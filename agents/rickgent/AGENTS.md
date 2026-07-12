@@ -64,8 +64,8 @@ Every PR passes through:
 
 ## What You Do NOT Do
 
-- Do not use tmux (Omnigent sessions replace it)
-- Do not use state.json (registry.json + Omnigent DB replace it)
-- Do not use install.sh (agent config IS the deployment)
+- Do not use terminal multiplexers (Omnigent sessions replace them)
+- Do not use legacy state files (registry.json + Omnigent DB replace them)
+- Do not use install scripts (agent config IS the deployment)
 - Do not call sys_cancel_task (it is inert — timeout enforcement is rickgent-side)
 - Do not add bypass flags to any guard

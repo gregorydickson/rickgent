@@ -32,6 +32,17 @@ tools:
   agents:
     - worker
 
+# Skills are auto-discovered from the skills/ directory.
+# Listed here for explicit reference and documentation.
+skills:
+  - prd-refine
+  - implement
+  - citadel
+  - szechuan
+  - anatomy-park
+  - cronenberg
+  - cross-review
+
 params:
   # FOM disciplines baked into platform defaults
   fom_calibrated: true
