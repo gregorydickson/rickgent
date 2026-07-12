@@ -1,0 +1,17 @@
+{
+  "id": "breaker-003",
+  "check": "breaker",
+  "input": {
+    "threshold": 3,
+    "iterations": [
+      { "error": "ETIMEDOUT", "gitTreeChanged": false },
+      { "error": "ETIMEDOUT", "gitTreeChanged": false, "workerClaimedFilesChanged": 2 }
+    ]
+  },
+  "expected": {
+    "canExecute": true,
+    "errorCount": 2,
+    "note": "claimed progress without tree change does not reset error count"
+  },
+  "source": "circuit-breaker.ts:213 — detectProgress uses git tree, not worker claims"
+}

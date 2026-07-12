@@ -1,0 +1,16 @@
+{
+  "id": "gate-003",
+  "check": "gate",
+  "input": {
+    "current": [],
+    "baseline": [{ "name": "lint", "passed": false, "output": "3 findings" }],
+    "scope": ["src/"],
+    "findings": []
+  },
+  "expected": {
+    "passed": false,
+    "staleBaseline": true,
+    "failures": ["no checks executed — silence is not success"]
+  },
+  "source": "FOM §5.3: silence is not success — zero checks = failure"
+}

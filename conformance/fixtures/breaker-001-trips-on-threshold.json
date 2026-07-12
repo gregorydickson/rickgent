@@ -1,0 +1,18 @@
+{
+  "id": "breaker-001",
+  "check": "breaker",
+  "input": {
+    "threshold": 3,
+    "iterations": [
+      { "error": "ETIMEDOUT at line 42", "gitTreeChanged": false },
+      { "error": "ETIMEDOUT at line 99", "gitTreeChanged": false },
+      { "error": "ETIMEDOUT at line 55", "gitTreeChanged": false }
+    ]
+  },
+  "expected": {
+    "canExecute": false,
+    "transition": "opened",
+    "reason": "threshold reached for Error at line N: timeout"
+  },
+  "source": "circuit-breaker.ts:359 — recordIterationResult opens after sameErrorThreshold"
+}

@@ -1,0 +1,16 @@
+{
+  "id": "completion-002",
+  "check": "completion",
+  "input": {
+    "claimedSha": null,
+    "baselineSha": "baseline789012",
+    "shaExists": false,
+    "treeChanged": false,
+    "gateGreen": null
+  },
+  "expected": {
+    "verdict": "UNVERIFIED",
+    "reason": "no reachable commit"
+  },
+  "source": "ticket-completion-evidence.ts:821 — refuseAbsent when no accepted evidence"
+}

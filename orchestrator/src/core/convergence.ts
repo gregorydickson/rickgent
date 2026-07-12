@@ -33,22 +33,33 @@ export interface GateVerdict {
 }
 
 export function evaluateConvergenceGate(input: GateInput): GateVerdict {
+  // AC-16: Fail closed on malformed input
+  if (input == null || typeof input !== "object") {
+    return { passed: false, failures: ["invalid input"], staleBaseline: true, newFindings: [] };
+  }
+
+  // Coerce array fields with defaults — missing/wrong types fail closed
+  const current: CheckResult[] = Array.isArray(input.current) ? input.current : [];
+  const baseline: CheckResult[] = Array.isArray(input.baseline) ? input.baseline : [];
+  const scope: string[] = Array.isArray(input.scope) ? input.scope : [];
+  const findings: Finding[] = Array.isArray(input.findings) ? input.findings : [];
+
   // 1. Assert baseline is fresh (R-SZGB: zero checks = stale baseline)
-  const staleBaseline = input.baseline.length === 0 || isBaselineStale(input.baseline, input.current);
+  const staleBaseline = baseline.length === 0 || isBaselineStale(baseline, current);
 
   // 2. Subtract baseline findings
-  const newFindings = subtractBaseline(input.findings, input.baseline);
+  const newFindings = subtractBaseline(findings, baseline);
 
   // 3. Filter by scope
-  const scopedFindings = filterByScope(newFindings, input.scope);
+  const scopedFindings = filterByScope(newFindings, scope);
 
   // 4. Check if all current checks pass
-  const failures = input.current
+  const failures = current
     .filter((c) => !c.passed)
     .map((c) => `${c.name}: ${c.output}`);
 
   // Silence is not success: if zero checks ran, that's a failure
-  if (input.current.length === 0) {
+  if (current.length === 0) {
     failures.push("no checks executed — silence is not success");
   }
 

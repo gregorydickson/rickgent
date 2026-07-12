@@ -1,0 +1,22 @@
+{
+  "id": "prd-003",
+  "check": "prd",
+  "input": {
+    "title": "auth feature",
+    "description": "Add auth",
+    "acceptanceCriteria": [
+      {
+        "description": "test",
+        "type": "test",
+        "verifyCommand": "pnpm test",
+        "scope": ["src/"]
+      }
+    ],
+    "simplificationReview": null
+  },
+  "expected": {
+    "valid": false,
+    "errors": ["PRD must have a simplification review (subtract before you add)"]
+  },
+  "source": "AC-15: PRD invalid without simplification review"
+}

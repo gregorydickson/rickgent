@@ -1,0 +1,16 @@
+{
+  "id": "salvage-005",
+  "check": "salvage",
+  "input": {
+    "gatePassed": false,
+    "treeChanged": false,
+    "orphanReset": false,
+    "ffReattachPossible": false,
+    "ownedPaths": []
+  },
+  "expected": {
+    "disposition": "error",
+    "reason": "salvage could not determine a disposition"
+  },
+  "source": "salvage-ticket.ts:213 — best-effort error catch"
+}

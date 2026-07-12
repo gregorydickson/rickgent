@@ -1,0 +1,16 @@
+{
+  "id": "completion-005",
+  "check": "completion",
+  "input": {
+    "claimedSha": "abc123def456",
+    "baselineSha": "baseline789012",
+    "shaExists": true,
+    "treeChanged": true,
+    "gateGreen": false
+  },
+  "expected": {
+    "verdict": "UNVERIFIED",
+    "reason": "gate verdict was not green"
+  },
+  "source": "ticket-completion-evidence.ts:830 — workerGateRefusal returns worker_gate_red"
+}

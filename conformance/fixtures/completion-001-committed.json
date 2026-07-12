@@ -1,0 +1,17 @@
+{
+  "id": "completion-001",
+  "check": "completion",
+  "input": {
+    "claimedSha": "abc123def456",
+    "baselineSha": "baseline789012",
+    "shaExists": true,
+    "treeChanged": true,
+    "gateGreen": true
+  },
+  "expected": {
+    "verdict": "COMMITTED",
+    "commitSha": "abc123def456",
+    "treeChanged": true
+  },
+  "source": "ticket-completion-evidence.ts:821 — evaluateCompletionEvidence returns ok:true with sha"
+}

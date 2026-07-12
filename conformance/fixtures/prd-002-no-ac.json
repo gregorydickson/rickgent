@@ -1,0 +1,15 @@
+{
+  "id": "prd-002",
+  "check": "prd",
+  "input": {
+    "title": "auth feature",
+    "description": "Add auth",
+    "acceptanceCriteria": [],
+    "simplificationReview": { "reviewed": true, "notes": "reviewed" }
+  },
+  "expected": {
+    "valid": false,
+    "errors": ["PRD must have at least one acceptance criterion"]
+  },
+  "source": "AC-15: PRD invalid without ACs"
+}

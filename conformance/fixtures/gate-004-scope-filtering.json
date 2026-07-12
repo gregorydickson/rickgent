@@ -1,0 +1,21 @@
+{
+  "id": "gate-004",
+  "check": "gate",
+  "input": {
+    "current": [{ "name": "lint", "passed": true, "output": "" }],
+    "baseline": [{ "name": "lint", "passed": false, "output": "src/foo.ts:10: error" }],
+    "scope": ["src/auth/"],
+    "findings": [
+      { "file": "src/auth/login.ts", "line": 5, "message": "error", "check": "lint" },
+      { "file": "src/billing/invoice.ts", "line": 10, "message": "error", "check": "lint" }
+    ]
+  },
+  "expected": {
+    "passed": false,
+    "staleBaseline": false,
+    "newFindings": [
+      { "file": "src/auth/login.ts", "line": 5, "message": "error", "check": "lint" }
+    ]
+  },
+  "source": "convergence-gate.ts:553 — filterByScope: only in-scope findings count"
+}

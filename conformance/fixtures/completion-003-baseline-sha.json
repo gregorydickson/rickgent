@@ -1,0 +1,16 @@
+{
+  "id": "completion-003",
+  "check": "completion",
+  "input": {
+    "claimedSha": "baseline789012",
+    "baselineSha": "baseline789012",
+    "shaExists": true,
+    "treeChanged": false,
+    "gateGreen": null
+  },
+  "expected": {
+    "verdict": "BASELINE_SHA",
+    "reason": "claimed SHA equals baseline SHA"
+  },
+  "source": "ticket-completion-evidence.ts:821 — baseline SHA rejection (no-op commit)"
+}

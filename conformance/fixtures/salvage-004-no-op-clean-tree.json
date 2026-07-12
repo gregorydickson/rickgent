@@ -1,0 +1,16 @@
+{
+  "id": "salvage-004",
+  "check": "salvage",
+  "input": {
+    "gatePassed": true,
+    "treeChanged": false,
+    "orphanReset": false,
+    "ffReattachPossible": false,
+    "ownedPaths": ["src/feature.py"]
+  },
+  "expected": {
+    "disposition": "no-op",
+    "reason": "no tree changes to salvage"
+  },
+  "source": "salvage-ticket.ts:210 — clean_tree no-op"
+}

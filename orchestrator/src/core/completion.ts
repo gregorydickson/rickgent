@@ -36,25 +36,37 @@ export const ALLOWED_COMPLETION_CALLERS = new Set([
 ]);
 
 export function evaluateCompletion(input: CompletionInput): CompletionVerdict {
+  // AC-16: Fail closed on malformed input
+  if (input == null || typeof input !== "object") {
+    return { verdict: "UNVERIFIED", reason: "invalid input" };
+  }
+
+  // Coerce fields with strict type checks — wrong types fail closed
+  const claimedSha = typeof input.claimedSha === "string" ? input.claimedSha : null;
+  const baselineSha = typeof input.baselineSha === "string" ? input.baselineSha : "";
+  const shaExists = input.shaExists === true;
+  const treeChanged = input.treeChanged === true;
+  const gateGreen = input.gateGreen;
+
   // 1. A commit exists and is reachable
-  if (!input.claimedSha || !input.shaExists) {
+  if (!claimedSha || !shaExists) {
     return { verdict: "UNVERIFIED", reason: "no reachable commit" };
   }
 
   // 2. The commit is not the baseline SHA (rejection of no-op)
-  if (input.claimedSha === input.baselineSha) {
+  if (claimedSha === baselineSha) {
     return { verdict: "BASELINE_SHA", reason: "claimed SHA equals baseline SHA" };
   }
 
   // 3. The tree changed (empty commits don't count)
-  if (!input.treeChanged) {
+  if (!treeChanged) {
     return { verdict: "NO_TREE_CHANGE", reason: "tree at claimed SHA matches baseline tree" };
   }
 
   // 4. Gate verdict was green (if applicable)
-  if (input.gateGreen === false) {
+  if (gateGreen === false) {
     return { verdict: "UNVERIFIED", reason: "gate verdict was not green" };
   }
 
-  return { verdict: "COMMITTED", commitSha: input.claimedSha, treeChanged: true };
+  return { verdict: "COMMITTED", commitSha: claimedSha, treeChanged: true };
 }

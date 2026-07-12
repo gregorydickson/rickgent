@@ -25,15 +25,21 @@ export interface PrdVerdict {
 }
 
 export function evaluatePrd(input: PrdInput): PrdVerdict {
+  // AC-16: Fail closed on malformed input
+  if (input == null || typeof input !== "object") {
+    return { valid: false, errors: ["invalid input"] };
+  }
+
   const errors: string[] = [];
+  const acceptanceCriteria = Array.isArray(input.acceptanceCriteria) ? input.acceptanceCriteria : [];
 
   // Must have at least one acceptance criterion
-  if (input.acceptanceCriteria.length === 0) {
+  if (acceptanceCriteria.length === 0) {
     errors.push("PRD must have at least one acceptance criterion");
   }
 
   // Every AC must have a non-empty verify command
-  for (const ac of input.acceptanceCriteria) {
+  for (const ac of acceptanceCriteria) {
     if (!ac.verifyCommand || ac.verifyCommand.trim().length === 0) {
       errors.push(`AC "${ac.description}" has empty verify command`);
     }

@@ -30,6 +30,11 @@ export interface SalvageDecision {
 }
 
 export function decideSalvage(input: SalvageInput): SalvageDecision {
+  // AC-16: Fail closed on malformed input
+  if (input == null || typeof input !== "object") {
+    return { disposition: "error", reason: "invalid input" };
+  }
+
   // ff-reattached: orphan-reset detected → fast-forward reattach
   if (input.orphanReset && input.ffReattachPossible) {
     return {
@@ -56,15 +61,15 @@ export function decideSalvage(input: SalvageInput): SalvageDecision {
     };
   }
 
-  // no-op: nothing to salvage
-  if (!input.treeChanged) {
+  // no-op: gate passing and nothing to salvage
+  if (input.gatePassed && !input.treeChanged) {
     return {
       disposition: "no-op",
       reason: "no tree changes to salvage",
     };
   }
 
-  // error: salvage itself failed
+  // error: gate failing with no tree changes, or salvage could not determine a disposition
   return {
     disposition: "error",
     reason: "salvage could not determine a disposition",

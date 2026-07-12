@@ -1,0 +1,14 @@
+{
+  "id": "scope-003",
+  "check": "scope",
+  "input": {
+    "declaredPaths": ["src/auth/"],
+    "targetPath": "src/auth/../billing/invoice.py",
+    "isWrite": true
+  },
+  "expected": {
+    "result": "DENY",
+    "code": "SCOPE_DENIED"
+  },
+  "source": "AC-10: adversarial path traversal"
+}

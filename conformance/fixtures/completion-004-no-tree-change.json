@@ -1,0 +1,16 @@
+{
+  "id": "completion-004",
+  "check": "completion",
+  "input": {
+    "claimedSha": "abc123def456",
+    "baselineSha": "baseline789012",
+    "shaExists": true,
+    "treeChanged": false,
+    "gateGreen": true
+  },
+  "expected": {
+    "verdict": "NO_TREE_CHANGE",
+    "reason": "tree at claimed SHA matches baseline tree"
+  },
+  "source": "ticket-completion-evidence.ts:821 — empty commit doesn't count"
+}

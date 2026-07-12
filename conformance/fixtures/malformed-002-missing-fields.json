@@ -1,0 +1,11 @@
+{
+  "id": "malformed-002",
+  "check": "completion",
+  "input": {},
+  "expected": {
+    "verdict": "UNVERIFIED",
+    "reason": "no reachable commit",
+    "failClosed": true
+  },
+  "source": "AC-16: malformed-input matrix — missing required fields fail closed"
+}

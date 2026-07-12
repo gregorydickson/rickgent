@@ -1,0 +1,11 @@
+{
+  "id": "malformed-001",
+  "check": "completion",
+  "input": "not valid json {{{",
+  "expected": {
+    "error": true,
+    "code": "INVALID_JSON",
+    "failClosed": true
+  },
+  "source": "AC-16: malformed-input matrix — invalid JSON"
+}

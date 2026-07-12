@@ -1,0 +1,14 @@
+{
+  "id": "scope-002",
+  "check": "scope",
+  "input": {
+    "declaredPaths": ["src/auth/"],
+    "targetPath": "src/billing/invoice.py",
+    "isWrite": true
+  },
+  "expected": {
+    "result": "DENY",
+    "code": "SCOPE_DENIED"
+  },
+  "source": "check-scope-diff.ts:32 — isPathInScope: outside scope"
+}

@@ -1,0 +1,16 @@
+{
+  "id": "gate-001",
+  "check": "gate",
+  "input": {
+    "current": [{ "name": "lint", "passed": true, "output": "" }],
+    "baseline": [{ "name": "lint", "passed": false, "output": "3 findings" }],
+    "scope": ["src/"],
+    "findings": []
+  },
+  "expected": {
+    "passed": true,
+    "staleBaseline": false,
+    "newFindings": []
+  },
+  "source": "convergence-gate.ts:1323 — runGate with fresh baseline"
+}

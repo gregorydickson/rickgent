@@ -1,0 +1,17 @@
+{
+  "id": "salvage-002",
+  "check": "salvage",
+  "input": {
+    "gatePassed": false,
+    "treeChanged": true,
+    "orphanReset": false,
+    "ffReattachPossible": false,
+    "ownedPaths": ["src/feature.py"]
+  },
+  "expected": {
+    "disposition": "archived-todo",
+    "reason": "gate failing but tree changed, archive and reset to Todo",
+    "stagedPaths": ["src/feature.py"]
+  },
+  "source": "salvage-ticket.ts:204 — gate_failing_archived"
+}

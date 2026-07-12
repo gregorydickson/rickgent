@@ -1,0 +1,22 @@
+{
+  "id": "prd-001",
+  "check": "prd",
+  "input": {
+    "title": "auth feature",
+    "description": "Add auth",
+    "acceptanceCriteria": [
+      {
+        "description": "auth rejects empty password",
+        "type": "test",
+        "verifyCommand": "pnpm test -- auth.empty-password.test.ts",
+        "scope": ["src/auth/", "test/auth.empty-password.test.ts"]
+      }
+    ],
+    "simplificationReview": { "reviewed": true, "notes": "reviewed" }
+  },
+  "expected": {
+    "valid": true,
+    "errors": []
+  },
+  "source": "PRD §3.7 — PRD model: valid with ACs + simplification review"
+}

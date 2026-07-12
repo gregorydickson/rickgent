@@ -1,0 +1,16 @@
+{
+  "id": "gate-002",
+  "check": "gate",
+  "input": {
+    "current": [{ "name": "lint", "passed": true, "output": "" }],
+    "baseline": [],
+    "scope": ["src/"],
+    "findings": []
+  },
+  "expected": {
+    "passed": false,
+    "staleBaseline": true,
+    "newFindings": []
+  },
+  "source": "convergence-gate.ts:301 — assertBaselineFresh: BaselineMissingError (R-SZGB)"
+}

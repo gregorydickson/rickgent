@@ -16,21 +16,36 @@ export type ScopeVerdict =
   | { result: "DENY"; reason: string; code: string };
 
 export function checkScope(input: ScopeInput): ScopeVerdict {
+  // AC-16: Fail closed on malformed input
+  if (input == null || typeof input !== "object") {
+    return { result: "DENY", reason: "invalid input", code: "SCOPE_DENIED" };
+  }
+
+  const isWrite = input.isWrite === true;
+  const isRead = input.isWrite === false;
+  const targetPath = typeof input.targetPath === "string" ? input.targetPath : "";
+  const declaredPaths = Array.isArray(input.declaredPaths) ? input.declaredPaths : [];
+
+  // If isWrite is not a proper boolean, fail closed
+  if (!isWrite && !isRead) {
+    return { result: "DENY", reason: "invalid isWrite field", code: "SCOPE_DENIED" };
+  }
+
   // Non-write operations are always allowed
-  if (!input.isWrite) {
+  if (!isWrite) {
     return { result: "ALLOW" };
   }
 
   // Unresolvable target → DENY
-  if (!input.targetPath) {
+  if (!targetPath) {
     return { result: "DENY", reason: "unresolvable write target", code: "SCOPE_DENIED" };
   }
 
   // Canonicalize the target path (remove ., .., etc.)
-  const canonicalTarget = canonicalizePath(input.targetPath);
+  const canonicalTarget = canonicalizePath(targetPath);
 
   // Check if the target is within any declared path
-  for (const declared of input.declaredPaths) {
+  for (const declared of declaredPaths) {
     const canonicalDeclared = canonicalizePath(declared);
     if (isPathInScope(canonicalTarget, canonicalDeclared)) {
       return { result: "ALLOW" };
@@ -39,7 +54,7 @@ export function checkScope(input: ScopeInput): ScopeVerdict {
 
   return {
     result: "DENY",
-    reason: `${canonicalTarget} not in declared paths [${input.declaredPaths.join(", ")}]`,
+    reason: `${canonicalTarget} not in declared paths [${declaredPaths.join(", ")}]`,
     code: "SCOPE_DENIED",
   };
 }

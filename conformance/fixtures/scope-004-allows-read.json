@@ -1,0 +1,13 @@
+{
+  "id": "scope-004",
+  "check": "scope",
+  "input": {
+    "declaredPaths": ["src/auth/"],
+    "targetPath": "src/billing/invoice.py",
+    "isWrite": false
+  },
+  "expected": {
+    "result": "ALLOW"
+  },
+  "source": "check-scope-diff.ts: scope fence applies to writes only"
+}

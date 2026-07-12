@@ -1,0 +1,16 @@
+{
+  "id": "salvage-003",
+  "check": "salvage",
+  "input": {
+    "gatePassed": true,
+    "treeChanged": true,
+    "orphanReset": true,
+    "ffReattachPossible": true,
+    "ownedPaths": ["src/feature.py"]
+  },
+  "expected": {
+    "disposition": "ff-reattached",
+    "reason": "orphan-reset detected, fast-forward reattach possible"
+  },
+  "source": "salvage-ticket.ts:173 — head_regression_reattached"
+}

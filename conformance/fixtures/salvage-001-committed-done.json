@@ -1,0 +1,17 @@
+{
+  "id": "salvage-001",
+  "check": "salvage",
+  "input": {
+    "gatePassed": true,
+    "treeChanged": true,
+    "orphanReset": false,
+    "ffReattachPossible": false,
+    "ownedPaths": ["src/feature.py"]
+  },
+  "expected": {
+    "disposition": "committed-done",
+    "reason": "gate passing and tree changed",
+    "stagedPaths": ["src/feature.py"]
+  },
+  "source": "salvage-ticket.ts:194 — gate_passing_committed"
+}

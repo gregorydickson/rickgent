@@ -1,0 +1,17 @@
+{
+  "id": "breaker-002",
+  "check": "breaker",
+  "input": {
+    "threshold": 3,
+    "iterations": [
+      { "error": "ETIMEDOUT", "gitTreeChanged": false },
+      { "error": null, "gitTreeChanged": true }
+    ]
+  },
+  "expected": {
+    "canExecute": true,
+    "transition": "reset",
+    "reason": "successful iteration with tree change"
+  },
+  "source": "circuit-breaker.ts:359 — git tree progress resets breaker"
+}

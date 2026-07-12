@@ -1,0 +1,13 @@
+{
+  "id": "scope-001",
+  "check": "scope",
+  "input": {
+    "declaredPaths": ["src/auth/"],
+    "targetPath": "src/auth/login.py",
+    "isWrite": true
+  },
+  "expected": {
+    "result": "ALLOW"
+  },
+  "source": "check-scope-diff.ts:32 — isPathInScope: prefix match"
+}

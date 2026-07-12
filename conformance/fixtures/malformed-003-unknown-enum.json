@@ -1,0 +1,17 @@
+{
+  "id": "malformed-003",
+  "check": "completion",
+  "input": {
+    "claimedSha": "abc",
+    "baselineSha": "def",
+    "shaExists": "yes",
+    "treeChanged": "true",
+    "gateGreen": "green"
+  },
+  "expected": {
+    "verdict": "UNVERIFIED",
+    "reason": "no reachable commit",
+    "failClosed": true
+  },
+  "source": "AC-16: malformed-input matrix — wrong types treated as falsy, fail closed"
+}
