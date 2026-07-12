@@ -1,0 +1,28 @@
+{
+  "name": "rickgent",
+  "version": "0.1.0-alpha",
+  "description": "Rickgent — autonomous multi-model engineering platform",
+  "type": "module",
+  "bin": {
+    "rickgent": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "node scripts/generate-build-commit.cjs && tsc && chmod +x dist/cli.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/ --ext .ts",
+    "doctor": "node dist/cli.js doctor"
+  },
+  "dependencies": {
+    "yaml": "^2.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

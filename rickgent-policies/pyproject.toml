@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rickgent-policies"
+version = "0.1.0a0"
+description = "Rickgent policy shims — pure Python enforcement surfaces over the TypeScript verdict core"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "omnigent>=0.5.0",
+    # For local development, install omnigent first:
+    #   pip install -e /path/to/omnigent
+    # Then install this package:
+    #   pip install -e /path/to/rickgent-policies
+    # The omnigent pin is recorded in docs/decisions/ — commit 6e3c7785 (0.6.0.dev0)
+]
+
+[tool.setuptools]
+packages = ["rickgent_policies"]

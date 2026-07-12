@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.rickgent/
+__pycache__/
+*.egg-info/
+*.pyc
+.env
+.DS_Store
+coverage/
+*.log

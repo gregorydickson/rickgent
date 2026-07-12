@@ -1,0 +1,27 @@
+spec_version: 1
+
+name: worker
+description: >
+  Rickgent worker sub-agent. Dispatched as an `omnigent run` one-shot
+  for a single lifecycle phase. Receives ticket scope and phase instructions
+  via the prompt.
+
+instructions: |
+  You are a Rickgent worker. You execute a single lifecycle phase for a ticket.
+  Work only within the declared paths for the ticket. Do not modify files
+  outside your declared scope. When you are done, ensure your work is committed
+  with a clear commit message. Do not claim done without a real commit.
+
+llm:
+  model: anthropic/claude-sonnet-4-20250514
+  max_completion_tokens: 16384
+
+interaction:
+  conversational: false
+  modalities:
+    input: [text]
+    output: [text]
+
+tools:
+  builtins:
+    - sys_os_shell

@@ -1,0 +1,47 @@
+spec_version: 1
+
+name: rickgent
+description: >
+  Rickgent — autonomous multi-model engineering platform.
+  Combines Omnigent's multi-harness infrastructure with Pickle Rick's
+  PRD-driven lifecycle and the Fable Operating Manual's epistemic discipline.
+
+instructions: AGENTS.md
+
+llm:
+  model: anthropic/claude-sonnet-4-20250514
+  max_completion_tokens: 16384
+  reasoning_effort: medium
+
+interaction:
+  conversational: true
+  modalities:
+    input: [text, image, file]
+    output: [text]
+
+tools:
+  builtins:
+    - sys_session_send
+    - sys_read_inbox
+    - sys_session_list
+    - sys_session_get_info
+    - sys_session_close
+    - sys_os_shell
+    - sys_advise_models
+    - sys_list_models
+  agents:
+    - worker
+
+params:
+  # FOM disciplines baked into platform defaults
+  fom_calibrated: true
+  # Circuit breaker defaults (ported from pickle_settings.json)
+  silent_death_respawn_cap: 1
+  failed_flip_suppression_cap: 2
+  bounded_terminal_escape_cap: 3
+  breaker_thresholds: 5
+  breaker_recovery_grace_seconds: 30
+  # Worker timeout (seconds) — rickgent-side enforcement
+  worker_timeout: 1200
+  # Max concurrent workers (v0.1 backpressure)
+  max_concurrent_workers: 2
