@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { join } from "path";
 import { BUILD_COMMIT } from "./build-commit.js";
 import { runVerdict } from "./core/verdict-cli.js";
 
@@ -63,8 +64,48 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "status") {
+    await runStatus(args.slice(1));
+    return;
+  }
+
+  if (command === "reconcile") {
+    await runReconcile();
+    return;
+  }
+
+  if (command === "build") {
+    if (args.includes("--resume")) {
+      console.log("rickgent build --resume: resume not yet wired");
+      return;
+    }
+    console.error(`rickgent: build not yet implemented in v0.1.0-alpha scaffold`);
+    console.error(USAGE);
+    process.exit(1);
+  }
+
+  if (command === "pipeline") {
+    const prd = args[1];
+    if (!prd) {
+      console.error("rickgent pipeline: missing <prd> argument");
+      process.exit(1);
+    }
+    console.log(`rickgent pipeline: PRD path = ${prd}`);
+    return;
+  }
+
   // Stub for not-yet-implemented commands
-  const implemented = ["verdict", "doctor", "--version", "--build-commit", "--help"];
+  const implemented = [
+    "verdict",
+    "doctor",
+    "status",
+    "reconcile",
+    "build",
+    "pipeline",
+    "--version",
+    "--build-commit",
+    "--help",
+  ];
   if (!implemented.includes(command)) {
     console.error(`rickgent: command "${command}" not yet implemented in v0.1.0-alpha scaffold`);
     console.error(USAGE);
@@ -80,6 +121,71 @@ async function runDoctor(): Promise<void> {
     process.exit(1);
   }
   console.log(result.report);
+}
+
+function getRickgentDir(): string {
+  return process.env.RICKGENT_DIR ?? join(process.cwd(), ".rickgent");
+}
+
+async function runStatus(rest: string[]): Promise<void> {
+  const deep = rest.includes("--deep");
+
+  if (deep) {
+    // status --deep runs the doctor check first, then prints pipeline status
+    const { runDoctorCheck } = await import("./lifecycle/doctor.js");
+    const doctorResult = await runDoctorCheck();
+    console.log(doctorResult.report);
+    if (!doctorResult.ok) {
+      console.error("rickgent status --deep: doctor check failed");
+      process.exit(1);
+    }
+  }
+
+  const { Registry } = await import("./lifecycle/registry.js");
+  const registryPath = join(getRickgentDir(), "registry.json");
+  const registry = new Registry(registryPath);
+  const status = registry.getPipelineStatus();
+
+  const lines: string[] = [
+    "rickgent status — pipeline state",
+    "=".repeat(50),
+    `runId: ${status.runId || "(none)"}`,
+    `startedAt: ${status.startedAt || "(none)"}`,
+    `updatedAt: ${status.updatedAt || "(none)"}`,
+    `tickets: ${Object.keys(status.tickets).length}`,
+  ];
+  for (const [id, t] of Object.entries(status.tickets)) {
+    lines.push(`  ${id}: [${t.status}] phase=${t.phase} attempt=${t.attempt} commit=${t.completionCommitSha ?? "(none)"}`);
+  }
+  lines.push("=".repeat(50));
+  console.log(lines.join("\n"));
+}
+
+async function runReconcile(): Promise<void> {
+  const { reconcile } = await import("./lifecycle/reconcile.js");
+  const workingDir = process.cwd();
+  const rickgentDir = getRickgentDir();
+  const result = reconcile(workingDir, rickgentDir);
+
+  const lines: string[] = [
+    "rickgent reconcile — rebuild registry from git + dispatch ledger",
+    "=".repeat(50),
+    `ok: ${result.ok}`,
+    `rebuilt: ${result.rebuilt}`,
+    `ticketsFound: ${result.ticketsFound}`,
+  ];
+  if (result.errors.length > 0) {
+    lines.push("errors:");
+    for (const e of result.errors) {
+      lines.push(`  - ${e}`);
+    }
+  }
+  lines.push("=".repeat(50));
+  console.log(lines.join("\n"));
+
+  if (!result.ok) {
+    process.exit(1);
+  }
 }
 
 main().catch((err) => {
