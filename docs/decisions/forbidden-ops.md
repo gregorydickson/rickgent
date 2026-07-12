@@ -68,3 +68,11 @@ On top of `blast_radius`, Rickgent adds a Rickgent-specific `forbidden_ops` poli
 The R-WSRC trap-door catalog (CLAUDE.md + source comments) is the authoritative list of forbidden ops. It is NOT in the FOM document — the FOM is the judgment layer, the trap-door catalog is the machine-enforceable invariant list. For Rickgent, the trap-door catalog is re-derived for the Omnigent transport model: the state-file and deploy-tree trap doors evaporate (no `state.json`, no deployed JS mirror), while the destructive-git-verb and blast-radius trap doors are inherited via `blast_radius`.
 
 The `spawn_bounds` policy (`orchestration.py:407-464`) bounds fan-out per turn (default 5, Rickgent config sets 6 per §2.2). This replaces Pickle Rick's implicit concurrency limits. The `headless_subagent_purpose_guard` (`orchestration.py:466-517`) requires every dispatch to declare its purpose — this is the Rickgent equivalent of Pickle Rick's worker-role discipline.
+
+## Countersign
+
+- **Reviewer:** GPT-5 Codex
+- **Verdict:** REJECTED
+- **Spot-checks performed:** `omnigent/omnigent/policies/builtins/orchestration.py:345-405,407-567`; `pickle-rick-claude/extension/src/hooks/handlers/config-protection.ts:19-28,49-65,543-559,572-605,652-662`
+- **Notes:** The mash direction is defensible, but the Omnigent citations in the file use nonexistent shortened paths under `omnigent/policies/...` rather than the local `omnigent/omnigent/policies/...` paths.
+- **Date:** 2026-07-12

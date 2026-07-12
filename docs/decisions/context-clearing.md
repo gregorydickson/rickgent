@@ -29,3 +29,11 @@ Reuse Omnigent's session model — no tmux, no process management, cleaner.
 
 ## Reasoning
 Context clearing in Omnigent is free: each `sys_session_send` creates a session with its own conversation store, and the one-shot `omnigent run -p` path clears context via process exit. Pickle Rick's `mux-runner.ts` is 11,339 lines of process management (tmux kill, respawn, orphan reaping, circuit breaking, recovery ladders) whose entire purpose is to approximate what Omnigent gets from its session model. Porting or mashing `mux-runner.ts` would import its failure modes (orphaned processes, respawn failures, state leakage on crash) for zero benefit. Reusing Omnigent eliminates the tmux dependency entirely, removes the process-management surface, and makes context clearing an invariant rather than a best-effort side effect. The only caveat — that `mux-runner.ts`'s recovery logic (circuit breaker, no-progress detection) has value — is addressed in the policy-framework and sandboxing decisions, where the relevant concepts are mapped to Omnigent's policy events.
+
+## Countersign
+
+- **Reviewer:** GPT-5 Codex
+- **Verdict:** REJECTED
+- **Spot-checks performed:** `omnigent/omnigent/tools/builtins/spawn.py:118-130`; `pickle-rick-claude/extension/src/bin/mux-runner.ts:3390-3413,6660`
+- **Notes:** The reuse decision is directionally reasonable, but the Omnigent citation path is wrong (`omnigent/tools/builtins/spawn.py` does not exist here) and the cited line range is also off from the actual "own conversation" text.
+- **Date:** 2026-07-12

@@ -71,3 +71,11 @@ Omnigent's `sys_cancel_task` is a confirmed TRAP. The tasks table was removed an
 Pickle Rick's orchestrator-side timeout semantics are the right model because they actually work. The orchestrator owns the deadline (`worker_timeout_seconds`, default 1200s; per-ticket `current_ticket_worker_timeout_seconds`), caps the worker's own gate-phase test runs (`PICKLE_WORKER_TEST_FAST_TIMEOUT_MS`, default 600000ms, floor 60000ms), and on timeout: (a) SIGTERMs the worker process (`mux-runner.ts:206, 3591`), (b) salvages any real work via `salvageTicket` / `salvageDirtyTree` so partial output isn't lost, (c) writes a `TASK_NOTES.md` stub via `writeTimeoutStub` so the next iteration knows the previous approach didn't finish in time and must not repeat it, (d) records `timeout_count` and emits remediation via `executeTimeoutHalt` (`mux-runner.ts:6418-6427`), and (e) halts after 2 consecutive timeouts (`reason: 'timeout_repeat'`) rather than spinning forever.
 
 Rickgent ports these semantics: a per-spawn deadline on inbox wait, SIGTERM kill when the deadline is exceeded, salvage of any real work the worker produced, a timeout stub recording what was tried and how long it ran, and a repeat-timeout halt. Rickgent does NOT port the Pickle Rick-specific surface (`--worker-timeout` CLI flag shape, `PICKLE_WORKER_TEST_FAST_TIMEOUT_MS` env var name, `TASK_NOTES.md` stub format, `pickle-retry` remediation message) verbatim — it ports the deadline + kill + salvage + stub + halt loop against Rickgent's own orchestrator and registry. The decision is PORT, not MASH, because Omnigent contributes nothing here — `sys_cancel_task` is inert and must be explicitly avoided, not mashed in.
+
+## Countersign
+
+- **Reviewer:** GPT-5 Codex
+- **Verdict:** REJECTED
+- **Spot-checks performed:** `omnigent/omnigent/tools/builtins/async_inbox.py:97-126`; `pickle-rick-claude/extension/src/bin/setup.ts:664-667,1193-1198`
+- **Notes:** The decision itself looks sound, but the Omnigent evidence in the file uses the nonexistent shortened path `omnigent/tools/builtins/async_inbox.py` instead of the local `omnigent/omnigent/tools/builtins/async_inbox.py`, so the AC-3 citation is not literally valid.
+- **Date:** 2026-07-12

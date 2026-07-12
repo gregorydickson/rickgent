@@ -74,3 +74,11 @@ The Polly pattern proves the substrate works: `sys_session_send` with a differen
 But the Polly skill itself is too thin for Rickgent's quality bar: no confidence scoring, no false-positive filter, no severity matrix, no multi-category sweep, no approval gate. Council of Ricks (`council-of-ricks.md`) has hardened exactly those semantics — the P0-P4 matrix, the `conf >= 80` threshold, the false-positive pre-filter (`council-of-ricks.md:211-220, 291-296`), the "reviewer never edits" rule (`council-of-ricks.md:5`), and the blocking→fix-task loop (`council-of-ricks.md:32-38`). Rickgent's own cross-review skill should adopt those semantics.
 
 What Rickgent must NOT inherit from Council of Ricks: the Graphite stack coupling (`gt log short`, `gt branch checkout`), the tmux session orchestration, the stack-scoped (multi-PR) review shape, and — most importantly — the manual `/council-of-ricks` invocation. AC-13 demands that cross-review is POLICY-ENFORCED: the policy engine must refuse to mark a ticket Done until a cross-vendor review has run with zero blocking issues. Omnigent's policy engine (`omnigent/policies/builtins/`) is the enforcing mechanism; Pickle Rick has no equivalent (it relies on the operator). So the mash is: Omnigent substrate + Omnigent policy enforcement + Rickgent-authored review skill with Council-of-Ricks-grade semantics, scoped per-ticket (not per-stack), vendor-portable (not Graphite-coupled).
+
+## Countersign
+
+- **Reviewer:** GPT-5 Codex
+- **Verdict:** REJECTED
+- **Spot-checks performed:** `omnigent/examples/polly/skills/cross-review/SKILL.md:13-45,49-60`; `pickle-rick-claude/.claude/commands/council-of-ricks.md:224-305,359-369`
+- **Notes:** The overall mash decision is plausible, but one of the Pickle Rick citations is wrong: the file reuses `council-of-ricks.md:32-38` for a blocking-issue fix-loop claim, and those lines are only flag documentation.
+- **Date:** 2026-07-12

@@ -40,3 +40,11 @@ Reuse Omnigent's policy framework — proper framework, no bash scanning.
 
 ## Reasoning
 Rickgent needs composable, validated policies for scope fencing, cost limits, blast radius, and lifecycle gates. Omnigent already has all of this: the `policies/` package with its closed event vocabulary, three-valued verdicts, JSON-schema param validation, CEL, and FunctionPolicy factories. The `headless_subagent_purpose_guard` (`orchestration.py:466-468`) is a direct example of how to enforce a closed set of work types — exactly what Rickgent needs for its dispatch guards. Pickle Rick's hooks (`check-scope-diff.ts`, `config-protection.ts`, `tsc-gate.ts`, `bash-scanner`) are each 100-200 LOC of standalone Node script with no shared infrastructure. Porting them would mean rebuilding the policy registry, schema validation, and event model that Omnigent already provides. Instead, each Pickle Rick hook maps to an Omnigent `tool_call` policy: scope fence → policy on `git_commit` tool, config protection → policy on `file_write` tool, tsc gate → policy on `commit` tool. The `policy_modules` config (`cli.py:3164`, `app.py:1320`) lets Rickgent register its own policy module without forking. No mash needed; reuse is the clean path.
+
+## Countersign
+
+- **Reviewer:** GPT-5 Codex
+- **Verdict:** REJECTED
+- **Spot-checks performed:** `omnigent/omnigent/policies/schema.py:219-225,294-298`; `omnigent/omnigent/policies/registry.py:68-89`
+- **Notes:** The reuse decision is directionally right, but the file's Omnigent citations are all written against nonexistent shortened paths (`omnigent/policies/...`) rather than the local `omnigent/omnigent/policies/...` tree.
+- **Date:** 2026-07-12

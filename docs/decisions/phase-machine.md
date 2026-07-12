@@ -73,3 +73,11 @@ The `ReExecutionSeam` DI pattern is preserved: the lifecycle layer owns the conc
 The INV-RUNG-ERROR-CONTAINED invariant (a throw in any ladder rung is contained as a not-ok step, never yielding `advanced`) is preserved: `safeStep` wraps every adapter call in a try/catch that returns `false` on throw. This prevents an orphaned half-commit from riding to Done when an adapter crashes mid-operation.
 
 Starting from `recovery-controller.ts` rather than a blank file is the key insight: the recovery state machine is already factored, already DI'd, already tmux-free, and already tested with scripted workers. The port is a transport-layer swap (tmux → Omnigent one-shots) plus a core/lifecycle split, not a rewrite.
+
+## Countersign
+
+- **Reviewer:** GPT-5 Codex
+- **Verdict:** REJECTED
+- **Spot-checks performed:** `omnigent/omnigent/tools/builtins/spawn.py:118-130`; `pickle-rick-claude/extension/src/services/recovery-controller.ts:166,227,240,264,293,323`
+- **Notes:** The Pickle Rick phase-machine evidence checks out, but the file provides no Omnigent file:line citation for the "generic session, no phases" side of the comparison.
+- **Date:** 2026-07-12

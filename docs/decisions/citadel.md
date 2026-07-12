@@ -60,3 +60,11 @@ The mechanical-finding classifier (`mechanical-finding-classifier.ts`) ports wit
 The AC verification commands (the per-AC `Verification` column from the PRD) run via Omnigent's `sys_os_shell` — confirmed available in §2.1.1 — so the verify step survives the move from in-process `execFileSync` to Omnigent dispatch. The trap door catalog (`ENFORCE:` reference matching) is a pure file/regex operation and ports unchanged.
 
 The only Rickgent-specific addition is a policy hook at the Omnigent seam that fences `rickgent citadel` as a `tool_call` policy (per §2.1.1's closed policy event vocabulary) so the audit cannot be skipped by a worker mid-pipeline.
+
+## Countersign
+
+- **Reviewer:** GPT-5 Codex
+- **Verdict:** REJECTED
+- **Spot-checks performed:** `omnigent/omnigent/tools/builtins/spawn.py:118-130`; `pickle-rick-claude/.claude/commands/citadel.md:1-29,43-61`
+- **Notes:** The port direction looks reasonable, but the file gives no Omnigent file:line citation for the "nothing" claim and also states that fresh checks were verified against HEAD `95f5c416` while the local Pickle Rick reference is at `d5a021fa`.
+- **Date:** 2026-07-12

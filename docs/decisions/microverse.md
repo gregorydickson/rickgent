@@ -63,3 +63,11 @@ The port strategy splits cleanly along the §10.9 language boundary:
 The per-iteration convergence gate delegates to the ported `convergence-gate.ts` verdict core (see `convergence-gate.md`). The circuit breaker integration delegates to the ported `circuit-breaker.ts` verdict core (see `circuit-breaker.md`). The dirty-tree rescue delegates to the ported salvage executor (see `salvage.md`).
 
 The R-DEFCHURN lesson (empty-commit churn burns the budget without tripping the breaker) is preserved: `detectProgress` in the circuit breaker compares tree SHAs, not just commit SHAs, so empty commits do not count as progress. This invariant must survive the port.
+
+## Countersign
+
+- **Reviewer:** GPT-5 Codex
+- **Verdict:** REJECTED
+- **Spot-checks performed:** `omnigent/omnigent/tools/builtins/spawn.py:118-130`; `pickle-rick-claude/extension/src/bin/microverse-runner.ts:1613,3407,3637,4367`
+- **Notes:** The Pickle Rick microverse citations check out and the port decision looks right, but the file gives no Omnigent file:line citation for the "Omnigent has nothing" side of the comparison.
+- **Date:** 2026-07-12

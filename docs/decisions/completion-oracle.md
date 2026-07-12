@@ -74,3 +74,11 @@ The one-predicate, enumerated-caller-allowlist invariant (R-AFCC-CALLER-ENUMERAT
 The B-1SEAM WS-1 invariant (phantom-Done watcher and Done-flip gate share ONE policy) is preserved: `gateForPhantomDoneRevert` remains a thin adapter over `evaluateCompletionEvidence`, not a separate implementation. No accept-here-revert-there split.
 
 The baseline-rejection invariant (a SHA equal to the session start commit is not new work) is preserved: `readEvidence` rejects baseline SHAs categorically. The gate-consultation invariant (a failing gate refuses completion even with a valid SHA) is preserved: `workerGateRefusal` runs after evidence acceptance and before the final return.
+
+## Countersign
+
+- **Reviewer:** GPT-5 Codex
+- **Verdict:** REJECTED
+- **Spot-checks performed:** `omnigent/omnigent/tools/builtins/spawn.py:118-130`; `pickle-rick-claude/extension/src/services/ticket-completion-evidence.ts:529,821,859`
+- **Notes:** The Pickle Rick oracle citations check out and the decision is sensible, but the file supplies no Omnigent file:line citation for the "Omnigent has nothing" side, so the comparison is not AC-3 evidence-backed.
+- **Date:** 2026-07-12

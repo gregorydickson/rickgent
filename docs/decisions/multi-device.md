@@ -29,3 +29,11 @@ Reuse Omnigent's server + web UI, with a deferred custom dashboard. A custom das
 
 ## Reasoning
 Rickgent needs multi-device observability from day one — an operator should be able to check on a long-running multi-model session from their phone. Omnigent already provides this: FastAPI server, React web UI, iOS/Android/Electron shells. Pickle Rick's tmux TUI is strictly local and cannot be extended to remote devices without building an entirely new server. Reusing Omnigent gives us network-accessible session trees, labels, and terminal attach for free. The hardcoded route table is a limitation, but not a v0.1 blocker: the existing sessions, comments, and terminal-attach routes cover Rickgent's visibility needs. When Rickgent needs a custom dashboard route (e.g., convergence metrics, scope-drift visualization), that becomes fork trigger #2 — the point at which extending Omnigent via an external package is no longer sufficient and we fork the server. Until then, `rickgent status` over `registry.json` plus the stock web UI is the plan.
+
+## Countersign
+
+- **Reviewer:** GPT-5 Codex
+- **Verdict:** REJECTED
+- **Spot-checks performed:** `omnigent/omnigent/server/app.py:1994-2102,2459-2485`; `pickle-rick-claude/CLAUDE.md:82`
+- **Notes:** The file cites `app.py:44-66` as `include_router(...)` calls, but those lines are import statements; the actual route-registration calls begin at line 1994. The Omnigent path is also shortened incorrectly in the decision file.
+- **Date:** 2026-07-12

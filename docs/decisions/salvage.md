@@ -66,3 +66,11 @@ The port splits along the §14.8 decide/execute/verify boundary:
 The `reconcileTicketTruth` single-definition invariant (AC-W3-RECONCILE) is preserved: there is exactly one ground-truth reader in the entire codebase. The R-MACB invariant (never `git add -A` over foreign dirt) is preserved: `stageOwnedPaths` stages one path at a time, and `salvageDirtyTree` anchors foreign dirt to a recoverable ref before any staging.
 
 The `sys_cancel_task` inertness is not a problem — the PRD (§10.4) already specifies that worker-timeout enforcement lives in the rickgent orchestrator (deadline on inbox wait + salvage), not in a platform cancel primitive. Salvage runs on timeout/crash/cancel regardless of whether the platform has a working cancel primitive.
+
+## Countersign
+
+- **Reviewer:** GPT-5 Codex
+- **Verdict:** REJECTED
+- **Spot-checks performed:** `omnigent/omnigent/tools/builtins/async_inbox.py:97-126`; `pickle-rick-claude/extension/src/lib/salvage-ticket.ts:32,166`
+- **Notes:** The port decision looks right, but the file never gives a literal Omnigent file:line citation for the "no salvage logic, only inert cancel" side; it references the concept, not an AC-3-checkable citation.
+- **Date:** 2026-07-12

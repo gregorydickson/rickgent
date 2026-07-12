@@ -76,3 +76,11 @@ Everything else ports verbatim:
 - The `anatomy-park.json` findings artifact is preserved so citadel's cross-phase ingest (`audit-runner.ts:32-46`) continues to work.
 
 The pipeline-runner chains anatomy-park before szechuan-sauce; that ordering is preserved in Rickgent's phase sequence (§13).
+
+## Countersign
+
+- **Reviewer:** GPT-5 Codex
+- **Verdict:** REJECTED
+- **Spot-checks performed:** `omnigent/omnigent/tools/builtins/spawn.py:118-130`; `pickle-rick-claude/.claude/commands/anatomy-park.md:5-23,52-80`
+- **Notes:** The port decision looks reasonable, but the file gives no Omnigent file:line citation for the "nothing" claim, and it says the cited checks were verified against HEAD `95f5c416` while the local Pickle Rick reference is at `d5a021fa`.
+- **Date:** 2026-07-12

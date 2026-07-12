@@ -55,3 +55,11 @@ Skipping quality gates for v0.1 is the subtract-before-add discipline applied to
 5. **No hybrid gates.** A "mash" of Omnigent policy + Pickle Rick gate semantics would create a new gate surface with the same false-block risk. The correct move is to not have per-phase heuristic gates at all — the build is the gate, the review phases are the judgment.
 
 If a specific gate proves necessary in practice (e.g., a pre-spawn check that the ticket's worktree exists), it should be added as a single, narrow, machine-checkable assertion — not a heuristic framework. Revisit in v0.2 if autonomous runs demonstrate a need.
+
+## Countersign
+
+- **Reviewer:** GPT-5 Codex
+- **Verdict:** REJECTED
+- **Spot-checks performed:** `omnigent/omnigent/tools/builtins/spawn.py:118-130`; `pickle-rick-claude/extension/src/bin/mux-runner.ts:9587-9675`
+- **Notes:** The skip decision is plausible, but the file gives no Omnigent file:line citation for the "Omnigent has nothing" side of the comparison, so the cross-vendor evidence is incomplete.
+- **Date:** 2026-07-12
