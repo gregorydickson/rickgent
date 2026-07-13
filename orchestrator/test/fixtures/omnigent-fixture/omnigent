@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Deterministic fixture omnigent shim. Placed ahead of the real binary on PATH
+# by the B2 dispatch tests (architecture §4). Delegates to fixture.mjs.
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec node "$DIR/fixture.mjs" "$@"

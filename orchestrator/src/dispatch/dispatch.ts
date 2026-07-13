@@ -5,6 +5,12 @@
 import { spawn } from "child_process";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, appendFileSync, rmSync } from "fs";
 import { join } from "path";
+import {
+  captureGitBaseline,
+  captureConversationIds,
+  gatherCompletionEvidence,
+  type CompletionEvidenceContext,
+} from "./evidence.js";
 
 export type DispatchState =
   | "planned" | "spawned" | "db_session_observed" | "completed"
@@ -28,6 +34,8 @@ export interface DispatchEntry {
   exitCode: number | null;
   stdout: string | null;
   stderr: string | null;
+  /** Conversation id of the DB session created by this dispatch (B2 evidence). */
+  conversationId?: string | null;
 }
 
 const TERMINAL_STATES: ReadonlySet<DispatchState> = new Set([
@@ -128,6 +136,17 @@ export interface DispatchOptions {
   prompt: string;
   timeout: number;
   maxConcurrent: number;
+  /**
+   * Target git repo the worker mutates. Required to observe an in-scope git
+   * delta; without it completion cannot be verified and fails closed.
+   */
+  targetRepo?: string;
+  /** Ticket's declared scope (repo-relative path prefixes) for the delta filter. */
+  declaredPaths?: string[];
+  /** OMNIGENT_DATA_DIR of the chat.db to observe for a DB session + transcript. */
+  dataDir?: string;
+  /** Extra environment merged into the spawned worker process. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export class Dispatcher {
@@ -186,6 +205,11 @@ export class Dispatcher {
 
     try {
       this.active++;
+      // Capture the pre-dispatch evidence baseline BEFORE spawning: the git
+      // HEAD the delta is measured against and the conversations that already
+      // exist (so a DB session created by THIS dispatch is distinguishable).
+      const evidenceCtx = this.captureEvidenceContext(opts);
+
       // Capture the spawn timestamp once and reuse it for every ledger entry
       // produced by this dispatch. The "spawned" entry is the source of truth
       // for startedAt — completion entries must not overwrite it (W3).
@@ -202,14 +226,33 @@ export class Dispatcher {
       });
 
       // Dispatch via omnigent run one-shot
-      return await this.runOneShot(idStr, opts, startedAt);
+      return await this.runOneShot(idStr, opts, startedAt, evidenceCtx);
     } finally {
       this.active--;
       this.lock.release(id.ticketId);
     }
   }
 
-  private async runOneShot(idStr: string, opts: DispatchOptions, startedAt: string): Promise<DispatchEntry> {
+  // Assemble the evidence baseline captured at dispatch start. Returns null
+  // when the caller did not supply the repo + data dir needed to verify
+  // completion — in that case a bare exit 0 must fail closed.
+  private captureEvidenceContext(opts: DispatchOptions): CompletionEvidenceContext | null {
+    if (!opts.targetRepo || !opts.dataDir) return null;
+    return {
+      repoDir: opts.targetRepo,
+      dataDir: opts.dataDir,
+      baseline: captureGitBaseline(opts.targetRepo),
+      baselineConvIds: captureConversationIds(opts.dataDir),
+      declaredPaths: Array.isArray(opts.declaredPaths) ? opts.declaredPaths : [],
+    };
+  }
+
+  private async runOneShot(
+    idStr: string,
+    opts: DispatchOptions,
+    startedAt: string,
+    evidenceCtx: CompletionEvidenceContext | null,
+  ): Promise<DispatchEntry> {
     return new Promise((resolve) => {
       // W3: do NOT pass `timeout` to spawn() — the manual timer below is the
       // single source of truth for timeout enforcement. Passing both creates a
@@ -217,6 +260,12 @@ export class Dispatcher {
       // produce conflicting ledger entries.
       const child = spawn("omnigent", ["run", opts.agentDir, "-p", opts.prompt], {
         stdio: ["pipe", "pipe", "pipe"],
+        cwd: opts.targetRepo || undefined,
+        env: {
+          ...process.env,
+          ...(opts.dataDir ? { OMNIGENT_DATA_DIR: opts.dataDir } : {}),
+          ...(opts.env ?? {}),
+        },
       });
 
       let stdout = "";
@@ -244,11 +293,57 @@ export class Dispatcher {
       }, opts.timeout);
 
       child.on("close", (code) => {
-        const state: DispatchState = code === 0 ? "completed" : "failed";
+        const completedAt = new Date().toISOString();
+        const pid = child.pid ?? null;
+
+        // Exit code alone is NOT completion. A non-zero exit fails immediately.
+        if (code !== 0) {
+          finish({
+            dispatchId: idStr, state: "failed", pid,
+            startedAt, completedAt, exitCode: code, stdout, stderr,
+          });
+          return;
+        }
+
+        // Exit 0 with no way to verify evidence fails closed.
+        if (!evidenceCtx) {
+          finish({
+            dispatchId: idStr, state: "failed", pid,
+            startedAt, completedAt, exitCode: code, stdout,
+            stderr: stderr + "\n[dispatch] exit 0 but no evidence context (targetRepo/dataDir) — cannot verify completion",
+          });
+          return;
+        }
+
+        // Gather the four evidence conditions + oracle verdict (fail-closed).
+        const evidence = gatherCompletionEvidence(evidenceCtx);
+
+        // Emit db_session_observed BEFORE completed, only when a conversation
+        // created by THIS dispatch is observed.
+        if (evidence.dbObserved) {
+          this.ledger.append({
+            dispatchId: idStr, state: "db_session_observed", pid,
+            startedAt, completedAt: null, exitCode: code, stdout, stderr,
+            conversationId: evidence.conversationId,
+          });
+        }
+
+        if (evidence.completed) {
+          finish({
+            dispatchId: idStr, state: "completed", pid,
+            startedAt, completedAt, exitCode: code, stdout, stderr,
+            conversationId: evidence.conversationId,
+          });
+          return;
+        }
+
         finish({
-          dispatchId: idStr, state, pid: child.pid ?? null,
-          startedAt, completedAt: new Date().toISOString(),
-          exitCode: code, stdout, stderr,
+          dispatchId: idStr, state: "failed", pid,
+          startedAt, completedAt, exitCode: code, stdout,
+          stderr: stderr + `\n[dispatch] completion evidence incomplete: ` +
+            `dbSession=${evidence.dbObserved} transcript=${evidence.transcriptCount} ` +
+            `inScopeDelta=${evidence.inScopePaths.length} oracle=${evidence.oracleVerdict}`,
+          conversationId: evidence.conversationId,
         });
       });
 
