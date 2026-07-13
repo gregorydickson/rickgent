@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { reconcile } from "../../src/lifecycle/reconcile.js";
+import { DispatchLedger, dispatchIdString, dispatchLedgerPath, type DispatchEntry } from "../../src/dispatch/dispatch.js";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -24,10 +25,34 @@ describe("reconcile", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  function commit(message: string): void {
+  function commit(message: string): string {
     writeFileSync(join(tempDir, `file-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`), "content");
     execSync("git add -A", { cwd: tempDir, timeout: 10000 });
     execSync(`git commit -m "${message}"`, { cwd: tempDir, timeout: 10000 });
+    return execSync("git rev-parse HEAD", { cwd: tempDir, encoding: "utf-8" }).trim();
+  }
+
+  function appendCompleted(over: Partial<DispatchEntry> & { ticketId: string; phase?: string; attempt?: number }): void {
+    const ledger = new DispatchLedger(dispatchLedgerPath(rickgentDir));
+    const dispatchId = dispatchIdString({
+      runId: "run",
+      ticketId: over.ticketId,
+      phase: over.phase ?? "simplify",
+      attempt: over.attempt ?? 1,
+      role: "impl",
+    });
+    ledger.append({
+      dispatchId,
+      state: "completed",
+      pid: null,
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      exitCode: 0,
+      stdout: null,
+      stderr: null,
+      baselineSha: "",
+      ...over,
+    });
   }
 
   it("builds registry from git commits with ticket IDs", () => {
@@ -58,55 +83,25 @@ describe("reconcile", () => {
     expect(result.ticketsFound).toBe(0);
   });
 
-  it("reads dispatch ledger for completed tickets", () => {
-    const ledgerPath = join(rickgentDir, "dispatch-ledger.jsonl");
-    writeFileSync(
-      ledgerPath,
-      [
-        JSON.stringify({
-          ticket_id: "T-LEDGER-1",
-          state: "completed",
-          title: "Ledger ticket",
-          phase: "code_review",
-          declared_paths: ["src/foo.ts"],
-          attempt: 2,
-          commit_sha: "deadbeef",
-        }),
-        JSON.stringify({
-          ticket_id: "T-LEDGER-2",
-          state: "completed",
-          title: "Another ledger ticket",
-          phase: "simplify",
-          declared_paths: [],
-          attempt: 1,
-          commit_sha: "cafef00d",
-        }),
-      ].join("\n") + "\n",
-    );
+  it("reads dispatch ledger for completed tickets (shared camelCase schema)", () => {
+    const sha1 = commit("work 1");
+    const sha2 = commit("work 2");
+    appendCompleted({ ticketId: "T-LEDGER-1", phase: "code_review", attempt: 2, commitSha: sha1, declaredPaths: ["src/foo.ts"] });
+    appendCompleted({ ticketId: "T-LEDGER-2", phase: "simplify", attempt: 1, commitSha: sha2, declaredPaths: [] });
 
     const result = reconcile(tempDir, rickgentDir);
     expect(result.ticketsFound).toBe(2);
-    expect(result.registry.tickets["T-LEDGER-1"]?.title).toBe("Ledger ticket");
+    expect(result.registry.tickets["T-LEDGER-1"]?.status).toBe("Done");
     expect(result.registry.tickets["T-LEDGER-1"]?.phase).toBe("code_review");
-    expect(result.registry.tickets["T-LEDGER-1"]?.completionCommitSha).toBe("deadbeef");
+    expect(result.registry.tickets["T-LEDGER-1"]?.attempt).toBe(2);
+    expect(result.registry.tickets["T-LEDGER-1"]?.completionCommitSha).toBe(sha1);
+    expect(result.registry.tickets["T-LEDGER-1"]?.declaredPaths).toEqual(["src/foo.ts"]);
     expect(result.registry.tickets["T-LEDGER-2"]).toBeDefined();
   });
 
   it("git truth takes precedence over ledger for same ticket", () => {
     commit("ticket: T-DUP git version");
-    const ledgerPath = join(rickgentDir, "dispatch-ledger.jsonl");
-    writeFileSync(
-      ledgerPath,
-      JSON.stringify({
-        ticket_id: "T-DUP",
-        state: "completed",
-        title: "ledger version",
-        phase: "research",
-        declared_paths: [],
-        attempt: 1,
-        commit_sha: null,
-      }) + "\n",
-    );
+    appendCompleted({ ticketId: "T-DUP", phase: "research", commitSha: "abc" });
 
     const result = reconcile(tempDir, rickgentDir);
     expect(result.ticketsFound).toBe(1);
@@ -114,27 +109,21 @@ describe("reconcile", () => {
   });
 
   it("skips malformed ledger entries", () => {
-    const ledgerPath = join(rickgentDir, "dispatch-ledger.jsonl");
-    writeFileSync(
-      ledgerPath,
-      [
-        "{ not valid json",
-        JSON.stringify({
-          ticket_id: "T-VALID",
-          state: "completed",
-          title: "valid entry",
-          phase: "simplify",
-          declared_paths: [],
-          attempt: 1,
-          commit_sha: "abc",
-        }),
-      ].join("\n") + "\n",
-    );
+    const sha = commit("valid work");
+    const ledgerPath = dispatchLedgerPath(rickgentDir);
+    const validLine = JSON.stringify({
+      dispatchId: dispatchIdString({ runId: "run", ticketId: "T-VALID", phase: "simplify", attempt: 1, role: "impl" }),
+      state: "completed",
+      commitSha: sha,
+      baselineSha: "",
+      declaredPaths: [],
+    });
+    writeFileSync(ledgerPath, ["{ not valid json", validLine].join("\n") + "\n");
 
     const result = reconcile(tempDir, rickgentDir);
     expect(result.ticketsFound).toBe(1);
     expect(result.registry.tickets["T-VALID"]).toBeDefined();
-    expect(result.registry.tickets["T-VALID"]?.title).toBe("valid entry");
+    expect(result.registry.tickets["T-VALID"]?.status).toBe("Done");
   });
 
   it("sets runId to reconciled", () => {

@@ -36,6 +36,18 @@ export interface DispatchEntry {
   stderr: string | null;
   /** Conversation id of the DB session created by this dispatch (B2 evidence). */
   conversationId?: string | null;
+  /**
+   * Commit sha the dispatch's in-scope git delta landed on (B6 reconcile
+   * evidence). reconcile re-validates this sha through the completion oracle
+   * before assigning Done — it is never trusted as a bare completion claim.
+   */
+  commitSha?: string | null;
+  /** Baseline HEAD sha the delta was measured against (B6 reconcile evidence). */
+  baselineSha?: string | null;
+  /** Whether the tree at commitSha differed from the baseline (B6 evidence). */
+  treeChanged?: boolean;
+  /** Ticket's declared scope, persisted so reconcile recovers it losslessly. */
+  declaredPaths?: string[];
 }
 
 const TERMINAL_STATES: ReadonlySet<DispatchState> = new Set([
@@ -44,6 +56,15 @@ const TERMINAL_STATES: ReadonlySet<DispatchState> = new Set([
 
 export function dispatchIdString(id: DispatchId): string {
   return `${id.runId}/${id.ticketId}/${id.phase}/${id.attempt}/${id.role}`;
+}
+
+/**
+ * The canonical dispatch ledger path for a `.rickgent` dir. Both the Dispatcher
+ * (writer) and reconcile (reader) resolve the ledger through this single helper
+ * so the two can never diverge on a hardcoded filename (B6).
+ */
+export function dispatchLedgerPath(rickgentDir: string): string {
+  return join(rickgentDir, "dispatch-ledger.jsonl");
 }
 
 export class DispatchLedger {
@@ -333,6 +354,10 @@ export class Dispatcher {
             dispatchId: idStr, state: "completed", pid,
             startedAt, completedAt, exitCode: code, stdout, stderr,
             conversationId: evidence.conversationId,
+            commitSha: evidence.commitSha,
+            baselineSha: evidence.baselineSha,
+            treeChanged: evidence.treeChanged,
+            declaredPaths: Array.isArray(opts.declaredPaths) ? opts.declaredPaths : [],
           });
           return;
         }

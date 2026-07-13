@@ -192,6 +192,12 @@ export interface CompletionEvidence {
   inScopePaths: string[];
   oraclePass: boolean;
   oracleVerdict: string;
+  /** Commit sha the delta landed on (persisted to the ledger for reconcile). */
+  commitSha: string | null;
+  /** Baseline HEAD sha the delta was measured against. */
+  baselineSha: string;
+  /** Whether the tree changed relative to the baseline. */
+  treeChanged: boolean;
   /** True iff ALL four evidence conditions hold and the oracle passed. */
   completed: boolean;
 }
@@ -227,6 +233,9 @@ export function gatherCompletionEvidence(ctx: CompletionEvidenceContext): Comple
     inScopePaths: delta.inScopePaths,
     oraclePass,
     oracleVerdict: verdict.verdict,
+    commitSha: delta.claimedSha,
+    baselineSha: delta.baselineSha,
+    treeChanged: delta.treeChanged,
     completed: dbObserved && transcriptNonEmpty && inScope && oraclePass,
   };
 }
