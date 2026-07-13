@@ -62,8 +62,11 @@ export function evaluatePrd(input: PrdInput): PrdVerdict {
     if (/\bread\s+-p\b/.test(verifyCommand)) {
       errors.push(`AC "${desc}" has interactive command (read -p)`);
     }
-    // Reject network commands
-    if (/\bcurl\b|\bwget\b|\bhttp\b/.test(verifyCommand)) {
+    // Reject network commands: a real network invocation, meaning curl/wget in
+    // command position (start of string or after a shell separator) or an
+    // explicit http(s):// URL — not an incidental "http" substring inside a
+    // filename such as vitest's http.test.ts or pytest's test_http.py.
+    if (/(?:^|[\n;&|])\s*(?:curl|wget)\b|https?:\/\//.test(verifyCommand)) {
       errors.push(`AC "${desc}" has network command`);
     }
   }

@@ -59,4 +59,35 @@ describe("PRD validation", () => {
     };
     expect(evaluatePrd(prd).valid).toBe(false);
   });
+
+  const withVerifyCommand = (verifyCommand: string): PrdInput => ({
+    ...validPrd,
+    acceptanceCriteria: [{ ...validPrd.acceptanceCriteria[0]!, verifyCommand }],
+  });
+  const hasNetworkFinding = (input: PrdInput): boolean =>
+    evaluatePrd(input).errors.some((e) => e.includes("network command"));
+
+  it("accepts a vitest command with 'http' in a filename (VAL-BUG-005)", () => {
+    const prd = withVerifyCommand("vitest run http.test.ts");
+    expect(hasNetworkFinding(prd)).toBe(false);
+    expect(evaluatePrd(prd).valid).toBe(true);
+  });
+
+  it("accepts a pytest command with 'http' in a filename (VAL-BUG-006)", () => {
+    const prd = withVerifyCommand("pytest tests/test_http.py");
+    expect(hasNetworkFinding(prd)).toBe(false);
+    expect(evaluatePrd(prd).valid).toBe(true);
+  });
+
+  it("rejects a real network invocation via curl scheme (VAL-BUG-007)", () => {
+    const prd = withVerifyCommand("curl https://x");
+    expect(hasNetworkFinding(prd)).toBe(true);
+    expect(evaluatePrd(prd).valid).toBe(false);
+  });
+
+  it("rejects a wget network invocation in command position (VAL-BUG-027)", () => {
+    const prd = withVerifyCommand("wget https://x");
+    expect(hasNetworkFinding(prd)).toBe(true);
+    expect(evaluatePrd(prd).valid).toBe(false);
+  });
 });
