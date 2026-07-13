@@ -9,6 +9,7 @@ import {
   captureGitBaseline,
   captureConversationIds,
   gatherCompletionEvidence,
+  isolatedDataDir,
   type CompletionEvidenceContext,
 } from "./evidence.js";
 
@@ -164,7 +165,11 @@ export interface DispatchOptions {
   targetRepo?: string;
   /** Ticket's declared scope (repo-relative path prefixes) for the delta filter. */
   declaredPaths?: string[];
-  /** OMNIGENT_DATA_DIR of the chat.db to observe for a DB session + transcript. */
+  /**
+   * Root OMNIGENT_DATA_DIR. Each dispatch isolates its chat.db under a
+   * per-dispatchId subdir of this root so a session it creates is never
+   * confused with a concurrent foreign dispatch's row in a shared store.
+   */
   dataDir?: string;
   /** Extra environment merged into the spawned worker process. */
   env?: NodeJS.ProcessEnv;
@@ -226,10 +231,19 @@ export class Dispatcher {
 
     try {
       this.active++;
+      // Isolate this dispatch's chat.db under a per-dispatchId subdir so a
+      // session it creates cannot be confused with one a CONCURRENT foreign
+      // dispatch writes to the shared store (VAL-DISPATCH-008). The worker is
+      // pointed at this dir via OMNIGENT_DATA_DIR, and evidence is observed
+      // from the same dir — attribution is thus provable, not inferred from a
+      // pre-spawn baseline that a concurrent writer could defeat.
+      const sessionDataDir = opts.dataDir ? isolatedDataDir(opts.dataDir, idStr) : null;
+      if (sessionDataDir) mkdirSync(sessionDataDir, { recursive: true });
+
       // Capture the pre-dispatch evidence baseline BEFORE spawning: the git
       // HEAD the delta is measured against and the conversations that already
       // exist (so a DB session created by THIS dispatch is distinguishable).
-      const evidenceCtx = this.captureEvidenceContext(opts);
+      const evidenceCtx = this.captureEvidenceContext(opts, sessionDataDir);
 
       // Capture the spawn timestamp once and reuse it for every ledger entry
       // produced by this dispatch. The "spawned" entry is the source of truth
@@ -247,7 +261,7 @@ export class Dispatcher {
       });
 
       // Dispatch via omnigent run one-shot
-      return await this.runOneShot(idStr, opts, startedAt, evidenceCtx);
+      return await this.runOneShot(idStr, opts, startedAt, evidenceCtx, sessionDataDir);
     } finally {
       this.active--;
       this.lock.release(id.ticketId);
@@ -256,14 +270,18 @@ export class Dispatcher {
 
   // Assemble the evidence baseline captured at dispatch start. Returns null
   // when the caller did not supply the repo + data dir needed to verify
-  // completion — in that case a bare exit 0 must fail closed.
-  private captureEvidenceContext(opts: DispatchOptions): CompletionEvidenceContext | null {
-    if (!opts.targetRepo || !opts.dataDir) return null;
+  // completion — in that case a bare exit 0 must fail closed. Evidence is
+  // observed from the per-dispatch isolated data dir, not the shared root.
+  private captureEvidenceContext(
+    opts: DispatchOptions,
+    sessionDataDir: string | null,
+  ): CompletionEvidenceContext | null {
+    if (!opts.targetRepo || !sessionDataDir) return null;
     return {
       repoDir: opts.targetRepo,
-      dataDir: opts.dataDir,
+      dataDir: sessionDataDir,
       baseline: captureGitBaseline(opts.targetRepo),
-      baselineConvIds: captureConversationIds(opts.dataDir),
+      baselineConvIds: captureConversationIds(sessionDataDir),
       declaredPaths: Array.isArray(opts.declaredPaths) ? opts.declaredPaths : [],
     };
   }
@@ -273,6 +291,7 @@ export class Dispatcher {
     opts: DispatchOptions,
     startedAt: string,
     evidenceCtx: CompletionEvidenceContext | null,
+    sessionDataDir: string | null,
   ): Promise<DispatchEntry> {
     return new Promise((resolve) => {
       // W3: do NOT pass `timeout` to spawn() — the manual timer below is the
@@ -282,10 +301,14 @@ export class Dispatcher {
       const child = spawn("omnigent", ["run", opts.agentDir, "-p", opts.prompt], {
         stdio: ["pipe", "pipe", "pipe"],
         cwd: opts.targetRepo || undefined,
+        // OMNIGENT_DATA_DIR is pinned LAST to the per-dispatch isolated dir so
+        // neither the inherited env nor opts.env can redirect the worker back
+        // to a shared store — the worker writes its session where this dispatch
+        // exclusively observes it.
         env: {
           ...process.env,
-          ...(opts.dataDir ? { OMNIGENT_DATA_DIR: opts.dataDir } : {}),
           ...(opts.env ?? {}),
+          ...(sessionDataDir ? { OMNIGENT_DATA_DIR: sessionDataDir } : {}),
         },
       });
 

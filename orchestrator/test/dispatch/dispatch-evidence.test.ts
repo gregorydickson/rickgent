@@ -43,6 +43,7 @@ function initGitRepo(repo: string): void {
 
 interface FixtureConfig {
   writeDb?: boolean;
+  ownConversationId?: string;
   transcriptItems?: number;
   gitFile?: string;
   exitCode?: number;
@@ -50,6 +51,12 @@ interface FixtureConfig {
   declaredPaths?: string[];
   seedConversation?: { id: string; items: number; createdAt: number };
   preDirtyFile?: string;
+  /**
+   * Simulate a CONCURRENT foreign dispatch that writes its conversation into
+   * the SHARED store (the root dataDir) during this run — the store the
+   * pre-fix observer read directly. It must never be attributed here.
+   */
+  concurrentForeign?: { id: string; items: number };
 }
 
 interface RunResult {
@@ -97,8 +104,17 @@ async function runDispatch(cfg: FixtureConfig, dir: string): Promise<RunResult> 
   if (cfg.writeDb) {
     fixtureEnv.FIXTURE_WRITE_DB = "1";
     fixtureEnv.FIXTURE_TRANSCRIPT_ITEMS = String(cfg.transcriptItems ?? 1);
+    if (cfg.ownConversationId) fixtureEnv.FIXTURE_CONV_ID = cfg.ownConversationId;
   }
   if (cfg.gitFile) fixtureEnv.FIXTURE_GIT_FILE = cfg.gitFile;
+  if (cfg.concurrentForeign) {
+    // The shared store is the root dataDir — exactly what the pre-fix observer
+    // read directly (opts.dataDir). Per-dispatch isolation moves THIS
+    // dispatch's chat.db to a subdir, so this foreign row is out of view.
+    fixtureEnv.FIXTURE_FOREIGN_DATA_DIR = dataDir;
+    fixtureEnv.FIXTURE_FOREIGN_CONV_ID = cfg.concurrentForeign.id;
+    fixtureEnv.FIXTURE_FOREIGN_ITEMS = String(cfg.concurrentForeign.items);
+  }
 
   const saved: Record<string, string | undefined> = {};
   for (const [k, v] of Object.entries(fixtureEnv)) {
@@ -252,6 +268,47 @@ describe("B2 evidence-based dispatch completion", () => {
     const states = ledgerStates(r.ledgerPath, r.dispatchId);
     expect(states).not.toContain("db_session_observed");
     expect(states).not.toContain("completed");
+  });
+
+  // VAL-DISPATCH-008 (concurrent-foreign): a conversations row created by a
+  // CONCURRENT foreign dispatch writing to a shared chat.db must NOT be
+  // attributed to THIS dispatch. THIS dispatch's own worker creates no session,
+  // yet has an in-scope git delta — so the ONLY thing that could (wrongly) mark
+  // it completed is mis-attributing the foreign row. Fails against the pre-fix
+  // shared-store observer; passes once each dispatch observes an isolated store.
+  it("a concurrent foreign dispatch's session in a shared store is NOT mis-attributed", async () => {
+    const r = await runDispatch(
+      {
+        writeDb: false, // THIS dispatch's worker creates NO conversation
+        gitFile: "src/feature.ts", // real in-scope delta present
+        concurrentForeign: { id: "concurrent-foreign", items: 3 },
+      },
+      dir,
+    );
+    expect(r.entry.state).not.toBe("completed");
+    const states = ledgerStates(r.ledgerPath, r.dispatchId);
+    expect(states).not.toContain("db_session_observed");
+    expect(states).not.toContain("completed");
+    expect(r.entry.conversationId ?? null).not.toBe("concurrent-foreign");
+  });
+
+  // VAL-DISPATCH-008 (no regression): a foreign row coexisting in the shared
+  // store does not corrupt attribution — THIS dispatch's own session still
+  // completes and the attributed conversation id is its own, never the foreign.
+  it("attributes only THIS dispatch's own session when a foreign row also exists", async () => {
+    const r = await runDispatch(
+      {
+        writeDb: true,
+        ownConversationId: "own-session",
+        transcriptItems: 2,
+        gitFile: "src/feature.ts",
+        concurrentForeign: { id: "concurrent-foreign", items: 5 },
+      },
+      dir,
+    );
+    expect(r.entry.state).toBe("completed");
+    expect(r.entry.conversationId).toBe("own-session");
+    expect(r.entry.conversationId).not.toBe("concurrent-foreign");
   });
 
   // VAL-DISPATCH-009

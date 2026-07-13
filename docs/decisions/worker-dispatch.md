@@ -32,7 +32,11 @@ Reuse Omnigent's dispatch — natively multi-model, no `--backend` flag.
 ## Reasoning
 Rickgent's core value proposition is multi-model orchestration across vendor families. Omnigent already has 11 registered native harnesses (`harness_plugins.py:100-193`), a purpose guard (`orchestration.py:466-468`), and both async (`sys_session_send`) and synchronous (`omnigent run -p`) dispatch paths. Porting Pickle Rick's `spawn-morty.ts` would mean rebuilding a 2,706-LOC launcher that is hardcoded to `claude -p`/`codex exec`, gated by a `--backend` flag, and dependent on tmux for parallelism. Reusing Omnigent eliminates the `--backend` flag entirely (harness selection moves to the sub-agent spec), gives us the `async_work_complete` inbox for result collection, and inherits the purpose guard for free. The only Pickle Rick concept worth noting — tier-based model selection within Claude — is subsumed by Omnigent's `sys_advise_models` (see `model-routing.md`). No port or mash needed; reuse is the clean path.
 
-## Countersign
+## Mission 2 implementation note — per-dispatch data-dir isolation (B2 / VAL-DISPATCH-008)
+
+Contract invariant (2) — "a dispatch's conversation is not visible to siblings" — is enforced in the evidence layer, not merely assumed. A "DB session" is a `conversations` row in `chat.db` under `OMNIGENT_DATA_DIR`. A pre-dispatch baseline snapshot alone (excluding rows that existed before spawn) does NOT prove attribution: a CONCURRENT foreign dispatch writing to a shared `chat.db` during the run would appear as "new since baseline" and be mis-attributed, firing `db_session_observed` without proof THIS dispatch created it.
+
+Decision: each dispatch runs against its OWN isolated `OMNIGENT_DATA_DIR`, a subdir keyed by the unique dispatchId (`runId/ticketId/phase/attempt/role`) under the caller-supplied root (`isolatedDataDir()` in `orchestrator/src/dispatch/evidence.ts`). The Dispatcher pins `OMNIGENT_DATA_DIR` to that subdir as the FINAL env override (neither inherited env nor `opts.env` can redirect the worker back to a shared store) and observes evidence from the same subdir. Attribution is thus provable by construction: the only sessions in the observed store are the ones this dispatch's worker created. This aligns with architecture §3.3/§4 (isolated/injected DB path) and keeps completion fail-closed under concurrency.
 
 - **Reviewer:** GPT-5.6-sol (Codex)
 - **Verdict:** APPROVED

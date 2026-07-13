@@ -103,6 +103,21 @@ function chatDbPath(dataDir: string): string {
   return join(dataDir, "chat.db");
 }
 
+/**
+ * Per-dispatch OMNIGENT_DATA_DIR isolation. Each dispatch gets its own chat.db
+ * under a subdir keyed by its unique dispatchId, so a `conversations` row this
+ * dispatch's worker creates cannot be confused with one a CONCURRENT foreign
+ * dispatch writes to the shared store. Without this, the pre-dispatch baseline
+ * snapshot only excludes conversations that existed BEFORE spawn — a foreign
+ * dispatch that writes DURING the run would be wrongly attributed here
+ * (VAL-DISPATCH-008, concurrent-foreign case). Isolation makes attribution
+ * provable: the only sessions in this dir are the ones this dispatch created.
+ */
+export function isolatedDataDir(rootDataDir: string, dispatchId: string): string {
+  const safe = dispatchId.replace(/[^A-Za-z0-9_.-]/g, "_");
+  return join(rootDataDir, ".rickgent-dispatch", safe);
+}
+
 interface ConversationRow {
   id: string;
   createdAt: number;

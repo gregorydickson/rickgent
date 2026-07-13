@@ -19,6 +19,11 @@
 //   FIXTURE_GIT_FILE        repo-relative file to write (empty → no git mutation)
 //   FIXTURE_GIT_CONTENT     file content (default unique)
 //   FIXTURE_GIT_COMMIT      "0" → stage only, else commit (default commit)
+//   FIXTURE_FOREIGN_DATA_DIR   simulate a CONCURRENT foreign dispatch: write a
+//                              conversation into this (shared) chat.db, distinct
+//                              from OMNIGENT_DATA_DIR, during this run
+//   FIXTURE_FOREIGN_CONV_ID    foreign conversation id (default: unique)
+//   FIXTURE_FOREIGN_ITEMS      foreign conversation_items count (default 3)
 
 import { execFileSync } from "child_process";
 import { writeFileSync, mkdirSync } from "fs";
@@ -42,6 +47,17 @@ function main() {
       const items = parseInt(env("FIXTURE_TRANSCRIPT_ITEMS", "1"), 10);
       insertConversation(dataDir, convId, Number.isNaN(items) ? 1 : items, Date.now());
     }
+  }
+
+  // --- concurrent foreign dispatch writing to a shared store ---
+  // Simulates a DIFFERENT dispatch that writes its own conversation into a
+  // shared chat.db during this run. It must never be attributed to THIS
+  // dispatch (VAL-DISPATCH-008, concurrent-foreign case).
+  const foreignDir = env("FIXTURE_FOREIGN_DATA_DIR");
+  if (foreignDir) {
+    const foreignId = env("FIXTURE_FOREIGN_CONV_ID", `foreign-${Date.now()}-${Math.floor(Math.random() * 1e9)}`);
+    const foreignItems = parseInt(env("FIXTURE_FOREIGN_ITEMS", "3"), 10);
+    insertConversation(foreignDir, foreignId, Number.isNaN(foreignItems) ? 3 : foreignItems, Date.now());
   }
 
   // --- git mutation (deterministic write + add + commit) ---
