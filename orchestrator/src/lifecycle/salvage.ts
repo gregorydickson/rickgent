@@ -3,7 +3,7 @@
 // §14.8: decide / execute / verify split. R-MACB: never git add -A.
 
 import { decideSalvage, type SalvageInput, type SalvageDecision } from "../core/salvage.js";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 
 export interface SalvageExecutionResult {
   decision: SalvageDecision;
@@ -23,18 +23,20 @@ export class SalvageExecutor {
       switch (decision.disposition) {
         case "committed-done":
           if (decision.stagedPaths && decision.stagedPaths.length > 0) {
-            // Stage only owned paths (never git add -A — R-MACB)
+            // Stage only owned paths (never git add -A — R-MACB). Array-argv
+            // via execFileSync spawns no shell; `--` blocks option injection so
+            // a path with $(...), ;rm, quote-break, or a leading dash is inert.
             for (const path of decision.stagedPaths) {
-              execSync(`git add "${path}"`, { cwd: this.workingDir, timeout: 10000 });
+              execFileSync("git", ["add", "--", path], { cwd: this.workingDir, timeout: 10000 });
             }
-            execSync('git commit -m "salvage: committed scoped work"', { cwd: this.workingDir, timeout: 10000 });
-            gitOutput = execSync("git rev-parse HEAD", { cwd: this.workingDir, encoding: "utf-8" }).trim();
+            execFileSync("git", ["commit", "-m", "salvage: committed scoped work"], { cwd: this.workingDir, timeout: 10000 });
+            gitOutput = execFileSync("git", ["rev-parse", "HEAD"], { cwd: this.workingDir, encoding: "utf-8" }).trim();
             executed = true;
           }
           break;
         case "archived-todo": {
           // Archive the diff before any reset (never lose work)
-          const archiveResult = execSync("git diff", { cwd: this.workingDir, encoding: "utf-8", timeout: 10000 });
+          const archiveResult = execFileSync("git", ["diff"], { cwd: this.workingDir, encoding: "utf-8", timeout: 10000 });
           gitOutput = archiveResult;
           // Reset to Todo happens in the registry, not here
           executed = true;
