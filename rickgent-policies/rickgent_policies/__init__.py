@@ -319,14 +319,17 @@ def _git_subcommand_writes(rest: list) -> bool:
 def _nested_shell_c_argument(rest: list):
     """Return the `-c` command string of a nested shell invocation, or None.
 
-    Handles both `-c <cmd>` and short-flag bundles ending in `c` (`-ec <cmd>`);
-    the nested command is the token immediately following the flag."""
+    A nested shell's `-c` consumes the following token as the command string
+    regardless of where `c` sits in a combined short-flag bundle, so `c`
+    anywhere in an all-alpha bundle (`-c`, `-ce`, `-ec`, `-ic`, `-ceux`, …)
+    treats the next token as the nested command. Matching only a trailing `c`
+    fails open for `bash -ce <cmd>`."""
     i = 0
     while i < len(rest):
         tok = rest[i]
         if tok.startswith("-") and not tok.startswith("--") and len(tok) > 1:
             body = tok[1:]
-            if body.isalpha() and body.endswith("c"):
+            if body.isalpha() and "c" in body:
                 return rest[i + 1] if i + 1 < len(rest) else None
         i += 1
     return None
