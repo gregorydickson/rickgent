@@ -290,6 +290,74 @@ def cross_vendor_review(event, config):
         return {"result": "DENY", "reason": f"cross-vendor review: {e}", "code": "POLICY_SHIM_ERROR"}
 
 
+# ── Autonomous PR flow (narrow ALLOW exception to blast_radius gating) ────────
+
+def _is_tool_call(event) -> bool:
+    """Heuristic: is this event a tool call we should evaluate?
+
+    Raises on non-dict input (e.g. None) so autonomous_pr_flow's try/except
+    fails closed with POLICY_SHIM_ERROR.
+    """
+    tool_name = event.get("tool_name", "")
+    if not tool_name:
+        return False
+    return tool_name in {"Bash", "bash", "sys_os_shell", "shell"}
+
+
+def autonomous_pr_flow(event, config):
+    """Narrow ALLOW for the autonomous PR flow — feature-branch push + gh pr create only.
+
+    This is the narrow exception to blast_radius's ASK-class gating. It allows
+    only the exact command shapes the PR flow needs, leaving blast_radius
+    (gate_pushes=True) in force for everything else (gh pr merge, gh release,
+    gh repo delete, infra destroy, rm -rf, etc.).
+    """
+    try:
+        if not _is_tool_call(event):
+            return {"result": "ALLOW"}
+
+        args = event.get("arguments", {})
+        if isinstance(args, str):
+            import json as _json
+            try:
+                args = _json.loads(args)
+            except Exception:
+                args = {}
+
+        command = ""
+        if isinstance(args, dict):
+            command = args.get("command", "")
+        if not command:
+            return {"result": "ALLOW"}  # Not a shell command — let other policies handle
+
+        command_lower = command.lower().strip()
+
+        # Only evaluate git push and gh pr create commands
+        is_git_push = command_lower.startswith("git push")
+        is_gh_pr_create = command_lower.startswith("gh pr create")
+
+        if not is_git_push and not is_gh_pr_create:
+            return {"result": "ALLOW"}  # Not a PR-flow command — defer to blast_radius
+
+        # DENY force push
+        if "--force" in command_lower or " -f " in command_lower or "--force-with-lease" in command_lower:
+            return {"result": "DENY", "reason": "autonomous_pr_flow: force push not allowed", "code": "FORCE_PUSH_DENIED"}
+
+        # For git push: only allow push to feature branches (not main/master/trunk/develop)
+        if is_git_push:
+            protected = ["main", "master", "trunk", "develop", "dev", "release/"]
+            for branch in protected:
+                if f"origin {branch}" in command_lower or f"origin/{branch}" in command_lower:
+                    return {"result": "DENY", "reason": f"autonomous_pr_flow: push to protected branch {branch} not allowed", "code": "PROTECTED_BRANCH_DENIED"}
+            return {"result": "ALLOW", "reason": "autonomous_pr_flow: feature-branch push allowed"}
+
+        # gh pr create — allow
+        return {"result": "ALLOW", "reason": "autonomous_pr_flow: gh pr create allowed"}
+
+    except Exception as e:
+        return {"result": "DENY", "reason": f"autonomous_pr_flow: {e}", "code": "POLICY_SHIM_ERROR"}
+
+
 # ── POLICY_REGISTRY ──────────────────────────────────────────────────────────
 
 # The registry that omnigent's `policy_modules` config ingests.
@@ -324,5 +392,11 @@ POLICY_REGISTRY = [
         "factory": cross_vendor_review,
         "events": ["tool_call"],
         "description": "Cross-vendor review — denies same-vendor code review (AC-13)",
+    },
+    {
+        "handler": "rickgent_policies.autonomous_pr_flow",
+        "factory": autonomous_pr_flow,
+        "events": ["tool_call"],
+        "description": "Autonomous PR flow — narrow ALLOW for feature-branch push + gh pr create (forbidden-ops remediation)",
     },
 ]
