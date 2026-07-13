@@ -539,16 +539,33 @@ def _split_command_segments(command: str) -> list:
     return segments
 
 
+# sudo options that consume a following value token (`sudo -u root git …`).
+# If these are not consumed, the value (e.g. `root`) is mistaken for the
+# command word and the real `git push` behind it evades push detection.
+_SUDO_VALUE_OPTS = {
+    "-u", "-g", "-h", "-p", "-r", "-t", "-T", "-U", "-C", "-R", "-D", "-c",
+    "--user", "--group", "--host", "--prompt", "--role", "--type",
+    "--command-timeout", "--other-user", "--chdir", "--close-from",
+}
+
+
+def _shlex_tokens(segment: str) -> list:
+    """Shlex-split a segment, falling back to whitespace split on parse error
+    so detection stays conservative (a garbled push is still tokenized)."""
+    try:
+        return shlex.split(segment)
+    except ValueError:
+        return segment.split()
+
+
 def _tokenize(segment: str) -> list:
     """Tokenize a single segment, then strip leading env-assignments and sudo.
 
-    Falls back to a whitespace split when shlex cannot parse the segment so
-    detection stays conservative (a garbled push is still recognized as a push).
+    A `sudo` prefix is stripped along with its options; options that take a
+    separate value token (`-u <user>`, `--user <user>`) consume that value too,
+    so the command word after the prefix (e.g. `git`) is not mistaken.
     """
-    try:
-        tokens = shlex.split(segment)
-    except ValueError:
-        tokens = segment.split()
+    tokens = _shlex_tokens(segment)
 
     i = 0
     while i < len(tokens):
@@ -559,7 +576,10 @@ def _tokenize(segment: str) -> list:
         if tok == "sudo":
             i += 1
             while i < len(tokens) and tokens[i].startswith("-"):
+                opt = tokens[i]
                 i += 1
+                if opt in _SUDO_VALUE_OPTS and i < len(tokens) and not tokens[i].startswith("-"):
+                    i += 1
             continue
         break
     return tokens[i:]
@@ -627,10 +647,14 @@ def _is_protected(dest) -> bool:
 
 def _is_narrow_feature_push(segment: str, feature_branch) -> bool:
     """True iff the segment is EXACTLY `git push origin <own-branch>` /
-    `git push origin HEAD:<own-branch>` with no extra flags or global options."""
+    `git push origin HEAD:<own-branch>` with no extra flags or global options.
+
+    The tokens are read RAW (no env-assignment/sudo prefix stripping): any
+    `sudo`/`FOO=1` prefix leaves a non-`git` leading token, disqualifying the
+    narrow allow so a prefixed own-branch push can never ALLOW."""
     if not feature_branch:
         return False
-    tokens = _tokenize(segment)
+    tokens = _shlex_tokens(segment)
     if len(tokens) != 4 or tokens[0] != "git" or tokens[1] != "push" or tokens[2] != "origin":
         return False
     dest = tokens[3]

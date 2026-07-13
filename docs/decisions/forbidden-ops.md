@@ -126,3 +126,27 @@ The hardened policy inverts this to a **whitelist that ALLOWs exactly one push s
 This is a single self-contained evaluator: it depends on no cross-policy precedence and
 cannot be widened by a sibling ALLOW. Fulfills VAL-SEC-001..018 and VAL-SEC-052..055.
 - **Date:** 2026-07-13
+
+### A-SEC-1 scrutiny follow-up: two sudo/env prefix bypasses closed (VAL-SEC-058/059)
+
+Two residual prefix bypasses were found in the push-authorization branch:
+
+1. **Incomplete sudo option consumption.** The sudo-prefix stripper skipped `sudo`
+   flags but not the value tokens they consume, so `sudo -u root git push --force
+   origin main` left `root` as the leading token; the real `git push --force` behind
+   it evaded push detection and abstained. Fix: the stripper now consumes the argument
+   of value-taking sudo options (`_SUDO_VALUE_OPTS`: `-u/-g/-h/-p/-r/-t/-T/-U/-C/-R/
+   -D/-c` and their long forms) so the downstream `git push --force` is detected and
+   DENIED as a force push.
+2. **Prefixed own-branch push satisfied the narrow allow.** The narrow-allow shape
+   check tokenized through the same prefix-stripping path, so `sudo git push origin
+   feature/x` and `FOO=1 git push origin feature/x` matched the whitelist and ALLOWed.
+   Fix: the narrow-allow shape is now checked against RAW tokens (`_shlex_tokens`, no
+   env-assignment/sudo stripping). It requires the ENTIRE command to be a single
+   UNPREFIXED segment exactly `git push origin <feature>` / `HEAD:<feature>`; any
+   `sudo`/`FOO=1` prefix leaves a non-`git` leading token and disqualifies the narrow
+   allow (the push then falls through to DENY as not-whitelisted). Unprefixed
+   own-branch pushes still ALLOW (no regression).
+
+Fulfills VAL-SEC-058, VAL-SEC-059.
+- **Date:** 2026-07-13
