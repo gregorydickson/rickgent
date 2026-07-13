@@ -118,6 +118,150 @@ def _is_path_in_scope(target: str, scope: str) -> bool:
     return target.startswith(scope + "/")
 
 
+# Every shell/write tool-name variant across harnesses. The fence must cover
+# all of them or it fails open for a non-`claude` harness (Cursor `Shell`,
+# Pi `shell`, Claude `Bash`/`bash`, Omnigent `sys_os_shell`).
+_SHELL_TOOL_NAMES = {"sys_os_shell", "Bash", "bash", "Shell", "shell"}
+_STRUCTURED_WRITE_TOOLS = {
+    "Write", "Edit", "MultiEdit", "sys_os_write", "sys_os_edit", "write", "edit",
+}
+
+# Interpreters that can write disk via an inline-code-eval flag.
+_INTERPRETER_EVAL_FLAGS = {
+    "python": {"-c"},
+    "python3": {"-c"},
+    "python2": {"-c"},
+    "perl": {"-e", "-E"},
+    "ruby": {"-e"},
+    "php": {"-r"},
+    "node": {"-e", "-p", "--eval", "--print"},
+    "nodejs": {"-e", "-p", "--eval", "--print"},
+}
+
+# Utilities that create/replace/mutate files or filesystem attributes. `tar`
+# and `dd` are ambiguous (read or write) so they are treated as writes to
+# fail closed.
+_WRITE_UTILITIES = {
+    "tee", "cp", "mv", "rm", "mkdir", "rmdir", "install", "rsync", "touch",
+    "truncate", "chmod", "chown", "chgrp", "ln", "dd", "tar", "unzip",
+    "gunzip", "gzip", "patch", "sponge",
+}
+
+# git subcommands that mutate the working tree / index on disk.
+_GIT_WRITE_SUBCOMMANDS = {
+    "apply", "am", "checkout", "restore", "clean", "stash", "mv", "rm",
+    "init", "reset",
+}
+
+
+def _strip_quoted(s: str) -> str:
+    """Remove single/double-quoted regions so quoted redirect characters
+    (e.g. `grep '>' file`) are not mistaken for shell redirects."""
+    s = re.sub(r"'[^']*'", "", s)
+    s = re.sub(r'"[^"]*"', "", s)
+    return s
+
+
+def _has_file_write_redirect(command: str) -> bool:
+    """True iff the command contains a `>`/`>>` redirect to a FILE.
+
+    fd-duplications such as `2>&1` / `>&2` (a `>` whose next non-space char is
+    `&`) are NOT file writes and must not be flagged.
+    """
+    unquoted = _strip_quoted(command)
+    return bool(re.search(r"\d*>>?\s*(?![&\s])\S", unquoted))
+
+
+def _strip_shell_prefix_tokens(tokens: list) -> list:
+    """Drop leading `VAR=val` env-assignments and a `sudo [flags]` prefix."""
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tok):
+            i += 1
+            continue
+        if tok == "sudo":
+            i += 1
+            while i < len(tokens) and tokens[i].startswith("-"):
+                i += 1
+            continue
+        break
+    return tokens[i:]
+
+
+def _git_subcommand_writes(rest: list) -> bool:
+    """True iff a git invocation's subcommand mutates disk (skips globals)."""
+    i = 0
+    while i < len(rest):
+        tok = rest[i]
+        if tok.startswith("-"):
+            if "=" in tok:
+                i += 1
+            elif tok in _GIT_VALUE_OPTS:
+                i += 2
+            else:
+                i += 1
+            continue
+        return tok in _GIT_WRITE_SUBCOMMANDS
+    return False
+
+
+def _shell_command_writes(command: str) -> bool:
+    """Best-effort detection of a disk-writing shell command.
+
+    Covers file-write redirects, interpreter one-liners, patch/archive/link
+    utilities, and attribute mutators. A read-only command (no redirect, no
+    write utility) returns False.
+    """
+    if not command or not command.strip():
+        return False
+    if _has_file_write_redirect(command):
+        return True
+    for segment in re.split(r"\|\||&&|;|\||&|\n", command):
+        seg = segment.strip()
+        if not seg:
+            continue
+        try:
+            tokens = shlex.split(seg)
+        except ValueError:
+            tokens = seg.split()
+        tokens = _strip_shell_prefix_tokens(tokens)
+        if not tokens:
+            continue
+        cmd = os.path.basename(tokens[0])
+        rest = tokens[1:]
+        if cmd in _WRITE_UTILITIES:
+            return True
+        if cmd == "sed" and any(a == "-i" or a.startswith("-i") for a in rest):
+            return True
+        eval_flags = _INTERPRETER_EVAL_FLAGS.get(cmd)
+        if eval_flags and any(a in eval_flags for a in rest):
+            return True
+        if cmd == "git" and _git_subcommand_writes(rest):
+            return True
+        if cmd in ("npm", "pnpm", "yarn", "pip", "pip3") and "install" in rest:
+            return True
+    return False
+
+
+def _extract_shell_command(event):
+    """Pull the command string from a shell tool_call event, or None."""
+    args = event.get("arguments", {})
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            args = {}
+    if isinstance(args, dict):
+        cmd = args.get("command")
+        if isinstance(cmd, str):
+            return cmd
+    top = event.get("command")
+    if isinstance(top, str):
+        return top
+    return None
+
+
 def scope_fence(event, config):
     """Enforcement surface for write-path scope checking.
 
@@ -127,35 +271,28 @@ def scope_fence(event, config):
     try:
         # Only check write operations
         tool_name = event.get("tool_name", "")
-        write_tools = {"Write", "Edit", "MultiEdit", "sys_os_shell", "Bash", "bash"}
-        if tool_name not in write_tools:
+        if tool_name not in _SHELL_TOOL_NAMES and tool_name not in _STRUCTURED_WRITE_TOOLS:
             return {"result": "ALLOW"}
 
-        # Check if this is a write operation in sys_os_shell
-        if tool_name in ("sys_os_shell", "Bash", "bash"):
-            # Shell commands that write — expanded list plus redirect patterns.
-            # Catches both explicit write utilities and any redirect-to-file
-            # operation (`>`, `>>`) that the substring list would otherwise miss.
-            args = event.get("arguments", {})
-            if isinstance(args, str):
-                import json as _json
-                try:
-                    args = _json.loads(args)
-                except Exception:
-                    args = {}
-            command = args.get("command", "") if isinstance(args, dict) else str(args)
-            write_ops = [
-                ">", ">>", "tee", "cp", "mv", "rm", "mkdir",
-                "sed -i", "dd of=", "install", "rsync",
-                "git checkout --", "git restore", "patch", "touch",
-                "cat >", "printf >", "python -c", "node -e",
-                "npm install", "pip install",
-            ]
-            is_write = any(op in command for op in write_ops) or bool(
-                re.search(r">\s*\S", command) or re.search(r">>\s*\S", command)
-            )
-            if not is_write:
+        # Shell tools: the concrete write target cannot be positively resolved
+        # from an arbitrary command string, so any detected write fails closed
+        # to DENY (architecture §6.2). Read-only commands (incl. `2>&1` fd-dups
+        # and quoted `>`) are not writes and pass through.
+        if tool_name in _SHELL_TOOL_NAMES:
+            command = _extract_shell_command(event)
+            if command is None:
+                return {
+                    "result": "DENY",
+                    "reason": "scope fence: unresolvable shell write target (no command)",
+                    "code": "SCOPE_DENIED",
+                }
+            if not _shell_command_writes(command):
                 return {"result": "ALLOW"}
+            return {
+                "result": "DENY",
+                "reason": "scope fence: unresolvable shell write target",
+                "code": "SCOPE_DENIED",
+            }
 
         # Get ticket info from config
         ticket_id = config.get("ticket_id")

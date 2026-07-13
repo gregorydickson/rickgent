@@ -55,6 +55,24 @@ Parity is pinned by shared AC-10 fixtures: the same test cases (trailing-slash, 
 
 The trap-door catalog exemption (`isTrapDoorCatalogPath`, `check-scope-diff.ts:42-46`) is preserved: `CLAUDE.md` at any depth is not a scope violation, because a trap-door catalog is documentation-only tool output, not code scope creep. The fence on source files stays fully intact.
 
+## Shell-write detection (A-SEC-3 detection side)
+
+The `scope_fence` policy shim (`rickgent_policies.scope_fence`) enforces two branches:
+
+1. **Structured write tools** (`Write`, `Edit`, `MultiEdit`, `sys_os_write`, `sys_os_edit`, `write`, `edit`) carry a resolvable `path`/`file_path`/`target`; the fence canonicalizes it and DENYs when it is not under a declared path (or is unresolvable).
+2. **Shell tools** — the concrete write target cannot be positively resolved from an arbitrary command string, so any command detected as a write **fails closed to DENY** (unresolvable shell write target). Read-only commands pass through.
+
+**Shell tool-name coverage (never fail open for a non-`claude` harness):** the fence evaluates every shell tool-name variant — `sys_os_shell` (Omnigent), `Bash`/`bash` (Claude), `Shell` (Cursor), `shell` (Pi). A missing variant would silently ALLOW shell writes for that harness.
+
+**Write detection** (`_shell_command_writes`) treats a command as a write when any of the following hold, per `&&`/`||`/`;`/`|`/`&`/newline segment (env-assignment and `sudo` prefixes stripped, `git` globals skipped):
+- a `>`/`>>` redirect to a **file** — fd-duplications (`2>&1`, `>&2`) and quoted `>` (`grep '>' f`) are NOT writes and must not be false-DENIED;
+- an interpreter inline-code-eval one-liner: `python`/`python3`/`python2 -c`, `perl -e`/`-E`, `ruby -e`, `php -r`, `node`/`nodejs -e`/`-p`/`--eval`;
+- a write utility: `tee cp mv rm mkdir rmdir install rsync touch truncate chmod chown chgrp ln dd tar unzip gunzip gzip patch sponge`, or `sed -i`;
+- a disk-mutating git subcommand: `apply am checkout restore clean stash mv rm init reset`;
+- a package install: `npm`/`pnpm`/`yarn`/`pip`/`pip3 install`.
+
+`tar` and `dd` are ambiguous (read or write) and are treated as writes to fail closed. A shell tool_call with no parseable command also DENYs (fail closed). This detection is verified by `test/test_scope_fence_shell_writes.py` (VAL-SEC-027..035, VAL-SEC-057), authored red-first.
+
 ## Countersign
 
 - **Reviewer:** GPT-5.6-sol (Codex)
