@@ -160,4 +160,61 @@ describe("registry", () => {
     expect(state.runId).toBe("run-3");
     expect(state.tickets).toEqual({});
   });
+
+  // Mirrors the exact rendering loop in cli.ts runStatus so the test observes the
+  // real crash the CLI would hit on a malformed per-ticket entry.
+  function renderStatusTable(status: PipelineStatus): string[] {
+    const lines: string[] = [];
+    for (const [id, t] of Object.entries(status.tickets)) {
+      lines.push(`  ${id}: [${t.status}] phase=${t.phase} attempt=${t.attempt} commit=${t.completionCommitSha ?? "(none)"}`);
+    }
+    return lines;
+  }
+
+  it("load coerces or skips a null per-ticket entry so status rendering does not throw", () => {
+    mkdirSync(join(tempDir, ".rickgent"), { recursive: true });
+    writeFileSync(registryPath, '{"tickets":{"T1":null}}');
+    const state = registry.load();
+    expect(() => renderStatusTable(state)).not.toThrow();
+    expect(state.tickets["T1"] === undefined || typeof state.tickets["T1"] === "object").toBe(true);
+    expect(state.tickets["T1"]).not.toBeNull();
+  });
+
+  it("load skips non-object per-ticket entries (string/number/array)", () => {
+    mkdirSync(join(tempDir, ".rickgent"), { recursive: true });
+    writeFileSync(registryPath, '{"tickets":{"T1":"nope","T2":42,"T3":[]}}');
+    const state = registry.load();
+    expect(() => renderStatusTable(state)).not.toThrow();
+    expect(Object.keys(state.tickets)).toHaveLength(0);
+  });
+
+  it("load coerces an invalid-shape per-ticket entry to a safe default and keeps a valid one", () => {
+    mkdirSync(join(tempDir, ".rickgent"), { recursive: true });
+    writeFileSync(
+      registryPath,
+      JSON.stringify({
+        tickets: {
+          T1: { id: "T1" },
+          T2: {
+            id: "T2",
+            title: "Valid",
+            status: "Done",
+            phase: "simplify",
+            declaredPaths: ["src/"],
+            attempt: 2,
+            completionCommitSha: "abc",
+            updatedAt: "2025-01-01T00:00:00.000Z",
+          },
+        },
+      }),
+    );
+    const state = registry.load();
+    expect(() => renderStatusTable(state)).not.toThrow();
+    expect(state.tickets["T1"].status).toBe("Todo");
+    expect(state.tickets["T1"].phase).toBe("");
+    expect(state.tickets["T1"].attempt).toBe(0);
+    expect(state.tickets["T1"].completionCommitSha).toBeNull();
+    expect(state.tickets["T2"].status).toBe("Done");
+    expect(state.tickets["T2"].completionCommitSha).toBe("abc");
+  });
 });
