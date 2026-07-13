@@ -87,7 +87,7 @@ export async function runVerdict(args: string[]): Promise<void> {
           canExecute: canExecute(state),
           transition: lastTransition?.transition,
           reason: (lastTransition as { reason?: string } | undefined)?.reason,
-          errorCount: Object.values(state.errorCounts)[0] ?? 0,
+          errorCount: Math.max(0, ...Object.values(state.errorCounts)),
         });
         break;
       }

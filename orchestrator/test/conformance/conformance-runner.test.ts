@@ -43,7 +43,7 @@ function runCoreApi(fixture: any): any {
         canExecute: canExecute(state),
         transition: lastTransition?.transition,
         reason: lastTransition?.reason,
-        errorCount: Object.values(state.errorCounts)[0] ?? 0,
+        errorCount: Math.max(0, ...Object.values(state.errorCounts)),
       };
     }
     default:
