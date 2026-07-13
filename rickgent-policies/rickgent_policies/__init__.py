@@ -11,6 +11,7 @@ import subprocess
 import json
 import os
 import re
+import shlex
 from pathlib import Path
 
 # Build commit — matched against the TS package at startup.
@@ -328,13 +329,134 @@ def _is_tool_call(event) -> bool:
     return tool_name in {"Bash", "bash", "sys_os_shell", "shell"}
 
 
-def autonomous_pr_flow(event, config):
-    """Narrow ALLOW for the autonomous PR flow — feature-branch push + gh pr create only.
+# git global options that consume a following value token (`git -C dir push …`).
+_GIT_VALUE_OPTS = {
+    "-C", "-c", "--git-dir", "--work-tree", "--namespace",
+    "--super-prefix", "--exec-path",
+}
+_PROTECTED_BRANCHES = ["main", "master", "trunk", "develop", "dev", "release/"]
 
-    This is the narrow exception to blast_radius's ASK-class gating. It allows
-    only the exact command shapes the PR flow needs, leaving blast_radius
-    (gate_pushes=True) in force for everything else (gh pr merge, gh release,
-    gh repo delete, infra destroy, rm -rf, etc.).
+
+def _split_command_segments(command: str) -> list:
+    """Split a shell command into logically-separate segments.
+
+    A single destructive `git push` hidden behind ANY separator
+    (`&&`, `||`, `;`, `|`, `&`, or a newline) must be evaluated on its own,
+    so the narrow-allow whitelist can never be satisfied by a compound command.
+    """
+    segments = []
+    for raw in re.split(r"\|\||&&|;|\n|\||&", command):
+        seg = raw.strip()
+        if seg:
+            segments.append(seg)
+    return segments
+
+
+def _tokenize(segment: str) -> list:
+    """Tokenize a single segment, then strip leading env-assignments and sudo.
+
+    Falls back to a whitespace split when shlex cannot parse the segment so
+    detection stays conservative (a garbled push is still recognized as a push).
+    """
+    try:
+        tokens = shlex.split(segment)
+    except ValueError:
+        tokens = segment.split()
+
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tok):  # FOO=bar prefix
+            i += 1
+            continue
+        if tok == "sudo":
+            i += 1
+            while i < len(tokens) and tokens[i].startswith("-"):
+                i += 1
+            continue
+        break
+    return tokens[i:]
+
+
+def _git_subcommand_index(tokens: list):
+    """Index of the git subcommand token, skipping `git` global options."""
+    if not tokens or tokens[0] != "git":
+        return None
+    i = 1
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok.startswith("-"):
+            if "=" in tok:
+                i += 1
+            elif tok in _GIT_VALUE_OPTS:
+                i += 2
+            else:
+                i += 1
+            continue
+        return i
+    return None
+
+
+def _is_git_push(segment: str) -> bool:
+    tokens = _tokenize(segment)
+    idx = _git_subcommand_index(tokens)
+    return idx is not None and tokens[idx] == "push"
+
+
+def _is_gh_pr_create(segment: str) -> bool:
+    tokens = _tokenize(segment)
+    return tokens[:3] == ["gh", "pr", "create"]
+
+
+def _has_force_flag(segment: str) -> bool:
+    s = segment.lower()
+    return bool(
+        "--force" in s
+        or "--force-with-lease" in s
+        or re.search(r"(?:^|\s)-[a-z]*f[a-z]*\b", s)
+    )
+
+
+def _push_destination(segment: str):
+    """Best-effort destination branch for a push segment (for DENY labeling)."""
+    for pattern in (r"\bheads/(\S+)", r"\bhead:(\S+)", r"\borigin/(\S+)", r"\borigin\s+(\S+)"):
+        m = re.search(pattern, segment.lower())
+        if m:
+            return m.group(1)
+    return None
+
+
+def _is_protected(dest) -> bool:
+    if not dest:
+        return False
+    for branch in _PROTECTED_BRANCHES:
+        if dest == branch or dest.startswith(branch):
+            return True
+    return False
+
+
+def _is_narrow_feature_push(segment: str, feature_branch) -> bool:
+    """True iff the segment is EXACTLY `git push origin <own-branch>` /
+    `git push origin HEAD:<own-branch>` with no extra flags or global options."""
+    if not feature_branch:
+        return False
+    tokens = _tokenize(segment)
+    if len(tokens) != 4 or tokens[0] != "git" or tokens[1] != "push" or tokens[2] != "origin":
+        return False
+    dest = tokens[3]
+    return dest == feature_branch or dest == f"HEAD:{feature_branch}"
+
+
+def autonomous_pr_flow(event, config):
+    """Narrow ALLOW for the autonomous PR flow — own-feature-branch push + gh pr create only.
+
+    This is the narrow exception to blast_radius's ASK-class gating. The SOLE
+    push shape that may ALLOW is a single-segment push to the run's own feature
+    branch (`git push origin <feature>` or `git push origin HEAD:<feature>`).
+    Every force/delete/mirror/all/tags refspec, symbolic/bare/remote-only
+    destination, wrong-branch destination, and separator/prefix bypass fails
+    closed (DENY), leaving blast_radius (gate_pushes=True) in force for
+    everything else.
     """
     try:
         if not _is_tool_call(event):
@@ -342,9 +464,8 @@ def autonomous_pr_flow(event, config):
 
         args = event.get("arguments", {})
         if isinstance(args, str):
-            import json as _json
             try:
-                args = _json.loads(args)
+                args = json.loads(args)
             except Exception:
                 args = {}
 
@@ -354,54 +475,37 @@ def autonomous_pr_flow(event, config):
         if not command:
             return {"result": "ALLOW"}  # Not a shell command — let other policies handle
 
-        command_lower = command.lower().strip()
+        feature_branch = (config or {}).get("feature_branch") or (config or {}).get("feature")
 
-        # Only evaluate git push and gh pr create commands
-        is_git_push = command_lower.startswith("git push")
-        is_gh_pr_create = command_lower.startswith("gh pr create")
+        segments = _split_command_segments(command)
+        push_segments = [s for s in segments if _is_git_push(s)]
+        gh_segments = [s for s in segments if _is_gh_pr_create(s)]
 
-        if not is_git_push and not is_gh_pr_create:
+        if not push_segments and not gh_segments:
             return {"result": "ALLOW"}  # Not a PR-flow command — defer to blast_radius
 
-        # DENY force push — detect -f in any position (start, middle, end of
-        # command, or combined into a short-flag group like -uf / -fH) plus the
-        # long forms. Substring matching of " -f " misses trailing and combined
-        # flags, so use word-boundary / combined-flag regexes instead.
-        if (
-            re.search(r"\s-f\b", command_lower)
-            or re.search(r"(?:^|\s)-\S*f\S*", command_lower)
-            or "--force" in command_lower
-            or "--force-with-lease" in command_lower
-        ):
-            return {"result": "DENY", "reason": "autonomous_pr_flow: force push not allowed", "code": "FORCE_PUSH_DENIED"}
+        if push_segments:
+            # The narrow allow is only ever the ENTIRE command being exactly one
+            # own-feature-branch push segment. Anything else fails closed.
+            if len(segments) == 1 and _is_narrow_feature_push(segments[0], feature_branch):
+                return {"result": "ALLOW", "reason": "autonomous_pr_flow: narrow own-feature-branch push allowed"}
 
-        # For git push: only allow push to feature branches (not main/master/trunk/develop)
-        if is_git_push:
-            protected = ["main", "master", "trunk", "develop", "dev", "release/"]
-            # Extract the destination branch from all common push syntaxes:
-            # `origin <branch>`, `origin/<branch>`, `HEAD:<branch>`,
-            # `refs/heads/<branch>`. This catches `git push origin HEAD:main`
-            # and `git push origin refs/heads/main` which the bare
-            # `origin <branch>` substring check would miss.
-            dest_branch = None
-            for pattern in (
-                r"\bheads/(\S+)",
-                r"\bhead:(\S+)",
-                r"\borigin/(\S+)",
-                r"\borigin\s+(\S+)",
-            ):
-                m = re.search(pattern, command_lower)
-                if m:
-                    dest_branch = m.group(1)
-                    break
-            if dest_branch:
-                for branch in protected:
-                    if dest_branch == branch or dest_branch.startswith(branch):
-                        return {"result": "DENY", "reason": f"autonomous_pr_flow: push to protected branch {branch} not allowed", "code": "PROTECTED_BRANCH_DENIED"}
-            return {"result": "ALLOW", "reason": "autonomous_pr_flow: feature-branch push allowed"}
+            if any(_has_force_flag(s) for s in push_segments):
+                return {"result": "DENY", "reason": "autonomous_pr_flow: force push not allowed", "code": "FORCE_PUSH_DENIED"}
 
-        # gh pr create — allow
-        return {"result": "ALLOW", "reason": "autonomous_pr_flow: gh pr create allowed"}
+            if any(_is_protected(_push_destination(s)) for s in push_segments):
+                return {"result": "DENY", "reason": "autonomous_pr_flow: push to protected branch not allowed", "code": "PROTECTED_BRANCH_DENIED"}
+
+            return {"result": "DENY", "reason": "autonomous_pr_flow: push not the narrow own-feature-branch shape", "code": "PUSH_NOT_WHITELISTED"}
+
+        # Only gh pr create segments remain (no push segment present).
+        if len(segments) == 1:
+            return {"result": "ALLOW", "reason": "autonomous_pr_flow: gh pr create allowed"}
+
+        # A compound command carrying gh pr create is not the narrow shape;
+        # abstain (None) so blast_radius remains authoritative rather than
+        # granting an authoritative ALLOW that would un-gate the other segments.
+        return None
 
     except Exception as e:
         return {"result": "DENY", "reason": f"autonomous_pr_flow: {e}", "code": "POLICY_SHIM_ERROR"}

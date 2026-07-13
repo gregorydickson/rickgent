@@ -124,7 +124,7 @@ class TestCrossVendorReview:
 class TestAutonomousPrFlow:
     def test_allows_feature_branch_push(self):
         event = {"tool_name": "Bash", "arguments": {"command": "git push origin feature/auth-login"}}
-        result = autonomous_pr_flow(event, {})
+        result = autonomous_pr_flow(event, {"feature_branch": "feature/auth-login"})
         assert result["result"] == "ALLOW"
 
     def test_denies_force_push(self):

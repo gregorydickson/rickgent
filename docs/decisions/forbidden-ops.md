@@ -92,3 +92,37 @@ The `spawn_bounds` policy (`orchestration.py:407-464`) bounds fan-out per turn (
 - **Verified against source:** `orchestration.py:400` (ASK branch guarded by `gate_pushes`), `orchestration.py:63-65` (`_DENY_PATTERNS` is a single regex), `orchestration.py:68-70` (`_ASK_PATTERNS` covers `gh pr merge|release|repo delete` and `kubectl|helm|terraform|databricks apply|deploy|destroy|delete`).
 - **Decision unchanged:** mash.
 - **Date:** 2026-07-12
+
+## A-SEC-1: `autonomous_pr_flow` push authorization is a strict own-branch whitelist
+
+The `autonomous_pr_flow` shim originally ALLOWed any `git push` whose destination
+was not on a small protected-branch blacklist, using `command.startswith("git push")`
+plus substring/regex flag checks. That is fail-open: a blacklist grants everything not
+enumerated, and the leading-token check is trivially bypassed by a separator or prefix.
+
+The hardened policy inverts this to a **whitelist that ALLOWs exactly one push shape**:
+
+- The SOLE push ALLOW is a **single-segment** command that, after stripping leading
+  env-assignments (`FOO=1`) and `sudo`, is EXACTLY `git push origin <feature>` or
+  `git push origin HEAD:<feature>`, where `<feature>` equals the run's own feature
+  branch supplied in `config["feature_branch"]` (alias `config["feature"]`). No extra
+  flags, no `git` global options (`-C`, `-c`, `--git-dir`, …), no additional tokens.
+- Every other push shape fails closed to DENY: force/delete/mirror/all/tags refspecs
+  (`+main`, `:main`, `--mirror`, `--all`, `--delete`, `-d`, `--force`, `-f`,
+  `--force-with-lease`, `--tags`), bare `git push`, `git push origin`, symbolic
+  `git push origin HEAD`, and any destination that is not the run's own branch.
+- Separator/prefix bypasses cannot reach the whitelist. The command is segmented on
+  `&&`, `||`, `;`, `|`, `&`, and newline; the narrow ALLOW requires the ENTIRE command
+  to be a single segment, so any compound command containing a push (e.g.
+  `cd sub && git push --force origin main`, `git push origin feature/x ; rm -rf /`)
+  is DENY. `git -C <dir>` global options and `sudo`/env-assign prefixes are normalized
+  before the push subcommand is detected, so a bypassed force push is still recognized.
+- If `feature_branch` is absent, the own-branch push cannot be proven and the policy
+  fails closed (never ALLOW).
+- A compound command whose only PR-flow segment is `gh pr create` abstains (`None`) so
+  `blast_radius` stays authoritative rather than granting an ALLOW that would un-gate
+  the sibling segments; a single-segment `gh pr create` still ALLOWs.
+
+This is a single self-contained evaluator: it depends on no cross-policy precedence and
+cannot be widened by a sibling ALLOW. Fulfills VAL-SEC-001..018 and VAL-SEC-052..055.
+- **Date:** 2026-07-13
