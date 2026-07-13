@@ -1,0 +1,14 @@
+{
+  "id": "absolute-009-abs-escape",
+  "description": "regression: an absolute-path write outside the declared dir still DENYs",
+  "setup": {
+    "dirs": ["declared"],
+    "symlinks": [],
+    "files": []
+  },
+  "declaredPaths": ["declared"],
+  "targetPath": "/etc/passwd",
+  "destinationPath": null,
+  "isWrite": true,
+  "expected": "DENY"
+}

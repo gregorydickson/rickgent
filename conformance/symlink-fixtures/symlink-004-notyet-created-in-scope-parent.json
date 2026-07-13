@@ -1,0 +1,14 @@
+{
+  "id": "symlink-004-notyet-created-in-scope-parent",
+  "description": "not-yet-created target whose nearest existing parent is a real in-scope dir -> ALLOW",
+  "setup": {
+    "dirs": ["declared", "declared/sub"],
+    "symlinks": [],
+    "files": []
+  },
+  "declaredPaths": ["declared"],
+  "targetPath": "declared/sub/newfile",
+  "destinationPath": null,
+  "isWrite": true,
+  "expected": "ALLOW"
+}

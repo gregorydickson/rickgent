@@ -1,0 +1,14 @@
+{
+  "id": "symlink-003-notyet-created-under-symlink-parent",
+  "description": "not-yet-created target whose nearest existing parent is a symlink escaping scope -> DENY",
+  "setup": {
+    "dirs": ["declared"],
+    "symlinks": [{ "link": "declared/link", "target": "/" }],
+    "files": []
+  },
+  "declaredPaths": ["declared"],
+  "targetPath": "declared/link/newfile",
+  "destinationPath": null,
+  "isWrite": true,
+  "expected": "DENY"
+}

@@ -118,6 +118,56 @@ def _is_path_in_scope(target: str, scope: str) -> bool:
     return target.startswith(scope + "/")
 
 
+def _resolve_endpoint(root: str, rel: str) -> str:
+    """Resolve a root-relative path to its canonical real form.
+
+    `os.path.realpath` follows symlinks in the existing portion and re-appends
+    the non-existent tail (a not-yet-created write target) onto the realpath of
+    the nearest existing parent — the parity of the TS `realpathNearestExisting`.
+    """
+    return os.path.realpath(os.path.join(root, rel))
+
+
+def check_scope_resolved(root, declared_paths, target_path, is_write, destination_path=None):
+    """Filesystem-aware scope check with parity to the TS `checkScopeResolved`.
+
+    Resolves symlinks (both source and destination endpoints for rename/link
+    ops) and not-yet-created write paths via the nearest existing parent, then
+    DENYs any endpoint whose real target escapes the declared set. Fails closed
+    on malformed input. Pins TS↔Python parity on the shared symlink fixtures.
+    """
+    if not isinstance(root, str) or not root:
+        return {"result": "DENY", "reason": "unresolvable worktree root", "code": "SCOPE_DENIED"}
+
+    if is_write is not True and is_write is not False:
+        return {"result": "DENY", "reason": "invalid isWrite field", "code": "SCOPE_DENIED"}
+    if is_write is not True:
+        return {"result": "ALLOW"}
+
+    declared = [d for d in (declared_paths or []) if isinstance(d, str) and d]
+
+    endpoints = []
+    if isinstance(target_path, str) and target_path:
+        endpoints.append(("target", target_path))
+    if isinstance(destination_path, str) and destination_path:
+        endpoints.append(("destination", destination_path))
+    if not endpoints:
+        return {"result": "DENY", "reason": "unresolvable write target", "code": "SCOPE_DENIED"}
+
+    resolved_declared = [_resolve_endpoint(root, d) for d in declared]
+
+    for label, rel in endpoints:
+        resolved_target = _resolve_endpoint(root, rel)
+        if not any(_is_path_in_scope(resolved_target, d) for d in resolved_declared):
+            return {
+                "result": "DENY",
+                "reason": f"{label} {rel} resolves outside declared paths",
+                "code": "SCOPE_DENIED",
+            }
+
+    return {"result": "ALLOW"}
+
+
 # Every shell/write tool-name variant across harnesses. The fence must cover
 # all of them or it fails open for a non-`claude` harness (Cursor `Shell`,
 # Pi `shell`, Claude `Bash`/`bash`, Omnigent `sys_os_shell`).

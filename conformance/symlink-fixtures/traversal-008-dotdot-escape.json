@@ -1,0 +1,14 @@
+{
+  "id": "traversal-008-dotdot-escape",
+  "description": "regression: a `..` traversal out of the declared dir still DENYs",
+  "setup": {
+    "dirs": ["declared", "outside"],
+    "symlinks": [],
+    "files": []
+  },
+  "declaredPaths": ["declared"],
+  "targetPath": "declared/../outside/invoice.py",
+  "destinationPath": null,
+  "isWrite": true,
+  "expected": "DENY"
+}

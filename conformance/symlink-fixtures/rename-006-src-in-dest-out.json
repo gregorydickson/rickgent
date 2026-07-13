@@ -1,0 +1,14 @@
+{
+  "id": "rename-006-src-in-dest-out",
+  "description": "rename/link: source in-scope but destination escapes via a symlink -> DENY (both endpoints checked)",
+  "setup": {
+    "dirs": ["declared", "declared/sub"],
+    "symlinks": [{ "link": "declared/root", "target": "/" }],
+    "files": ["declared/sub/a.py"]
+  },
+  "declaredPaths": ["declared"],
+  "targetPath": "declared/sub/a.py",
+  "destinationPath": "declared/root/tmp/evil",
+  "isWrite": true,
+  "expected": "DENY"
+}

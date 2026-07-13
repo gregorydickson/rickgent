@@ -1,0 +1,14 @@
+{
+  "id": "symlink-002-in-scope-real-file",
+  "description": "a write to a real file inside the declared dir is allowed (control)",
+  "setup": {
+    "dirs": ["declared", "declared/sub"],
+    "symlinks": [],
+    "files": ["declared/sub/login.py"]
+  },
+  "declaredPaths": ["declared"],
+  "targetPath": "declared/sub/login.py",
+  "destinationPath": null,
+  "isWrite": true,
+  "expected": "ALLOW"
+}

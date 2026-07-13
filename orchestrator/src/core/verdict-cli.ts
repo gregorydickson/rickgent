@@ -5,7 +5,7 @@
 import { evaluateCompletion, type CompletionInput, type CompletionVerdict } from "./completion.js";
 import { decideSalvage, type SalvageInput, type SalvageDecision } from "./salvage.js";
 import { evaluateConvergenceGate, type GateInput, type GateVerdict } from "./convergence.js";
-import { checkScope, type ScopeInput, type ScopeVerdict } from "./scope.js";
+import { checkScope, checkScopeResolved, type ScopeInput, type ResolvedScopeInput, type ScopeVerdict } from "./scope.js";
 import { evaluatePrd, type PrdInput, type PrdVerdict } from "./prd.js";
 import { createBreakerState, recordIterationResult, canExecute } from "./breaker.js";
 import { BUILD_COMMIT } from "../build-commit.js";
@@ -22,7 +22,7 @@ export async function runVerdict(args: string[]): Promise<void> {
 
   if (!check) {
     console.error("rickgent verdict: missing <check> argument");
-    console.error("Usage: rickgent verdict <completion|salvage|gate|scope|prd|breaker> --json");
+    console.error("Usage: rickgent verdict <completion|salvage|gate|scope|scope-resolved|prd|breaker> --json");
     process.exit(1);
   }
 
@@ -54,6 +54,9 @@ export async function runVerdict(args: string[]): Promise<void> {
         break;
       case "scope":
         outputResult(checkScope(input as ScopeInput));
+        break;
+      case "scope-resolved":
+        outputResult(checkScopeResolved(input as ResolvedScopeInput));
         break;
       case "prd":
         outputResult(evaluatePrd(input as PrdInput));

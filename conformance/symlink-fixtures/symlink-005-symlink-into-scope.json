@@ -1,0 +1,14 @@
+{
+  "id": "symlink-005-symlink-into-scope",
+  "description": "a symlink resolving to another in-scope dir is allowed (no over-denial)",
+  "setup": {
+    "dirs": ["declared", "declared/sub"],
+    "symlinks": [{ "link": "declared/inner", "target": "sub" }],
+    "files": ["declared/sub/target.py"]
+  },
+  "declaredPaths": ["declared"],
+  "targetPath": "declared/inner/target.py",
+  "destinationPath": null,
+  "isWrite": true,
+  "expected": "ALLOW"
+}

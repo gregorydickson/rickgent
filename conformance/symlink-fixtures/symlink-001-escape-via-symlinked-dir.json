@@ -1,0 +1,14 @@
+{
+  "id": "symlink-001-escape-via-symlinked-dir",
+  "description": "declared/root -> / : a write under the symlinked dir escapes declared scope",
+  "setup": {
+    "dirs": ["declared", "declared/sub"],
+    "symlinks": [{ "link": "declared/root", "target": "/" }],
+    "files": []
+  },
+  "declaredPaths": ["declared"],
+  "targetPath": "declared/root/etc/passwd",
+  "destinationPath": null,
+  "isWrite": true,
+  "expected": "DENY"
+}
