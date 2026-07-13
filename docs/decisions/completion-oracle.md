@@ -74,3 +74,11 @@ The one-predicate, enumerated-caller-allowlist invariant (R-AFCC-CALLER-ENUMERAT
 The B-1SEAM WS-1 invariant (phantom-Done watcher and Done-flip gate share ONE policy) is preserved: `gateForPhantomDoneRevert` remains a thin adapter over `evaluateCompletionEvidence`, not a separate implementation. No accept-here-revert-there split.
 
 The baseline-rejection invariant (a SHA equal to the session start commit is not new work) is preserved: `readEvidence` rejects baseline SHAs categorically. The gate-consultation invariant (a failing gate refuses completion even with a valid SHA) is preserved: `workerGateRefusal` runs after evidence acceptance and before the final return.
+
+## Countersign
+
+- **Reviewer:** GPT-5.6-sol (Codex)
+- **Verdict:** APPROVED
+- **Spot-checks performed:** `extension/src/services/ticket-completion-evidence.ts:808-840` shows gate refusal and the single predicate with recovery; Omnigent search found no verified-SHA/phantom-Done oracle.
+- **Notes:** The single-predicate/enumerated-caller invariant correctly adopts §2.2.1.
+- **Date:** 2026-07-12

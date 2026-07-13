@@ -81,3 +81,11 @@ Rickgent's resume is a v0.1 requirement and it is pipeline-level, not conversati
 Pickle Rick's pipeline-level resume is the right model. The `--resume` flag (`setup.ts:664-667`) reads `state.json`, recomputes missing fields from git truth, and heals the pipeline. The C5 self-heal (`setup.ts:1193, 1344`) ff-reattaches orphaned commits. `pickle-recover` (`pickle-recover.ts:runRecover`) performs exactly-one transitions: `--resume-from-todo` (re-queue lowest runnable Todo + ff-reattach), `--salvage` (commit+Done / archive+Todo / ff-reattach / no-op per tree+gate), `--reattach-orphan` (ff-only), `--reset-ticket` (archive+resetTodo), `--reactivate` (un-terminalize). `reconcileTicketTruth` (`mux-runner.ts:reconcileTicketStateDesync`) reconciles frontmatter against git truth at resume and at every terminal finalize — git is ground truth, state.json is a cache.
 
 Rickgent ports the SEMANTICS: a `.rickgent/registry.json` resume layer that (a) reads the registry, (b) reconciles it against git truth (commits, frontmatter, branch state) — git wins, (c) ff-reattaches orphaned commits to their tickets, (d) salvages or resets tickets whose tree state disagrees with their status, (e) re-derives the working-dir HEAD pin, (f) re-dispatches the next runnable ticket. Rickgent does NOT port the Pickle Rick CLI surface (`--resume-from-todo` etc.), the `state.json` schema, the `recovery_exhausted` exit-reason gate, or the `salvageTicket`/`detectAndRecoverHeadRegression` internals — those are reimplemented against Rickgent's registry schema and git-truth model. The decision is PORT, not MASH, because Omnigent contributes nothing to pipeline-level resume — it is conversation-level only.
+
+## Countersign
+
+- **Reviewer:** GPT-5.6-sol (Codex)
+- **Verdict:** APPROVED
+- **Spot-checks performed:** `omnigent/resume_dispatch.py:35-86` resumes a wrapper without ticket reconcile; `extension/src/bin/setup.ts:664-670,1193-1200` confirms pipeline resume and orphan healing.
+- **Notes:** A Rickgent git-truth resume layer is required.
+- **Date:** 2026-07-12

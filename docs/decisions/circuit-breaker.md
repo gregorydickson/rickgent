@@ -65,3 +65,11 @@ The port consolidates the split implementation into a single coherent module:
 The four `hardening` caps (`silent_death_respawn_cap`, `failed_flip_suppression_cap`, `breaker_recovery_grace_seconds`, `bounded_terminal_escape_cap`) are resolved from settings and passed to the core as configuration. The persistent `recovery_attempts` ledger survives relaunch and resume, ensuring the caps draw down across session boundaries.
 
 The R-DEFCHURN invariant is the most critical: `detectProgress` must compare tree SHAs (`^{tree}`), not just commit SHAs, so a churn of empty commits does not reset the breaker. This was learned from a live incident (2026-06-19, session 2b1e2707, ticket 26cd29db: ~12 deferral commits, 9 empty) and must survive the port verbatim.
+
+## Countersign
+
+- **Reviewer:** GPT-5.6-sol (Codex)
+- **Verdict:** APPROVED
+- **Spot-checks performed:** `extension/src/services/circuit-breaker.ts:209-230` contains `canExecute` and `detectProgress`; Omnigent search found only an MCP transport breaker, not a lifecycle progress breaker.
+- **Notes:** The split-ladder consolidation accurately adopts §2.2.1.
+- **Date:** 2026-07-12

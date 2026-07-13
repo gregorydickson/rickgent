@@ -72,3 +72,11 @@ Everything else ports verbatim:
 - The iterative find-slop → fix-slop → measure-slop loop is in the prompt and does not change.
 
 The pipeline-runner chains szechuan-sauce after anatomy-park and before citadel; that ordering is preserved in Rickgent's phase sequence (§13).
+
+## Countersign
+
+- **Reviewer:** GPT-5.6-sol (Codex)
+- **Verdict:** APPROVED
+- **Spot-checks performed:** `.claude/commands/szechuan-sauce.md:16-36,38-66` confirms notes, tmux setup, and flags; Omnigent search found no deslop convergence skill.
+- **Notes:** Prompt-skill porting preserves measured quality without tmux.
+- **Date:** 2026-07-12

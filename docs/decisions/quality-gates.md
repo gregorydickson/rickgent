@@ -55,3 +55,11 @@ Skipping quality gates for v0.1 is the subtract-before-add discipline applied to
 5. **No hybrid gates.** A "mash" of Omnigent policy + Pickle Rick gate semantics would create a new gate surface with the same false-block risk. The correct move is to not have per-phase heuristic gates at all — the build is the gate, the review phases are the judgment.
 
 If a specific gate proves necessary in practice (e.g., a pre-spawn check that the ticket's worktree exists), it should be added as a single, narrow, machine-checkable assertion — not a heuristic framework. Revisit in v0.2 if autonomous runs demonstrate a need.
+
+## Countersign
+
+- **Reviewer:** GPT-5.6-sol (Codex)
+- **Verdict:** APPROVED_WITH_NOTES
+- **Spot-checks performed:** `docs/FABLE_OPERATING_MANUAL.md:105` names validation overreach; pinned `check-readiness.ts` and `audit-ticket-bundle.ts` are 1,338 and 720 lines; Omnigent has no equivalent ticket gates.
+- **Notes:** Skip is sound. The stated 57,117/26,521 LOC figures are wrong, and the cited `prism` skill does not exist in the snapshot.
+- **Date:** 2026-07-12

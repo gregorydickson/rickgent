@@ -60,3 +60,11 @@ The mechanical-finding classifier (`mechanical-finding-classifier.ts`) ports wit
 The AC verification commands (the per-AC `Verification` column from the PRD) run via Omnigent's `sys_os_shell` — confirmed available in §2.1.1 — so the verify step survives the move from in-process `execFileSync` to Omnigent dispatch. The trap door catalog (`ENFORCE:` reference matching) is a pure file/regex operation and ports unchanged.
 
 The only Rickgent-specific addition is a policy hook at the Omnigent seam that fences `rickgent citadel` as a `tool_call` policy (per §2.1.1's closed policy event vocabulary) so the audit cannot be skipped by a worker mid-pipeline.
+
+## Countersign
+
+- **Reviewer:** GPT-5.6-sol (Codex)
+- **Verdict:** APPROVED
+- **Spot-checks performed:** `extension/src/services/citadel/audit-runner.ts:5-28,39-46` contains the audit imports and cross-phase schema; an Omnigent tools search confirms `sys_os_shell`.
+- **Notes:** The port supports measured PR quality.
+- **Date:** 2026-07-12

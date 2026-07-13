@@ -54,3 +54,11 @@ The mash layers two fences:
 Parity is pinned by shared AC-10 fixtures: the same test cases (trailing-slash, subdirectory prefix, trap-door catalog exemption, missing scope.json) run against both the TS core's scope module and the Python policy, ensuring the two implementations agree on every path shape. Per §4 (AC-10) and §10.9 (the north star: every claim was true), the scope fence must be truthful — a worker that silently edits another ticket's files breaks the N-hands-off-runs bar.
 
 The trap-door catalog exemption (`isTrapDoorCatalogPath`, `check-scope-diff.ts:42-46`) is preserved: `CLAUDE.md` at any depth is not a scope violation, because a trap-door catalog is documentation-only tool output, not code scope creep. The fence on source files stays fully intact.
+
+## Countersign
+
+- **Reviewer:** GPT-5.6-sol (Codex)
+- **Verdict:** APPROVED
+- **Spot-checks performed:** `extension/src/bin/check-scope-diff.ts:30-54` confirms normalization, prefix matching, and exemption; `omnigent/inner/datamodel.py:470-535` documents agent-level, not ticket-level, sandbox policy.
+- **Notes:** Hard isolation plus live per-ticket policy is sound.
+- **Date:** 2026-07-12

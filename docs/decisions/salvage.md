@@ -66,3 +66,11 @@ The port splits along the §14.8 decide/execute/verify boundary:
 The `reconcileTicketTruth` single-definition invariant (AC-W3-RECONCILE) is preserved: there is exactly one ground-truth reader in the entire codebase. The R-MACB invariant (never `git add -A` over foreign dirt) is preserved: `stageOwnedPaths` stages one path at a time, and `salvageDirtyTree` anchors foreign dirt to a recoverable ref before any staging.
 
 The `sys_cancel_task` inertness is not a problem — the PRD (§10.4) already specifies that worker-timeout enforcement lives in the rickgent orchestrator (deadline on inbox wait + salvage), not in a platform cancel primitive. Salvage runs on timeout/crash/cancel regardless of whether the platform has a working cancel primitive.
+
+## Countersign
+
+- **Reviewer:** GPT-5.6-sol (Codex)
+- **Verdict:** APPROVED
+- **Spot-checks performed:** `extension/src/lib/salvage-ticket.ts:1-80,166-207` confirms five dispositions and the salvage matrix; `omnigent/tools/builtins/async_inbox.py:97-126` confirms cancellation provides no salvage.
+- **Notes:** The corrected dispositions and work-preservation port are sound.
+- **Date:** 2026-07-12

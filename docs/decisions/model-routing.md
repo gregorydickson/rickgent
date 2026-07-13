@@ -33,3 +33,11 @@ Reuse Omnigent's `sys_advise_models` — automatic, multi-vendor.
 
 ## Reasoning
 Rickgent's core differentiator is automatic multi-model routing: the orchestrator should not need a `--backend` flag or a manual tier map. Omnigent's `sys_advise_models` already solves this with an LLM judge that reads the task description, applies a SIMPLE/MODERATE/COMPLEX rubric, and recommends a model from the appropriate vendor family. The `MODEL_LISTS` and `_HARNESS_FAMILY` tables cover Claude, GPT, and Pi's interleaved set — all the vendors Rickgent cares about. The `RoutingClient` protocol allows managed deployments to swap in custom routing logic without forking. Pickle Rick's `TIER_MODEL_MAP` is a 4-entry static dict (`trivial→haiku`, `small→sonnet`, `medium→sonnet`, `large→opus`) that only works within Claude and requires the operator to manually pass `--backend`. Porting it would be a regression. Reusing Omnigent gives Rickgent automatic, multi-vendor routing with per-dispatch override, gated by `OMNIGENT_SMART_ROUTING=1` so it can be turned off for cost-sensitive deployments. No mash needed; reuse is the clean path.
+
+## Countersign
+
+- **Reviewer:** GPT-5.6-sol (Codex)
+- **Verdict:** APPROVED
+- **Spot-checks performed:** `omnigent/tools/builtins/advise_models.py:1-14,23-60` confirms gated server-side advising; an `rg 'TIER_MODEL_MAP'` check confirmed Pickle Rick's static map.
+- **Notes:** Reuse directly advances native multi-model routing.
+- **Date:** 2026-07-12

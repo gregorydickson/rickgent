@@ -81,3 +81,11 @@ MASH — Omnigent enforcement infra (MLflow pricing via `context_window.py`, thr
 Rickgent needs cost ENFORCEMENT (gate dispatch, deny over-budget turns, per-ticket budgets) and cost OBSERVABILITY (operator dashboard correlating spend with commits/LOC). Omnigent is the only one of the two that enforces: its three budget policies gate at the `request` and `tool_call` phases, fail closed on unpriced models, and support per-dispatch subtree budgets via the `cost_budget` spawn arg (`cost.py:cost_budget`, `cost.py:subagent_cost_budget`). Per-ticket budgets come free — the parent sets `cost_budget` on `sys_session_send` and the child gates against its own subtree. Rickgent should reuse this entire enforcement spine rather than re-implement gating, pricing fetch, or persistence.
 
 Omnigent's weakness is reporting: it surfaces DENY/ASK messages and `session_state` approval keys, but no dashboard. Pickle Rick's `/pickle-metrics` (`metrics.ts:261-271, 217-222`) is the opposite — rich lifecycle-aware reporting (tokens → commits → LOC, daily/weekly, skip-flag budgets against `SKIP_FLAG_BUDGETS`) but zero enforcement. The mash: Omnigent enforces, Pickle Rick-shaped metrics report. Rickgent adopts Omnigent's fail-closed unpriced posture verbatim (`_usage_is_unpriced` → ASK, not `$0`), because the §2.1.1 finding is correct that unpriced spend is unbounded-risk, not zero — silently allowing it would let a whole pipeline run uncapped on an unpriced model.
+
+## Countersign
+
+- **Reviewer:** GPT-5.6-sol (Codex)
+- **Verdict:** APPROVED
+- **Spot-checks performed:** `omnigent/llms/context_window.py:184-205,389-430` confirms cached MLflow pricing and nullable lookup; `extension/src/bin/metrics.ts:217-222,261-271` aggregates tokens, commits, and LOC.
+- **Notes:** Enforcement plus lifecycle observability is well justified.
+- **Date:** 2026-07-12

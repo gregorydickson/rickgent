@@ -71,3 +71,11 @@ Omnigent's `sys_cancel_task` is a confirmed TRAP. The tasks table was removed an
 Pickle Rick's orchestrator-side timeout semantics are the right model because they actually work. The orchestrator owns the deadline (`worker_timeout_seconds`, default 1200s; per-ticket `current_ticket_worker_timeout_seconds`), caps the worker's own gate-phase test runs (`PICKLE_WORKER_TEST_FAST_TIMEOUT_MS`, default 600000ms, floor 60000ms), and on timeout: (a) SIGTERMs the worker process (`mux-runner.ts:206, 3591`), (b) salvages any real work via `salvageTicket` / `salvageDirtyTree` so partial output isn't lost, (c) writes a `TASK_NOTES.md` stub via `writeTimeoutStub` so the next iteration knows the previous approach didn't finish in time and must not repeat it, (d) records `timeout_count` and emits remediation via `executeTimeoutHalt` (`mux-runner.ts:6418-6427`), and (e) halts after 2 consecutive timeouts (`reason: 'timeout_repeat'`) rather than spinning forever.
 
 Rickgent ports these semantics: a per-spawn deadline on inbox wait, SIGTERM kill when the deadline is exceeded, salvage of any real work the worker produced, a timeout stub recording what was tried and how long it ran, and a repeat-timeout halt. Rickgent does NOT port the Pickle Rick-specific surface (`--worker-timeout` CLI flag shape, `PICKLE_WORKER_TEST_FAST_TIMEOUT_MS` env var name, `TASK_NOTES.md` stub format, `pickle-retry` remediation message) verbatim — it ports the deadline + kill + salvage + stub + halt loop against Rickgent's own orchestrator and registry. The decision is PORT, not MASH, because Omnigent contributes nothing here — `sys_cancel_task` is inert and must be explicitly avoided, not mashed in.
+
+## Countersign
+
+- **Reviewer:** GPT-5.6-sol (Codex)
+- **Verdict:** APPROVED
+- **Spot-checks performed:** `omnigent/tools/builtins/async_inbox.py:97-126` always returns `task_not_found`; `extension/src/bin/mux-runner.ts:6418-6428` records timeout-repeat count and remediation.
+- **Notes:** The trap finding and orchestrator-owned kill/salvage posture are accurate.
+- **Date:** 2026-07-12

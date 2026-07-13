@@ -113,3 +113,11 @@ Adaptations:
 - **tmux launch** — the "all metaphors are tmux-launching" assumption (`cronenberg.md:98`) is replaced by "all metaphors are Omnigent one-shot dispatching." The do-not-auto-chain-followups rule is preserved because Omnigent one-shots are also asynchronous relative to the followups.
 
 The `AC_SHAPE_SMELL` heuristic stays shared with citadel (T11.7) — the same regex lives in both the TS router and the citadel audit runner, so cronenberg and citadel agree on what counts as a smelly AC. This invariant is preserved by keeping the regex in a shared `core/prd/ac-shape.ts` module that both the router and the citadel audit import.
+
+## Countersign
+
+- **Reviewer:** GPT-5.6-sol (Codex)
+- **Verdict:** REJECTED
+- **Spot-checks performed:** `.claude/commands/cronenberg.md:44-82` confirms the source matrices; `omnigent/server/smart_routing.py:1-72` confirms model, not pipeline, routing.
+- **Notes:** Retaining “do not auto-chain” because one-shots are allegedly asynchronous contradicts the contract and `omnigent/chat.py:4017` synchronous process-exit path, breaking hands-off execution.
+- **Date:** 2026-07-12

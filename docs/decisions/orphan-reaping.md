@@ -65,3 +65,11 @@ Skipping orphan reaping for v0.1 is the subtract-before-add discipline applied t
 5. **Revisit if sandbox escapes are observed.** If a worker process is observed surviving its `omnigent run` parent (e.g., a sandbox misconfiguration, a bwrap `--unshare-pid` failure, or a seatbelt policy gap), the orphan reaper can be ported as a setup-time safety net. The reaper's design (positive-ownership-mandatory, no ppid==1-only branch) is sound and can be directly translated to Python if needed. But it should be added in response to a observed failure, not preemptively.
 
 The `killProcessGroup` primitive (`orphan-reaper.ts:62-78`) IS relevant to Rickgent — but it is already part of the worker-timeout decision (process-group kill on the `omnigent run` one-shot). The reaper as a standalone setup-time collector is what is skipped.
+
+## Countersign
+
+- **Reviewer:** GPT-5.6-sol (Codex)
+- **Verdict:** REJECTED
+- **Spot-checks performed:** `omnigent/inner/bwrap_sandbox.py:451-468` uses PID isolation and die-with-parent; `omnigent/inner/sandbox.py:806-845` documents backend defaults/explicit none; `extension/src/services/orphan-reaper.ts:8-30,52-65` documents crash orphans/group kill.
+- **Notes:** Evidence does not justify a blanket skip for every macOS or explicit-none path. Constrain the skip by proven backend or retain the positive-ownership reaper.
+- **Date:** 2026-07-12

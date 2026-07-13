@@ -76,3 +76,11 @@ Everything else ports verbatim:
 - The `anatomy-park.json` findings artifact is preserved so citadel's cross-phase ingest (`audit-runner.ts:32-46`) continues to work.
 
 The pipeline-runner chains anatomy-park before szechuan-sauce; that ordering is preserved in Rickgent's phase sequence (§13).
+
+## Countersign
+
+- **Reviewer:** GPT-5.6-sol (Codex)
+- **Verdict:** APPROVED
+- **Spot-checks performed:** `.claude/commands/anatomy-park.md:64-80` confirms immediate-child discovery, thresholds, exclusions, and ordering; an Omnigent-wide anatomy search returned no matches.
+- **Notes:** Prompt-skill port and Omnigent delivery adaptation are sound.
+- **Date:** 2026-07-12
