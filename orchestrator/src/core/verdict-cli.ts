@@ -7,6 +7,7 @@ import { decideSalvage, type SalvageInput, type SalvageDecision } from "./salvag
 import { evaluateConvergenceGate, type GateInput, type GateVerdict } from "./convergence.js";
 import { checkScope, type ScopeInput, type ScopeVerdict } from "./scope.js";
 import { evaluatePrd, type PrdInput, type PrdVerdict } from "./prd.js";
+import { createBreakerState, recordIterationResult, canExecute } from "./breaker.js";
 import { BUILD_COMMIT } from "../build-commit.js";
 
 export async function runVerdict(args: string[]): Promise<void> {
@@ -43,7 +44,7 @@ export async function runVerdict(args: string[]): Promise<void> {
   try {
     switch (check) {
       case "completion":
-        outputResult(evaluateCompletion(input as CompletionInput));
+        outputResult(evaluateCompletion(input as CompletionInput, "cli.verdict"));
         break;
       case "salvage":
         outputResult(decideSalvage(input as SalvageInput));
@@ -57,6 +58,36 @@ export async function runVerdict(args: string[]): Promise<void> {
       case "prd":
         outputResult(evaluatePrd(input as PrdInput));
         break;
+      case "breaker": {
+        // Breaker fixture input: {threshold, iterations: [{error, gitTreeChanged, workerClaimedFilesChanged}]}
+        // Output: {canExecute, transition, reason, errorCount}
+        const breakerInput = input as {
+          threshold?: number;
+          iterations?: Array<{
+            error?: string | null;
+            gitTreeChanged?: boolean;
+            workerClaimedFilesChanged?: number | null;
+          }>;
+        };
+        const threshold = typeof breakerInput.threshold === "number" ? breakerInput.threshold : 5;
+        const iterations = Array.isArray(breakerInput.iterations) ? breakerInput.iterations : [];
+        const state = createBreakerState(threshold);
+        let lastTransition: ReturnType<typeof recordIterationResult> | undefined;
+        for (const iter of iterations) {
+          lastTransition = recordIterationResult(state, {
+            error: iter.error ?? null,
+            gitTreeChanged: iter.gitTreeChanged ?? false,
+            workerClaimedFilesChanged: iter.workerClaimedFilesChanged ?? null,
+          });
+        }
+        outputResult({
+          canExecute: canExecute(state),
+          transition: lastTransition?.transition,
+          reason: (lastTransition as { reason?: string } | undefined)?.reason,
+          errorCount: Object.values(state.errorCounts)[0] ?? 0,
+        });
+        break;
+      }
       default:
         outputError("UNKNOWN_CHECK", `Unknown verdict check: ${check}`);
         process.exit(1);

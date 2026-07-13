@@ -8,6 +8,11 @@ description: >
 
 instructions: AGENTS.md
 
+executor:
+  type: omnigent
+  config:
+    harness: claude
+
 llm:
   model: anthropic/claude-sonnet-4-20250514
   max_completion_tokens: 16384

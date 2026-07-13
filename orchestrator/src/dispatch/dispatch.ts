@@ -3,7 +3,7 @@
 // `omnigent run` dispatch with timeout enforcement.
 
 import { spawn } from "child_process";
-import { writeFileSync, readFileSync, existsSync, mkdirSync, appendFileSync } from "fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, appendFileSync, rmSync } from "fs";
 import { join } from "path";
 
 export type DispatchState =
@@ -94,10 +94,9 @@ export class TicketLock {
     const lockPath = join(this.lockDir, `${ticketId}.lock`);
     if (existsSync(lockPath)) {
       try {
-        const content = readFileSync(lockPath, "utf-8");
-        // Only release if we own it (same timestamp)
-        // In a real implementation, we'd check ownership
-        void content;
+        // Delete the lock file so the ticket can be re-acquired.
+        // Without this, acquire() would always see a stale/active lock.
+        rmSync(lockPath, { force: true });
       } catch { /* ignore */ }
     }
   }
@@ -166,11 +165,15 @@ export class Dispatcher {
 
     try {
       this.active++;
+      // Capture the spawn timestamp once and reuse it for every ledger entry
+      // produced by this dispatch. The "spawned" entry is the source of truth
+      // for startedAt — completion entries must not overwrite it (W3).
+      const startedAt = new Date().toISOString();
       this.ledger.append({
         dispatchId: idStr,
         state: "spawned",
         pid: null,
-        startedAt: new Date().toISOString(),
+        startedAt,
         completedAt: null,
         exitCode: null,
         stdout: null,
@@ -178,17 +181,20 @@ export class Dispatcher {
       });
 
       // Dispatch via omnigent run one-shot
-      return await this.runOneShot(idStr, opts);
+      return await this.runOneShot(idStr, opts, startedAt);
     } finally {
       this.active--;
       this.lock.release(id.ticketId);
     }
   }
 
-  private async runOneShot(idStr: string, opts: DispatchOptions): Promise<DispatchEntry> {
+  private async runOneShot(idStr: string, opts: DispatchOptions, startedAt: string): Promise<DispatchEntry> {
     return new Promise((resolve) => {
+      // W3: do NOT pass `timeout` to spawn() — the manual timer below is the
+      // single source of truth for timeout enforcement. Passing both creates a
+      // race where Node's internal timeout and our timer can both fire and
+      // produce conflicting ledger entries.
       const child = spawn("omnigent", ["run", opts.agentDir, "-p", opts.prompt], {
-        timeout: opts.timeout,
         stdio: ["pipe", "pipe", "pipe"],
       });
 
@@ -211,7 +217,7 @@ export class Dispatcher {
         child.kill("SIGTERM");
         finish({
           dispatchId: idStr, state: "timed_out", pid: child.pid ?? null,
-          startedAt: new Date().toISOString(), completedAt: new Date().toISOString(),
+          startedAt, completedAt: new Date().toISOString(),
           exitCode: null, stdout, stderr,
         });
       }, opts.timeout);
@@ -220,7 +226,7 @@ export class Dispatcher {
         const state: DispatchState = code === 0 ? "completed" : "failed";
         finish({
           dispatchId: idStr, state, pid: child.pid ?? null,
-          startedAt: new Date().toISOString(), completedAt: new Date().toISOString(),
+          startedAt, completedAt: new Date().toISOString(),
           exitCode: code, stdout, stderr,
         });
       });
@@ -228,7 +234,7 @@ export class Dispatcher {
       child.on("error", (err) => {
         finish({
           dispatchId: idStr, state: "failed", pid: child.pid ?? null,
-          startedAt: new Date().toISOString(), completedAt: new Date().toISOString(),
+          startedAt, completedAt: new Date().toISOString(),
           exitCode: null, stdout, stderr: err.message,
         });
       });

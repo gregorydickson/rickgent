@@ -40,20 +40,31 @@ export function evaluatePrd(input: PrdInput): PrdVerdict {
 
   // Every AC must have a non-empty verify command
   for (const ac of acceptanceCriteria) {
-    if (!ac.verifyCommand || ac.verifyCommand.trim().length === 0) {
-      errors.push(`AC "${ac.description}" has empty verify command`);
+    // C4: guard against malformed acceptance-criterion elements. If an element
+    // is not an object (e.g. a string, number, null) or is missing required
+    // fields, record an error instead of crashing on property access.
+    if (ac == null || typeof ac !== "object") {
+      errors.push("acceptance criterion is not an object");
+      continue;
+    }
+    const desc = typeof ac.description === "string" ? ac.description : "(unknown)";
+    const verifyCommand = typeof ac.verifyCommand === "string" ? ac.verifyCommand : "";
+    const scope = Array.isArray(ac.scope) ? ac.scope : [];
+
+    if (verifyCommand.trim().length === 0) {
+      errors.push(`AC "${desc}" has empty verify command`);
     }
     // AC must have non-empty scope
-    if (ac.scope.length === 0) {
-      errors.push(`AC "${ac.description}" has empty scope`);
+    if (scope.length === 0) {
+      errors.push(`AC "${desc}" has empty scope`);
     }
     // Reject interactive commands
-    if (/\bread\s+-p\b/.test(ac.verifyCommand)) {
-      errors.push(`AC "${ac.description}" has interactive command (read -p)`);
+    if (/\bread\s+-p\b/.test(verifyCommand)) {
+      errors.push(`AC "${desc}" has interactive command (read -p)`);
     }
     // Reject network commands
-    if (/\bcurl\b|\bwget\b|\bhttp\b/.test(ac.verifyCommand)) {
-      errors.push(`AC "${ac.description}" has network command`);
+    if (/\bcurl\b|\bwget\b|\bhttp\b/.test(verifyCommand)) {
+      errors.push(`AC "${desc}" has network command`);
     }
   }
 

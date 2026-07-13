@@ -25,6 +25,7 @@ def test_policies_register_via_policy_modules():
         "rickgent_policies.convergence_gate",
         "rickgent_policies.subtract_before_add",
         "rickgent_policies.cross_vendor_review",
+        "rickgent_policies.autonomous_pr_flow",
     }
     for handler in expected:
         assert is_registered_handler(handler), f"{handler} not registered"

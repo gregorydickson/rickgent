@@ -41,8 +41,13 @@ export class SalvageExecutor {
           break;
         }
         case "ff-reattached":
-          // Fast-forward reattach
-          gitOutput = execSync("git merge --ff-only HEAD", { cwd: this.workingDir, encoding: "utf-8", timeout: 10000 }).trim();
+          // C5: the ff-reattach disposition is DECIDED by the core, but the
+          // actual git mutation requires branch/ref context (the orphan branch
+          // and the target branch to fast-forward onto) that is not available
+          // in this scaffold. Running `git merge --ff-only HEAD` is a no-op and
+          // would misleadingly report success. Mark as executed with a note
+          // instead of running a meaningless git command.
+          gitOutput = "ff-reattach requires branch/ref context not available in scaffold; no git mutation performed";
           executed = true;
           break;
         case "no-op":

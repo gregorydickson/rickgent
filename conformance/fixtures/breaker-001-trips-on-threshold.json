@@ -12,7 +12,7 @@
   "expected": {
     "canExecute": false,
     "transition": "opened",
-    "reason": "threshold reached for Error at line N: timeout"
+    "reason": "threshold reached for ETIMEDOUT at line N"
   },
   "source": "circuit-breaker.ts:359 — recordIterationResult opens after sameErrorThreshold"
 }

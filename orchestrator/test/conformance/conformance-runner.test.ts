@@ -70,29 +70,34 @@ function runCliSubprocess(fixture: any): any {
   }
 }
 
+// W4: meta-fields that appear in fixture `expected` blocks but are not part
+// of the verdict shape produced by the core/CLI. They must be skipped during
+// comparison.
+const META_FIELDS = new Set(["note", "source", "failClosed"]);
+
 function compareVerdict(actual: any, expected: any): boolean {
   if (expected.error) {
     return actual.error === true || actual.verdict === "UNVERIFIED" || actual.result === "DENY";
   }
-  if (expected.verdict) {
-    return actual.verdict === expected.verdict;
+  // Check ALL relevant fields present in the expected object, not just the
+  // first one found. Previously this returned on the first matching branch,
+  // so a fixture could pass on one field while contradicting every other.
+  let checks = 0;
+  for (const key of Object.keys(expected)) {
+    if (META_FIELDS.has(key)) continue;
+    checks++;
+    const e = expected[key];
+    const a = actual[key];
+    if (e !== null && typeof e === "object") {
+      if (JSON.stringify(a) !== JSON.stringify(e)) return false;
+    } else {
+      if (a !== e) return false;
+    }
   }
-  if (expected.disposition) {
-    return actual.disposition === expected.disposition;
+  if (checks === 0) {
+    return JSON.stringify(actual) === JSON.stringify(expected);
   }
-  if (expected.result) {
-    return actual.result === expected.result;
-  }
-  if (expected.valid !== undefined) {
-    return actual.valid === expected.valid;
-  }
-  if (expected.passed !== undefined) {
-    return actual.passed === expected.passed;
-  }
-  if (expected.canExecute !== undefined) {
-    return actual.canExecute === expected.canExecute;
-  }
-  return JSON.stringify(actual) === JSON.stringify(expected);
+  return true;
 }
 
 describe("conformance fixtures — in-process core API", () => {
@@ -107,9 +112,8 @@ describe("conformance fixtures — in-process core API", () => {
 
 describe("conformance fixtures — CLI subprocess path", () => {
   for (const file of fixtureFiles) {
-    // Skip breaker fixtures for CLI (no breaker CLI check yet)
     const fixture = loadFixture(file);
-    if (fixture.check === "breaker") continue;
+    // Breaker CLI check is now implemented (C2) — no longer skipped.
     it(`${fixture.id}: ${file}`, () => {
       const result = runCliSubprocess(fixture);
       expect(compareVerdict(result, fixture.expected)).toBe(true);

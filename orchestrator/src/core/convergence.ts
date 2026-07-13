@@ -10,8 +10,12 @@ export interface CheckResult {
 export interface GateInput {
   /** Current gate check results. */
   current: CheckResult[];
-  /** Baseline gate check results. */
+  /** Baseline gate check results (used for staleness detection). */
   baseline: CheckResult[];
+  /** Baseline findings to subtract from current findings.
+   *  Stored as Finding objects so the comparison uses the same
+   *  `${file}:${line}:${message}` key on both sides (C3). */
+  baselineFindings?: Finding[];
   /** Ticket declared scope paths. */
   scope: string[];
   /** Candidate findings to filter. */
@@ -41,14 +45,16 @@ export function evaluateConvergenceGate(input: GateInput): GateVerdict {
   // Coerce array fields with defaults — missing/wrong types fail closed
   const current: CheckResult[] = Array.isArray(input.current) ? input.current : [];
   const baseline: CheckResult[] = Array.isArray(input.baseline) ? input.baseline : [];
+  const baselineFindings: Finding[] = Array.isArray(input.baselineFindings) ? input.baselineFindings : [];
   const scope: string[] = Array.isArray(input.scope) ? input.scope : [];
   const findings: Finding[] = Array.isArray(input.findings) ? input.findings : [];
 
   // 1. Assert baseline is fresh (R-SZGB: zero checks = stale baseline)
   const staleBaseline = baseline.length === 0 || isBaselineStale(baseline, current);
 
-  // 2. Subtract baseline findings
-  const newFindings = subtractBaseline(findings, baseline);
+  // 2. Subtract baseline findings — both sides now use Finding objects keyed
+  //    by `${file}:${line}:${message}`, so subtraction actually matches (C3).
+  const newFindings = subtractBaseline(findings, baselineFindings);
 
   // 3. Filter by scope
   const scopedFindings = filterByScope(newFindings, scope);
@@ -85,12 +91,16 @@ function isBaselineStale(baseline: CheckResult[], current: CheckResult[]): boole
   return false;
 }
 
-function subtractBaseline(findings: Finding[], baseline: CheckResult[]): Finding[] {
-  // Only NEW findings count — findings that exist in the baseline are subtracted
-  const baselineMessages = new Set(
-    baseline.flatMap((c) => c.output.split("\n").map((l) => l.trim()).filter(Boolean)),
+function subtractBaseline(findings: Finding[], baselineFindings: Finding[]): Finding[] {
+  // Only NEW findings count — findings that exist in the baseline are subtracted.
+  // C3: build the baseline set from Finding objects using the same
+  // `${file}:${line}:${message}` key the current findings are matched against.
+  // The previous implementation built keys from raw CheckResult.output lines,
+  // which never matched the structured finding keys (effective no-op).
+  const baselineKeys = new Set(
+    baselineFindings.map((f) => `${f.file}:${f.line}:${f.message}`),
   );
-  return findings.filter((f) => !baselineMessages.has(`${f.file}:${f.line}:${f.message}`));
+  return findings.filter((f) => !baselineKeys.has(`${f.file}:${f.line}:${f.message}`));
 }
 
 function filterByScope(findings: Finding[], scope: string[]): Finding[] {

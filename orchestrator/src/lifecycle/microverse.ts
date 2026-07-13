@@ -36,6 +36,11 @@ export class MicroverseRunner {
 
   runSimulated(scores: number[]): ConvergenceResult {
     for (const score of scores) {
+      // W2: respect the configured maxIterations cap — stop early once we've
+      // recorded that many iterations instead of consuming the whole score list.
+      if (this.history.length >= this.config.maxIterations) {
+        return { converged: false, iterations: this.history.length, finalScore: this.baseline, reason: "max iterations reached", history: this.history };
+      }
       if (!canExecute(this.state)) {
         return { converged: false, iterations: this.history.length, finalScore: this.baseline, reason: "breaker tripped", history: this.history };
       }

@@ -1,0 +1,246 @@
+{
+  "breaker-001": {
+    "check": "breaker",
+    "source": "circuit-breaker.ts:359 — recordIterationResult opens after sameErrorThreshold",
+    "expected": {
+      "canExecute": false,
+      "transition": "opened",
+      "reason": "threshold reached for Error at line N: timeout"
+    }
+  },
+  "breaker-002": {
+    "check": "breaker",
+    "source": "circuit-breaker.ts:359 — git tree progress resets breaker",
+    "expected": {
+      "canExecute": true,
+      "transition": "reset",
+      "reason": "successful iteration with tree change"
+    }
+  },
+  "breaker-003": {
+    "check": "breaker",
+    "source": "circuit-breaker.ts:213 — detectProgress uses git tree, not worker claims",
+    "expected": {
+      "canExecute": true,
+      "errorCount": 2,
+      "note": "claimed progress without tree change does not reset error count"
+    }
+  },
+  "completion-001": {
+    "check": "completion",
+    "source": "ticket-completion-evidence.ts:821 — evaluateCompletionEvidence returns ok:true with sha",
+    "expected": {
+      "verdict": "COMMITTED",
+      "commitSha": "abc123def456",
+      "treeChanged": true
+    }
+  },
+  "completion-002": {
+    "check": "completion",
+    "source": "ticket-completion-evidence.ts:821 — refuseAbsent when no accepted evidence",
+    "expected": {
+      "verdict": "UNVERIFIED",
+      "reason": "no reachable commit"
+    }
+  },
+  "completion-003": {
+    "check": "completion",
+    "source": "ticket-completion-evidence.ts:821 — baseline SHA rejection (no-op commit)",
+    "expected": {
+      "verdict": "BASELINE_SHA",
+      "reason": "claimed SHA equals baseline SHA"
+    }
+  },
+  "completion-004": {
+    "check": "completion",
+    "source": "ticket-completion-evidence.ts:821 — empty commit doesn't count",
+    "expected": {
+      "verdict": "NO_TREE_CHANGE",
+      "reason": "tree at claimed SHA matches baseline tree"
+    }
+  },
+  "completion-005": {
+    "check": "completion",
+    "source": "ticket-completion-evidence.ts:830 — workerGateRefusal returns worker_gate_red",
+    "expected": {
+      "verdict": "UNVERIFIED",
+      "reason": "gate verdict was not green"
+    }
+  },
+  "gate-001": {
+    "check": "gate",
+    "source": "convergence-gate.ts:1323 — runGate with fresh baseline",
+    "expected": {
+      "passed": true,
+      "staleBaseline": false,
+      "newFindings": []
+    }
+  },
+  "gate-002": {
+    "check": "gate",
+    "source": "convergence-gate.ts:301 — assertBaselineFresh: BaselineMissingError (R-SZGB)",
+    "expected": {
+      "passed": false,
+      "staleBaseline": true,
+      "newFindings": []
+    }
+  },
+  "gate-003": {
+    "check": "gate",
+    "source": "FOM §5.3: silence is not success — zero checks = failure",
+    "expected": {
+      "passed": false,
+      "staleBaseline": true,
+      "failures": [
+        "no checks executed — silence is not success"
+      ]
+    }
+  },
+  "gate-004": {
+    "check": "gate",
+    "source": "convergence-gate.ts:553 — filterByScope: only in-scope findings count",
+    "expected": {
+      "passed": false,
+      "staleBaseline": false,
+      "newFindings": [
+        {
+          "file": "src/auth/login.ts",
+          "line": 5,
+          "message": "error",
+          "check": "lint"
+        }
+      ]
+    }
+  },
+  "malformed-001": {
+    "check": "completion",
+    "source": "AC-16: malformed-input matrix — invalid JSON",
+    "expected": {
+      "error": true,
+      "code": "INVALID_JSON",
+      "failClosed": true
+    }
+  },
+  "malformed-002": {
+    "check": "completion",
+    "source": "AC-16: malformed-input matrix — missing required fields fail closed",
+    "expected": {
+      "verdict": "UNVERIFIED",
+      "reason": "no reachable commit",
+      "failClosed": true
+    }
+  },
+  "malformed-003": {
+    "check": "completion",
+    "source": "AC-16: malformed-input matrix — wrong types treated as falsy, fail closed",
+    "expected": {
+      "verdict": "UNVERIFIED",
+      "reason": "no reachable commit",
+      "failClosed": true
+    }
+  },
+  "prd-001": {
+    "check": "prd",
+    "source": "PRD §3.7 — PRD model: valid with ACs + simplification review",
+    "expected": {
+      "valid": true,
+      "errors": []
+    }
+  },
+  "prd-002": {
+    "check": "prd",
+    "source": "AC-15: PRD invalid without ACs",
+    "expected": {
+      "valid": false,
+      "errors": [
+        "PRD must have at least one acceptance criterion"
+      ]
+    }
+  },
+  "prd-003": {
+    "check": "prd",
+    "source": "AC-15: PRD invalid without simplification review",
+    "expected": {
+      "valid": false,
+      "errors": [
+        "PRD must have a simplification review (subtract before you add)"
+      ]
+    }
+  },
+  "salvage-001": {
+    "check": "salvage",
+    "source": "salvage-ticket.ts:194 — gate_passing_committed",
+    "expected": {
+      "disposition": "committed-done",
+      "reason": "gate passing and tree changed",
+      "stagedPaths": [
+        "src/feature.py"
+      ]
+    }
+  },
+  "salvage-002": {
+    "check": "salvage",
+    "source": "salvage-ticket.ts:204 — gate_failing_archived",
+    "expected": {
+      "disposition": "archived-todo",
+      "reason": "gate failing but tree changed, archive and reset to Todo",
+      "stagedPaths": [
+        "src/feature.py"
+      ]
+    }
+  },
+  "salvage-003": {
+    "check": "salvage",
+    "source": "salvage-ticket.ts:173 — head_regression_reattached",
+    "expected": {
+      "disposition": "ff-reattached",
+      "reason": "orphan-reset detected, fast-forward reattach possible"
+    }
+  },
+  "salvage-004": {
+    "check": "salvage",
+    "source": "salvage-ticket.ts:210 — clean_tree no-op",
+    "expected": {
+      "disposition": "no-op",
+      "reason": "no tree changes to salvage"
+    }
+  },
+  "salvage-005": {
+    "check": "salvage",
+    "source": "salvage-ticket.ts:213 — best-effort error catch",
+    "expected": {
+      "disposition": "error",
+      "reason": "salvage could not determine a disposition"
+    }
+  },
+  "scope-001": {
+    "check": "scope",
+    "source": "check-scope-diff.ts:32 — isPathInScope: prefix match",
+    "expected": {
+      "result": "ALLOW"
+    }
+  },
+  "scope-002": {
+    "check": "scope",
+    "source": "check-scope-diff.ts:32 — isPathInScope: outside scope",
+    "expected": {
+      "result": "DENY",
+      "code": "SCOPE_DENIED"
+    }
+  },
+  "scope-003": {
+    "check": "scope",
+    "source": "AC-10: adversarial path traversal",
+    "expected": {
+      "result": "DENY",
+      "code": "SCOPE_DENIED"
+    }
+  },
+  "scope-004": {
+    "check": "scope",
+    "source": "check-scope-diff.ts: scope fence applies to writes only",
+    "expected": {
+      "result": "ALLOW"
+    }
+  }
+}

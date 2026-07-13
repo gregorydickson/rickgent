@@ -12,6 +12,11 @@ instructions: |
   outside your declared scope. When you are done, ensure your work is committed
   with a clear commit message. Do not claim done without a real commit.
 
+executor:
+  type: omnigent
+  config:
+    harness: claude
+
 llm:
   model: anthropic/claude-sonnet-4-20250514
   max_completion_tokens: 16384

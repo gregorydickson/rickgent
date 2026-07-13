@@ -35,7 +35,14 @@ export const ALLOWED_COMPLETION_CALLERS = new Set([
   "lifecycle.auto-fill-completion",
 ]);
 
-export function evaluateCompletion(input: CompletionInput): CompletionVerdict {
+export function evaluateCompletion(input: CompletionInput, caller?: string): CompletionVerdict {
+  // W1: enforce the caller allowlist. If a caller is provided and is not in
+  // ALLOWED_COMPLETION_CALLERS, refuse to evaluate — the allowlist exists to
+  // keep every completion check routed through a single enumerated predicate.
+  if (caller != null && !ALLOWED_COMPLETION_CALLERS.has(caller)) {
+    throw new Error(`evaluateCompletion called by unauthorized caller: ${caller}`);
+  }
+
   // AC-16: Fail closed on malformed input
   if (input == null || typeof input !== "object") {
     return { verdict: "UNVERIFIED", reason: "invalid input" };
