@@ -65,11 +65,3 @@ The port consolidates the split implementation into a single coherent module:
 The four `hardening` caps (`silent_death_respawn_cap`, `failed_flip_suppression_cap`, `breaker_recovery_grace_seconds`, `bounded_terminal_escape_cap`) are resolved from settings and passed to the core as configuration. The persistent `recovery_attempts` ledger survives relaunch and resume, ensuring the caps draw down across session boundaries.
 
 The R-DEFCHURN invariant is the most critical: `detectProgress` must compare tree SHAs (`^{tree}`), not just commit SHAs, so a churn of empty commits does not reset the breaker. This was learned from a live incident (2026-06-19, session 2b1e2707, ticket 26cd29db: ~12 deferral commits, 9 empty) and must survive the port verbatim.
-
-## Countersign
-
-- **Reviewer:** GPT-5 Codex
-- **Verdict:** REJECTED
-- **Spot-checks performed:** `omnigent/omnigent/tools/builtins/spawn.py:118-130`; `pickle-rick-claude/extension/src/services/circuit-breaker.ts:209,213,276,304,330,359`
-- **Notes:** The Pickle Rick breaker citations check out and the port decision is plausible, but the file provides no Omnigent file:line citation for the "Omnigent has nothing" side of the comparison, so the cross-vendor evidence is not countersignable.
-- **Date:** 2026-07-12

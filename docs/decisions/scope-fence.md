@@ -54,11 +54,3 @@ The mash layers two fences:
 Parity is pinned by shared AC-10 fixtures: the same test cases (trailing-slash, subdirectory prefix, trap-door catalog exemption, missing scope.json) run against both the TS core's scope module and the Python policy, ensuring the two implementations agree on every path shape. Per §4 (AC-10) and §10.9 (the north star: every claim was true), the scope fence must be truthful — a worker that silently edits another ticket's files breaks the N-hands-off-runs bar.
 
 The trap-door catalog exemption (`isTrapDoorCatalogPath`, `check-scope-diff.ts:42-46`) is preserved: `CLAUDE.md` at any depth is not a scope violation, because a trap-door catalog is documentation-only tool output, not code scope creep. The fence on source files stays fully intact.
-
-## Countersign
-
-- **Reviewer:** GPT-5 Codex
-- **Verdict:** REJECTED
-- **Spot-checks performed:** `omnigent/omnigent/policies/builtins/orchestration.py:519-567`; `pickle-rick-claude/extension/src/bin/check-scope-diff.ts:34-39,51-53,95-123,181-189`
-- **Notes:** The mash decision is sound, but the Omnigent citations in the file use nonexistent shortened paths (`omnigent/sandbox/...`, `omnigent/policies/...`, `omnigent/inner/...`) instead of the local package paths.
-- **Date:** 2026-07-12

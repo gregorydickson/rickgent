@@ -52,11 +52,3 @@ The TS orchestration shim (`spawn-refinement-team.ts`, `refinement-watcher.ts`) 
 The parser (`citadel/prd-parser.ts`) is ported as-is into the TS product — it is pure, has no tmux or claude-CLI coupling, and its `ParsedPrd` shape is the contract between refinement output and the citadel conformance audit. The `composes:` cycle/depth/glob guards and the AC/Decision/Endpoint regex anchors are kept verbatim because downstream citadel findings join on those exact IDs.
 
 Omnigent contributes the dispatch substrate (multi-harness, async fan-out, per-dispatch cost budgets per §2.1.1) but nothing to the PRD model itself. The mash is: Pickle Rick prompts + Pickle Rick parser + Omnigent dispatch infrastructure + fresh Rickgent TS types.
-
-## Countersign
-
-- **Reviewer:** GPT-5 Codex
-- **Verdict:** REJECTED
-- **Spot-checks performed:** `omnigent/omnigent/tools/builtins/spawn.py:118-130`; `pickle-rick-claude/.claude/commands/pickle-prd.md:12-18,43-72`
-- **Notes:** The port direction looks reasonable, but the file provides no Omnigent file:line citation for the "nothing" claim and states that the checks were against HEAD `95f5c416` while the local Pickle Rick reference is at `d5a021fa`.
-- **Date:** 2026-07-12

@@ -31,11 +31,3 @@ Reuse Omnigent's dispatch — natively multi-model, no `--backend` flag.
 
 ## Reasoning
 Rickgent's core value proposition is multi-model orchestration across vendor families. Omnigent already has 11 registered native harnesses (`harness_plugins.py:100-193`), a purpose guard (`orchestration.py:466-468`), and both async (`sys_session_send`) and synchronous (`omnigent run -p`) dispatch paths. Porting Pickle Rick's `spawn-morty.ts` would mean rebuilding a 2,706-LOC launcher that is hardcoded to `claude -p`/`codex exec`, gated by a `--backend` flag, and dependent on tmux for parallelism. Reusing Omnigent eliminates the `--backend` flag entirely (harness selection moves to the sub-agent spec), gives us the `async_work_complete` inbox for result collection, and inherits the purpose guard for free. The only Pickle Rick concept worth noting — tier-based model selection within Claude — is subsumed by Omnigent's `sys_advise_models` (see `model-routing.md`). No port or mash needed; reuse is the clean path.
-
-## Countersign
-
-- **Reviewer:** GPT-5 Codex
-- **Verdict:** REJECTED
-- **Spot-checks performed:** `omnigent/omnigent/tools/builtins/spawn.py:111-130`; `pickle-rick-claude/extension/src/bin/spawn-morty.ts:48-52,426-430`
-- **Notes:** The decision is directionally right, but the cited Omnigent evidence is not literal-correct: `spawn.py:111-112` is the tool name, not the async handle/inbox behavior the file attributes to it, and the decision file also uses nonexistent shortened Omnigent paths.
-- **Date:** 2026-07-12

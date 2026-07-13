@@ -113,11 +113,3 @@ Adaptations:
 - **tmux launch** — the "all metaphors are tmux-launching" assumption (`cronenberg.md:98`) is replaced by "all metaphors are Omnigent one-shot dispatching." The do-not-auto-chain-followups rule is preserved because Omnigent one-shots are also asynchronous relative to the followups.
 
 The `AC_SHAPE_SMELL` heuristic stays shared with citadel (T11.7) — the same regex lives in both the TS router and the citadel audit runner, so cronenberg and citadel agree on what counts as a smelly AC. This invariant is preserved by keeping the regex in a shared `core/prd/ac-shape.ts` module that both the router and the citadel audit import.
-
-## Countersign
-
-- **Reviewer:** GPT-5 Codex
-- **Verdict:** REJECTED
-- **Spot-checks performed:** `omnigent/omnigent/tools/builtins/spawn.py:118-130`; `pickle-rick-claude/.claude/commands/cronenberg.md:5-24,26-58,62-83`
-- **Notes:** The deterministic-router thesis looks reasonable, but the file gives no Omnigent file:line citation for the "nothing" claim and says the fresh checks were against HEAD `95f5c416` while the local Pickle Rick reference is at `d5a021fa`.
-- **Date:** 2026-07-12

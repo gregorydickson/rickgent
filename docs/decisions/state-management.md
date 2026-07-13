@@ -84,11 +84,3 @@ Pipeline-level state (tickets, phases, baselines, iteration counts, recovery led
 What Rickgent must NOT inherit from Pickle Rick: the runtime coupling (worker forbidden ops R-WSRC, `STATE_MANAGER_DEFAULTS` deploy-parity drift checks, `LATEST_SCHEMA_VERSION` shared between types and state-manager, the `pickle_settings.json` / `circuit_breaker.json` / `pipeline-status.json` config-protection hooks). Rickgent's registry is its own schema, versioned independently.
 
 Critically, the registry is a DERIVED INDEX — rebuildable via a reconcile pass over git truth (frontmatter status, commits, branch state). Pickle Rick's `reconcileTicketTruth` (`mux-runner.ts:reconcileTicketStateDesync`, `reconcileInProgressSet`) and `graduationDecision` (`state-manager.ts:graduationDecision` — keys on real progress `doneCount + commitCount`, never the bare `pendingCount/ticketCount` ratio) prove the reconcile-from-git-truth pattern. Rickgent adopts the same: git is ground truth, registry is a cache. If the registry is lost or corrupt, a reconcile pass rebuilds it; if git and the registry disagree, git wins.
-
-## Countersign
-
-- **Reviewer:** GPT-5 Codex
-- **Verdict:** REJECTED
-- **Spot-checks performed:** `omnigent/omnigent/db/db_models.py:431-500,1019-1056`; `pickle-rick-claude/extension/src/services/state-manager.ts:157,326,538,765,919,948,1114,1349`
-- **Notes:** The mash decision is reasonable, but the Omnigent citations in the file omit the inner package directory (`omnigent/db/...`, `omnigent/stores/...`) and therefore are not literal valid paths in this checkout.
-- **Date:** 2026-07-12

@@ -34,11 +34,3 @@ Mash Omnigent's sandbox backends (where available) with Pickle Rick's scope fenc
 
 ## Reasoning
 Rickgent needs sandboxing for two reasons: protecting the host from worker misbehavior, and protecting siblings from each other. Omnigent's seatbelt/bwrap/cloud backends handle this on macOS, Linux, and cloud — reuse is the right call there. But Windows is a first-class Rickgent target, and the Job Object backend's lack of filesystem/network isolation is a real gap. Pickle Rick's `check-scope-diff.ts` (201 LOC) is not a sandbox, but it is a useful scope fence: it checks `git diff --staged --name-only` against `scope.json:allowed_paths` and exits 1 on out-of-scope paths. This catches the most common failure mode (a worker editing files outside its ticket's scope) even when the OS cannot confine the filesystem. Mashing both gives: OS-level isolation where available (seatbelt/bwrap/cloud), scope-fence backstop everywhere (including Windows), and the salvage-before-worktree-removal discipline enforced as a policy. The `git worktree remove --force` caveat is handled by requiring a salvage policy to run before any worktree removal — this is a policy-level concern, not a sandbox backend concern.
-
-## Countersign
-
-- **Reviewer:** GPT-5 Codex
-- **Verdict:** REJECTED
-- **Spot-checks performed:** `omnigent/omnigent/inner/sandbox.py:253-259,808-814`; `omnigent/omnigent/inner/bwrap_sandbox.py:452-456`
-- **Notes:** The mash decision is reasonable, but the Omnigent citations in the file point at nonexistent shortened paths such as `omnigent/sandbox/...` and `omnigent/_platform.py` rather than the local package paths.
-- **Date:** 2026-07-12

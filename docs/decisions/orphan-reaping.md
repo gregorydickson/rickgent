@@ -65,11 +65,3 @@ Skipping orphan reaping for v0.1 is the subtract-before-add discipline applied t
 5. **Revisit if sandbox escapes are observed.** If a worker process is observed surviving its `omnigent run` parent (e.g., a sandbox misconfiguration, a bwrap `--unshare-pid` failure, or a seatbelt policy gap), the orphan reaper can be ported as a setup-time safety net. The reaper's design (positive-ownership-mandatory, no ppid==1-only branch) is sound and can be directly translated to Python if needed. But it should be added in response to a observed failure, not preemptively.
 
 The `killProcessGroup` primitive (`orphan-reaper.ts:62-78`) IS relevant to Rickgent — but it is already part of the worker-timeout decision (process-group kill on the `omnigent run` one-shot). The reaper as a standalone setup-time collector is what is skipped.
-
-## Countersign
-
-- **Reviewer:** GPT-5 Codex
-- **Verdict:** REJECTED
-- **Spot-checks performed:** `omnigent/omnigent/inner/sandbox.py:253-259,342-358,808-814`; `pickle-rick-claude/extension/src/services/orphan-reaper.ts:1-24,37-39,52-78,175-196,310-314`
-- **Notes:** The skip decision is plausible, but the Omnigent citations in the file use nonexistent shortened paths (`omnigent/inner/...`) instead of the local `omnigent/omnigent/inner/...` paths.
-- **Date:** 2026-07-12

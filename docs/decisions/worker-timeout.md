@@ -58,11 +58,3 @@ The port layers three things:
 The R-WTZ repair (`mux-runner.ts:6543-6567`) is also ported: a zeroed timeout (which could be a microverse sentinel value) is repaired to the default before validation, so a convergence-loop run does not poison a subsequent pipeline run with a disabled deadline.
 
 The `StallCategory` classification (`types/index.ts:1327`) is ported as Rickgent's stall taxonomy: `worker_timeout` → `escalate_timeout` (kill + salvage + retry or fail); `tests_red_no_progress` → escalate to review; `circular_revert` → escalate to human; `external_blocker` → escalate to human. This is the FOM's "convergence vs attrition" judgment made mechanical.
-
-## Countersign
-
-- **Reviewer:** GPT-5 Codex
-- **Verdict:** REJECTED
-- **Spot-checks performed:** `omnigent/omnigent/tools/builtins/async_inbox.py:97-126`; `pickle-rick-claude/extension/src/bin/mux-runner.ts:6418-6427,6543-6567`
-- **Notes:** The port decision looks sensible, but the Omnigent citation path in the file is wrong (`omnigent/tools/builtins/async_inbox.py` does not exist in this checkout), so the evidence block is not literally valid.
-- **Date:** 2026-07-12

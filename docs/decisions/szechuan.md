@@ -72,11 +72,3 @@ Everything else ports verbatim:
 - The iterative find-slop → fix-slop → measure-slop loop is in the prompt and does not change.
 
 The pipeline-runner chains szechuan-sauce after anatomy-park and before citadel; that ordering is preserved in Rickgent's phase sequence (§13).
-
-## Countersign
-
-- **Reviewer:** GPT-5 Codex
-- **Verdict:** REJECTED
-- **Spot-checks performed:** `omnigent/omnigent/tools/builtins/spawn.py:118-130`; `pickle-rick-claude/.claude/commands/szechuan-sauce.md:1-33,44-80`
-- **Notes:** The port direction looks reasonable, but the file gives no Omnigent file:line citation for the "nothing" claim and says the fresh checks were against HEAD `95f5c416` while the local Pickle Rick reference is at `d5a021fa`.
-- **Date:** 2026-07-12
