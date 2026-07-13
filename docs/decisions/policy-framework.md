@@ -41,6 +41,29 @@ Reuse Omnigent's policy framework — proper framework, no bash scanning.
 ## Reasoning
 Rickgent needs composable, validated policies for scope fencing, cost limits, blast radius, and lifecycle gates. Omnigent already has all of this: the `policies/` package with its closed event vocabulary, three-valued verdicts, JSON-schema param validation, CEL, and FunctionPolicy factories. The `headless_subagent_purpose_guard` (`orchestration.py:466-468`) is a direct example of how to enforce a closed set of work types — exactly what Rickgent needs for its dispatch guards. Pickle Rick's hooks (`check-scope-diff.ts`, `config-protection.ts`, `tsc-gate.ts`, `bash-scanner`) are each 100-200 LOC of standalone Node script with no shared infrastructure. Porting them would mean rebuilding the policy registry, schema validation, and event model that Omnigent already provides. Instead, each Pickle Rick hook maps to an Omnigent `tool_call` policy: scope fence → policy on `git_commit` tool, config protection → policy on `file_write` tool, tsc gate → policy on `commit` tool. The `policy_modules` config (`cli.py:3164`, `app.py:1320`) lets Rickgent register its own policy module without forking. No mash needed; reuse is the clean path.
 
+## Addendum (M1 / B4-C4): ATTACHMENT vs registration
+
+Registering a policy in `rickgent_policies.POLICY_REGISTRY` is **not** the same
+as attaching it to a bundle. omnigent enforces only the policies a bundle
+**attaches** via its top-level `guardrails:` block (architecture §3.1) — NOT
+`policy_modules` (a server-config module-allowlist unrelated to bundle
+attachment). The effective attached set is read statically from the omnigent
+parser: `omnigent.spec.parser.parse(bundleDir).guardrails.policies`, a list of
+`FunctionPolicySpec` each carrying `.name` and `.function.path`.
+
+- `rickgent_policies.effective_attached_policies(bundle_dir)` returns the set of
+  attached policy names by reading the parser, never `POLICY_REGISTRY`. A bundle
+  with an absent/empty `guardrails:` block yields the empty set even while the
+  registry is fully populated.
+- `rickgent_policies.REQUIRED_POLICIES` is the minimum attachment contract
+  (architecture §7): `blast_radius`, `scope_fence`, `completion_evidence`,
+  `convergence_gate`, `subtract_before_add`, `cross_vendor_review`,
+  `autonomous_pr_flow`. `blast_radius` is the omnigent builtin
+  (`omnigent.inner.nessie.policies.blast_radius`) attached with
+  `arguments.gate_pushes: true`; the rest resolve to `rickgent_policies.<name>`.
+- The manager bundle (`agents/rickgent/config.yaml`) attaches all seven,
+  function-typed, with resolvable handlers.
+
 ## Countersign
 
 - **Reviewer:** GPT-5.6-sol (Codex)

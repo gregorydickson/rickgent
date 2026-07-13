@@ -9,10 +9,13 @@ Fail closed everywhere: unknown exceptions map to DENY/POLICY_SHIM_ERROR.
 
 import subprocess
 import json
+import logging
 import os
 import re
 import shlex
 from pathlib import Path
+
+_LOG = logging.getLogger("rickgent_policies")
 
 # Build commit — matched against the TS package at startup.
 # For editable installs, auto-detect from `rickgent --build-commit` if available.
@@ -508,34 +511,70 @@ def _is_done_claim(event) -> bool:
 
 # ── Convergence gate (cold path — via rickgent verdict) ──────────────────────
 
+# The convergence check has two enforcement postures (quality-gates.md,
+# architecture §7). Per-phase advance is ADVISORY: a failing convergence verdict
+# is logged and the advance proceeds, because a machine-checkable failure is
+# caught by the build itself and the review phases, and a heuristic per-phase
+# block is the "validation overreach" archetype. Blocking is RESERVED for the
+# build/full-PR gate, the single machine-checkable enforcement point that runs
+# before the PR.
+_PHASE_ADVANCE_TOOL = "rickgent_phase_advance"
+_BUILD_GATE_TOOL = "rickgent_build_gate"
+_CONVERGENCE_GATE_PHASES = {"implement", "spec_conformance"}
+
+
 def convergence_gate(event, config):
-    """Enforcement surface for the convergence gate."""
+    """Convergence enforcement — advisory per-phase, blocking at the build gate.
+
+    On a per-phase advance (`rickgent_phase_advance`, gate phases `implement` /
+    `spec_conformance`) the gate is ADVISORY: a failing/unverifiable verdict is
+    logged and the advance proceeds (returns `None` — abstain, never DENY). On
+    the build/full-PR gate (`rickgent_build_gate`) it is BLOCKING and fails
+    closed to DENY on a failing/unverifiable verdict.
+    """
     try:
-        if event.get("tool_name") != "rickgent_phase_advance":
+        tool_name = event.get("tool_name")
+        if tool_name not in (_PHASE_ADVANCE_TOOL, _BUILD_GATE_TOOL):
             return {"result": "ALLOW"}
 
-        # Only gate phases require a gate_input. Non-gate phases pass through.
+        blocking = tool_name == _BUILD_GATE_TOOL
         phase = config.get("phase", "")
-        gate_phases = {"implement", "spec_conformance"}
-        if phase not in gate_phases:
+
+        # Per-phase advance only evaluates on gate phases; others pass through.
+        if not blocking and phase not in _CONVERGENCE_GATE_PHASES:
             return {"result": "ALLOW"}
+
+        def _advisory(reason: str):
+            _LOG.warning(
+                "convergence gate (advisory, phase=%s): %s; proceeding "
+                "(blocking reserved for the build/full-PR gate)",
+                phase or "?",
+                reason,
+            )
+            return None
 
         gate_input = config.get("gate_input", {})
         if not gate_input:
-            # Fail closed: a gate phase without gate_input cannot be verified.
-            return {
-                "result": "DENY",
-                "reason": "convergence gate: missing gate_input for gate phase",
-                "code": "GATE_FAILED",
-            }
+            if blocking:
+                # Fail closed: the build gate cannot verify without gate_input.
+                return {
+                    "result": "DENY",
+                    "reason": "convergence gate: missing gate_input for build gate",
+                    "code": "GATE_FAILED",
+                }
+            return _advisory("missing gate_input")
 
         verdict = _rickgent_verdict("gate", gate_input)
         if verdict.get("error"):
-            return {"result": "DENY", "reason": f"convergence gate: {verdict.get('code', 'ERROR')}", "code": "POLICY_SHIM_ERROR"}
+            if blocking:
+                return {"result": "DENY", "reason": f"convergence gate: {verdict.get('code', 'ERROR')}", "code": "POLICY_SHIM_ERROR"}
+            return _advisory(f"verdict error {verdict.get('code', 'ERROR')}")
 
         if not verdict.get("passed", False):
             failures = verdict.get("failures", [])
-            return {"result": "DENY", "reason": f"convergence gate: {failures}", "code": "GATE_FAILED"}
+            if blocking:
+                return {"result": "DENY", "reason": f"convergence gate: {failures}", "code": "GATE_FAILED"}
+            return _advisory(f"failing verdict {failures}")
 
         return {"result": "ALLOW"}
     except Exception as e:
@@ -852,3 +891,41 @@ POLICY_REGISTRY = [
         "description": "Autonomous PR flow — narrow ALLOW for feature-branch push + gh pr create (forbidden-ops remediation)",
     },
 ]
+
+
+# ── Effective attachment (B4/C4) ─────────────────────────────────────────────
+
+# The minimum policy set every rickgent bundle must ATTACH via its top-level
+# `guardrails:` block (architecture §7). `blast_radius` is the omnigent builtin;
+# the rest are the rickgent shims above. This is the ATTACHMENT contract, read
+# from the omnigent static parser — not POLICY_REGISTRY (registration).
+REQUIRED_POLICIES = frozenset(
+    {
+        "blast_radius",
+        "scope_fence",
+        "completion_evidence",
+        "convergence_gate",
+        "subtract_before_add",
+        "cross_vendor_review",
+        "autonomous_pr_flow",
+    }
+)
+
+
+def effective_attached_policies(bundle_dir) -> set:
+    """Names of the policies ATTACHED to a bundle via its `guardrails:` block.
+
+    The effective attached set is read from the omnigent static parser
+    (``omnigent.spec.parser.parse(bundle_dir).guardrails.policies``) — the
+    authoritative bundle-declared attachment surface. ``POLICY_REGISTRY``
+    membership (registration) is deliberately NOT consulted: registration is
+    not attachment (B4/C4). A bundle whose ``guardrails:`` block is absent or
+    empty yields an empty set even while the registry is fully populated.
+    """
+    from omnigent.spec.parser import parse
+
+    spec = parse(Path(bundle_dir))
+    guardrails = getattr(spec, "guardrails", None)
+    if guardrails is None:
+        return set()
+    return {policy.name for policy in (guardrails.policies or [])}

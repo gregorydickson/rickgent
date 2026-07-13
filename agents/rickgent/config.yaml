@@ -37,6 +37,48 @@ tools:
   agents:
     - worker
 
+# Policy ATTACHMENT (B4/C4). Attachment is expressed here, via the top-level
+# `guardrails:` block — NOT `policy_modules` (a server-config module-allowlist,
+# unrelated to bundle attachment). The effective attached set is read
+# statically via `omnigent.spec.parser.parse(...).guardrails.policies`.
+# Composition precedence is DENY > ASK > ALLOW; `None` = abstain.
+guardrails:
+  ask_timeout: 86400
+  policies:
+    # Omnigent builtin — bounds shell blast radius. gate_pushes=True keeps the
+    # ASK-class gate on push/merge/deploy; autonomous_pr_flow is the narrow
+    # own-feature-branch ALLOW exception layered on top.
+    blast_radius:
+      type: function
+      function:
+        path: omnigent.inner.nessie.policies.blast_radius
+        arguments:
+          gate_pushes: true
+    scope_fence:
+      type: function
+      function:
+        path: rickgent_policies.scope_fence
+    completion_evidence:
+      type: function
+      function:
+        path: rickgent_policies.completion_evidence
+    convergence_gate:
+      type: function
+      function:
+        path: rickgent_policies.convergence_gate
+    subtract_before_add:
+      type: function
+      function:
+        path: rickgent_policies.subtract_before_add
+    cross_vendor_review:
+      type: function
+      function:
+        path: rickgent_policies.cross_vendor_review
+    autonomous_pr_flow:
+      type: function
+      function:
+        path: rickgent_policies.autonomous_pr_flow
+
 # Skills are auto-discovered from the skills/ directory.
 # Listed here for explicit reference and documentation.
 skills:

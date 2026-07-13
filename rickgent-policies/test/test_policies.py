@@ -203,10 +203,14 @@ class TestAutonomousPrFlow:
 
 
 class TestConvergenceGate:
-    """W6 — direct tests for convergence_gate fail-closed behavior."""
+    """W6 / B4 — convergence_gate is ADVISORY on per-phase advance and
+    BLOCKING only at the build/full-PR gate (`rickgent_build_gate`)."""
 
     def _event(self):
         return {"tool_name": "rickgent_phase_advance"}
+
+    def _build_event(self):
+        return {"tool_name": "rickgent_build_gate"}
 
     def test_gate_passing(self, monkeypatch):
         monkeypatch.setattr(
@@ -216,38 +220,36 @@ class TestConvergenceGate:
         config = {"phase": "implement", "gate_input": {"phase": "implement"}}
         assert convergence_gate(self._event(), config)["result"] == "ALLOW"
 
-    def test_gate_failing(self, monkeypatch):
+    def test_gate_failing_is_advisory_on_phase_advance(self, monkeypatch):
+        """A failing verdict on per-phase advance is advisory, never DENY."""
         monkeypatch.setattr(
             "rickgent_policies._rickgent_verdict",
             lambda check, data: {"passed": False, "failures": ["metric x < y"]},
         )
         config = {"phase": "implement", "gate_input": {"phase": "implement"}}
         result = convergence_gate(self._event(), config)
-        assert result["result"] == "DENY"
-        assert result["code"] == "GATE_FAILED"
+        assert result is None
 
-    def test_stale_baseline(self, monkeypatch):
-        """Verdict reports not passed → DENY with GATE_FAILED (stale baseline)."""
+    def test_stale_baseline_advisory_on_phase_advance(self, monkeypatch):
+        """Not-passed on per-phase advance (stale baseline) is advisory, not DENY."""
         monkeypatch.setattr(
             "rickgent_policies._rickgent_verdict",
             lambda check, data: {"passed": False, "failures": ["stale baseline"]},
         )
         config = {"phase": "spec_conformance", "gate_input": {"phase": "spec_conformance"}}
         result = convergence_gate(self._event(), config)
-        assert result["result"] == "DENY"
-        assert result["code"] == "GATE_FAILED"
+        assert result is None
 
-    def test_missing_gate_input_fail_closed(self):
-        """Gate phase with no gate_input → DENY (fail closed, W2)."""
+    def test_missing_gate_input_advisory_on_phase_advance(self):
+        """Gate phase with no gate_input on per-phase advance → advisory (None)."""
         config = {"phase": "implement"}
         result = convergence_gate(self._event(), config)
-        assert result["result"] == "DENY"
-        assert result["code"] == "GATE_FAILED"
+        assert result is None
 
-    def test_missing_gate_input_spec_conformance_fail_closed(self):
+    def test_missing_gate_input_spec_conformance_advisory(self):
         config = {"phase": "spec_conformance"}
         result = convergence_gate(self._event(), config)
-        assert result["result"] == "DENY"
+        assert result is None
 
     def test_non_gate_phase_allows_without_gate_input(self):
         """Non-gate phases do not require gate_input."""
@@ -255,18 +257,35 @@ class TestConvergenceGate:
         result = convergence_gate(self._event(), config)
         assert result["result"] == "ALLOW"
 
-    def test_fail_closed_on_exception(self):
-        result = convergence_gate(None, {})
+    def test_build_gate_failing_blocks(self, monkeypatch):
+        """The build/full-PR gate fails closed to DENY on a failing verdict."""
+        monkeypatch.setattr(
+            "rickgent_policies._rickgent_verdict",
+            lambda check, data: {"passed": False, "failures": ["metric x < y"]},
+        )
+        config = {"phase": "build", "gate_input": {"phase": "build"}}
+        result = convergence_gate(self._build_event(), config)
         assert result["result"] == "DENY"
-        assert result["code"] == "POLICY_SHIM_ERROR"
+        assert result["code"] == "GATE_FAILED"
 
-    def test_fail_closed_on_verdict_error(self, monkeypatch):
-        """Verdict returns error → DENY with POLICY_SHIM_ERROR."""
+    def test_build_gate_missing_gate_input_fail_closed(self):
+        """Build gate with no gate_input → DENY (fail closed)."""
+        result = convergence_gate(self._build_event(), {"phase": "build"})
+        assert result["result"] == "DENY"
+        assert result["code"] == "GATE_FAILED"
+
+    def test_build_gate_verdict_error_fail_closed(self, monkeypatch):
+        """Build gate: verdict error → DENY with POLICY_SHIM_ERROR."""
         monkeypatch.setattr(
             "rickgent_policies._rickgent_verdict",
             lambda check, data: {"error": True, "code": "POLICY_SHIM_ERROR"},
         )
-        config = {"phase": "implement", "gate_input": {"phase": "implement"}}
-        result = convergence_gate(self._event(), config)
+        config = {"phase": "build", "gate_input": {"phase": "build"}}
+        result = convergence_gate(self._build_event(), config)
+        assert result["result"] == "DENY"
+        assert result["code"] == "POLICY_SHIM_ERROR"
+
+    def test_fail_closed_on_exception(self):
+        result = convergence_gate(None, {})
         assert result["result"] == "DENY"
         assert result["code"] == "POLICY_SHIM_ERROR"

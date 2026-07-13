@@ -57,6 +57,29 @@ The R-SZGB lesson is the central design constraint: `assertBaselineFresh` must t
 
 The gate is invoked by the microverse loop (per-iteration gate hook) and by the pipeline runner (per-phase gate). Both callers delegate to the same core functions, ensuring one definition of "converged" across the entire system.
 
+## Addendum (M1 / B4): advisory per-phase, blocking at the build gate
+
+The attached `convergence_gate` policy shim (`rickgent_policies.convergence_gate`)
+has two enforcement postures, matching `quality-gates.md` (per-phase checks are
+advisory; the full gate runs before PR):
+
+- **Per-phase advance is ADVISORY.** On a `rickgent_phase_advance` tool call for
+  a gate phase (`implement` / `spec_conformance`), a failing or unverifiable
+  convergence verdict (including a missing `gate_input` or a verdict error) is
+  logged via the `rickgent_policies` logger and the shim returns `None`
+  (abstain). It **never** returns `DENY` on per-phase advance — a machine-checkable
+  failure is caught by the build itself and the review phases, and a heuristic
+  per-phase block is the "validation overreach" archetype.
+- **The build/full-PR gate is BLOCKING.** On a `rickgent_build_gate` tool call the
+  shim fails closed to `DENY` (`GATE_FAILED`, or `POLICY_SHIM_ERROR` on a verdict
+  error) whenever the verdict is failing/unverifiable. This is the single
+  machine-checkable enforcement point, so making per-phase advance advisory does
+  not silently disable convergence enforcement everywhere.
+
+`rickgent_build_gate` is the reserved rickgent-owned tool name for the build/full-PR
+convergence boundary. Non-gate tool calls and non-gate per-phase phases pass through
+with `ALLOW`. Malformed events (e.g. a non-dict event) still fail closed to `DENY`.
+
 ## Countersign
 
 - **Reviewer:** GPT-5.6-sol (Codex)
