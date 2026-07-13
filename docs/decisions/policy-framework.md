@@ -64,6 +64,28 @@ parser: `omnigent.spec.parser.parse(bundleDir).guardrails.policies`, a list of
 - The manager bundle (`agents/rickgent/config.yaml`) attaches all seven,
   function-typed, with resolvable handlers.
 
+## Addendum (M1 / C4): build-commit parity guard + enforcement non-tautology
+
+- **Build-commit fails closed.** `rickgent_policies._assert_build_commit()`
+  compares the TS `rickgent --build-commit` output against the Python
+  `BUILD_COMMIT`. A mismatch (or a failing/timed-out CLI) now RAISES
+  `RuntimeError` — the previous `except: pass` that silently swallowed a
+  divergent verdict core is removed. A not-yet-installed CLI
+  (`FileNotFoundError`) is tolerated so the module still imports; the
+  downstream `_rickgent_verdict` call fails closed to DENY on a missing binary
+  on its own. Only a *mismatch* aborts, not *absence*.
+- **Runs before the first verdict.** Every verdict-dependent policy
+  (`completion_evidence`, `convergence_gate`, `subtract_before_add`) routes its
+  verdict-CLI call through the single `_verified_verdict(check, input)` seam,
+  which calls `_assert_build_commit()` before `_rickgent_verdict(...)`. So the
+  TS↔Python verdict core is proven in-parity before any policy trusts a
+  verdict; a build_commit mismatch makes those policies fail closed to DENY.
+- **C4 enforcement is non-tautological.** The C4 test (`test_c4_enforcement.py`)
+  drives the real omnigent parser over a MUTATED copy of each bundle with one
+  required policy dropped and confirms the adequacy predicate
+  (`REQUIRED_POLICIES <= effective_attached_policies(bundle)`) goes false for
+  BOTH the manager and worker bundles, and holds for the pristine bundles.
+
 ## Countersign
 
 - **Reviewer:** GPT-5.6-sol (Codex)

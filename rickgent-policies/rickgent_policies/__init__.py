@@ -78,21 +78,48 @@ def _rickgent_verdict(check: str, input_data: dict) -> dict:
 
 
 def _assert_build_commit() -> None:
-    """Assert the Python wheel and TS package expose the same build_commit."""
+    """Assert the Python wheel and TS package expose the same build_commit.
+
+    Fails CLOSED: a TS↔Python build_commit mismatch (or a failing/timed-out
+    `rickgent --build-commit`) raises ``RuntimeError`` so a divergent verdict
+    core can never be trusted. A not-yet-installed rickgent CLI
+    (``FileNotFoundError``) is tolerated — the module must import even before
+    the TS package is present, and the downstream ``_rickgent_verdict`` call
+    fails closed to DENY on a missing binary on its own. Only a *mismatch*
+    (or an affirmative CLI failure) aborts here; absence does not.
+    """
     try:
-        ts_commit = subprocess.run(
+        proc = subprocess.run(
             [_RICKGENT_BIN, "--build-commit"],
             capture_output=True,
             text=True,
             timeout=10,
-        ).stdout.strip()
-        if ts_commit != BUILD_COMMIT:
-            raise RuntimeError(
-                f"build_commit mismatch: TS={ts_commit[:12]} Python={BUILD_COMMIT[:12]}"
-            )
-    except Exception:
-        # Fail closed — but don't crash on first import if rickgent isn't installed yet
-        pass
+        )
+    except FileNotFoundError:
+        return
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError("build_commit check timed out") from e
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"build_commit check failed: rickgent --build-commit exited {proc.returncode}"
+        )
+    ts_commit = (proc.stdout or "").strip()
+    if ts_commit != BUILD_COMMIT:
+        raise RuntimeError(
+            f"build_commit mismatch: TS={ts_commit[:12]} Python={BUILD_COMMIT[:12]}"
+        )
+
+
+def _verified_verdict(check: str, input_data: dict) -> dict:
+    """Assert TS↔Python build parity, then delegate to the verdict CLI.
+
+    Every verdict-dependent policy routes through this single seam, so the
+    build-commit parity guard runs BEFORE any policy trusts the TS verdict
+    core. A build_commit mismatch raises here (fail closed) and each policy's
+    own ``except`` converts it to DENY.
+    """
+    _assert_build_commit()
+    return _rickgent_verdict(check, input_data)
 
 
 # ── Scope fence (hot path — in-process) ──────────────────────────────────────
@@ -490,7 +517,7 @@ def completion_evidence(event, config):
             "gateGreen": config.get("gate_green"),
         }
 
-        verdict = _rickgent_verdict("completion", completion_input)
+        verdict = _verified_verdict("completion", completion_input)
         if verdict.get("error"):
             return {"result": "DENY", "reason": f"completion evidence: {verdict.get('code', 'ERROR')}", "code": "POLICY_SHIM_ERROR"}
 
@@ -564,7 +591,7 @@ def convergence_gate(event, config):
                 }
             return _advisory("missing gate_input")
 
-        verdict = _rickgent_verdict("gate", gate_input)
+        verdict = _verified_verdict("gate", gate_input)
         if verdict.get("error"):
             if blocking:
                 return {"result": "DENY", "reason": f"convergence gate: {verdict.get('code', 'ERROR')}", "code": "POLICY_SHIM_ERROR"}
@@ -593,7 +620,7 @@ def subtract_before_add(event, config):
         if not prd_input:
             return {"result": "DENY", "reason": "PRD validation: no PRD provided", "code": "PRD_INVALID"}
 
-        verdict = _rickgent_verdict("prd", prd_input)
+        verdict = _verified_verdict("prd", prd_input)
         if verdict.get("error"):
             return {"result": "DENY", "reason": f"PRD validation: {verdict.get('code', 'ERROR')}", "code": "POLICY_SHIM_ERROR"}
 
