@@ -617,7 +617,10 @@ def _is_protected(dest) -> bool:
     if not dest:
         return False
     for branch in _PROTECTED_BRANCHES:
-        if dest == branch or dest.startswith(branch):
+        if branch.endswith("/"):
+            if dest == branch or dest.startswith(branch):
+                return True
+        elif dest == branch:
             return True
     return False
 
