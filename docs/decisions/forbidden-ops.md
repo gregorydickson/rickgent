@@ -62,7 +62,15 @@ The mash uses Omnigent's `blast_radius` policy (`orchestration.py:345-405`) as t
 
 On top of `blast_radius`, Rickgent adds a Rickgent-specific `forbidden_ops` policy function that encodes the R-WSRC semantics that are still relevant in the Omnigent transport model:
 - **No writes to `config.yaml`** — the agent config IS the deployment; a worker must not modify its own runtime definition. Enforced via the scope fence (config.yaml is never in a ticket's `allowed_paths`).
-- **No `git push` / `git reset --hard` / `git rebase`** — already covered by `blast_radius` (DENY for force-push/hard-reset-to-remote, ASK for plain push). For Rickgent's autonomous runs, `gate_pushes: false` is set in the config (§2.2) so only the catastrophic DENY set fires — recoverable pushes are allowed for the PR-creation flow.
+- **No `git push` / `git reset --hard` / `git rebase`** — the catastrophic cases (force-push, hard-reset to a remote ref, `rm -rf /`) are covered by `blast_radius`'s DENY set. Rickgent **must NOT set `gate_pushes: false`** to unblock the PR-creation flow. `gate_pushes` is a blunt master switch, not a push-scoped one: at `orchestration.py:400` the flag guards the *entire* ASK branch —
+
+  ```python
+  if gate_pushes and ("ASK" in severities or any(p.search(command) for p in _ASK_PATTERNS)):
+  ```
+
+  so `gate_pushes: false` short-circuits every ASK-class classification at once, not just `_push_severity`. That silently un-gates, in an unattended run: `gh pr merge`, `gh release`, **`gh repo delete`**, and `kubectl|helm|terraform|databricks apply|deploy|destroy|delete` (`_ASK_PATTERNS`, `orchestration.py:68-70`), plus scoped `rm -rf <path>` (`_rm_severity` ASK). The residual DENY set is nearly empty — `_DENY_PATTERNS` is a single hard-reset-to-remote regex (`orchestration.py:63-65`) plus the force-push / `rm -rf /` severities. An agent that may delete the repository unattended is not "hands-off"; it is unbounded.
+
+  Instead Rickgent keeps `blast_radius(gate_pushes=True)` intact and adds ONE narrow policy, `autonomous_pr_flow`, that ALLOWs only the exact command shapes the PR flow needs — a non-force `git push` of the ticket's own feature branch to `origin`, and `gh pr create` — and defers to `blast_radius` for everything else. Scoping the exception to the command rather than to the whole ASK class keeps merge, release, repo-delete, infra-destroy, and `rm -rf` gated. This is one self-contained evaluator, so it does not depend on cross-policy precedence: it cannot be widened by an ALLOW from a sibling policy.
 - **No `bash install.sh`** — N/A in Rickgent (there is no `install.sh`; the agent config is the deployment). This trap door does not carry over.
 
 The R-WSRC trap-door catalog (CLAUDE.md + source comments) is the authoritative list of forbidden ops. It is NOT in the FOM document — the FOM is the judgment layer, the trap-door catalog is the machine-enforceable invariant list. For Rickgent, the trap-door catalog is re-derived for the Omnigent transport model: the state-file and deploy-tree trap doors evaporate (no `state.json`, no deployed JS mirror), while the destructive-git-verb and blast-radius trap doors are inherited via `blast_radius`.
@@ -75,4 +83,12 @@ The `spawn_bounds` policy (`orchestration.py:407-464`) bounds fan-out per turn (
 - **Verdict:** REJECTED
 - **Spot-checks performed:** `omnigent/policies/builtins/orchestration.py:345-404` shows ASK-class gating only when `gate_pushes` is true; `extension/src/services/state-manager.ts:71-93` confirms R-WSRC write protection.
 - **Notes:** Saying “No git push” while setting `gate_pushes: false` allows plain push and all other ASK-class operations. Use a narrow autonomous policy.
+- **Date:** 2026-07-12
+
+## Remediation
+
+- **Status:** FIXED — countersign finding accepted.
+- **Change:** Reasoning bullet 2 rewritten. `gate_pushes: false` is now explicitly forbidden for Rickgent, with the reason spelled out: the flag guards the whole ASK branch at `orchestration.py:400`, so disabling it un-gates `gh pr merge` / `gh release` / `gh repo delete` / infra `destroy|delete` / scoped `rm -rf`, not just `git push`. Replaced with a narrow `autonomous_pr_flow` policy that ALLOWs only a non-force feature-branch push and `gh pr create`, leaving `blast_radius(gate_pushes=True)` in force for everything else.
+- **Verified against source:** `orchestration.py:400` (ASK branch guarded by `gate_pushes`), `orchestration.py:63-65` (`_DENY_PATTERNS` is a single regex), `orchestration.py:68-70` (`_ASK_PATTERNS` covers `gh pr merge|release|repo delete` and `kubectl|helm|terraform|databricks apply|deploy|destroy|delete`).
+- **Decision unchanged:** mash.
 - **Date:** 2026-07-12
