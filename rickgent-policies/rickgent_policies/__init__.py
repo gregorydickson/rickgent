@@ -203,6 +203,11 @@ _GIT_WRITE_SUBCOMMANDS = {
     "init", "reset",
 }
 
+# Shell interpreters that run a nested command string passed via `-c`. A write
+# inside that quoted `-c` argument (`sh -c "echo x > f"`) must be evaluated
+# recursively — treating the quoted string as an inert literal fails open.
+_NESTED_SHELL_NAMES = {"sh", "bash", "zsh", "dash", "ksh", "ash", "mksh"}
+
 # sudo options that consume a following value token (`sudo -u root <cmd>`).
 # If these are not consumed, the value (e.g. `root`) is mistaken for the
 # command word and the real write behind the prefix evades detection.
@@ -311,15 +316,35 @@ def _git_subcommand_writes(rest: list) -> bool:
     return False
 
 
-def _shell_command_writes(command: str) -> bool:
+def _nested_shell_c_argument(rest: list):
+    """Return the `-c` command string of a nested shell invocation, or None.
+
+    Handles both `-c <cmd>` and short-flag bundles ending in `c` (`-ec <cmd>`);
+    the nested command is the token immediately following the flag."""
+    i = 0
+    while i < len(rest):
+        tok = rest[i]
+        if tok.startswith("-") and not tok.startswith("--") and len(tok) > 1:
+            body = tok[1:]
+            if body.isalpha() and body.endswith("c"):
+                return rest[i + 1] if i + 1 < len(rest) else None
+        i += 1
+    return None
+
+
+def _shell_command_writes(command: str, _depth: int = 0) -> bool:
     """Best-effort detection of a disk-writing shell command.
 
     Covers file-write redirects, interpreter one-liners, patch/archive/link
-    utilities, and attribute mutators. A read-only command (no redirect, no
-    write utility) returns False.
+    utilities, attribute mutators, and writes nested inside a `sh -c`/`bash -c`
+    (`zsh`/`dash`/`ksh`) `-c` argument (evaluated recursively). A read-only
+    command (no redirect, no write utility) returns False.
     """
     if not command or not command.strip():
         return False
+    if _depth > 24:
+        # Pathologically deep nesting cannot be analyzed — fail closed.
+        return True
     if _has_file_write_redirect(command):
         return True
     for segment in re.split(r"\|\||&&|;|\||&|\n", command):
@@ -346,6 +371,10 @@ def _shell_command_writes(command: str) -> bool:
             return True
         if cmd in ("npm", "pnpm", "yarn", "pip", "pip3") and "install" in rest:
             return True
+        if cmd in _NESTED_SHELL_NAMES:
+            nested = _nested_shell_c_argument(rest)
+            if nested is not None and _shell_command_writes(nested, _depth + 1):
+                return True
     return False
 
 
