@@ -443,18 +443,22 @@ def scope_fence(event, config):
             # Unresolvable write target → DENY
             return {"result": "DENY", "reason": "scope fence: unresolvable write target", "code": "SCOPE_DENIED"}
 
-        # Canonicalize and check
-        canonical_target = _canonicalize_path(target)
-        for declared in declared_paths:
-            canonical_declared = _canonicalize_path(declared)
-            if _is_path_in_scope(canonical_target, canonical_declared):
-                return {"result": "ALLOW"}
+        # Rename/link ops carry a second endpoint that must ALSO be scope-checked;
+        # validating only the source lets a rename escape via the destination.
+        destination = (
+            event.get("destination")
+            or event.get("destination_path")
+            or event.get("dest")
+            or event.get("new_path")
+            or event.get("to")
+        )
 
-        return {
-            "result": "DENY",
-            "reason": f"scope fence: {canonical_target} not in declared paths",
-            "code": "SCOPE_DENIED",
-        }
+        # Route the write decision through the realpath-resolving checker so a
+        # symlink whose real target escapes the declared set is DENIED and both
+        # rename/link endpoints are validated. Lexical canonicalization alone
+        # fails open on symlink escapes and ignores the destination endpoint.
+        root = config.get("worktree_root") or config.get("root") or os.getcwd()
+        return check_scope_resolved(root, declared_paths, target, True, destination)
     except Exception as e:
         return {
             "result": "DENY",

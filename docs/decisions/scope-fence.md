@@ -109,6 +109,26 @@ Resolution semantics (identical across languages):
 This is an additive enforcement layer; the lexical `checkScope` remains for the
 pre-canonicalized string-input path used by the existing AC-10 fixtures.
 
+**Runtime enforcement wiring (A-SEC-4 enforcement path).** Adding
+`check_scope_resolved` alone was not enough: the `scope_fence` policy's
+structured-write branch still called the lexical `_canonicalize_path` /
+`_is_path_in_scope` matcher, so at runtime a symlink escape was ALLOWed and
+rename/link ops checked only one endpoint (a green helper test over a still-
+vulnerable enforcement path). The structured-write branch now routes its
+decision through `check_scope_resolved(root, declared_paths, target, True,
+destination)`:
+- the worktree root is read from `config["worktree_root"]` (alias `root`),
+  falling back to the process cwd for relative-path configs;
+- the destination endpoint of a rename/link op is extracted from
+  `destination`/`destination_path`/`dest`/`new_path`/`to` and passed so BOTH
+  endpoints are realpath-resolved and scope-checked;
+- existing `..`/absolute denial and in-scope read/write behavior is preserved
+  (realpath collapses `..`/absolutizes; reads abstain-ALLOW before the check).
+The lexical helpers remain defined (used internally by `check_scope_resolved`
+and pinned by the parity guard test) but no longer make the runtime write
+decision. Verified at the production `scope_fence` entrypoint by
+`test/test_scope_fence_resolved_enforcement.py`, authored red-first.
+
 ## Countersign
 
 - **Reviewer:** GPT-5.6-sol (Codex)
