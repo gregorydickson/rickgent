@@ -125,4 +125,39 @@ describe("registry", () => {
     expect(state.runId).toBe("");
     expect(state.tickets).toEqual({});
   });
+
+  it("load normalizes an empty-object status file to a safe default", () => {
+    mkdirSync(join(tempDir, ".rickgent"), { recursive: true });
+    writeFileSync(registryPath, "{}");
+    const state = registry.load();
+    expect(state.tickets).toEqual({});
+    expect(state.tickets).not.toBeUndefined();
+    expect(() => Object.keys(state.tickets)).not.toThrow();
+    expect(Object.keys(state.tickets)).toHaveLength(0);
+  });
+
+  it("load normalizes a truncated/wrong-shape status file to a safe default", () => {
+    mkdirSync(join(tempDir, ".rickgent"), { recursive: true });
+    writeFileSync(registryPath, '{"runId":"run-9"}');
+    const state = registry.load();
+    expect(state.runId).toBe("run-9");
+    expect(state.tickets).toEqual({});
+    expect(() => Object.entries(state.tickets)).not.toThrow();
+  });
+
+  it("load normalizes a non-object JSON value (array) to a safe default", () => {
+    mkdirSync(join(tempDir, ".rickgent"), { recursive: true });
+    writeFileSync(registryPath, "[]");
+    const state = registry.load();
+    expect(state.runId).toBe("");
+    expect(state.tickets).toEqual({});
+  });
+
+  it("load normalizes a status file whose tickets field is the wrong type", () => {
+    mkdirSync(join(tempDir, ".rickgent"), { recursive: true });
+    writeFileSync(registryPath, '{"runId":"run-3","tickets":"nope"}');
+    const state = registry.load();
+    expect(state.runId).toBe("run-3");
+    expect(state.tickets).toEqual({});
+  });
 });

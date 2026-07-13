@@ -49,6 +49,40 @@ describe("CLI commands", () => {
     expect(result).toContain("doctor") ;
   });
 
+  it("status exits 0 with an empty table on an empty-object registry", () => {
+    const tmp = join(tmpdir(), `rickgent-status-empty-${Date.now()}`);
+    const rickgentDir = join(tmp, ".rickgent");
+    mkdirSync(rickgentDir, { recursive: true });
+    try {
+      writeFileSync(join(rickgentDir, "registry.json"), "{}");
+      const result = execSync(`${rickgentBin} status`, {
+        encoding: "utf-8",
+        env: { ...process.env, RICKGENT_DIR: rickgentDir },
+      });
+      expect(result).toContain("pipeline");
+      expect(result).toContain("tickets: 0");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("status exits 0 with an empty table on a truncated/malformed registry", () => {
+    const tmp = join(tmpdir(), `rickgent-status-malformed-${Date.now()}`);
+    const rickgentDir = join(tmp, ".rickgent");
+    mkdirSync(rickgentDir, { recursive: true });
+    try {
+      writeFileSync(join(rickgentDir, "registry.json"), '{"runId":"run-x","tickets":');
+      const result = execSync(`${rickgentBin} status`, {
+        encoding: "utf-8",
+        env: { ...process.env, RICKGENT_DIR: rickgentDir },
+      });
+      expect(result).toContain("pipeline");
+      expect(result).toContain("tickets: 0");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("reconcile prints reconciliation result", () => {
     const tmp = join(tmpdir(), `rickgent-test-${Date.now()}`);
     mkdirSync(tmp, { recursive: true });

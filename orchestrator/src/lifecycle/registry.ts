@@ -22,17 +22,39 @@ export interface PipelineStatus {
   updatedAt: string;
 }
 
+function emptyStatus(): PipelineStatus {
+  return { runId: "", tickets: {}, startedAt: "", updatedAt: "" };
+}
+
+function normalizeStatus(parsed: unknown): PipelineStatus {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return emptyStatus();
+  }
+  const obj = parsed as Record<string, unknown>;
+  const rawTickets = obj.tickets;
+  const tickets =
+    rawTickets !== null && typeof rawTickets === "object" && !Array.isArray(rawTickets)
+      ? (rawTickets as Record<string, TicketState>)
+      : {};
+  return {
+    runId: typeof obj.runId === "string" ? obj.runId : "",
+    tickets,
+    startedAt: typeof obj.startedAt === "string" ? obj.startedAt : "",
+    updatedAt: typeof obj.updatedAt === "string" ? obj.updatedAt : "",
+  };
+}
+
 export class Registry {
   constructor(private registryPath: string) {}
 
   load(): PipelineStatus {
     if (!existsSync(this.registryPath)) {
-      return { runId: "", tickets: {}, startedAt: "", updatedAt: "" };
+      return emptyStatus();
     }
     try {
-      return JSON.parse(readFileSync(this.registryPath, "utf-8")) as PipelineStatus;
+      return normalizeStatus(JSON.parse(readFileSync(this.registryPath, "utf-8")));
     } catch {
-      return { runId: "", tickets: {}, startedAt: "", updatedAt: "" };
+      return emptyStatus();
     }
   }
 
