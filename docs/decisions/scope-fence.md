@@ -77,6 +77,39 @@ The `scope_fence` policy shim (`rickgent_policies.scope_fence`) enforces two bra
 
 `-c` extraction is **flag-order agnostic**: a nested shell's `-c` consumes the following token as the command string wherever `c` appears in a combined short-flag bundle (`-c`, `-ce`, `-ec`, `-ic`, `-ceux`, …), so `_nested_shell_c_argument` treats the token after any all-alpha bundle containing `c` as the nested command. Matching only a *trailing* `c` (the original handling) failed open for `bash -ce 'echo x > out.txt'` — the `c` is non-trailing so the redirect escaped detection. Regression-pinned by `test/test_scope_fence_nested_shell_flag_order.py` (`-ce`/`-ec`/`-ceux`/`-eic` write shapes DENY, read-only bundles are not false-DENIED) across every shell tool-name variant, authored red-first.
 
+## Worker capability change + attachment (A-SEC-3 capability side, B4 worker)
+
+The detection side above only matters if the worker cannot route writes through
+an unresolvable raw shell. Per option (a), the worker bundle
+(`agents/rickgent/agents/worker/config.yaml`) drops the ad-hoc raw-shell write
+capability entirely:
+
+- **Worker `tools.builtins`** is now `sys_os_read`, `sys_os_write`, `sys_os_edit`
+  (no `sys_os_shell`). `sys_os_write`/`sys_os_edit` carry a resolvable
+  `path`/`file_path`/`target` that the attached `scope_fence` positively resolves
+  and scope-checks; `sys_os_read` is read-only. There is no remaining shell
+  write surface whose target the fence cannot resolve.
+- **Worker `guardrails:`** attaches the SAME required set as the manager
+  (`blast_radius(gate_pushes=True)`, `scope_fence`, `completion_evidence`,
+  `convergence_gate`, `subtract_before_add`, `cross_vendor_review`,
+  `autonomous_pr_flow`) — the worker executes real writes and pushes, so an
+  unattached worker is the live risk. `blast_radius` carries
+  `gate_pushes: True`.
+
+**Startup/doctor fails closed on attachment gaps.** `runDoctorCheck`
+(`orchestrator/src/lifecycle/doctor.ts`) adds a `policy_attachment` check that
+reads each bundle's effective attached set from the omnigent parser
+(`spec.guardrails.policies`, via `rickgent_policies.effective_attached_policies`)
+— never `POLICY_REGISTRY` (registration ≠ attachment). If either the manager or
+worker effective set is a strict subset of `REQUIRED_POLICIES` (the single source
+of truth in `rickgent_policies`), the check FAILS and `rickgent doctor` exits
+non-zero, naming the missing policy per bundle. It passes (exit 0) only when both
+bundles attach the full required set. Bundle dirs default to the repo layout and
+are overridable via `RICKGENT_MANAGER_DIR` / `RICKGENT_WORKER_DIR` for testing.
+Verified red-first by `test/test_worker_attachment.py` (pytest) and
+`test/lifecycle/doctor-attachment.test.ts` (vitest); covers VAL-ATTACH-011..014,
+016, 017, 027, 028 and VAL-SEC-036.
+
 ## Symlink / rename escape resolution (A-SEC-4)
 
 The lexical `checkScope` / `_is_path_in_scope` canonicalization (`.`/`..`

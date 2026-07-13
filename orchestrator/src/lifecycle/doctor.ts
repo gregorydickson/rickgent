@@ -113,6 +113,50 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
   }
   checks.push({ name: "build_commit_match", pass: shimOk, detail: shimDetail });
 
+  // 8. policy ATTACHMENT audit (B4/C4). Registration is not attachment: the
+  // effective set is read from `spec.guardrails.policies` via the omnigent
+  // parser. Fails CLOSED (this check fails → non-zero doctor exit) when either
+  // bundle's effective attached set is a strict subset of REQUIRED_POLICIES.
+  const managerDir = process.env.RICKGENT_MANAGER_DIR ?? new URL("agents/rickgent", repoRoot).pathname;
+  const workerDir =
+    process.env.RICKGENT_WORKER_DIR ?? new URL("agents/rickgent/agents/worker", repoRoot).pathname;
+  let attachOk = false;
+  let attachDetail = "";
+  try {
+    const py = [
+      "import json, os",
+      "from rickgent_policies import REQUIRED_POLICIES, effective_attached_policies",
+      "bundles = {'manager': os.environ['RG_MGR'], 'worker': os.environ['RG_WKR']}",
+      "missing = {}",
+      "for label, d in bundles.items():",
+      "    try:",
+      "        eff = effective_attached_policies(d)",
+      "    except Exception as e:",
+      "        missing[label] = ['<parse-error: %s>' % e] + sorted(REQUIRED_POLICIES)",
+      "        continue",
+      "    gap = sorted(REQUIRED_POLICIES - eff)",
+      "    if gap:",
+      "        missing[label] = gap",
+      "print(json.dumps(missing))",
+    ].join("\n");
+    const raw = execSync("python3 -", {
+      encoding: "utf-8",
+      timeout: 15000,
+      input: py,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, RG_MGR: managerDir, RG_WKR: workerDir },
+    }).trim();
+    const missing = JSON.parse(raw) as Record<string, string[]>;
+    const labels = Object.keys(missing);
+    attachOk = labels.length === 0;
+    attachDetail = attachOk
+      ? "manager + worker bundles attach the full required policy set"
+      : labels.map((l) => `${l} missing [${(missing[l] ?? []).join(", ")}]`).join("; ");
+  } catch (e) {
+    attachDetail = `policy attachment audit failed: ${e instanceof Error ? e.message : String(e)}`;
+  }
+  checks.push({ name: "policy_attachment", pass: attachOk, detail: attachDetail });
+
   const allPass = checks.every((c) => c.pass);
   const report = [
     "rickgent doctor — behavioral smoke test",
