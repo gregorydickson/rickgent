@@ -460,7 +460,7 @@ def autonomous_pr_flow(event, config):
     """
     try:
         if not _is_tool_call(event):
-            return {"result": "ALLOW"}
+            return None  # Non-tool event — abstain so blast_radius stays authoritative
 
         args = event.get("arguments", {})
         if isinstance(args, str):
@@ -473,7 +473,7 @@ def autonomous_pr_flow(event, config):
         if isinstance(args, dict):
             command = args.get("command", "")
         if not command:
-            return {"result": "ALLOW"}  # Not a shell command — let other policies handle
+            return None  # No parseable command — abstain, never affirmatively ALLOW
 
         feature_branch = (config or {}).get("feature_branch") or (config or {}).get("feature")
 
@@ -482,7 +482,7 @@ def autonomous_pr_flow(event, config):
         gh_segments = [s for s in segments if _is_gh_pr_create(s)]
 
         if not push_segments and not gh_segments:
-            return {"result": "ALLOW"}  # Not a PR-flow command — defer to blast_radius
+            return None  # Not a PR-flow command — abstain so blast_radius remains authoritative
 
         if push_segments:
             # The narrow allow is only ever the ENTIRE command being exactly one

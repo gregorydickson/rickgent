@@ -144,10 +144,12 @@ class TestAutonomousPrFlow:
         result = autonomous_pr_flow(event, {})
         assert result["result"] == "ALLOW"
 
-    def test_allows_non_pr_commands(self):
+    def test_abstains_on_non_pr_commands(self):
+        # A-SEC-2: a non-push/non-pr-create command abstains (None), never a
+        # blanket ALLOW that would override blast_radius under ALLOW-precedence.
         event = {"tool_name": "Bash", "arguments": {"command": "ls -la"}}
         result = autonomous_pr_flow(event, {})
-        assert result["result"] == "ALLOW"
+        assert result is None
 
     # C1: force-push flag at end of command
     def test_denies_force_push_flag_at_end(self):
