@@ -29,4 +29,30 @@ describe("salvage disposition", () => {
     const result = decideSalvage({ ...baseInput, treeChanged: false });
     expect(result.disposition).toBe("no-op");
   });
+
+  it("coerces a non-array ownedPaths to an empty array (VAL-BUG-008)", () => {
+    const result = decideSalvage({ ...baseInput, ownedPaths: "notarray" } as unknown as SalvageInput);
+    expect(result.disposition).toBe("committed-done");
+    expect(Array.isArray(result.stagedPaths)).toBe(true);
+    expect(result.stagedPaths).toHaveLength(0);
+  });
+
+  it("filters ownedPaths to string entries only (VAL-BUG-009)", () => {
+    const result = decideSalvage({
+      ...baseInput,
+      ownedPaths: ["a", 5, null, "b"],
+    } as unknown as SalvageInput);
+    expect(result.stagedPaths).toEqual(["a", "b"]);
+  });
+
+  it("compares boolean fields with strict equality (VAL-BUG-010)", () => {
+    const truthy = decideSalvage({
+      ...baseInput,
+      gatePassed: false,
+      treeChanged: "yes",
+    } as unknown as SalvageInput);
+    const falsy = decideSalvage({ ...baseInput, gatePassed: false, treeChanged: false });
+    expect(truthy.disposition).toBe(falsy.disposition);
+    expect(truthy.disposition).not.toBe("archived-todo");
+  });
 });

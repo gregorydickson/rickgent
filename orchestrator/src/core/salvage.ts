@@ -35,8 +35,16 @@ export function decideSalvage(input: SalvageInput): SalvageDecision {
     return { disposition: "error", reason: "invalid input" };
   }
 
+  const gatePassed = input.gatePassed === true;
+  const treeChanged = input.treeChanged === true;
+  const orphanReset = input.orphanReset === true;
+  const ffReattachPossible = input.ffReattachPossible === true;
+  const ownedPaths = Array.isArray(input.ownedPaths)
+    ? input.ownedPaths.filter((p): p is string => typeof p === "string")
+    : [];
+
   // ff-reattached: orphan-reset detected → fast-forward reattach
-  if (input.orphanReset && input.ffReattachPossible) {
+  if (orphanReset && ffReattachPossible) {
     return {
       disposition: "ff-reattached",
       reason: "orphan-reset detected, fast-forward reattach possible",
@@ -44,25 +52,25 @@ export function decideSalvage(input: SalvageInput): SalvageDecision {
   }
 
   // committed-done: gate-green + tree changed
-  if (input.gatePassed && input.treeChanged) {
+  if (gatePassed && treeChanged) {
     return {
       disposition: "committed-done",
       reason: "gate passing and tree changed",
-      stagedPaths: input.ownedPaths,
+      stagedPaths: ownedPaths,
     };
   }
 
   // archived-todo: gate-failing but tree changed
-  if (!input.gatePassed && input.treeChanged) {
+  if (!gatePassed && treeChanged) {
     return {
       disposition: "archived-todo",
       reason: "gate failing but tree changed, archive and reset to Todo",
-      stagedPaths: input.ownedPaths,
+      stagedPaths: ownedPaths,
     };
   }
 
   // no-op: gate passing and nothing to salvage
-  if (input.gatePassed && !input.treeChanged) {
+  if (gatePassed && !treeChanged) {
     return {
       disposition: "no-op",
       reason: "no tree changes to salvage",
