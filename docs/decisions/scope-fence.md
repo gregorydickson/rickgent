@@ -73,6 +73,40 @@ The `scope_fence` policy shim (`rickgent_policies.scope_fence`) enforces two bra
 
 `tar` and `dd` are ambiguous (read or write) and are treated as writes to fail closed. A shell tool_call with no parseable command also DENYs (fail closed). This detection is verified by `test/test_scope_fence_shell_writes.py` (VAL-SEC-027..035, VAL-SEC-057), authored red-first.
 
+## Symlink / rename escape resolution (A-SEC-4)
+
+The lexical `checkScope` / `_is_path_in_scope` canonicalization (`.`/`..`
+collapse + prefix match) is correct for string paths but blind to symlinks: a
+declared-dir symlink (`declared/root -> /`) makes an out-of-scope target look
+in-scope lexically. A-SEC-4 adds a filesystem-aware resolver in BOTH languages,
+pinned in parity by shared fixtures (`conformance/symlink-fixtures/`):
+
+- **TS:** `checkScopeResolved(ResolvedScopeInput)` in `core/scope.ts`, exposed
+  as the `rickgent verdict scope-resolved --json` CLI surface. Exports the
+  canonical `isPathInScope` matcher (single matcher, invariant 4).
+- **Python:** `check_scope_resolved(root, declared_paths, target_path, is_write,
+  destination_path=None)` in `rickgent_policies`.
+
+Resolution semantics (identical across languages):
+1. **Realpath resolution** — each declared path and each write endpoint is
+   resolved to its canonical real form; a symlink escaping the declared set
+   DENYs even though the lexical string is in-scope.
+2. **Nearest existing parent** — a not-yet-created write target is resolved by
+   realpath'ing the nearest existing ancestor and re-appending the non-existent
+   tail (TS `realpathNearestExisting`; Python `os.path.realpath`). This never
+   false-DENYs a benign new file, and never fails open through a symlinked
+   parent.
+3. **Both endpoints for rename/link** — when `destinationPath` is present, BOTH
+   source and destination must resolve in-scope; an escape via either endpoint
+   DENYs.
+4. **Existing `..`/absolute handling preserved** — `resolve`/`realpath` collapse
+   `..` and absolutize, so prior traversal/absolute escapes still DENY
+   (regression-pinned). Fail closed on malformed input / missing root / no
+   resolvable target.
+
+This is an additive enforcement layer; the lexical `checkScope` remains for the
+pre-canonicalized string-input path used by the existing AC-10 fixtures.
+
 ## Countersign
 
 - **Reviewer:** GPT-5.6-sol (Codex)
