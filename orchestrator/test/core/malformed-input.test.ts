@@ -8,12 +8,12 @@ import { evaluatePrd } from "../../src/core/prd.js";
 describe("AC-16 — malformed-input matrix, fail closed", () => {
   describe("completion oracle", () => {
     it("handles null input by failing closed", () => {
-      const result = evaluateCompletion(null as any);
+      const result = evaluateCompletion(null as any, "cli.verdict");
       expect(result.verdict).toBe("UNVERIFIED");
     });
 
     it("handles undefined fields by failing closed", () => {
-      const result = evaluateCompletion({} as any);
+      const result = evaluateCompletion({} as any, "cli.verdict");
       expect(result.verdict).toBe("UNVERIFIED");
     });
 
@@ -24,7 +24,7 @@ describe("AC-16 — malformed-input matrix, fail closed", () => {
         shaExists: "yes" as any,
         treeChanged: "true" as any,
         gateGreen: "green" as any,
-      } as any);
+      } as any, "cli.verdict");
       expect(result.verdict).toBe("UNVERIFIED");
     });
   });

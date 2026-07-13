@@ -20,7 +20,7 @@ function loadFixture(file: string) {
 function runCoreApi(fixture: any): any {
   switch (fixture.check) {
     case "completion":
-      return evaluateCompletion(fixture.input);
+      return evaluateCompletion(fixture.input, "cli.verdict");
     case "salvage":
       return decideSalvage(fixture.input);
     case "gate":

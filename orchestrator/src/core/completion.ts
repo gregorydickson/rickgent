@@ -22,24 +22,25 @@ export interface CompletionInput {
 }
 
 /**
+ * Branded identity of every code path allowed to invoke the completion oracle.
+ * Each member must correspond to a real `evaluateCompletion` call site — a value
+ * with no call site is a phantom entry and fails the AC-5 import-graph audit.
+ */
+export type CompletionCaller = "cli.verdict";
+
+/**
  * ALLOWED callers of evaluateCompletion — pinned by test (AC-5).
  * Any caller not in this set is a finding.
  */
-export const ALLOWED_COMPLETION_CALLERS = new Set([
-  "lifecycle.phase-machine",
-  "lifecycle.microverse",
-  "lifecycle.salvage",
-  "lifecycle.reconcile",
+export const ALLOWED_COMPLETION_CALLERS: ReadonlySet<CompletionCaller> = new Set<CompletionCaller>([
   "cli.verdict",
-  "policy.completion-evidence",
-  "lifecycle.auto-fill-completion",
 ]);
 
-export function evaluateCompletion(input: CompletionInput, caller?: string): CompletionVerdict {
-  // W1: enforce the caller allowlist. If a caller is provided and is not in
-  // ALLOWED_COMPLETION_CALLERS, refuse to evaluate — the allowlist exists to
-  // keep every completion check routed through a single enumerated predicate.
-  if (caller != null && !ALLOWED_COMPLETION_CALLERS.has(caller)) {
+export function evaluateCompletion(input: CompletionInput, caller: CompletionCaller): CompletionVerdict {
+  // Enforce the caller allowlist unconditionally. There is no `!= null`
+  // short-circuit: a missing/rogue caller must never bypass the allowlist, so
+  // every completion check stays routed through this single enumerated predicate.
+  if (!ALLOWED_COMPLETION_CALLERS.has(caller)) {
     throw new Error(`evaluateCompletion called by unauthorized caller: ${caller}`);
   }
 
