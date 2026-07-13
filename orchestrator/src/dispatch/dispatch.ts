@@ -87,11 +87,16 @@ export class TicketLock {
       let content: string;
       try {
         content = readFileSync(lockPath, "utf-8");
-      } catch {
-        // A concurrent release removed the lock between existsSync and read.
-        // The ticket is free — take it rather than propagating ENOENT.
-        writeFileSync(lockPath, String(Date.now()));
-        return true;
+      } catch (err) {
+        // Only ENOENT means a concurrent release removed the lock between
+        // existsSync and read; the ticket is genuinely free, so take it. Any
+        // other read error (EACCES, EIO, ...) fails closed — we cannot prove
+        // the lock is free, so we do not grant ownership.
+        if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+          writeFileSync(lockPath, String(Date.now()));
+          return true;
+        }
+        return false;
       }
       const lockTime = parseInt(content, 10);
       // An empty/corrupt lock parses to NaN; treat it as stale so a garbage
