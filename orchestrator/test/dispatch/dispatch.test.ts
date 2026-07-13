@@ -138,6 +138,50 @@ describe("TicketLock", () => {
   it("release does not throw for unknown ticket", () => {
     expect(() => lock.release("T-unknown")).not.toThrow();
   });
+
+  // VAL-BUG-011 (A-BUG-4): an empty lock file parses to NaN and must be
+  // treated as stale, not wedged forever.
+  it("treats an empty lock file as stale and takes it", () => {
+    const lockPath = join(dir, "T-1.lock");
+    writeFileSync(lockPath, "");
+    expect(lock.acquire("T-1")).toBe(true);
+    expect(readFileSync(lockPath, "utf-8")).not.toBe("");
+  });
+
+  // VAL-BUG-012 (A-BUG-4): a corrupt/non-numeric lock file parses to NaN and
+  // must be treated as stale.
+  it("treats a corrupt (non-numeric) lock file as stale and takes it", () => {
+    const lockPath = join(dir, "T-1.lock");
+    writeFileSync(lockPath, "not-a-number-garbage");
+    expect(lock.acquire("T-1")).toBe(true);
+    expect(Number.isNaN(parseInt(readFileSync(lockPath, "utf-8"), 10))).toBe(false);
+  });
+
+  // VAL-BUG-024 (A-BUG-9): a lock aged within a normal worker lifetime is not
+  // stale under the default staleness policy.
+  it("does not steal a lock aged within a normal worker lifetime (default staleness)", () => {
+    const lockPath = join(dir, "T-1.lock");
+    // Aged 60s — well under a ~1200s worker lifetime, but far past the old 5s default.
+    const stamp = String(Date.now() - 60_000);
+    writeFileSync(lockPath, stamp);
+    expect(lock.acquire("T-1")).toBe(false);
+    // The live lock must not have been overwritten (stolen).
+    expect(readFileSync(lockPath, "utf-8")).toBe(stamp);
+  });
+
+  // VAL-BUG-026 (A-BUG-4 + A-BUG-9): the staleness policy distinguishes a
+  // NaN/corrupt lock (stealable) from a valid recent lock (not stealable).
+  it("steals a corrupt lock but not a valid recent lock, in one suite", () => {
+    const corruptPath = join(dir, "T-corrupt.lock");
+    writeFileSync(corruptPath, "xyz");
+    expect(lock.acquire("T-corrupt")).toBe(true);
+
+    const livePath = join(dir, "T-live.lock");
+    const liveStamp = String(Date.now() - 60_000);
+    writeFileSync(livePath, liveStamp);
+    expect(lock.acquire("T-live")).toBe(false);
+    expect(readFileSync(livePath, "utf-8")).toBe(liveStamp);
+  });
 });
 
 describe("Dispatcher idempotency", () => {
@@ -301,5 +345,32 @@ describe("Dispatcher lock failure", () => {
     expect(result.state).toBe("failed");
     expect(result.stderr).toBe("could not acquire ticket lock");
     expect(ledger.find(idStr)?.state).toBe("failed");
+  });
+
+  // VAL-BUG-025 (A-BUG-9): while dispatch A legitimately holds ticket T within
+  // a normal worker lifetime, dispatch B must NOT steal the lock and spawn a
+  // second worker. B's dispatch must fail closed on the lock, not proceed to spawn.
+  it("does not let a second worker run a ticket held within a normal worker lifetime", async () => {
+    const lockPath = join(dir, "locks", "T-1.lock");
+    // Worker A acquired 60s ago and is still running (well under a ~1200s lifetime).
+    const liveStamp = String(Date.now() - 60_000);
+    writeFileSync(lockPath, liveStamp);
+
+    const dispatcher = new Dispatcher(ledger, lock, dir);
+    const id = makeId("T-1");
+
+    const result = await dispatcher.dispatch(id, {
+      agentDir: "/tmp/agent",
+      prompt: "do work",
+      timeout: 1000,
+      maxConcurrent: 2,
+    });
+
+    // Fail closed on the lock — the specific lock stderr proves B did not steal
+    // the lock and fall through to spawning (which would yield a spawn error).
+    expect(result.state).toBe("failed");
+    expect(result.stderr).toBe("could not acquire ticket lock");
+    // A's live lock must be untouched.
+    expect(readFileSync(lockPath, "utf-8")).toBe(liveStamp);
   });
 });

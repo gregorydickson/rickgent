@@ -68,19 +68,35 @@ export class DispatchLedger {
   }
 }
 
+// A held lock is only stale once it outlives the worker it protects. The
+// default worker lifetime is ~1200s; the staleness deadline adds margin so a
+// legitimately-held lock is never stolen mid-run while a truly dead worker's
+// lock still gets reclaimed.
+const WORKER_LIFETIME_MS = 1_200_000;
+const LOCK_STALE_MARGIN_MS = 300_000;
+export const DEFAULT_LOCK_STALE_MS = WORKER_LIFETIME_MS + LOCK_STALE_MARGIN_MS;
+
 export class TicketLock {
   constructor(private lockDir: string) {
     mkdirSync(lockDir, { recursive: true });
   }
 
-  acquire(ticketId: string, timeoutMs: number = 5000): boolean {
+  acquire(ticketId: string, timeoutMs: number = DEFAULT_LOCK_STALE_MS): boolean {
     const lockPath = join(this.lockDir, `${ticketId}.lock`);
     if (existsSync(lockPath)) {
-      // Check if the lock is stale
-      const content = readFileSync(lockPath, "utf-8");
+      let content: string;
+      try {
+        content = readFileSync(lockPath, "utf-8");
+      } catch {
+        // A concurrent release removed the lock between existsSync and read.
+        // The ticket is free — take it rather than propagating ENOENT.
+        writeFileSync(lockPath, String(Date.now()));
+        return true;
+      }
       const lockTime = parseInt(content, 10);
-      if (Date.now() - lockTime > timeoutMs) {
-        // Stale lock — take it
+      // An empty/corrupt lock parses to NaN; treat it as stale so a garbage
+      // lock file is reclaimed instead of wedging the ticket forever.
+      if (Number.isNaN(lockTime) || Date.now() - lockTime > timeoutMs) {
         writeFileSync(lockPath, String(Date.now()));
         return true;
       }
