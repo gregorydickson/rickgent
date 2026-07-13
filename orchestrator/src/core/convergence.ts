@@ -1,6 +1,8 @@
 // Convergence gate — baseline subtraction, freshness assertion, scope filtering.
 // PURE decision functions over gate outputs and baseline data.
 
+import { isPathInScope } from "./scope.js";
+
 export interface CheckResult {
   name: string;
   passed: boolean;
@@ -106,6 +108,6 @@ function subtractBaseline(findings: Finding[], baselineFindings: Finding[]): Fin
 function filterByScope(findings: Finding[], scope: string[]): Finding[] {
   if (scope.length === 0) return findings;
   return findings.filter((f) =>
-    scope.some((s) => f.file.startsWith(s)),
+    scope.some((s) => isPathInScope(f.file, s)),
   );
 }

@@ -48,3 +48,38 @@ describe("convergence gate", () => {
     expect(result.passed).toBe(false);
   });
 });
+
+describe("convergence scope filtering (A-BUG-1)", () => {
+  const passingChecks = {
+    current: [{ name: "lint", passed: true, output: "" }],
+    baseline: [{ name: "lint", passed: false, output: "" }],
+  };
+
+  it("VAL-BUG-001: excludes a sibling directory that shares a name prefix", () => {
+    const result = evaluateConvergenceGate({
+      ...passingChecks,
+      scope: ["src"],
+      findings: [{ file: "src2/foo.ts", line: 1, message: "x", check: "lint" }],
+    });
+    expect(result.newFindings).toHaveLength(0);
+  });
+
+  it("VAL-BUG-002: retains an in-scope finding", () => {
+    const result = evaluateConvergenceGate({
+      ...passingChecks,
+      scope: ["src"],
+      findings: [{ file: "src/foo.ts", line: 1, message: "x", check: "lint" }],
+    });
+    expect(result.newFindings).toHaveLength(1);
+    expect(result.newFindings[0].file).toBe("src/foo.ts");
+  });
+
+  it("VAL-BUG-003: gate is not blocked by an out-of-scope sibling finding", () => {
+    const result = evaluateConvergenceGate({
+      ...passingChecks,
+      scope: ["src"],
+      findings: [{ file: "src2/foo.ts", line: 1, message: "x", check: "lint" }],
+    });
+    expect(result.passed).toBe(true);
+  });
+});
