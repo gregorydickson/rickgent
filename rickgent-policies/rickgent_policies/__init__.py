@@ -203,27 +203,79 @@ _GIT_WRITE_SUBCOMMANDS = {
     "init", "reset",
 }
 
-
-def _strip_quoted(s: str) -> str:
-    """Remove single/double-quoted regions so quoted redirect characters
-    (e.g. `grep '>' file`) are not mistaken for shell redirects."""
-    s = re.sub(r"'[^']*'", "", s)
-    s = re.sub(r'"[^"]*"', "", s)
-    return s
+# sudo options that consume a following value token (`sudo -u root <cmd>`).
+# If these are not consumed, the value (e.g. `root`) is mistaken for the
+# command word and the real write behind the prefix evades detection.
+_SUDO_VALUE_OPTS = {
+    "-u", "-g", "-h", "-p", "-r", "-t", "-T", "-U", "-C", "-R", "-D", "-c",
+    "--user", "--group", "--host", "--prompt", "--role", "--type",
+    "--command-timeout", "--other-user", "--chdir", "--close-from",
+}
 
 
 def _has_file_write_redirect(command: str) -> bool:
     """True iff the command contains a `>`/`>>` redirect to a FILE.
 
-    fd-duplications such as `2>&1` / `>&2` (a `>` whose next non-space char is
-    `&`) are NOT file writes and must not be flagged.
+    A redirect operator is a `>` that appears OUTSIDE single/double quotes; a
+    quoted `>` (e.g. `grep '>' file`) is a literal argument, not a redirect.
+    The target may itself be quoted (`echo hi > "out.txt"`) — that is still a
+    file-write redirect, because a shell write target can never be positively
+    resolved and must fail closed. fd-duplications such as `2>&1` / `>&2` (the
+    operator is followed, after optional whitespace, by `&`) are NOT file
+    writes and must not be flagged.
     """
-    unquoted = _strip_quoted(command)
-    return bool(re.search(r"\d*>>?\s*(?![&\s])\S", unquoted))
+    in_single = False
+    in_double = False
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if in_single:
+            in_single = ch != "'"
+            i += 1
+            continue
+        if in_double:
+            if ch == "\\" and i + 1 < n:
+                i += 2
+                continue
+            in_double = ch != '"'
+            i += 1
+            continue
+        if ch == "'":
+            in_single = True
+            i += 1
+            continue
+        if ch == '"':
+            in_double = True
+            i += 1
+            continue
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == ">":
+            j = i + 1
+            if j < n and command[j] == ">":
+                j += 1
+            while j < n and command[j] in " \t":
+                j += 1
+            if j < n and command[j] == "&":
+                i = j + 1
+                continue
+            if j < n:
+                return True
+            i = j
+            continue
+        i += 1
+    return False
 
 
 def _strip_shell_prefix_tokens(tokens: list) -> list:
-    """Drop leading `VAR=val` env-assignments and a `sudo [flags]` prefix."""
+    """Drop leading `VAR=val` env-assignments and a `sudo [flags]` prefix.
+
+    sudo options that take a separate value token (`-u <user>`,
+    `--user <user>`) consume that value too, so the command word after the
+    prefix (e.g. `truncate`) is not mistaken for the option's argument and a
+    write behind `sudo -u root <write-cmd>` is still detected."""
     i = 0
     while i < len(tokens):
         tok = tokens[i]
@@ -233,7 +285,10 @@ def _strip_shell_prefix_tokens(tokens: list) -> list:
         if tok == "sudo":
             i += 1
             while i < len(tokens) and tokens[i].startswith("-"):
+                opt = tokens[i]
                 i += 1
+                if opt in _SUDO_VALUE_OPTS and i < len(tokens) and not tokens[i].startswith("-"):
+                    i += 1
             continue
         break
     return tokens[i:]
@@ -537,16 +592,6 @@ def _split_command_segments(command: str) -> list:
         if seg:
             segments.append(seg)
     return segments
-
-
-# sudo options that consume a following value token (`sudo -u root git …`).
-# If these are not consumed, the value (e.g. `root`) is mistaken for the
-# command word and the real `git push` behind it evades push detection.
-_SUDO_VALUE_OPTS = {
-    "-u", "-g", "-h", "-p", "-r", "-t", "-T", "-U", "-C", "-R", "-D", "-c",
-    "--user", "--group", "--host", "--prompt", "--role", "--type",
-    "--command-timeout", "--other-user", "--chdir", "--close-from",
-}
 
 
 def _shlex_tokens(segment: str) -> list:
