@@ -64,6 +64,84 @@ The per-iteration convergence gate delegates to the ported `convergence-gate.ts`
 
 The R-DEFCHURN lesson (empty-commit churn burns the budget without tripping the breaker) is preserved: `detectProgress` in the circuit breaker compares tree SHAs, not just commit SHAs, so empty commits do not count as progress. This invariant must survive the port.
 
+## B5 finalization — convergence semantics (retire "N improvements = converged")
+
+Architecture §6.1 delegates the convergence definition to this doc. B5 adopts a
+**plateau / diminishing-delta + target-threshold** definition and RETIRES the
+Mission-1 heuristic "N consecutive improvements = converged" (which halted a
+still-climbing metric and left gains on the table). The FOM discipline
+"convergence vs attrition" requires distinguishing *still-climbing* from *done*.
+
+### Finalized parameters
+
+| Parameter | Symbol | Default | Meaning |
+|---|---|---|---|
+| Diminishing-delta epsilon | `epsilon` | `1.0` | An improvement delta strictly below epsilon counts as "diminishing". |
+| Plateau window | `window` (N) | `3` | Number of most-recent accepted-baseline improvement deltas inspected. |
+| Target threshold | `target` | `null` | Optional metric target; reaching it converges regardless of delta size. |
+| Direction | `direction` | `"higher"` | `"higher"` = larger is better; `"lower"` = smaller is better. |
+| Attrition/stall limit | `stallLimit` | `3` | Consecutive non-improving (delta ≤ 0) iterations → attrition/salvage. |
+
+### Decision rule (`classifyConvergence`, evaluated over the accepted-baseline score series)
+
+Improvement deltas are direction-aware: for `higher`, `delta = cur - prev`; for
+`lower`, `delta = prev - cur` (positive = improvement). Evaluated in order:
+
+1. **Target reached** → `converged` (via `target`). If `target` is set and the
+   latest score meets it (`>= target` for higher, `<= target` for lower), the
+   run is converged **even when the deltas are still large** (VAL-MICRO-008).
+2. **Attrition/stall** → `stalled`. If the last `stallLimit` deltas are each
+   `≤ 0` (no improvement), the run is attrition and routes to **salvage**, never
+   convergence (VAL-MICRO-006).
+3. **Plateau / diminishing returns** → `converged` (via `plateau`). If the last
+   `window` deltas are each `< epsilon` (and, having passed step 2, at least one
+   is a positive improvement), the metric has plateaued and is converged
+   (VAL-MICRO-004).
+4. Otherwise → `improving` (still climbing; NOT converged). A monotonic
+   still-improving series such as `[60, 70, 80]` with `target` unmet is
+   therefore **NOT converged** (VAL-MICRO-004/005).
+
+### AC-6 expected-value update (permitted by PRD §7.1/§10.5)
+
+The retired Mission-1 expectation `run_simulated([60,70,80]) → converged == true`
+is replaced: `[60,70,80]` (three large improvements, no target) is **NOT
+converged** (still climbing). `microverse.test.ts` is updated to pin the new
+expected values (plateau converges, target converges, `[60,70,80]` does not) and
+no test still asserts the retired "three improvements = converged" semantics.
+
+## B5 real convergence loop (retire `runSimulated`-only)
+
+`runSimulated` remains only as a pure driver for the convergence-decision unit
+tests. The **live** loop is `MicroverseLoop.run()` (lifecycle layer), which
+drives real git + real worker processes + a real metric command, honoring the
+§8 invariants (git-tree-truth > claims; owned-paths-only array-argv staging; no
+global reset/checkout):
+
+- **Measure** the metric each iteration by executing the real `metricCommand`
+  in the target repo and parsing its numeric stdout.
+- **Dispatch** a per-iteration worker process under a hard **deadline**. A
+  deadline breach **kills the worker process group** (SIGTERM → grace → SIGKILL)
+  and **salvage-commits only the in-scope dirty work** (owned-paths-only via the
+  salvage executor's `execFileSync("git", ["add","--", path])` staging) — dirty
+  work is neither dropped nor committed with `git add -A`/out-of-scope files
+  (VAL-MICRO-002).
+- **Classify** against the accepted baseline: an **improving** iteration commits
+  its in-scope owned work and **advances the baseline ref** so the next
+  iteration measures against the new baseline (VAL-MICRO-009); a **regressing**
+  iteration performs a **scoped rollback** (`git checkout -- <ownedPath>` +
+  `git clean -f -- <ownedPath>` per owned path) that restores only the
+  iteration's in-scope owned paths and **preserves the baseline ref** while
+  leaving out-of-scope/untracked files intact — never `git reset --hard` or
+  `git checkout -- .` (VAL-MICRO-001/010).
+- **Attrition/stall** (delta ≤ 0 for `stallLimit` iterations) routes to
+  **salvage**, distinctly from convergence (VAL-MICRO-006).
+- **Record every iteration** into the circuit breaker via `recordIterationResult`
+  so `canExecute` is live and a tripped breaker halts the loop (VAL-MICRO-007).
+- The **final report is derived from `git log`** (commits/deltas that actually
+  landed on owned paths between the initial baseline and HEAD), so a worker that
+  emits a false success token but produces no git delta records no improvement
+  and no commit (VAL-MICRO-003).
+
 ## Countersign
 
 - **Reviewer:** GPT-5.6-sol (Codex)
@@ -71,3 +149,11 @@ The R-DEFCHURN lesson (empty-commit churn burns the budget without tripping the 
 - **Spot-checks performed:** `extension/src/bin/microverse-runner.ts:3407-3435,3637-3665` implements metric classification and scoped rescue; Omnigent search found no convergence lifecycle.
 - **Notes:** The TS split preserves autonomous convergence.
 - **Date:** 2026-07-12
+
+## B5 addendum countersign
+
+- **Decision owner:** B5 worker (rickgent-engineer)
+- **Scope:** Finalized epsilon=1.0 / N=3 / target=null defaults, plateau+target
+  convergence rule, attrition routing, and the live `MicroverseLoop` semantics
+  above. AC-6 expected values updated in `microverse.test.ts`.
+- **Date:** 2026-07-14
