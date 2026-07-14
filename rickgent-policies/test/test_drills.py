@@ -104,9 +104,39 @@ class TestMissingSimplificationReview:
 
 
 class TestUnpricedModelDispatch:
-    """Drill 12: unpriced model → budget policy DENY/ASK before dispatch."""
+    """Drill 12 / VAL-ROUTE-003: unpriced model → cost gate DENY before dispatch.
+
+    The cost drill exercises the REAL router cost gate (no empty pass).
+    An unpriced model is DENIED (fail-closed); an over-budget model is
+    DENIED (hard) / ASK (soft) — all before dispatch.
+    """
     def test_unpriced_model_blocked(self):
-        # This would be tested with a cost policy — for now verify the concept
-        # In production, the cost policy checks model pricing before dispatch
-        # and DENIES unpriced models
-        pass  # Placeholder — cost policy implementation is in Phase 4
+        from rickgent_policies import select_model
+        roster = [
+            {
+                "harness": "claude",
+                "model": "anthropic/claude-sonnet-4-20250514",
+                "vendor": "anthropic",
+                "tier": "mid",
+                "pricing": None,
+            },
+        ]
+        result = select_model(roster, role="implement", cost_budget_usd=10.0)
+        assert result["result"] == "DENY"
+        assert result["code"] == "NO_PRICED_MODEL"
+        assert "selection" not in result
+
+    def test_over_budget_model_denied(self):
+        from rickgent_policies import select_model
+        roster = [
+            {
+                "harness": "codex",
+                "model": "openai/gpt-5",
+                "vendor": "openai",
+                "tier": "capable",
+                "pricing": {"cost_per_dispatch": 100.0},
+            },
+        ]
+        result = select_model(roster, role="implement", cost_budget_usd=1.0)
+        assert result["result"] == "DENY"
+        assert "selection" not in result

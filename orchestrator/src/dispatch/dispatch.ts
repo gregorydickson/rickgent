@@ -49,6 +49,13 @@ export interface DispatchEntry {
   treeChanged?: boolean;
   /** Ticket's declared scope, persisted so reconcile recovers it losslessly. */
   declaredPaths?: string[];
+  /**
+   * Per-dispatch vendor label (B8 multi-vendor routing). The harness/model
+   * identity the router selected for this dispatch, persisted so the ledger
+   * carries a non-empty vendor/harness label matching the router selection.
+   * Null when no router was consulted (no silent hardcoded default).
+   */
+  vendor?: string | null;
 }
 
 const TERMINAL_STATES: ReadonlySet<DispatchState> = new Set([
@@ -173,6 +180,12 @@ export interface DispatchOptions {
   dataDir?: string;
   /** Extra environment merged into the spawned worker process. */
   env?: NodeJS.ProcessEnv;
+  /**
+   * Per-dispatch vendor label (B8). The harness/model identity the router
+   * selected for this dispatch. Persisted into every ledger entry so the
+   * shared ledger carries a non-empty vendor/harness label per dispatch.
+   */
+  vendor?: string;
 }
 
 export class Dispatcher {
@@ -208,6 +221,7 @@ export class Dispatcher {
         exitCode: null,
         stdout: null,
         stderr: null,
+        vendor: opts.vendor ?? null,
       };
       this.ledger.append(planned);
       return planned;
@@ -224,6 +238,7 @@ export class Dispatcher {
         exitCode: null,
         stdout: null,
         stderr: "could not acquire ticket lock",
+        vendor: opts.vendor ?? null,
       };
       this.ledger.append(failed);
       return failed;
@@ -258,6 +273,7 @@ export class Dispatcher {
         exitCode: null,
         stdout: null,
         stderr: null,
+        vendor: opts.vendor ?? null,
       });
 
       // Dispatch via omnigent run one-shot
@@ -333,6 +349,7 @@ export class Dispatcher {
           dispatchId: idStr, state: "timed_out", pid: child.pid ?? null,
           startedAt, completedAt: new Date().toISOString(),
           exitCode: null, stdout, stderr,
+          vendor: opts.vendor ?? null,
         });
       }, opts.timeout);
 
@@ -345,6 +362,7 @@ export class Dispatcher {
           finish({
             dispatchId: idStr, state: "failed", pid,
             startedAt, completedAt, exitCode: code, stdout, stderr,
+            vendor: opts.vendor ?? null,
           });
           return;
         }
@@ -355,6 +373,7 @@ export class Dispatcher {
             dispatchId: idStr, state: "failed", pid,
             startedAt, completedAt, exitCode: code, stdout,
             stderr: stderr + "\n[dispatch] exit 0 but no evidence context (targetRepo/dataDir) — cannot verify completion",
+            vendor: opts.vendor ?? null,
           });
           return;
         }
@@ -369,6 +388,7 @@ export class Dispatcher {
             dispatchId: idStr, state: "db_session_observed", pid,
             startedAt, completedAt: null, exitCode: code, stdout, stderr,
             conversationId: evidence.conversationId,
+            vendor: opts.vendor ?? null,
           });
         }
 
@@ -381,6 +401,7 @@ export class Dispatcher {
             baselineSha: evidence.baselineSha,
             treeChanged: evidence.treeChanged,
             declaredPaths: Array.isArray(opts.declaredPaths) ? opts.declaredPaths : [],
+            vendor: opts.vendor ?? null,
           });
           return;
         }
@@ -392,6 +413,7 @@ export class Dispatcher {
             `dbSession=${evidence.dbObserved} transcript=${evidence.transcriptCount} ` +
             `inScopeDelta=${evidence.inScopePaths.length} oracle=${evidence.oracleVerdict}`,
           conversationId: evidence.conversationId,
+          vendor: opts.vendor ?? null,
         });
       });
 
@@ -400,6 +422,7 @@ export class Dispatcher {
           dispatchId: idStr, state: "failed", pid: child.pid ?? null,
           startedAt, completedAt: new Date().toISOString(),
           exitCode: null, stdout, stderr: err.message,
+          vendor: opts.vendor ?? null,
         });
       });
     });

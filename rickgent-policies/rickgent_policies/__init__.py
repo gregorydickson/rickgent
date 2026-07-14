@@ -872,6 +872,168 @@ def autonomous_pr_flow(event, config):
         return {"result": "DENY", "reason": f"autonomous_pr_flow: {e}", "code": "POLICY_SHIM_ERROR"}
 
 
+# ── Multi-vendor routing (B8) ────────────────────────────────────────────────
+
+# Per-role tier preference. The router selects from the live roster, ordered
+# by the preferred tier for each role. This is NOT a hardcoded vendor — the
+# router picks the best match from whatever the live roster offers.
+_ROLE_TIER_PREFERENCE = {
+    "research": "cheap",
+    "research_review": "cheap",
+    "plan": "mid",
+    "plan_review": "mid",
+    "implement": "capable",
+    "spec_conformance": "mid",
+    "code_review": "mid",
+    "simplify": "cheap",
+}
+
+# Sort order for tier preference: preferred tier first, then other tiers in a
+# fixed fallback order so selection is deterministic.
+_TIER_FALLBACK = ["cheap", "mid", "capable"]
+
+
+def _tier_sort_key(model, preferred_tier):
+    """Sort key: preferred tier first, then by fallback order, then by vendor
+    for deterministic ordering."""
+    tier = model.get("tier", "mid")
+    try:
+        pref_idx = _TIER_FALLBACK.index(preferred_tier) if preferred_tier in _TIER_FALLBACK else 1
+        tier_idx = _TIER_FALLBACK.index(tier) if tier in _TIER_FALLBACK else 1
+    except ValueError:
+        pref_idx, tier_idx = 1, 1
+    return (abs(pref_idx - tier_idx), model.get("vendor", ""), model.get("model", ""))
+
+
+def select_model(roster, role, task=None, implementer_vendor=None,
+                 cost_budget_usd=None, soft_threshold_usd=None):
+    """Route a dispatch to a harness/model from the live roster (B8).
+
+    The router is NOT hardcoded to one vendor. It enumerates the live roster
+    (preflight) and selects a harness/model per role and task. It fails closed
+    on an empty/unavailable roster — no dispatch, no silent fallback to a
+    hardcoded vendor.
+
+    Constraints enforced BEFORE dispatch:
+      - **Cross-vendor review:** the ``code_review`` role excludes the
+        implementer's vendor (``implementer_vendor``). If only the
+        implementer's vendor is available, the router DENYs (fail-closed)
+        rather than dispatching a same-vendor reviewer.
+      - **Cost gate:** an unpriced model (``pricing is None``) is skipped;
+        if ALL candidates are unpriced → DENY (fail-closed). A model over the
+        hard budget (``cost_budget_usd``) is skipped; if ALL are over-budget →
+        DENY. A model over the soft threshold (``soft_threshold_usd``) but
+        under the hard budget → ASK (if no within-budget alternative exists).
+
+    Args:
+        roster: list of model dicts, each with keys:
+            ``harness`` (str), ``model`` (str), ``vendor`` (str),
+            ``tier`` (str: "cheap"|"mid"|"capable"),
+            ``pricing`` (None for unpriced, or ``{"cost_per_dispatch": float}``).
+        role: lifecycle role ("implement", "code_review", "research", etc.).
+        task: optional task description (advisory; may influence selection).
+        implementer_vendor: the implementer's vendor (for cross-vendor review).
+        cost_budget_usd: hard per-dispatch cost limit in USD.
+        soft_threshold_usd: soft threshold for ASK.
+
+    Returns:
+        ``{"result": "ALLOW", "selection": {"harness": str, "model": str, "vendor": str}}``
+        ``{"result": "DENY", "reason": str, "code": str}``
+        ``{"result": "ASK", "reason": str, "code": str, "selection": {...}}``
+    """
+    try:
+        # Fail closed on an empty/unavailable roster.
+        if not roster or not isinstance(roster, list) or len(roster) == 0:
+            return {
+                "result": "DENY",
+                "reason": "routing: empty or unavailable roster",
+                "code": "ROSTER_EMPTY",
+            }
+
+        candidates = list(roster)
+
+        # Cross-vendor review: the review role excludes the implementer's vendor.
+        if role == "code_review" and implementer_vendor:
+            candidates = [m for m in candidates if m.get("vendor") != implementer_vendor]
+
+        # If no candidates after role-constraint filtering, fail closed.
+        if not candidates:
+            return {
+                "result": "DENY",
+                "reason": f"routing: no candidates for role '{role}' after constraints",
+                "code": "NO_CANDIDATES",
+            }
+
+        # Sort by tier preference for the role.
+        preferred_tier = _ROLE_TIER_PREFERENCE.get(role, "mid")
+        candidates.sort(key=lambda m: _tier_sort_key(m, preferred_tier))
+
+        # Cost gate: iterate candidates and find the first that passes.
+        # Unpriced models are skipped. Over-hard-budget models are skipped.
+        # Over-soft-threshold models are recorded as ASK fallback.
+        ask_candidate = None
+        for model in candidates:
+            pricing = model.get("pricing")
+            if pricing is None:
+                continue  # unpriced — skip
+
+            if not isinstance(pricing, dict):
+                continue  # malformed pricing — skip (fail-closed-ish)
+
+            cost = pricing.get("cost_per_dispatch")
+            if cost is None or not isinstance(cost, (int, float)):
+                continue  # no cost figure — treat as unpriced
+
+            # Hard budget check.
+            if cost_budget_usd is not None and isinstance(cost_budget_usd, (int, float)):
+                if cost > cost_budget_usd:
+                    continue  # over hard budget — skip
+
+            # Soft threshold check.
+            if soft_threshold_usd is not None and isinstance(soft_threshold_usd, (int, float)):
+                if cost > soft_threshold_usd:
+                    if ask_candidate is None:
+                        ask_candidate = model
+                    continue  # over soft — ASK candidate, try for a better option
+
+            # Within budget — ALLOW.
+            return {
+                "result": "ALLOW",
+                "selection": {
+                    "harness": model["harness"],
+                    "model": model["model"],
+                    "vendor": model["vendor"],
+                },
+            }
+
+        # No within-budget candidate found.
+        if ask_candidate is not None:
+            return {
+                "result": "ASK",
+                "reason": "routing: only over-soft-threshold candidates available",
+                "code": "OVER_SOFT_THRESHOLD",
+                "selection": {
+                    "harness": ask_candidate["harness"],
+                    "model": ask_candidate["model"],
+                    "vendor": ask_candidate["vendor"],
+                },
+            }
+
+        # All candidates unpriced or over hard budget.
+        return {
+            "result": "DENY",
+            "reason": "routing: no priced/within-budget model available",
+            "code": "NO_PRICED_MODEL",
+        }
+
+    except Exception as e:
+        return {
+            "result": "DENY",
+            "reason": f"routing: {e}",
+            "code": "ROUTING_ERROR",
+        }
+
+
 # ── POLICY_REGISTRY ──────────────────────────────────────────────────────────
 
 # The registry that omnigent's `policy_modules` config ingests.

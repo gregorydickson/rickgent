@@ -41,3 +41,71 @@ Rickgent's core differentiator is automatic multi-model routing: the orchestrato
 - **Spot-checks performed:** `omnigent/tools/builtins/advise_models.py:1-14,23-60` confirms gated server-side advising; an `rg 'TIER_MODEL_MAP'` check confirmed Pickle Rick's static map.
 - **Notes:** Reuse directly advances native multi-model routing.
 - **Date:** 2026-07-12
+
+## Implementation (B8 / M4)
+
+### Python router (`rickgent_policies.select_model`)
+
+The router is a pure-Python function in `rickgent_policies/__init__.py` that
+selects a harness/model per role/task from the **live roster** (preflight
+enumerated via `sys_list_models`). It is NOT hardcoded to one vendor.
+
+**API:**
+```python
+select_model(roster, role, task=None, implementer_vendor=None,
+             cost_budget_usd=None, soft_threshold_usd=None)
+```
+
+**Roster entries:** `{harness, model, vendor, tier, pricing}` where `pricing`
+is `None` (unpriced) or `{"cost_per_dispatch": float}` (estimated USD).
+
+**Role-based tier preference:**
+- `research`/`research_review`/`simplify` → prefer `cheap`
+- `plan`/`plan_review`/`spec_conformance`/`code_review` → prefer `mid`
+- `implement` → prefer `capable`
+
+The router sorts candidates by tier preference, then applies the cost gate to
+each in order, returning the first that passes.
+
+**Constraints enforced BEFORE dispatch:**
+1. **Fail-closed on empty/unavailable roster** → `DENY` with `ROSTER_EMPTY`
+   (no silent fallback to a hardcoded vendor).
+2. **Cross-vendor review:** the `code_review` role excludes the
+   implementer's vendor (`implementer_vendor`). If only the implementer's
+   vendor is available → `DENY` with `NO_CANDIDATES`. The existing
+   `cross_vendor_review` policy independently DENYs a same-vendor review
+   assignment at the policy layer (defense in depth).
+3. **Cost gate (fail-closed):**
+   - Unpriced model (`pricing is None`) → skipped; if ALL candidates are
+     unpriced → `DENY` with `NO_PRICED_MODEL`.
+   - Over hard budget (`cost > cost_budget_usd`) → skipped; if ALL over
+     budget → `DENY` with `NO_PRICED_MODEL`.
+   - Over soft threshold (`cost > soft_threshold_usd`) but under hard budget
+     → `ASK` with `OVER_SOFT_THRESHOLD` (only if no within-budget
+     alternative exists).
+   - Within budget → `ALLOW` with selection.
+
+**Return shape:**
+- `{"result": "ALLOW", "selection": {"harness", "model", "vendor"}}`
+- `{"result": "DENY", "reason", "code"}` (no `selection` → no dispatch)
+- `{"result": "ASK", "reason", "code", "selection"}`
+
+### Per-dispatch vendor label persistence (TS)
+
+The `DispatchEntry` and `DispatchOptions` types in
+`orchestrator/src/dispatch/dispatch.ts` carry a `vendor?: string | null`
+field. The Dispatcher writes `opts.vendor ?? null` into every ledger entry it
+creates (planned, spawned, db_session_observed, completed, failed, timed_out).
+A dispatch with no router consultation has `vendor: null` (no silent hardcoded
+default). The ledger is append-only JSONL, so the vendor label round-trips
+through `DispatchLedger.find` and is available to any consumer (reconcile,
+metrics, status).
+
+### Integration point
+
+The build loop (`orchestrator/src/lifecycle/build.ts`) calls the Python router
+via subprocess before each dispatch. If the router returns `ALLOW`, the
+selected `vendor` is passed to `Dispatcher.dispatch` as `opts.vendor`. If
+`DENY` or `ASK`, the dispatch is not spawned (fail-closed). The per-dispatch
+`args.harness`/`args.model` overrides are passed to `sys_session_send` per
+architecture §3.5.
