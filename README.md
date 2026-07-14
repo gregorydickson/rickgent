@@ -1,4 +1,4 @@
-<img src="images/pickle-rick.png" alt="Rickgent — Autonomous Multi-Model Engineering Platform" width="100%" />
+<img src="images/rickgent-hero.png" alt="Rickgent — Autonomous Multi-Model Engineering Platform" width="100%" />
 
 # 🥒 Rickgent
 
