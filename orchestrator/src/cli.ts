@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { join } from "path";
+import { readFileSync } from "fs";
 import { BUILD_COMMIT } from "./build-commit.js";
 import { runVerdict } from "./core/verdict-cli.js";
 
@@ -194,8 +195,11 @@ function resolveBuildOptions(rest: string[]): {
   autonomousPrFlow: boolean;
   featureBranch: string | undefined;
   maxConcurrent: number | undefined;
+  roster: import("./lifecycle/routing.js").ModelEntry[] | undefined;
+  costBudgetUsd: number | undefined;
+  softThresholdUsd: number | undefined;
 } | null {
-  const valueFlags = new Set(["--repo", "--agent", "--feature", "--max-concurrent"]);
+  const valueFlags = new Set(["--repo", "--agent", "--feature", "--max-concurrent", "--roster", "--cost-budget", "--soft-threshold"]);
   const positionals: string[] = [];
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i]!;
@@ -224,7 +228,35 @@ function resolveBuildOptions(rest: string[]): {
   const maxConcurrentRaw = flagValue(rest, "--max-concurrent") ?? process.env.RICKGENT_MAX_CONCURRENT;
   const maxConcurrentParsed = maxConcurrentRaw !== undefined ? parseInt(maxConcurrentRaw, 10) : NaN;
   const maxConcurrent = Number.isNaN(maxConcurrentParsed) ? undefined : maxConcurrentParsed;
-  return { prdPath, workingDir, rickgentDir, agentDir, dataDir, resume, autonomousPrFlow, featureBranch, maxConcurrent };
+
+  // Model roster (B8): resolve from --roster <file> (JSON) or RICKGENT_MODEL_ROSTER env var.
+  let roster: import("./lifecycle/routing.js").ModelEntry[] | undefined;
+  const rosterFile = flagValue(rest, "--roster");
+  const rosterRaw = rosterFile ? readRosterFile(rosterFile) : process.env.RICKGENT_MODEL_ROSTER;
+  if (rosterRaw) {
+    try {
+      const parsed = JSON.parse(rosterRaw);
+      if (Array.isArray(parsed)) roster = parsed;
+    } catch {
+      console.error("rickgent build: invalid model roster JSON");
+    }
+  }
+
+  const costBudgetRaw = flagValue(rest, "--cost-budget") ?? process.env.RICKGENT_COST_BUDGET_USD;
+  const costBudgetUsd = costBudgetRaw !== undefined ? Number(costBudgetRaw) : undefined;
+  const softThresholdRaw = flagValue(rest, "--soft-threshold") ?? process.env.RICKGENT_SOFT_THRESHOLD_USD;
+  const softThresholdUsd = softThresholdRaw !== undefined ? Number(softThresholdRaw) : undefined;
+
+  return { prdPath, workingDir, rickgentDir, agentDir, dataDir, resume, autonomousPrFlow, featureBranch, maxConcurrent, roster, costBudgetUsd: Number.isNaN(costBudgetUsd as number) ? undefined : costBudgetUsd, softThresholdUsd: Number.isNaN(softThresholdUsd as number) ? undefined : softThresholdUsd };
+}
+
+function readRosterFile(path: string): string {
+  try {
+    return readFileSync(path, "utf-8");
+  } catch {
+    console.error(`rickgent build: cannot read roster file: ${path}`);
+    return "";
+  }
 }
 
 async function runBuildCommand(rest: string[]): Promise<void> {

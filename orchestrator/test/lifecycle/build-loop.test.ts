@@ -18,6 +18,14 @@ const CLI_JS = join(import.meta.dirname, "../../dist/cli.js");
 const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
 const PRD_MIN = join(import.meta.dirname, "../../../fixtures/prd-min.md");
 
+// Minimal valid multi-vendor roster for build-loop tests. After the M4 router
+// wiring, the build path calls select_model before each dispatch; without a
+// roster the router DENYs (ROSTER_EMPTY) and no dispatch spawns.
+const TEST_ROSTER_JSON = JSON.stringify([
+  { harness: "claude", model: "anthropic/claude-sonnet-4", vendor: "anthropic", tier: "mid", pricing: { cost_per_dispatch: 0.50 } },
+  { harness: "codex", model: "openai/gpt-5-mini", vendor: "openai", tier: "cheap", pricing: { cost_per_dispatch: 0.04 } },
+]);
+
 function git(repo: string, args: string[]): string {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf-8" }).trim();
 }
@@ -81,6 +89,8 @@ function runCli(args: string[], d: Dirs, extraEnv: Record<string, string> = {}):
     FIXTURE_MODE: "prompt",
     FIXTURE_TARGET_REPO: d.repo,
     FAKE_GH_LOG: d.ghLog,
+    RICKGENT_MODEL_ROSTER: TEST_ROSTER_JSON,
+    RICKGENT_COST_BUDGET_USD: "10.0",
     ...extraEnv,
   };
   const res = spawnSync(process.execPath, [CLI_JS, ...args], {

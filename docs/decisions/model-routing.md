@@ -96,16 +96,51 @@ The `DispatchEntry` and `DispatchOptions` types in
 `orchestrator/src/dispatch/dispatch.ts` carry a `vendor?: string | null`
 field. The Dispatcher writes `opts.vendor ?? null` into every ledger entry it
 creates (planned, spawned, db_session_observed, completed, failed, timed_out).
-A dispatch with no router consultation has `vendor: null` (no silent hardcoded
-default). The ledger is append-only JSONL, so the vendor label round-trips
-through `DispatchLedger.find` and is available to any consumer (reconcile,
-metrics, status).
+The ledger is append-only JSONL, so the vendor label round-trips through
+`DispatchLedger.find` and is available to any consumer (reconcile, metrics,
+status).
 
-### Integration point
+### Integration point (WIRED — M4 fix)
 
 The build loop (`orchestrator/src/lifecycle/build.ts`) calls the Python router
-via subprocess before each dispatch. If the router returns `ALLOW`, the
-selected `vendor` is passed to `Dispatcher.dispatch` as `opts.vendor`. If
-`DENY` or `ASK`, the dispatch is not spawned (fail-closed). The per-dispatch
-`args.harness`/`args.model` overrides are passed to `sys_session_send` per
-architecture §3.5.
+via subprocess **before each dispatch** through the TypeScript routing bridge
+`orchestrator/src/lifecycle/routing.ts` (`routeDispatch` → `callSelectModel`).
+The `callSelectModel` function spawns `python3 -c` importing
+`rickgent_policies.select_model` and passes the roster, role,
+`implementer_vendor`, `cost_budget_usd`, and `soft_threshold_usd` as JSON on
+stdin. The parsed verdict determines whether the dispatch proceeds:
+
+- **ALLOW** → the selected `vendor` is passed to `Dispatcher.dispatch` as
+  `opts.vendor`, flowing into every ledger entry. The `implementer` role's
+  vendor is recorded per-ticket so a subsequent `code_review` dispatch can
+  pass it to the router for cross-vendor exclusion.
+- **DENY** → no dispatch spawns (fail-closed). A `failed` ledger entry is
+  recorded with the router's DENY reason, and the ticket is absorbed by
+  salvage/breaker (same as any other dispatch failure). This enforces the
+  pre-dispatch cost gate: unpriced/over-hard-budget → `NO_PRICED_MODEL`,
+  empty roster → `ROSTER_EMPTY`, no candidates after cross-vendor exclusion
+  → `NO_CANDIDATES`.
+- **ASK** → no dispatch spawns (the autonomous build loop is non-interactive;
+  an ASK is a cost-gate hit, not auto-approved). The ticket is absorbed by
+  salvage/breaker. This enforces the soft threshold: over-soft-threshold but
+  under hard budget → `OVER_SOFT_THRESHOLD`.
+
+The live roster is resolved from `BuildOptions.roster` or the
+`RICKGENT_MODEL_ROSTER` env var (JSON array of model entries). When absent or
+empty, the router returns `ROSTER_EMPTY` (DENY) and no dispatch spawns —
+fail-closed, no silent hardcoded default vendor. Cost budget and soft
+threshold are resolved from `BuildOptions.costBudgetUsd`/`softThresholdUsd`
+or the `RICKGENT_COST_BUDGET_USD`/`RICKGENT_SOFT_THRESHOLD_USD` env vars.
+
+The CLI (`rickgent build`) accepts `--roster <file>` (JSON), `--cost-budget
+<usd>`, and `--soft-threshold <usd>` flags, plus the corresponding env vars.
+
+The cross-vendor review exclusion flows through the router in the real
+dispatch path: when a dispatch has `role: "code_review"`, the build loop
+passes the recorded implementer vendor for that ticket as
+`implementer_vendor` to `select_model`, which excludes same-vendor
+candidates. The `cross_vendor_review` policy independently DENYs a
+same-vendor review assignment at the policy layer (defense in depth).
+
+The per-dispatch `args.harness`/`args.model` overrides from the router
+selection are available for `sys_session_send` per architecture §3.5.

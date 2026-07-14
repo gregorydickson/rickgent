@@ -45,6 +45,7 @@ import {
   detectBackend,
   type ReapResult,
 } from "./orphan-reaper.js";
+import { routeDispatch, type ModelEntry } from "./routing.js";
 
 export interface BuildOptions {
   prdPath: string;
@@ -64,6 +65,18 @@ export interface BuildOptions {
   maxConcurrent?: number | undefined;
   timeout?: number;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Live model roster (B8 multi-vendor routing). When provided, the build loop
+   * calls the Python `select_model` router before each dispatch to select a
+   * harness/model/vendor. The selected vendor flows into every ledger entry.
+   * When absent or empty, the router returns ROSTER_EMPTY (DENY) and no
+   * dispatch spawns — fail-closed, no silent hardcoded default vendor.
+   */
+  roster?: ModelEntry[] | undefined;
+  /** Hard per-dispatch cost limit in USD (cost gate). */
+  costBudgetUsd?: number | undefined;
+  /** Soft cost threshold in USD (ASK when exceeded but under hard budget). */
+  softThresholdUsd?: number | undefined;
 }
 
 export interface BuildResult {
@@ -124,6 +137,28 @@ function revParseHead(repo: string, env: NodeJS.ProcessEnv): string | null {
   } catch {
     return null;
   }
+}
+
+/** Parse the RICKGENT_MODEL_ROSTER env var (JSON array of model entries). */
+function parseRosterEnv(env: NodeJS.ProcessEnv): ModelEntry[] {
+  const raw = env.RICKGENT_MODEL_ROSTER;
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (m) => m && typeof m.harness === "string" && typeof m.model === "string" && typeof m.vendor === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** Parse a numeric env var, returning undefined on absence/invalid. */
+function parseNumberEnv(v: string | undefined): number | undefined {
+  if (!v) return undefined;
+  const n = Number(v);
+  return Number.isNaN(n) ? undefined : n;
 }
 
 function computeTreeChanged(repo: string, baseline: string | null, env: NodeJS.ProcessEnv): boolean {
@@ -215,6 +250,24 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
     return { ...base, exitCode: 1, gateHit: "plan-gate", interventions: countInterventions(opts.rickgentDir) };
   }
 
+  // ── Model roster (B8 multi-vendor routing) ────────────────────────────────
+  // The live roster is resolved from BuildOptions.roster or the
+  // RICKGENT_MODEL_ROSTER env var (JSON). When absent/empty, the router returns
+  // ROSTER_EMPTY (DENY) and no dispatch spawns — fail-closed, no silent
+  // hardcoded default vendor.
+  const roster = opts.roster ?? parseRosterEnv(env);
+  const costBudgetUsd = opts.costBudgetUsd ?? parseNumberEnv(env.RICKGENT_COST_BUDGET_USD);
+  const softThresholdUsd = opts.softThresholdUsd ?? parseNumberEnv(env.RICKGENT_SOFT_THRESHOLD_USD);
+  if (roster.length > 0) {
+    report.push(`build: model roster loaded — ${roster.length} model(s), cost budget=$${costBudgetUsd ?? "unbounded"}`);
+  } else {
+    report.push("build: no model roster — router will DENY all dispatches (fail-closed)");
+  }
+
+  // Track the implementer's vendor per ticket so a code_review dispatch can
+  // pass it to the router for cross-vendor exclusion.
+  const implementerVendorByTicket = new Map<string, string>();
+
   // ── Dispatch infra ───────────────────────────────────────────────────────
   const ledger = new DispatchLedger(dispatchLedgerPath(opts.rickgentDir));
   const lock = new TicketLock(join(opts.rickgentDir, "locks"));
@@ -296,6 +349,79 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
       };
     }
 
+    // ── Pre-dispatch model routing (B8) ──────────────────────────────────
+    // Call the Python select_model router BEFORE spawning the worker. The
+    // router enforces: fail-closed on empty roster, cross-vendor review
+    // exclusion (code_review role excludes implementer's vendor), and the
+    // cost gate (unpriced/over-hard-budget → DENY, over-soft-threshold → ASK).
+    // On ALLOW, the selected vendor flows into the dispatch opts and from
+    // there into every ledger entry. On DENY/ASK, no dispatch spawns
+    // (fail-closed) — the ticket is absorbed by salvage/breaker.
+    const routerRole = id.role === "worker" ? "implement" : id.role;
+    const implementerVendor = routerRole === "code_review"
+      ? (implementerVendorByTicket.get(ticket.id) ?? null)
+      : null;
+    const routed = routeDispatch(roster, routerRole, {
+      implementerVendor,
+      costBudgetUsd: costBudgetUsd ?? null,
+      softThresholdUsd: softThresholdUsd ?? null,
+    });
+
+    if (!routed.ok) {
+      const v = routed.verdict;
+      const reason = v.result === "DENY"
+        ? `routing DENY (${v.code}): ${v.reason}`
+        : `routing ASK (${v.code}): ${v.reason}`;
+      report.push(`  ${ticket.id}: router ${v.result} (${v.code}) — not dispatched (fail-closed)`);
+      const failedEntry: DispatchEntry = {
+        dispatchId: dispatchIdString(id),
+        state: "failed",
+        pid: null,
+        startedAt: null,
+        completedAt: new Date().toISOString(),
+        exitCode: null,
+        stdout: null,
+        stderr: reason,
+        vendor: null,
+      };
+      ledger.append(failedEntry);
+
+      // Absorb via salvage/breaker, same as any other dispatch failure.
+      const treeChanged = computeTreeChanged(opts.workingDir, revParseHead(opts.workingDir, env), env);
+      const transition = recordIterationResult(breaker, {
+        error: reason,
+        gitTreeChanged: treeChanged,
+        workerClaimedFilesChanged: null,
+      });
+      const salvage = salvageExec.execute(
+        {
+          gatePassed: false,
+          treeChanged,
+          orphanReset: false,
+          ffReattachPossible: false,
+          ownedPaths: ticket.declaredPaths,
+        },
+        { ticketId: ticket.id, registry },
+      );
+      recordSalvageDisposition(opts.rickgentDir, {
+        ticketId: ticket.id,
+        dispatchState: "failed",
+        disposition: salvage.decision.disposition,
+        executed: salvage.executed,
+        archivePath: salvage.archivePath,
+        breaker: transition.transition,
+        routerVerdict: v.result,
+        routerCode: v.code,
+      });
+      return failedEntry;
+    }
+
+    const selectedVendor = routed.selection.vendor;
+    // Record the implementer's vendor for cross-vendor review exclusion.
+    if (routerRole === "implement") {
+      implementerVendorByTicket.set(ticket.id, selectedVendor);
+    }
+
     const baseline = revParseHead(opts.workingDir, env);
     const entry = await dispatcher.dispatch(id, {
       agentDir: opts.agentDir,
@@ -306,6 +432,7 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
       dataDir: opts.dataDir,
       declaredPaths: ticket.declaredPaths,
       env,
+      vendor: selectedVendor,
     });
 
     if (entry.state === "completed") {

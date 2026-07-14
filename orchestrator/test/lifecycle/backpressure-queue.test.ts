@@ -70,6 +70,11 @@ function runCli(args: string[], d: Dirs, extraEnv: Record<string, string> = {}):
     FIXTURE_MODE: "prompt",
     FIXTURE_TARGET_REPO: d.repo,
     FAKE_GH_LOG: d.ghLog,
+    RICKGENT_MODEL_ROSTER: JSON.stringify([
+      { harness: "claude", model: "anthropic/claude-sonnet-4", vendor: "anthropic", tier: "mid", pricing: { cost_per_dispatch: 0.50 } },
+      { harness: "codex", model: "openai/gpt-5-mini", vendor: "openai", tier: "cheap", pricing: { cost_per_dispatch: 0.04 } },
+    ]),
+    RICKGENT_COST_BUDGET_USD: "10.0",
     ...extraEnv,
   };
   const res = spawnSync(process.execPath, [CLI_JS, ...args], {

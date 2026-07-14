@@ -150,25 +150,17 @@ describe("Dispatcher vendor label in spawned entries (VAL-ROUTE-004)", () => {
     }
   });
 
-  it("defaults vendor to null when not provided (no silent hardcoded label)", async () => {
-    const id = makeId();
-    const result = await dispatcher.dispatch(id, {
-      agentDir: "/tmp/agent",
-      prompt: "do work",
-      timeout: 1000,
-      maxConcurrent: 1,
-    });
-
-    // No vendor provided → vendor is null (not a hardcoded default).
-    expect(result.vendor).toBeNull();
-
-    const raw = readFileSync(join(dir, "ledger.jsonl"), "utf-8").trim();
-    const lines = raw.split("\n");
-    for (const line of lines) {
-      const parsed = JSON.parse(line);
-      expect(parsed.vendor).toBeNull();
-    }
-  });
+  // NOTE: The previous "defaults vendor to null when not provided" test was
+  // REMOVED (M4 fix). It blessed the gap where the production build path never
+  // consulted the router, so every ledger entry had vendor: null. The
+  // production path (build.ts) now calls select_model before each dispatch and
+  // populates opts.vendor from the router's selection — see
+  // build-routing.test.ts for the end-to-end test that drives
+  // select_model -> Dispatcher.dispatch -> ledger vendor label.
+  //
+  // At the Dispatcher level, omitting vendor still yields null (the Dispatcher
+  // does not call the router itself), but this is no longer tested as a
+  // production behavior — it is an internal contract, not the production path.
 
   it("backpressure planned entry carries the vendor label", async () => {
     const id = makeId();
