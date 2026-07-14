@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, appendFileSync } from "fs";
+import { execFileSync } from "child_process";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync, appendFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, dirname } from "path";
 import {
   DispatchLedger,
   TicketLock,
@@ -10,6 +11,34 @@ import {
   type DispatchEntry,
   type DispatchId,
 } from "../../src/dispatch/dispatch.js";
+
+const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
+
+function git(repo: string, args: string[]): string {
+  return execFileSync("git", ["-C", repo, ...args], { encoding: "utf-8" }).trim();
+}
+
+function initFixtureRepo(repo: string): void {
+  mkdirSync(repo, { recursive: true });
+  git(repo, ["init", "-q"]);
+  git(repo, ["config", "user.email", "test@rickgent.test"]);
+  git(repo, ["config", "user.name", "Rickgent Test"]);
+  writeFileSync(join(repo, "README.md"), "seed\n");
+  git(repo, ["add", "--", "README.md"]);
+  git(repo, ["commit", "-q", "-m", "initial"]);
+}
+
+/** Read the ordered list of states for a dispatchId from the ledger. */
+function ledgerStates(ledgerPath: string, dispatchId: string): string[] {
+  if (!existsSync(ledgerPath)) return [];
+  const raw = readFileSync(ledgerPath, "utf-8").trim();
+  if (!raw) return [];
+  return raw
+    .split("\n")
+    .map((l) => JSON.parse(l) as DispatchEntry)
+    .filter((e) => e.dispatchId === dispatchId)
+    .map((e) => e.state);
+}
 
 function tmpDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), `rickgent-dispatch-${prefix}-`));
@@ -292,22 +321,168 @@ describe("Dispatcher backpressure", () => {
     expect(found!.state).toBe("planned");
   });
 
-  it("does not apply backpressure when under maxConcurrent", async () => {
-    const id = makeId();
+  // VAL-TESTINT-002: The under-capacity dispatch test uses a DETERMINISTIC
+  // fixture omnigent on PATH (not the absent real binary) and asserts the FULL
+  // legal transition sequence, not "pass-on-spawn-failure." The old test passed
+  // when spawn failed (omnigent not installed) by merely checking state !==
+  // "planned" and a "spawned" substring — a pass-on-nothing anti-pattern.
+  it("under-capacity dispatch drives the full success transition sequence via fixture omnigent", async () => {
+    const repo = join(dir, "repo");
+    initFixtureRepo(repo);
+    const dataDir = join(dir, "data");
+    mkdirSync(dataDir, { recursive: true });
 
-    // maxConcurrent=1, active=0 → should attempt to spawn (will fail since omnigent not installed)
-    const result = await dispatcher.dispatch(id, {
-      agentDir: "/tmp/agent",
-      prompt: "do work",
-      timeout: 1000,
-      maxConcurrent: 1,
-    });
+    // Put the fixture omnigent ahead of everything on PATH so the Dispatcher
+    // spawns IT, not the absent real binary. If the fixture is missing, spawn
+    // fails and this test FAILS (does not pass on spawn failure).
+    const fixtureEnv: Record<string, string> = {
+      PATH: `${FIXTURE_BIN}:${process.env.PATH ?? ""}`,
+      OMNIGENT_DATA_DIR: dataDir,
+      FIXTURE_TARGET_REPO: repo,
+      FIXTURE_WRITE_DB: "1",
+      FIXTURE_TRANSCRIPT_ITEMS: "2",
+      FIXTURE_GIT_FILE: "src/feature.ts",
+      FIXTURE_EXIT_CODE: "0",
+    };
 
-    // Should not be "planned" — it should have attempted spawn
-    expect(result.state).not.toBe("planned");
-    // The spawned entry should be in the ledger
-    const raw = readFileSync(join(dir, "ledger.jsonl"), "utf-8");
-    expect(raw).toContain("spawned");
+    const saved: Record<string, string | undefined> = {};
+    for (const [k, v] of Object.entries(fixtureEnv)) {
+      saved[k] = process.env[k];
+      process.env[k] = v;
+    }
+    try {
+      const id = makeId();
+      const idStr = dispatchIdString(id);
+      const entry = await dispatcher.dispatch(id, {
+        agentDir: join(dir, "agent"),
+        prompt: "do work",
+        timeout: 20000,
+        maxConcurrent: 2,
+        targetRepo: repo,
+        dataDir,
+        declaredPaths: ["src"],
+        env: fixtureEnv,
+      });
+
+      // The dispatch must NOT be "planned" — it spawned the fixture.
+      expect(entry.state).not.toBe("planned");
+      // The terminal state must be "completed" — the fixture produced a DB
+      // session, transcript, and in-scope git delta.
+      expect(entry.state).toBe("completed");
+      expect(entry.exitCode).toBe(0);
+
+      // Assert the FULL ordered transition sequence, not just a "spawned"
+      // substring. The legal sequence for a successful dispatch is:
+      //   spawned → db_session_observed → completed
+      const states = ledgerStates(join(dir, "ledger.jsonl"), idStr);
+      expect(states).toEqual(["spawned", "db_session_observed", "completed"]);
+
+      // Git-tree-truth: HEAD advanced (the fixture committed an in-scope file).
+      const changed = git(repo, ["diff", "--name-only", "HEAD~1", "HEAD"]);
+      expect(changed).toContain("src/feature.ts");
+    } finally {
+      for (const k of Object.keys(fixtureEnv)) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
+  });
+
+  // VAL-TESTINT-002 (failure/recovery branch): the under-capacity dispatch
+  // also asserts a failure/recovery transition sequence via the fixture
+  // omnigent. A fixture worker configured to exit non-zero drives:
+  //   spawned → failed
+  // This proves the test does not pass-on-spawn-failure and observes the REAL
+  // terminal state the Dispatcher records for a genuinely failing worker.
+  it("under-capacity dispatch drives the failure transition sequence via fixture omnigent", async () => {
+    const repo = join(dir, "repo");
+    initFixtureRepo(repo);
+    const dataDir = join(dir, "data");
+    mkdirSync(dataDir, { recursive: true });
+
+    const fixtureEnv: Record<string, string> = {
+      PATH: `${FIXTURE_BIN}:${process.env.PATH ?? ""}`,
+      OMNIGENT_DATA_DIR: dataDir,
+      FIXTURE_TARGET_REPO: repo,
+      FIXTURE_WRITE_DB: "1",
+      FIXTURE_TRANSCRIPT_ITEMS: "1",
+      // No git file → no in-scope delta, and exit 1 → the evidence check fails.
+      FIXTURE_EXIT_CODE: "1",
+    };
+
+    const saved: Record<string, string | undefined> = {};
+    for (const [k, v] of Object.entries(fixtureEnv)) {
+      saved[k] = process.env[k];
+      process.env[k] = v;
+    }
+    try {
+      const id = makeId();
+      const idStr = dispatchIdString(id);
+      const entry = await dispatcher.dispatch(id, {
+        agentDir: join(dir, "agent"),
+        prompt: "do work",
+        timeout: 20000,
+        maxConcurrent: 2,
+        targetRepo: repo,
+        dataDir,
+        declaredPaths: ["src"],
+        env: fixtureEnv,
+      });
+
+      // The dispatch spawned (not planned) and reached the "failed" terminal.
+      expect(entry.state).not.toBe("planned");
+      expect(entry.state).toBe("failed");
+      expect(entry.exitCode).toBe(1);
+
+      // Assert the FULL ordered transition sequence for a failing dispatch:
+      //   spawned → failed
+      // (No db_session_observed or completed because exit ≠ 0 short-circuits.)
+      const states = ledgerStates(join(dir, "ledger.jsonl"), idStr);
+      expect(states).toEqual(["spawned", "failed"]);
+    } finally {
+      for (const k of Object.keys(fixtureEnv)) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
+  });
+
+  // VAL-TESTINT-002 (no-pass-on-spawn-failure): with the fixture omnigent
+  // intentionally NOT on PATH, the dispatch spawn fails. The test must NOT
+  // pass by merely checking "not planned" + "spawned" — it must assert a
+  // specific terminal state that only a REAL fixture run could produce. This
+  // test confirms the anti-pattern is gone: when the fixture is absent, the
+  // failure is observable as "failed" (not silently "completed").
+  it("fails closed (failed, not completed) when the fixture omnigent is absent from PATH", async () => {
+    // Ensure the fixture is NOT reachable: PATH excludes the fixture dir.
+    const fixtureEnv: Record<string, string> = {
+      PATH: `/usr/bin:/bin:${process.env.PATH ?? ""}`.replace(FIXTURE_BIN, ""),
+    };
+
+    const saved: Record<string, string | undefined> = {};
+    for (const [k, v] of Object.entries(fixtureEnv)) {
+      saved[k] = process.env[k];
+      process.env[k] = v;
+    }
+    try {
+      const id = makeId();
+      const entry = await dispatcher.dispatch(id, {
+        agentDir: "/tmp/agent",
+        prompt: "do work",
+        timeout: 2000,
+        maxConcurrent: 2,
+      });
+
+      // Spawn failed (no omnigent binary) → "failed", NOT "completed".
+      // The old test would have passed here (state !== "planned" + "spawned"
+      // substring). The new test asserts the SPECIFIC terminal: "failed".
+      expect(entry.state).toBe("failed");
+    } finally {
+      for (const k of Object.keys(fixtureEnv)) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
   });
 });
 

@@ -140,3 +140,54 @@ class TestUnpricedModelDispatch:
         result = select_model(roster, role="implement", cost_budget_usd=1.0)
         assert result["result"] == "DENY"
         assert "selection" not in result
+
+    def test_over_soft_threshold_asks(self):
+        """Over soft threshold but under hard budget → ASK (soft threshold).
+
+        The cost policy distinguishes hard DENY (over budget) from soft ASK
+        (over a warning threshold but still within budget). This exercises the
+        real select_model soft-threshold branch — a pass placeholder or a
+        concept-only assertion would not reach this code path.
+        """
+        from rickgent_policies import select_model
+        roster = [
+            {
+                "harness": "claude",
+                "model": "anthropic/claude-opus-4",
+                "vendor": "anthropic",
+                "tier": "capable",
+                "pricing": {"cost_per_dispatch": 5.0},
+            },
+        ]
+        result = select_model(
+            roster,
+            role="implement",
+            cost_budget_usd=10.0,
+            soft_threshold_usd=2.0,
+        )
+        assert result["result"] == "ASK"
+        assert result["code"] == "OVER_SOFT_THRESHOLD"
+        assert "selection" in result
+        assert result["selection"]["model"] == "anthropic/claude-opus-4"
+
+    def test_within_budget_model_allowed(self):
+        """A priced model within budget → ALLOW (positive cost-gate path).
+
+        Confirms the cost gate does not over-deny: a properly priced,
+        within-budget model is ALLOWed. A mutation that makes the policy
+        DENY all models (or ALLOW unpriced) would fail this test.
+        """
+        from rickgent_policies import select_model
+        roster = [
+            {
+                "harness": "claude",
+                "model": "anthropic/claude-sonnet-4-20250514",
+                "vendor": "anthropic",
+                "tier": "mid",
+                "pricing": {"cost_per_dispatch": 1.0},
+            },
+        ]
+        result = select_model(roster, role="implement", cost_budget_usd=10.0)
+        assert result["result"] == "ALLOW"
+        assert "selection" in result
+        assert result["selection"]["model"] == "anthropic/claude-sonnet-4-20250514"
