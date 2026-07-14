@@ -25,6 +25,21 @@ describe("CLI commands", () => {
     expect(out).toContain("status");
   });
 
+  it("build --help exits 0 and prints build help referencing the gates", () => {
+    const out = execSync(`${rickgentBin} build --help`, { encoding: "utf-8" });
+    expect(out).toContain("rickgent build");
+    expect(out).toContain("--resume");
+    expect(out.toLowerCase()).toContain("conformance");
+    expect(out.toLowerCase()).toContain("deslop");
+  });
+
+  it("pipeline --help exits 0 and prints pipeline help", () => {
+    const out = execSync(`${rickgentBin} pipeline --help`, { encoding: "utf-8" });
+    expect(out).toContain("rickgent pipeline");
+    expect(out.toLowerCase()).toContain("conformance");
+    expect(out.toLowerCase()).toContain("deslop");
+  });
+
   it("verdict completion --json works", () => {
     const out = execSync(
       `echo '{"claimedSha":null,"baselineSha":"abc","shaExists":false,"treeChanged":false,"gateGreen":null}' | ${rickgentBin} verdict completion --json`,

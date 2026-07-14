@@ -434,11 +434,14 @@ describe("Dispatcher backpressure", () => {
   // test confirms the anti-pattern is gone: when the fixture is absent, the
   // failure is observable as "failed" (not silently "completed").
   it("fails closed (failed, not completed) when the fixture omnigent is absent from PATH", async () => {
-    // Ensure the fixture is NOT reachable: PATH excludes the fixture dir.
+    // Ensure NO omnigent (fixture OR real) is reachable: use a minimal PATH
+    // that excludes the fixture dir AND any real omnigent install (e.g. pyenv
+    // shims), so spawn('omnigent') gets an immediate ENOENT -> "failed"
+    // deterministically, with no race against the timeout under full-suite load.
     // Pass via the dispatch `env` option (not process.env) to avoid cross-test
     // contamination in vitest's thread pool.
     const fixtureEnv: Record<string, string> = {
-      PATH: `/usr/bin:/bin:${process.env.PATH ?? ""}`.replace(FIXTURE_BIN, ""),
+      PATH: "/usr/bin:/bin",
     };
 
     const id = makeId();

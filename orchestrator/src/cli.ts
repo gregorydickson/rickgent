@@ -36,6 +36,44 @@ Commands:
   pipeline, cronenberg, status, metrics, reconcile, doctor, verdict
 `;
 
+const BUILD_USAGE = `rickgent build — implement all tickets through the gated build loop
+
+Usage:
+  rickgent build <prd> [options]
+  rickgent build --resume [options]
+
+Required (unless --resume):
+  <prd>                     PRD markdown file to decompose into tickets
+
+Options:
+  --repo <dir>              Target git repo (default: RICKGENT_TARGET_REPO or cwd)
+  --agent <dir>             omnigent agent bundle directory
+  --feature <branch>        Feature branch to build on
+  --max-concurrent <N>      Max concurrent dispatches (default: 2)
+  --roster <file>           JSON model roster for routing
+  --cost-budget <usd>       Hard cost budget per dispatch
+  --soft-threshold <usd>    Soft cost threshold (triggers ASK)
+  --resume                  Resume from an existing session (ledger + git state)
+  --no-autonomous-pr        Disable autonomous PR flow
+  --max-iterations <N>      Stop after N iterations
+
+Each ticket runs the 9-gate pipeline, including the conformance gate (citadel)
+and the deslop gate (szechuan), before merge.
+`;
+
+const PIPELINE_USAGE = `rickgent pipeline — full lifecycle (build + convergence + reconcile cleanup)
+
+Usage:
+  rickgent pipeline <prd> [options]
+
+Accepts the same flags as \`rickgent build\` (--repo, --agent, --feature,
+--max-concurrent, --roster, --cost-budget, --soft-threshold, --resume,
+--no-autonomous-pr, --max-iterations).
+
+Runs the gated build loop (including the conformance/citadel and deslop/szechuan
+gates), then convergence and reconcile cleanup.
+`;
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const command = args[0] ?? "";
@@ -280,6 +318,10 @@ function readRosterFile(path: string): string {
 }
 
 async function runBuildCommand(rest: string[]): Promise<void> {
+  if (rest.includes("--help") || rest.includes("-h")) {
+    console.log(BUILD_USAGE);
+    return;
+  }
   const opts = resolveBuildOptions(rest);
   if (!opts) {
     process.exit(1);
@@ -298,6 +340,10 @@ async function runBuildCommand(rest: string[]): Promise<void> {
 }
 
 async function runPipelineCommand(rest: string[]): Promise<void> {
+  if (rest.includes("--help") || rest.includes("-h")) {
+    console.log(PIPELINE_USAGE);
+    return;
+  }
   const opts = resolveBuildOptions(rest);
   if (!opts) {
     process.exit(1);
