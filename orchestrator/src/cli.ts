@@ -80,6 +80,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "metrics") {
+    await runMetricsCommand(args.slice(1));
+    return;
+  }
+
   if (command === "pipeline") {
     await runPipelineCommand(args.slice(1));
     return;
@@ -93,6 +98,7 @@ async function main(): Promise<void> {
     "reconcile",
     "build",
     "pipeline",
+    "metrics",
     "--version",
     "--build-commit",
     "--help",
@@ -293,6 +299,17 @@ async function runPipelineCommand(rest: string[]): Promise<void> {
   );
   if (result.exitCode !== 0) {
     process.exit(result.exitCode);
+  }
+}
+
+async function runMetricsCommand(rest: string[]): Promise<void> {
+  const asJson = rest.includes("--json");
+  const { runMetrics } = await import("./lifecycle/metrics.js");
+  const out = runMetrics(getRickgentDir(), process.env);
+  if (asJson) {
+    console.log(out.json);
+  } else {
+    console.log(out.report);
   }
 }
 

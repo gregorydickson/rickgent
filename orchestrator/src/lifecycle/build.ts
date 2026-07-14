@@ -46,6 +46,7 @@ import {
   type ReapResult,
 } from "./orphan-reaper.js";
 import { routeDispatch, type ModelEntry } from "./routing.js";
+import { recordRun, recordPr } from "./metrics.js";
 
 export interface BuildOptions {
   prdPath: string;
@@ -103,11 +104,18 @@ function salvageLedgerPath(rickgentDir: string): string {
 }
 
 /** Record a human-gate hit. A build that runs autonomously never appends here. */
-export function recordIntervention(rickgentDir: string, gate: string, reason: string): void {
+export function recordIntervention(
+  rickgentDir: string,
+  gate: string,
+  reason: string,
+  runId?: string,
+): void {
   mkdirSync(rickgentDir, { recursive: true });
+  const rec: Record<string, unknown> = { gate, reason, at: new Date().toISOString() };
+  if (runId) rec.runId = runId;
   appendFileSync(
     interventionLedgerPath(rickgentDir),
-    JSON.stringify({ gate, reason, at: new Date().toISOString() }) + "\n",
+    JSON.stringify(rec) + "\n",
   );
 }
 
@@ -236,16 +244,22 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
       `${parsed.prd.acceptanceCriteria.length} acceptance criteria`,
   );
 
+  // Record this run in the durable runs ledger so B9 `rickgent metrics` can
+  // compute interventions/run. The runId is resolved consistently with
+  // seedRegistry below (opts.runId, else a timestamped default).
+  const requestedRunId = opts.runId ?? `run-${Date.now()}`;
+  recordRun(opts.rickgentDir, requestedRunId, parsed.prd.title);
+
   const prdVerdict = evaluatePrd(parsed.prd);
   if (!prdVerdict.valid) {
-    recordIntervention(opts.rickgentDir, "prd-gate", `PRD invalid: ${prdVerdict.errors.join("; ")}`);
+    recordIntervention(opts.rickgentDir, "prd-gate", `PRD invalid: ${prdVerdict.errors.join("; ")}`, requestedRunId);
     report.push(`build: PRD GATE hit — ${prdVerdict.errors.join("; ")} (recorded intervention, exiting non-zero)`);
     return { ...base, exitCode: 1, gateHit: "prd-gate", interventions: countInterventions(opts.rickgentDir) };
   }
 
   // ── Plan gate ──────────────────────────────────────────────────────────
   if (parsed.tickets.length === 0) {
-    recordIntervention(opts.rickgentDir, "plan-gate", "decomposition produced zero tickets");
+    recordIntervention(opts.rickgentDir, "plan-gate", "decomposition produced zero tickets", requestedRunId);
     report.push("build: PLAN GATE hit — decomposition produced zero tickets (recorded intervention, exiting non-zero)");
     return { ...base, exitCode: 1, gateHit: "plan-gate", interventions: countInterventions(opts.rickgentDir) };
   }
@@ -276,7 +290,7 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
   const salvageExec = new SalvageExecutor(opts.workingDir);
   const breaker: CircuitBreakerState = createBreakerState();
 
-  const runId = seedRegistry(registry, opts.runId ?? `run-${Date.now()}`, parsed.tickets);
+  const runId = seedRegistry(registry, requestedRunId, parsed.tickets);
 
   // ── Resume: recover completed tickets from ledger + git via reconcile ─────
   const recoveredDone = new Set<string>();
@@ -503,6 +517,7 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
       opts.rickgentDir,
       "merge-gate",
       "autonomous PR flow disabled; a human must open the PR",
+      requestedRunId,
     );
     report.push(
       "build: MERGE GATE hit — autonomous PR flow disabled; a human must open the PR " +
@@ -533,12 +548,24 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
   );
   if (pr.prCreated) {
     base.prCreated = true;
+    // Record the shipped PR in the durable PR ledger so B9 `rickgent metrics`
+    // can compute the rolling matured-PR quality. shippedAt is now; the PR is
+    // immature until it crosses the 14-day maturity window.
+    recordPr(opts.rickgentDir, {
+      prId: pr.branch,
+      runId: requestedRunId,
+      branch: pr.branch,
+      title: parsed.prd.title,
+      repo: opts.workingDir,
+      shippedAt: new Date().toISOString(),
+      scopePaths: parsed.tickets.flatMap((t) => t.declaredPaths),
+    });
     report.push(`build: PR branch '${pr.branch}' created; gh pr create issued (${pr.ghOutput || "ok"})`);
     return { ...base, ok: true, exitCode: 0, interventions: countInterventions(opts.rickgentDir) };
   }
 
   // The autonomous PR path could not complete → human gate.
-  recordIntervention(opts.rickgentDir, "merge-gate", pr.error ?? "PR creation blocked");
+  recordIntervention(opts.rickgentDir, "merge-gate", pr.error ?? "PR creation blocked", requestedRunId);
   report.push(`build: MERGE GATE hit — ${pr.error ?? "PR creation blocked"} (recorded intervention, exiting non-zero)`);
   return {
     ...base,
