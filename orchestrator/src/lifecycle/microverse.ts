@@ -113,6 +113,26 @@ export function classifyConvergence(
   return { status: "improving", reason: "still improving" };
 }
 
+/**
+ * Parse the LAST numeric line from a metric command's stdout. A "numeric line"
+ * is a line whose trimmed content is a bare number (integer or decimal,
+ * optionally signed). Non-numeric noise before the score is ignored. Returns
+ * null when no numeric line is present (unreadable metric).
+ */
+export function parseLastNumericLine(stdout: string): number | null {
+  if (typeof stdout !== "string") return null;
+  const lines = stdout.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const trimmed = lines[i]!.trim();
+    if (trimmed === "") continue;
+    if (/^[+-]?(\d+(\.\d+)?|\.\d+)$/.test(trimmed)) {
+      const value = Number(trimmed);
+      if (Number.isFinite(value)) return value;
+    }
+  }
+  return null;
+}
+
 // ── Simulated runner (pure convergence-decision driver; unit tests) ──────────
 
 export interface MicroverseConfig {
@@ -228,8 +248,29 @@ export interface MicroverseLoopOptions {
   workingDir: string;
   /** Declared scope (repo-relative path prefixes) for owned-paths-only staging. */
   ownedPaths: string[];
-  /** Shell command whose numeric stdout is the metric score for an iteration. */
-  metricCommand: string;
+  /**
+   * Shell command whose last numeric stdout line is the metric score for an
+   * iteration. Optional when {@link metricFn} supplies the measurement instead
+   * (e.g. a `--goal` LLM judge spawned via `omnigent run`).
+   */
+  metricCommand?: string | undefined;
+  /**
+   * Custom measurement function; when provided it overrides {@link metricCommand}.
+   * Used by `--goal` mode to spawn a read-only LLM judge via `omnigent run` and
+   * parse its numeric verdict.
+   */
+  metricFn?: (() => number | null) | undefined;
+  /**
+   * Seed the baseline score instead of measuring it at loop start. Used by the
+   * CLI to (a) fail closed on an invalid metric before any state is written and
+   * (b) resume without re-measuring the baseline.
+   */
+  initialBaselineScore?: number | null | undefined;
+  /**
+   * Seed the accepted-score series (for `--resume`), preserving convergence
+   * continuity across invocations. The last entry becomes the baseline score.
+   */
+  initialAcceptedScores?: number[] | undefined;
   /** Per-iteration worker argv, e.g. () => ["omnigent","run",agentDir,"-p",prompt]. */
   workerArgv: (iteration: number) => string[];
   maxIterations: number;
@@ -307,8 +348,22 @@ export class MicroverseLoop {
   async run(): Promise<MicroverseLoopResult> {
     const initialBaseline = this.headSha();
     let baselineSha = initialBaseline;
-    let baselineScore = this.measure();
-    const acceptedScores: number[] = baselineScore === null ? [] : [baselineScore];
+    let baselineScore: number | null;
+    const acceptedScores: number[] = [];
+    if (Array.isArray(this.opts.initialAcceptedScores) && this.opts.initialAcceptedScores.length > 0) {
+      // Resume: continue the accepted-score series without re-measuring.
+      for (const s of this.opts.initialAcceptedScores) {
+        if (Number.isFinite(s)) acceptedScores.push(s);
+      }
+      baselineScore = acceptedScores.length > 0 ? acceptedScores[acceptedScores.length - 1]! : null;
+    } else if (this.opts.initialBaselineScore !== undefined && this.opts.initialBaselineScore !== null) {
+      // CLI pre-measured (and validated) the baseline; do not re-measure.
+      baselineScore = this.opts.initialBaselineScore;
+      acceptedScores.push(baselineScore);
+    } else {
+      baselineScore = this.measure();
+      if (baselineScore !== null) acceptedScores.push(baselineScore);
+    }
 
     const iterations: LoopIterationRecord[] = [];
     let status: LoopStatus = "max-iterations";
@@ -518,8 +573,21 @@ export class MicroverseLoop {
     }
   }
 
-  /** Run the real metric command and parse its numeric stdout (NaN → null). */
+  /**
+   * Measure the current metric score. A custom {@link MicroverseLoopOptions.metricFn}
+   * (e.g. a `--goal` judge) takes precedence; otherwise the shell metric command
+   * runs and its LAST numeric stdout line is parsed. A non-zero metric exit or a
+   * missing numeric line is unreadable → null (fail-closed at the caller).
+   */
   private measure(): number | null {
+    if (this.opts.metricFn) {
+      try {
+        return this.opts.metricFn();
+      } catch {
+        return null;
+      }
+    }
+    if (!this.opts.metricCommand) return null;
     const res = spawnSync("sh", ["-c", this.opts.metricCommand], {
       cwd: this.opts.workingDir,
       encoding: "utf-8",
@@ -527,9 +595,9 @@ export class MicroverseLoop {
     });
     if (res.status !== 0 && res.status !== null) {
       // Non-zero metric exit is not a score; treat as unreadable.
+      return null;
     }
-    const value = parseFloat((res.stdout ?? "").trim());
-    return Number.isFinite(value) ? value : null;
+    return parseLastNumericLine(res.stdout ?? "");
   }
 
   private ownedPaths(): string[] {

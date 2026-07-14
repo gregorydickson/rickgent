@@ -90,6 +90,12 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "microverse") {
+    const { runMicroverseCommand } = await import("./lifecycle/microverse-cli.js");
+    await runMicroverseCommand(args.slice(1));
+    return;
+  }
+
   // Stub for not-yet-implemented commands
   const implemented = [
     "verdict",
@@ -99,6 +105,7 @@ async function main(): Promise<void> {
     "build",
     "pipeline",
     "metrics",
+    "microverse",
     "--version",
     "--build-commit",
     "--help",
