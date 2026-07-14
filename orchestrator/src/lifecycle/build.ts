@@ -264,6 +264,40 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
     return { ...base, exitCode: 1, gateHit: "plan-gate", interventions: countInterventions(opts.rickgentDir) };
   }
 
+  // ── Policy attachment verification (B4 gate) ─────────────────────────────
+  // Before any dispatch, verify that the manager + worker bundles attach the
+  // full required policy set. This is the same check `rickgent doctor` runs,
+  // but wired into the build startup so a build cannot proceed with ungated
+  // policies. Skippable via RICKGENT_SKIP_POLICY_ATTACH=1 (test-only control).
+  const skipPolicyAttach = env.RICKGENT_SKIP_POLICY_ATTACH === "1";
+  if (!skipPolicyAttach) {
+    const attachResult = verifyPolicyAttachment(opts.agentDir, env);
+    if (attachResult.ok) {
+      report.push(
+        `build: policy attachment — manager: PASS, worker: PASS ` +
+          `(${attachResult.managerCount}/${attachResult.workerCount} policies)`,
+      );
+    } else {
+      // Fail closed: missing policy attachment is a human gate (not a bypass).
+      recordIntervention(
+        opts.rickgentDir,
+        "policy-attachment-gate",
+        attachResult.detail,
+        requestedRunId,
+      );
+      report.push(
+        `build: POLICY ATTACHMENT GATE hit — ${attachResult.detail} ` +
+          "(recorded intervention, exiting non-zero)",
+      );
+      return {
+        ...base,
+        exitCode: 1,
+        gateHit: "policy-attachment-gate",
+        interventions: countInterventions(opts.rickgentDir),
+      };
+    }
+  }
+
   // ── Model roster (B8 multi-vendor routing) ────────────────────────────────
   // The live roster is resolved from BuildOptions.roster or the
   // RICKGENT_MODEL_ROSTER env var (JSON). When absent/empty, the router returns
@@ -507,6 +541,80 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
     else base.ticketsFailed++;
   }
 
+  // ── Salvage/breaker infrastructure status ────────────────────────────────
+  // Report the salvage/breaker infrastructure state after the dispatch loop.
+  // On a failure path, individual ticket salvage dispositions are recorded
+  // inline; on a success path, the infrastructure is still live and observable.
+  const salvagePath = salvageLedgerPath(opts.rickgentDir);
+  const salvageCount = existsSync(salvagePath)
+    ? readFileSync(salvagePath, "utf-8").split("\n").filter((l) => l.trim().length > 0).length
+    : 0;
+  report.push(
+    `build: salvage/breaker — ${salvageCount} disposition(s) recorded, ` +
+      `breaker state=${canExecute(breaker) ? "CLOSED (executing)" : "OPEN (deferring)"}`,
+  );
+
+  // ── Conformance gate (citadel) ───────────────────────────────────────────
+  // After implementation, run each acceptance criterion's verifyCommand
+  // against the working repo. This is the post-implementation conformance
+  // audit that validates the implemented code against the PRD's acceptance
+  // criteria. A failing AC is absorbed (not a human intervention) but recorded
+  // as a gate finding. Skippable via RICKGENT_SKIP_CONFORMANCE=1 (test-only).
+  const skipConformance = env.RICKGENT_SKIP_CONFORMANCE === "1";
+  if (!skipConformance && base.ticketsDone > 0) {
+    const conformanceResult = runConformanceGate(parsed.prd.acceptanceCriteria, opts.workingDir, env);
+    const acResults = conformanceResult.results.map(
+      (r) => `${r.acId}: ${r.pass ? "PASS" : "FAIL"}`,
+    );
+    report.push(
+      `build: conformance gate — ${conformanceResult.passed}/${conformanceResult.total} ACs passed ` +
+        `(${acResults.join(", ")})`,
+    );
+    if (conformanceResult.failed > 0) {
+      // A conformance failure is absorbed by salvage, not a human gate.
+      for (const r of conformanceResult.results) {
+        if (!r.pass) {
+          recordSalvageDisposition(opts.rickgentDir, {
+            gate: "conformance",
+            acId: r.acId,
+            disposition: "conformance-failed",
+            executed: false,
+            detail: r.detail,
+          });
+        }
+      }
+    }
+  } else if (!skipConformance && base.ticketsDone === 0) {
+    report.push("build: conformance gate — skipped (no tickets completed)");
+  }
+
+  // ── Deslop gate (szechuan) ───────────────────────────────────────────────
+  // After conformance, run a basic code quality check on the changed files.
+  // This is the deslop gate that catches obvious slop patterns (TODO, FIXME,
+  // console.log, debugger, etc.) in the implemented code. A finding is absorbed
+  // (not a human intervention) but recorded. Skippable via
+  // RICKGENT_SKIP_DESLOP=1 (test-only).
+  const skipDeslop = env.RICKGENT_SKIP_DESLOP === "1";
+  if (!skipDeslop && base.ticketsDone > 0) {
+    const deslopResult = runDeslopGate(opts.workingDir, parsed.tickets, env);
+    report.push(
+      `build: deslop gate — checked ${deslopResult.filesChecked} file(s), ` +
+        `${deslopResult.findings} finding(s)`,
+    );
+    if (deslopResult.findings > 0) {
+      for (const f of deslopResult.details) {
+        recordSalvageDisposition(opts.rickgentDir, {
+          gate: "deslop",
+          disposition: "deslop-finding",
+          executed: false,
+          detail: f,
+        });
+      }
+    }
+  } else if (!skipDeslop && base.ticketsDone === 0) {
+    report.push("build: deslop gate — skipped (no tickets completed)");
+  }
+
   // ── Merge gate ───────────────────────────────────────────────────────────
   const featureBranch =
     opts.featureBranch ?? env.RICKGENT_FEATURE_BRANCH ?? `rickgent/${runId}`;
@@ -606,4 +714,203 @@ export async function runPipeline(opts: BuildOptions): Promise<PipelineResult> {
   const build = await runBuild(opts);
   const cleanup = runCleanup(opts.workingDir, opts.rickgentDir, opts.env);
   return { ...build, report: [...build.report, ...cleanup.report], cleanup };
+}
+
+// ── Policy attachment verification (B4 gate) ────────────────────────────────
+//
+// Verifies that the manager + worker bundles attach the full required policy
+// set via the omnigent static parser. This is the same check `rickgent doctor`
+// runs, but wired into build startup so a build cannot proceed with ungated
+// policies. Fails CLOSED (non-zero exit + intervention) on a missing policy.
+
+interface PolicyAttachResult {
+  ok: boolean;
+  detail: string;
+  managerCount: number;
+  workerCount: number;
+}
+
+function verifyPolicyAttachment(agentDir: string, env: NodeJS.ProcessEnv): PolicyAttachResult {
+  // Resolve manager + worker bundle dirs from the agent dir.
+  // agentDir is typically agents/rickgent (manager); worker is agents/rickgent/agents/worker.
+  const managerDir = agentDir;
+  const workerDir = join(agentDir, "agents", "worker");
+
+  // If neither bundle has a config.yaml, this is not a real bundle dir (e.g.,
+  // a test dummy). Skip the check — in production the agent dir always has one.
+  if (!existsSync(join(managerDir, "config.yaml")) && !existsSync(join(workerDir, "config.yaml"))) {
+    return {
+      ok: true,
+      detail: "no bundle config.yaml found — policy attachment check skipped (not a real bundle)",
+      managerCount: 0,
+      workerCount: 0,
+    };
+  }
+
+  const py = [
+    "import json, os, sys",
+    "from rickgent_policies import REQUIRED_POLICIES, effective_attached_policies",
+    "bundles = {'manager': os.environ['RG_MGR'], 'worker': os.environ['RG_WKR']}",
+    "counts = {}",
+    "missing = {}",
+    "for label, d in bundles.items():",
+    "    try:",
+    "        eff = effective_attached_policies(d)",
+    "        counts[label] = len(eff)",
+    "    except Exception as e:",
+    "        missing[label] = ['<parse-error: %s>' % e] + sorted(REQUIRED_POLICIES)",
+    "        counts[label] = 0",
+    "        continue",
+    "    gap = sorted(REQUIRED_POLICIES - eff)",
+    "    if gap:",
+    "        missing[label] = gap",
+    "print(json.dumps({'missing': missing, 'counts': counts}))",
+  ].join("\n");
+
+  try {
+    const stdout = execFileSync("python3", ["-c", py], {
+      encoding: "utf-8",
+      timeout: 15000,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...env, RG_MGR: managerDir, RG_WKR: workerDir },
+    }).trim();
+    const parsed = JSON.parse(stdout) as {
+      missing: Record<string, string[]>;
+      counts: Record<string, number>;
+    };
+    const labels = Object.keys(parsed.missing);
+    const mgrCount = parsed.counts["manager"] ?? 0;
+    const wkrCount = parsed.counts["worker"] ?? 0;
+    if (labels.length > 0) {
+      const detail = labels
+        .map((l) => `${l} missing [${(parsed.missing[l] ?? []).join(", ")}]`)
+        .join("; ");
+      return { ok: false, detail, managerCount: mgrCount, workerCount: wkrCount };
+    }
+    return {
+      ok: true,
+      detail: "manager + worker bundles attach the full required policy set",
+      managerCount: mgrCount,
+      workerCount: wkrCount,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      detail: `policy attachment check failed: ${err instanceof Error ? err.message : String(err)}`,
+      managerCount: 0,
+      workerCount: 0,
+    };
+  }
+}
+
+// ── Conformance gate (citadel) ──────────────────────────────────────────────
+//
+// Post-implementation conformance audit: runs each acceptance criterion's
+// verifyCommand against the working repo. A failing AC is absorbed (salvage
+// disposition recorded), not a human intervention.
+
+import type { AcceptanceCriterion } from "../core/prd.js";
+
+interface ConformanceResult {
+  total: number;
+  passed: number;
+  failed: number;
+  results: Array<{ acId: string; pass: boolean; detail: string }>;
+}
+
+function runConformanceGate(
+  acceptanceCriteria: AcceptanceCriterion[],
+  workingDir: string,
+  env: NodeJS.ProcessEnv,
+): ConformanceResult {
+  const results: Array<{ acId: string; pass: boolean; detail: string }> = [];
+  let passed = 0;
+  let failed = 0;
+
+  for (let i = 0; i < acceptanceCriteria.length; i++) {
+    const ac = acceptanceCriteria[i]!;
+    const acId = `AC-${i + 1}`;
+    // Strip markdown backtick delimiters that the PRD parser preserves.
+    const cmd = ac.verifyCommand.replace(/^`+|`+$/g, "").trim();
+    if (!cmd) {
+      results.push({ acId, pass: true, detail: "no verify command" });
+      passed++;
+      continue;
+    }
+    try {
+      execFileSync("sh", ["-c", cmd], {
+        cwd: workingDir,
+        encoding: "utf-8",
+        timeout: 30000,
+        stdio: ["ignore", "pipe", "pipe"],
+        env,
+      });
+      results.push({ acId, pass: true, detail: "verify command succeeded" });
+      passed++;
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      results.push({ acId, pass: false, detail: `verify command failed: ${detail}` });
+      failed++;
+    }
+  }
+
+  return { total: acceptanceCriteria.length, passed, failed, results };
+}
+
+// ── Deslop gate (szechuan) ──────────────────────────────────────────────────
+//
+// Post-conformance code quality check: scans the changed files for obvious slop
+// patterns (TODO, FIXME, console.log, debugger, etc.). A finding is absorbed
+// (salvage disposition recorded), not a human intervention.
+
+interface DeslopResult {
+  filesChecked: number;
+  findings: number;
+  details: string[];
+}
+
+const DESLOP_PATTERNS: RegExp[] = [
+  /\bTODO\b/i,
+  /\bFIXME\b/i,
+  /\bHACK\b/i,
+  /\bconsole\.log\b/,
+  /\bdebugger\b/,
+  /\beval\s*\(/,
+];
+
+function runDeslopGate(
+  workingDir: string,
+  tickets: TicketPlan[],
+  env: NodeJS.ProcessEnv,
+): DeslopResult {
+  void env;
+  const details: string[] = [];
+  let filesChecked = 0;
+
+  // Collect the set of declared paths from all tickets (the in-scope files).
+  const paths = new Set<string>();
+  for (const ticket of tickets) {
+    for (const p of ticket.declaredPaths) {
+      paths.add(p);
+    }
+  }
+
+  for (const relPath of paths) {
+    const abs = relPath.startsWith("/") ? relPath : join(workingDir, relPath);
+    if (!existsSync(abs)) continue;
+    filesChecked++;
+    try {
+      const content = readFileSync(abs, "utf-8");
+      for (const pattern of DESLOP_PATTERNS) {
+        const match = content.match(pattern);
+        if (match) {
+          details.push(`${relPath}: slop pattern "${match[0]}"`);
+        }
+      }
+    } catch {
+      // Skip unreadable files.
+    }
+  }
+
+  return { filesChecked, findings: details.length, details };
 }

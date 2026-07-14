@@ -24,19 +24,36 @@ through the real Dispatcher, absorbing failures without human interaction.
 
 ## Gates and interventions
 
-Three gates, per the hands-off NFR ("zero required human interventions between
-the three gates; failures route to salvage/breaker; human-gate hits are counted,
-target 0"):
+The full gated pipeline enforces these gates in order, per the hands-off NFR
+("zero required human interventions between the gates; failures route to
+salvage/breaker; human-gate hits are counted, target 0"):
 
 1. **PRD gate** — `evaluatePrd`. Invalid PRD → record intervention, exit non-zero.
 2. **Plan gate** — decomposition. Zero tickets → record intervention, exit non-zero.
-3. **Merge gate** — create the PR feature branch and issue `gh pr create`, gated by
-   `autonomous_pr_flow`. When autonomous PR flow is enabled (default) and the
+3. **Policy attachment gate (B4)** — before any dispatch, verify the manager +
+   worker bundles attach the full required policy set via the omnigent static
+   parser. Missing attachment → record intervention, exit non-zero (fail closed).
+4. **Model routing gate (B8)** — the Python `select_model` router selects a
+   harness/model/vendor from the live roster before each dispatch. Empty roster
+   or cost-gate DENY → no dispatch (fail-closed).
+5. **Evidence-based dispatch gate (B2)** — every dispatch reaches `completed`
+   only through the completion oracle (`evaluateCompletion`) with all four
+   evidence conditions (DB session, transcript, in-scope git delta, oracle pass).
+6. **Salvage/breaker gate (B6)** — a dispatch failure is absorbed by the circuit
+   breaker + salvage executor. The run continues non-interactively.
+7. **Conformance gate (citadel)** — after implementation, runs each acceptance
+   criterion's `verifyCommand` against the working repo. A failing AC is absorbed
+   (salvage disposition recorded), not a human intervention.
+8. **Deslop gate (szechuan)** — after conformance, scans changed files for
+   obvious slop patterns (TODO, FIXME, console.log, debugger, eval). Findings
+   are absorbed (salvage disposition recorded), not human interventions.
+9. **Merge gate** — create the PR feature branch and issue `gh pr create`, gated
+   by `autonomous_pr_flow`. When autonomous PR flow is enabled (default) and the
    policy ALLOWs the narrow own-branch shape, the PR is opened autonomously with
-   zero interventions. When autonomous PR flow is disabled (`--no-autonomous-pr`
-   / `RICKGENT_AUTONOMOUS_PR_FLOW=0`) or the policy will not grant the push, the
-   merge gate is a **human gate**: it records exactly one intervention and exits
-   non-zero rather than prompting.
+   zero interventions. When autonomous PR flow is disabled
+   (`--no-autonomous-pr` / `RICKGENT_AUTONOMOUS_PR_FLOW=0`) or the policy will
+   not grant the push, the merge gate is a **human gate**: it records exactly one
+   intervention and exits non-zero rather than prompting.
 
 Between the plan gate and the merge gate the loop is strictly non-interactive: a
 dispatched ticket that does not reach `completed` is **absorbed** — the circuit
@@ -44,6 +61,13 @@ breaker records the iteration and the salvage executor records a durable
 disposition (`.rickgent/salvage-dispositions.jsonl`) — and the run continues. It
 never prompts a human or prints a "run this yourself" instruction. A ticket
 failure is NOT an intervention.
+
+The conformance and deslop gates are observable in the build report output
+(`build: conformance gate — N/M ACs passed`, `build: deslop gate — checked N
+file(s), M finding(s)`) so the E2E test (VAL-E2E-001..004) can verify each named
+gate is live. They are skippable via `RICKGENT_SKIP_CONFORMANCE=1` and
+`RICKGENT_SKIP_DESLOP=1` (test-only controls for the distinctness assertion
+VAL-E2E-004); in production these are never set.
 
 Interventions are appended to `.rickgent/interventions.jsonl`; `countInterventions`
 reads the durable count (target 0 for a fully autonomous run).
