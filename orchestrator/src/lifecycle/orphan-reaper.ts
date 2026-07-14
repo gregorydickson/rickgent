@@ -3,15 +3,17 @@
  * Backend-gated: activates only where sandbox containment is absent.
  *
  * Why it exists: a worker session that crashes, is SIGKILL'd, or is operator-frozen
- * runs no teardown, so its process group re-parents to PID 1 and lingers. This
- * reaper runs at setup-time and collects worker procs no live session owns.
+ * runs no teardown, so its process group re-parents to the init process and lingers.
+ * This reaper runs at setup-time and collects worker procs no live session owns.
  *
  * Invariants (ported verbatim from source):
  * - Positive-ownership-mandatory: a proc is reaped ONLY when positively attributed
  *   to an owning session AND that session is provably not live.
- * - NO ppid==1-only reap branch — false-reaping an active worker is worse than a leaked orphan.
+ * - NO parent-is-init-only reap branch — false-reaping an active worker is worse
+ *   than a leaked orphan. Reaping is never triggered by parent-pid alone.
  * - Min-age gate: only procs older than minAgeSeconds are candidates.
- * - SIGTERM → SIGKILL escalation with grace period.
+ * - SIGTERM → grace → SIGKILL escalation on the process GROUP (negative pgid).
+ * - SIGKILL is skipped when the process exits during the grace window.
  * - Kill-switch: RICKGENT_ORPHAN_REAP=off → inert no-op.
  * - Win32: safe no-op (no process groups).
  */
@@ -35,10 +37,37 @@ export type ReapResult = {
   errors: string[];
 };
 
+/**
+ * Session liveness attribution for a worker proc candidate.
+ * - `"dead"`: the proc is positively attributed to an owning session that is
+ *   provably not live at reap time → eligible for reaping.
+ * - `"live"`: the proc is positively attributed to a session that is still
+ *   live → never reaped.
+ * - `"unattributable"`: ownership cannot be positively resolved → never reaped
+ *   (fail-closed: a leaked orphan is preferable to reaping an active worker).
+ */
+export type SessionLiveness = "dead" | "live" | "unattributable";
+
+/** Attribute a worker proc to its owning session's liveness. */
+export type AttributeSessionFn = (candidate: WorkerProcCandidate) => SessionLiveness;
+
+/** Kill a process group (addressed by negative pgid). Returns true if delivered. */
+export type KillGroupFn = (
+  pgid: number,
+  signal: NodeJS.Signals,
+  platform?: NodeJS.Platform,
+) => boolean;
+
+/** Return true if `pid` is currently alive (signal-0 probe). */
+export type IsAliveFn = (pid: number) => boolean;
+
+/** Block synchronously for approximately `ms` milliseconds. */
+export type SleepFn = (ms: number) => void;
+
 export const ORPHAN_REAP_ENV_VAR = "RICKGENT_ORPHAN_REAP";
-const DEFAULT_MIN_AGE_SECONDS = 600;
-const DEFAULT_GRACE_MS = 2000;
-const GRACE_POLL_MS = 100;
+export const DEFAULT_MIN_AGE_SECONDS = 600;
+export const DEFAULT_GRACE_MS = 2000;
+export const GRACE_POLL_MS = 100;
 
 /**
  * Determine whether the reaper should be active for the given sandbox backend.
@@ -135,7 +164,7 @@ function isWorkerShapedCommand(command: string): boolean {
     (lower.includes("codex") && lower.includes("exec"));
 }
 
-function isProcessAlive(pid: number): boolean {
+export function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -144,12 +173,24 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-function sleepSync(ms: number): void {
+export function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 /**
  * Reap orphaned worker processes. Runs once at setup-time.
+ *
+ * Reaping is driven SOLELY by: positive session attribution → live-state
+ * recheck → min-age gate. There is no branch that reaps based on parent-pid
+ * alone. A process is killed only when positively attributed to an owning
+ * session that is provably not live, and only after the min-age gate.
+ *
+ * The escalation is SIGTERM to the process GROUP → a grace window (polling
+ * isProcessAlive every GRACE_POLL_MS) → SIGKILL to the group, UNLESS the
+ * process exits during grace (then SIGKILL is skipped to avoid signaling a
+ * possibly-reused pid). `reaped` increments for every positively-attributed
+ * dead-session candidate that received SIGTERM, regardless of whether
+ * SIGKILL was needed.
  *
  * @param backend The sandbox backend in use (determines whether reaping is active)
  * @param opts Configuration options
@@ -163,12 +204,28 @@ export function reapOrphanedWorkerProcs(
     env?: NodeJS.ProcessEnv;
     platform?: NodeJS.Platform;
     scanFn?: () => string;
+    /** Resolve a candidate's owning-session liveness. Default: unattributable (fail-closed). */
+    attributeSession?: AttributeSessionFn;
+    /** Process-group kill primitive. Default: killProcessGroup. */
+    killGroupFn?: KillGroupFn;
+    /** Liveness probe. Default: isProcessAlive. */
+    isAliveFn?: IsAliveFn;
+    /** Sync sleep primitive. Default: sleepSync. */
+    sleepFn?: SleepFn;
   } = {},
 ): ReapResult {
   const env = opts.env ?? process.env;
   const platform = opts.platform ?? process.platform;
   const minAgeSeconds = opts.minAgeSeconds ?? DEFAULT_MIN_AGE_SECONDS;
   const graceMs = opts.graceMs ?? DEFAULT_GRACE_MS;
+
+  // The live reap path is wired to the real helpers by default; tests inject
+  // recording fakes to observe signal/alive/sleep behavior. These defaults are
+  // the previously-dead helpers, now invoked by every real reap.
+  const attributeSession: AttributeSessionFn = opts.attributeSession ?? (() => "unattributable");
+  const killGroup: KillGroupFn = opts.killGroupFn ?? ((pgid, signal, plat) => killProcessGroup(pgid, signal, plat));
+  const isAlive: IsAliveFn = opts.isAliveFn ?? isProcessAlive;
+  const sleep: SleepFn = opts.sleepFn ?? sleepSync;
 
   // Kill-switch
   if (env[ORPHAN_REAP_ENV_VAR] === "off") {
@@ -204,29 +261,49 @@ export function reapOrphanedWorkerProcs(
     for (const candidate of candidates) {
       scanned++;
 
-      // Min-age gate
+      // Min-age gate: a process younger than minAgeSeconds is never a reap
+      // candidate, even if attributed to a dead session.
       if (candidate.etimeSeconds < minAgeSeconds) {
         skipped++;
         continue;
       }
 
-      // Positive-ownership check: the proc must be positively attributed.
-      // In Rickgent, we check if the process looks like an omnigent worker
-      // that belongs to a session that is no longer live.
-      // Since we can't easily resolve session ownership without the full
-      // session infrastructure, we use a conservative heuristic:
-      // a worker process whose parent (ppid) is PID 1 is likely orphaned.
-      // BUT: we deliberately do NOT have a ppid==1-only reap branch.
-      // Instead, we check if the process group leader is alive and if the
-      // process responds to signal 0. If the process is still alive after
-      // minAgeSeconds AND its parent is PID 1, it's a candidate.
-      // However, we must be conservative: only reap if we're confident.
+      // Positive-ownership-mandatory: the proc must be positively attributed
+      // to an owning session. No attribution → fail-closed skip (never reap
+      // a proc we cannot prove belongs to a dead session).
+      const liveness = attributeSession(candidate);
+      if (liveness !== "dead") {
+        // "live" (session still active) or "unattributable" (cannot resolve
+        // ownership) → never reap. A leaked orphan is preferable to reaping
+        // an active worker.
+        skipped++;
+        continue;
+      }
 
-      // For now, skip all candidates — the reaper is active (scanning) but
-      // the positive-ownership attribution requires session infrastructure
-      // that isn't wired yet. This is the safe default: scan but don't reap
-      // until we can positively attribute ownership.
-      skipped++;
+      // Reap: SIGTERM the process GROUP → grace → SIGKILL the group if still
+      // alive. The group is addressed by its negative pgid inside
+      // killProcessGroup so the whole group receives the signal.
+      killGroup(candidate.pgid, "SIGTERM", platform);
+
+      // Grace window: poll isProcessAlive every GRACE_POLL_MS. Break early if
+      // the process exits before the deadline.
+      let elapsed = 0;
+      while (elapsed < graceMs) {
+        sleep(GRACE_POLL_MS);
+        elapsed += GRACE_POLL_MS;
+        if (!isAlive(candidate.pid)) {
+          break;
+        }
+      }
+
+      // Post-grace recheck: only send SIGKILL if the process is STILL alive
+      // after the grace window. This avoids signaling a possibly-reused pid
+      // when the process exited during grace.
+      if (isAlive(candidate.pid)) {
+        killGroup(candidate.pgid, "SIGKILL", platform);
+      }
+
+      reaped++;
     }
   } catch (err) {
     errors.push(`reap scan failed: ${err instanceof Error ? err.message : String(err)}`);

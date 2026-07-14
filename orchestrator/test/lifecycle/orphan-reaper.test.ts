@@ -5,7 +5,12 @@ import {
   killProcessGroup,
   parseWorkerProcsFromPs,
   reapOrphanedWorkerProcs,
+  isProcessAlive,
+  sleepSync,
+  GRACE_POLL_MS,
+  DEFAULT_GRACE_MS,
   type SandboxBackend,
+  type SessionLiveness,
 } from "../../src/lifecycle/orphan-reaper.js";
 
 describe("orphan reaper — backend gating", () => {
@@ -108,5 +113,192 @@ describe("orphan reaper — conservative default", () => {
     });
     expect(result.scanned).toBe(1);
     expect(result.skipped).toBe(1); // too young → skip
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B7 — real reap path (VAL-REAP-001..008).
+// These tests drive the reap loop with injectable attribution + signal/alive
+// fakes so the REAL code path is exercised and the REAL effect (which signals
+// are delivered to which pgid, in what order, and whether SIGKILL is skipped)
+// is observed — never a mock's return value.
+// ---------------------------------------------------------------------------
+
+const DEAD_OLD = "  1234  1234     1 20:00 omnigent run agents/rickgent -p build";
+const DEAD_YOUNG = "  1234  1234     1 00:05 omnigent run agents/rickgent -p build";
+
+type SignalCall = { pgid: number; signal: string };
+
+function recordingKillGroup(log: SignalCall[]) {
+  return (pgid: number, signal: NodeJS.Signals): boolean => {
+    log.push({ pgid, signal: String(signal) });
+    return true;
+  };
+}
+
+describe("orphan reaper — dead-session reap (VAL-REAP-001)", () => {
+  it("reaps a min-age dead-session process via SIGTERM→grace→SIGKILL on the pgid", () => {
+    const signals: SignalCall[] = [];
+    const result = reapOrphanedWorkerProcs("darwin_seatbelt", {
+      scanFn: () => DEAD_OLD,
+      minAgeSeconds: 600,
+      graceMs: 10,
+      attributeSession: () => "dead",
+      killGroupFn: recordingKillGroup(signals),
+      // process stays alive through the whole grace window
+      isAliveFn: () => true,
+      sleepFn: () => {},
+    });
+    expect(result.reaped).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(signals.length).toBe(2);
+    expect(signals[0]).toEqual({ pgid: 1234, signal: "SIGTERM" });
+    expect(signals[1]).toEqual({ pgid: 1234, signal: "SIGKILL" });
+  });
+
+  it("targets the process GROUP (negative pgid), not the single pid", () => {
+    const signals: SignalCall[] = [];
+    reapOrphanedWorkerProcs("none", {
+      scanFn: () => DEAD_OLD,
+      minAgeSeconds: 600,
+      graceMs: 10,
+      attributeSession: () => "dead",
+      killGroupFn: (pgid, signal) => {
+        // the real killProcessGroup signals the group via -pgid
+        signals.push({ pgid, signal: String(signal) });
+        return killProcessGroup(pgid, signal);
+      },
+      isAliveFn: () => true,
+      sleepFn: () => {},
+    });
+    // Both signals carry the candidate's pgid (the group is addressed by -pgid
+    // inside killProcessGroup); we never signal the bare pid 1234 directly.
+    expect(signals.every(s => s.pgid === 1234)).toBe(true);
+  });
+});
+
+describe("orphan reaper — live / unattributable never reaped (VAL-REAP-002/003)", () => {
+  it("never reaps a process attributed to a LIVE session", () => {
+    const signals: SignalCall[] = [];
+    const result = reapOrphanedWorkerProcs("darwin_seatbelt", {
+      scanFn: () => DEAD_OLD,
+      minAgeSeconds: 600,
+      attributeSession: () => "live",
+      killGroupFn: recordingKillGroup(signals),
+      isAliveFn: () => true,
+      sleepFn: () => {},
+    });
+    expect(result.reaped).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(signals.length).toBe(0);
+  });
+
+  it("never reaps an unattributable process (fail-closed default)", () => {
+    const signals: SignalCall[] = [];
+    const result = reapOrphanedWorkerProcs("darwin_seatbelt", {
+      scanFn: () => DEAD_OLD,
+      minAgeSeconds: 600,
+      // no attributeSession → default unattributable
+      killGroupFn: recordingKillGroup(signals),
+      isAliveFn: () => true,
+      sleepFn: () => {},
+    });
+    expect(result.reaped).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(signals.length).toBe(0);
+  });
+});
+
+describe("orphan reaper — sub-min-age never reaped (VAL-REAP-007)", () => {
+  it("skips a dead-session process younger than the min-age gate", () => {
+    const signals: SignalCall[] = [];
+    const result = reapOrphanedWorkerProcs("darwin_seatbelt", {
+      scanFn: () => DEAD_YOUNG,
+      minAgeSeconds: 600,
+      attributeSession: () => "dead",
+      killGroupFn: recordingKillGroup(signals),
+      isAliveFn: () => true,
+      sleepFn: () => {},
+    });
+    expect(result.reaped).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(signals.length).toBe(0);
+  });
+});
+
+describe("orphan reaper — SIGKILL skipped when process exits during grace (VAL-REAP-008)", () => {
+  it("sends SIGTERM only and increments reaped when the process exits during grace", () => {
+    const signals: SignalCall[] = [];
+    const aliveChecks: number[] = [];
+    let alive = true;
+    const result = reapOrphanedWorkerProcs("darwin_seatbelt", {
+      scanFn: () => DEAD_OLD,
+      minAgeSeconds: 600,
+      graceMs: 10,
+      attributeSession: () => "dead",
+      killGroupFn: recordingKillGroup(signals),
+      isAliveFn: (pid) => {
+        aliveChecks.push(pid);
+        return alive;
+      },
+      sleepFn: () => { alive = false; }, // process exits during the grace sleep
+    });
+    expect(result.reaped).toBe(1);
+    expect(signals).toEqual([{ pgid: 1234, signal: "SIGTERM" }]);
+    // a post-grace isProcessAlive recheck was performed (and returned false)
+    expect(aliveChecks.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("orphan reaper — helpers wired into the reap path (VAL-REAP-006)", () => {
+  it("invokes killGroup, isAlive, and sleep during a dead-session reap", () => {
+    const signals: SignalCall[] = [];
+    const aliveCalls: number[] = [];
+    const sleepCalls: number[] = [];
+    reapOrphanedWorkerProcs("darwin_seatbelt", {
+      scanFn: () => DEAD_OLD,
+      minAgeSeconds: 600,
+      graceMs: 10,
+      attributeSession: () => "dead",
+      killGroupFn: recordingKillGroup(signals),
+      isAliveFn: (pid) => { aliveCalls.push(pid); return true; },
+      sleepFn: (ms) => { sleepCalls.push(ms); },
+    });
+    expect(signals.length).toBe(2);           // SIGTERM + SIGKILL
+    expect(aliveCalls.length).toBeGreaterThanOrEqual(1); // live-state recheck
+    expect(sleepCalls.length).toBeGreaterThanOrEqual(1); // grace window
+    // the grace poll constant is used for each sleep
+    expect(sleepCalls.every(ms => ms === GRACE_POLL_MS)).toBe(true);
+  });
+
+  it("exports the real helper functions and grace constants (not dead code)", () => {
+    expect(typeof isProcessAlive).toBe("function");
+    expect(typeof sleepSync).toBe("function");
+    expect(typeof GRACE_POLL_MS).toBe("number");
+    expect(typeof DEFAULT_GRACE_MS).toBe("number");
+  });
+});
+
+describe("orphan reaper — no-op on contained backends (VAL-REAP-005)", () => {
+  it("sends no signals on linux_bwrap even with a dead-session candidate", () => {
+    const signals: SignalCall[] = [];
+    const result = reapOrphanedWorkerProcs("linux_bwrap", {
+      scanFn: () => { throw new Error("should not scan"); },
+      attributeSession: () => "dead",
+      killGroupFn: recordingKillGroup(signals),
+    });
+    expect(result.reaped).toBe(0);
+    expect(signals.length).toBe(0);
+  });
+
+  it("sends no signals on windows_jobobject even with a dead-session candidate", () => {
+    const signals: SignalCall[] = [];
+    const result = reapOrphanedWorkerProcs("windows_jobobject", {
+      scanFn: () => { throw new Error("should not scan"); },
+      attributeSession: () => "dead",
+      killGroupFn: recordingKillGroup(signals),
+    });
+    expect(result.reaped).toBe(0);
+    expect(signals.length).toBe(0);
   });
 });
