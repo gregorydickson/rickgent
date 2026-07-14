@@ -96,6 +96,12 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "cronenberg") {
+    const { runCronenbergCommand } = await import("./lifecycle/cronenberg-run.js");
+    await runCronenbergCommand(args.slice(1));
+    return;
+  }
+
   // Stub for not-yet-implemented commands
   const implemented = [
     "verdict",
@@ -106,6 +112,7 @@ async function main(): Promise<void> {
     "pipeline",
     "metrics",
     "microverse",
+    "cronenberg",
     "--version",
     "--build-commit",
     "--help",
