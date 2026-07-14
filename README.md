@@ -147,11 +147,17 @@ The orchestrator owns the verdict core (pure TS, no I/O), the lifecycle (state m
 
 ### Install
 
-```bash
-# Install orchestrator dependencies
-cd orchestrator && pnpm install
+> **omnigent is a hard runtime dependency.** Rickgent dispatches agents via `omnigent run <agentDir> -p <prompt>` and attaches policy shims through omnigent's `guardrails:` block. Without omnigent installed, `rickgent build` cannot dispatch. Install omnigent first.
 
-# Install Python policy shims (editable)
+```bash
+# 1. Install omnigent (hard runtime dependency, read-only)
+#    Clone from https://github.com/gregorydickson/omnigent if not already present
+cd /path/to/omnigent && pip install -e .
+
+# 2. Install orchestrator dependencies
+cd /path/to/rickgent/orchestrator && pnpm install
+
+# 3. Install Python policy shims (editable)
 cd ../rickgent-policies && pip install -e .
 ```
 

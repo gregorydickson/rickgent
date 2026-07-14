@@ -23,12 +23,18 @@ export PATH="/Users/gregorydickson/.nvm/versions/node/v24.13.1/bin:/Users/gregor
 ```
 
 ```bash
-# Orchestrator dependencies
+# 1. Install omnigent first (hard runtime dependency — rickgent dispatches via `omnigent run`)
+#    Clone from https://github.com/gregorydickson/omnigent if not already present
+cd /path/to/omnigent && pip install -e .
+
+# 2. Install orchestrator dependencies
 cd orchestrator && pnpm install
 
-# Python policy shims (editable)
+# 3. Install Python policy shims (editable)
 cd ../rickgent-policies && pip install -e .
 ```
+
+**omnigent is a hard runtime dependency.** Without it installed, `rickgent build` cannot dispatch agents. The `rickgent doctor` command checks for omnigent importability and will exit 1 if it's missing.
 
 ### Build
 
