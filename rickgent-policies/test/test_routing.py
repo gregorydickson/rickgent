@@ -7,6 +7,7 @@ implementer's vendor), and denies/asks unpriced/over-budget selections
 BEFORE dispatch.
 """
 
+import inspect
 import pytest
 from rickgent_policies import select_model, cross_vendor_review
 
@@ -387,3 +388,90 @@ class TestRosterFailClosed:
         """Malformed input (non-list roster) fails closed to DENY."""
         result = select_model("not-a-list", role="implement")
         assert result["result"] == "DENY"
+
+
+# ── Hardening #4: select_model task parameter removed ─────────────────────
+# The `task` parameter was accepted but never used in selection. Per the
+# hardening requirement, it is removed (not silently ignored).
+
+
+class TestTaskParameterRemoved:
+    """Hardening #4: the `task` parameter is removed from select_model."""
+
+    def test_task_not_in_signature(self):
+        """The function signature must not include `task`."""
+        sig = inspect.signature(select_model)
+        assert "task" not in sig.parameters, (
+            f"select_model still accepts an unused `task` parameter: "
+            f"{list(sig.parameters)}"
+        )
+
+    def test_task_keyword_rejected(self):
+        """Passing task=... raises TypeError (unexpected keyword argument)."""
+        with pytest.raises(TypeError):
+            select_model(MULTI_VENDOR_ROSTER, role="implement", task="codegen")
+
+
+# ── Hardening #5: Tier-sort ties broken by tier proximity, not vendor ─────
+# The sort key used abs(pref_idx - tier_idx), producing ties broken
+# alphabetically by vendor. The fix breaks ties by tier proximity (prefer
+# the cheaper adjacent tier), not by vendor name.
+
+
+class TestTierSortTieBreak:
+    """Hardening #5: abs() ties in tier distance are broken by tier proximity
+    (cheaper tier preferred), not by alphabetical vendor ordering."""
+
+    def test_equidistant_tiers_cheap_preferred_over_capable(self):
+        """When preferred=mid, both cheap (idx=0) and capable (idx=2) are
+        abs-distance 1. The tie must be broken by tier proximity (cheaper
+        first), NOT by vendor name. So a cheap model with vendor 'zzz' is
+        preferred over a capable model with vendor 'aaa'."""
+        roster = [
+            {
+                "harness": "h1",
+                "model": "m-capable",
+                "vendor": "aaa",
+                "tier": "capable",
+                "pricing": {"cost_per_dispatch": 0.10},
+            },
+            {
+                "harness": "h2",
+                "model": "m-cheap",
+                "vendor": "zzz",
+                "tier": "cheap",
+                "pricing": {"cost_per_dispatch": 0.10},
+            },
+        ]
+        result = select_model(roster, role="plan")  # prefers mid
+        assert result["result"] == "ALLOW"
+        # Both are abs=1 from mid. Current (buggy) code breaks by vendor:
+        # "aaa" < "zzz" → picks capable/aaa. Fixed code breaks by tier
+        # proximity: cheap (idx=0) preferred over capable (idx=2).
+        assert result["selection"]["vendor"] == "zzz"
+        assert result["selection"]["model"] == "m-cheap"
+
+    def test_equidistant_tiers_not_alphabetical(self):
+        """Explicitly verify the selection is NOT the alphabetically-first
+        vendor when tiers are equidistant."""
+        roster = [
+            {
+                "harness": "h1",
+                "model": "m-capable",
+                "vendor": "aaa",
+                "tier": "capable",
+                "pricing": {"cost_per_dispatch": 0.10},
+            },
+            {
+                "harness": "h2",
+                "model": "m-cheap",
+                "vendor": "bbb",
+                "tier": "cheap",
+                "pricing": {"cost_per_dispatch": 0.10},
+            },
+        ]
+        result = select_model(roster, role="plan")  # prefers mid
+        assert result["result"] == "ALLOW"
+        # Buggy: "aaa" (capable) selected. Fixed: "bbb" (cheap) selected.
+        assert result["selection"]["vendor"] == "bbb"
+

@@ -132,7 +132,7 @@ describe("B5 real microverse loop", () => {
   });
 
   // VAL-MICRO-002
-  it("deadline breach kills the worker and salvage-commits only in-scope dirty work", async () => {
+  it("deadline breach kills the worker and salvage-archives only in-scope dirty work", async () => {
     initRepo(repo, 2);
     const before = head(repo);
     const loop = new MicroverseLoop({
@@ -154,12 +154,18 @@ describe("B5 real microverse loop", () => {
     // Worker process group is dead after the deadline.
     expect(result.lastWorkerPid).toBeTypeOf("number");
     expect(await waitDead(result.lastWorkerPid!)).toBe(true);
-    // A salvage commit landed (HEAD advanced) containing ONLY the in-scope path.
-    expect(head(repo)).not.toBe(before);
-    const stat = git(repo, ["show", "--stat", "--name-only", "--pretty=format:", "HEAD"]);
-    expect(stat).toContain("src/wip.txt");
-    expect(stat).not.toContain("outside2.txt");
-    // The out-of-scope file was neither committed nor discarded.
+    // Hardening #3: deadline salvage produces archived-todo (incomplete work
+    // is archived, NOT committed as done). HEAD does NOT advance.
+    expect(result.salvage).toBeTruthy();
+    expect(result.salvage!.decision.disposition).toBe("archived-todo");
+    expect(head(repo)).toBe(before);
+    // An archive patch was written to disk for the in-scope dirty work.
+    expect(result.salvage!.archivePath).toBeTruthy();
+    expect(existsSync(result.salvage!.archivePath!)).toBe(true);
+    const patch = readFileSync(result.salvage!.archivePath!, "utf-8");
+    expect(patch).toContain("src/wip.txt");
+    expect(patch).not.toContain("outside2.txt");
+    // The out-of-scope file was neither archived nor discarded.
     expect(existsSync(join(repo, "outside2.txt"))).toBe(true);
   });
 

@@ -899,23 +899,31 @@ _TIER_FALLBACK = ["cheap", "mid", "capable"]
 
 
 def _tier_sort_key(model, preferred_tier):
-    """Sort key: preferred tier first, then by fallback order, then by vendor
-    for deterministic ordering."""
+    """Sort key: preferred tier first (by absolute distance), then by tier
+    proximity (cheaper tier preferred when equidistant), then by vendor and
+    model for deterministic ordering.
+
+    The tiebreak for equidistant tiers (same abs(pref_idx - tier_idx)) is
+    tier_idx ascending — i.e. the cheaper adjacent tier wins. This is "tier
+    proximity" in the sense that a cheaper model is the safer default when
+    the preferred tier is unavailable, rather than an arbitrary alphabetical
+    vendor tiebreak.
+    """
     tier = model.get("tier", "mid")
     try:
         pref_idx = _TIER_FALLBACK.index(preferred_tier) if preferred_tier in _TIER_FALLBACK else 1
         tier_idx = _TIER_FALLBACK.index(tier) if tier in _TIER_FALLBACK else 1
     except ValueError:
         pref_idx, tier_idx = 1, 1
-    return (abs(pref_idx - tier_idx), model.get("vendor", ""), model.get("model", ""))
+    return (abs(pref_idx - tier_idx), tier_idx, model.get("vendor", ""), model.get("model", ""))
 
 
-def select_model(roster, role, task=None, implementer_vendor=None,
+def select_model(roster, role, implementer_vendor=None,
                  cost_budget_usd=None, soft_threshold_usd=None):
     """Route a dispatch to a harness/model from the live roster (B8).
 
     The router is NOT hardcoded to one vendor. It enumerates the live roster
-    (preflight) and selects a harness/model per role and task. It fails closed
+    (preflight) and selects a harness/model per role. It fails closed
     on an empty/unavailable roster — no dispatch, no silent fallback to a
     hardcoded vendor.
 
@@ -936,7 +944,6 @@ def select_model(roster, role, task=None, implementer_vendor=None,
             ``tier`` (str: "cheap"|"mid"|"capable"),
             ``pricing`` (None for unpriced, or ``{"cost_per_dispatch": float}``).
         role: lifecycle role ("implement", "code_review", "research", etc.).
-        task: optional task description (advisory; may influence selection).
         implementer_vendor: the implementer's vendor (for cross-vendor review).
         cost_budget_usd: hard per-dispatch cost limit in USD.
         soft_threshold_usd: soft threshold for ASK.

@@ -122,3 +122,58 @@ describe("classifyConvergence — pure decision over an accepted-baseline score 
     expect(d.via).toBe("target");
   });
 });
+
+// ── Hardening fix #7: measureAndClassify supports direction:'lower' ──────────
+// The MicroverseRunner.measureAndClassify hardcoded `score > baseline` as the
+// improvement test, so a "lower is better" metric (e.g. error count, latency)
+// classified every decrease as a regression and every increase as an
+// improvement — the exact inverse of the configured direction. After the fix,
+// the comparison is direction-aware.
+
+describe("Hardening #7 — MicroverseRunner direction:'lower' support", () => {
+  it("a decreasing series is classified as improving under direction:'lower'", () => {
+    const runner = new MicroverseRunner({
+      metric: "error-count",
+      stallLimit: 5,
+      maxIterations: 10,
+      direction: "lower",
+    });
+    const result = runner.runSimulated([100, 90, 80]);
+    // Each step decreases → improvement under "lower" direction.
+    expect(result.history[1]!.classification).toBe("improved");
+    expect(result.history[2]!.classification).toBe("improved");
+    expect(result.history[1]!.rolledBack).toBe(false);
+    expect(result.history[2]!.rolledBack).toBe(false);
+    // Baseline advanced to the lowest score.
+    expect(result.finalScore).toBe(80);
+  });
+
+  it("an increasing series is classified as regression under direction:'lower'", () => {
+    const runner = new MicroverseRunner({
+      metric: "error-count",
+      stallLimit: 5,
+      maxIterations: 10,
+      direction: "lower",
+    });
+    const result = runner.runSimulated([80, 90, 100]);
+    // Each step increases → regression under "lower" direction.
+    expect(result.history[1]!.classification).toBe("regressed");
+    expect(result.history[1]!.rolledBack).toBe(true);
+    expect(result.history[2]!.classification).toBe("regressed");
+    // Baseline preserved at the lowest (best) score.
+    expect(result.finalScore).toBe(80);
+  });
+
+  it("direction:'lower' with target converges when score drops below target", () => {
+    const runner = new MicroverseRunner({
+      metric: "error-count",
+      stallLimit: 5,
+      maxIterations: 10,
+      direction: "lower",
+      target: 85,
+    });
+    const result = runner.runSimulated([100, 90, 80]);
+    expect(result.converged).toBe(true);
+    expect(result.reason).toContain("target");
+  });
+});

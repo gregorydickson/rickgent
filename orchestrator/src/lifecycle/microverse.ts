@@ -19,6 +19,7 @@ import {
   type CircuitBreakerState,
 } from "../core/breaker.js";
 import { SalvageExecutor, type SalvageExecutionResult } from "./salvage.js";
+import { isPathInScope } from "../core/scope.js";
 
 // ── Convergence decision (pure) ──────────────────────────────────────────────
 
@@ -206,7 +207,11 @@ export class MicroverseRunner {
       this.acceptedScores.push(score);
       return { score, classification: "improved", rolledBack: false };
     }
-    if (score > this.baseline) {
+    // Direction-aware comparison: "higher" = score > baseline is improvement;
+    // "lower" = score < baseline is improvement (e.g. error count, latency).
+    const direction = this.convConfig.direction;
+    const isImprovement = direction === "lower" ? score < this.baseline : score > this.baseline;
+    if (isImprovement) {
       return { score, classification: "improved", rolledBack: false };
     }
     if (score === this.baseline) {
@@ -352,26 +357,53 @@ export class MicroverseLoop {
 
       if (newScore !== null && baselineScore !== null && this.isImprovement(newScore, baselineScore)) {
         // Improving iteration: commit in-scope work and advance the baseline.
+        // Only advance baselineScore/acceptedScores when the commit actually
+        // lands (git-tree-truth). If commitInScope returns null (nothing to
+        // stage or git failure), the metric "improvement" has no git backing
+        // — do NOT advance the baseline score (invariant: git-tree-truth >
+        // metric reading).
         const committed = this.commitInScope();
-        if (committed) baselineSha = committed;
-        baselineScore = newScore;
-        acceptedScores.push(newScore);
-        stallCount = 0;
-        iterations.push({
-          iteration: i,
-          score: newScore,
-          classification: "improved",
-          committedSha: committed,
-          rolledBack: false,
-          salvageSha: null,
-          workerStdout: workerRun.stdout,
-          timedOut: false,
-        });
-        recordIterationResult(this.breaker, {
-          error: null,
-          gitTreeChanged: committed !== null,
-          workerClaimedFilesChanged: null,
-        });
+        if (committed) {
+          baselineSha = committed;
+          baselineScore = newScore;
+          acceptedScores.push(newScore);
+          stallCount = 0;
+          iterations.push({
+            iteration: i,
+            score: newScore,
+            classification: "improved",
+            committedSha: committed,
+            rolledBack: false,
+            salvageSha: null,
+            workerStdout: workerRun.stdout,
+            timedOut: false,
+          });
+          recordIterationResult(this.breaker, {
+            error: null,
+            gitTreeChanged: true,
+            workerClaimedFilesChanged: null,
+          });
+        } else {
+          // Metric improved but no in-scope commit landed — roll back any
+          // dirty in-scope noise and do NOT advance the baseline. The
+          // iteration is recorded as no-change (git-truth over metric).
+          this.rollbackScoped();
+          iterations.push({
+            iteration: i,
+            score: newScore,
+            classification: "no-change",
+            committedSha: null,
+            rolledBack: true,
+            salvageSha: null,
+            workerStdout: workerRun.stdout,
+            timedOut: false,
+          });
+          recordIterationResult(this.breaker, {
+            error: "improvement without in-scope commit",
+            gitTreeChanged: false,
+            workerClaimedFilesChanged: null,
+          });
+        }
       } else if (newScore !== null && baselineScore !== null && this.isRegression(newScore, baselineScore)) {
         // Regressing iteration: scoped rollback; baseline preserved.
         this.rollbackScoped();
@@ -504,7 +536,13 @@ export class MicroverseLoop {
     return this.opts.ownedPaths.filter((p): p is string => typeof p === "string" && p.length > 0);
   }
 
-  /** Dirty (modified/untracked) files that fall under the owned scope. */
+  /**
+   * Dirty (modified/untracked) files that fall under the owned scope.
+   *
+   * Parses `git status --porcelain -z` correctly: in -z format, renamed (R)
+   * and copied (C) entries produce TWO NUL-separated fields — the new path
+   * and the old path. The old path must be skipped, not mangled by slice(3).
+   */
   private dirtyOwnedPaths(): string[] {
     try {
       const out = execFileSync(
@@ -512,12 +550,21 @@ export class MicroverseLoop {
         ["-C", this.opts.workingDir, "status", "--porcelain", "-z", "--", ...this.ownedPaths()],
         { encoding: "utf-8", timeout: 10000 },
       );
-      return out
-        .split("\0")
-        .filter((entry) => entry.length > 0)
-        // porcelain -z format: "XY <path>"; strip the 3-char status prefix.
-        .map((entry) => entry.slice(3))
-        .filter((p) => p.length > 0);
+      const entries = out.split("\0").filter((e) => e.length > 0);
+      const paths: string[] = [];
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i]!;
+        // porcelain -z format: "XY <path>" (2-char status + space + path).
+        const status = entry.slice(0, 2);
+        const path = entry.slice(3);
+        if (path.length > 0) paths.push(path);
+        // Renamed/copied entries have a second NUL-separated field (the old
+        // path). Skip it so it is not mistaken for a separate dirty path.
+        if (status.includes("R") || status.includes("C")) {
+          i++;
+        }
+      }
+      return paths;
     } catch {
       return [];
     }
@@ -581,17 +628,29 @@ export class MicroverseLoop {
     }
   }
 
-  /** Salvage-commit the in-scope dirty work via the salvage executor. */
+  /**
+   * Salvage the in-scope dirty work via the salvage executor.
+   *
+   * All salvage calls in the microverse loop are for INCOMPLETE work (deadline
+   * breach, attrition/stall, convergence-stalled) — the gate did NOT pass.
+   * So gatePassed is false when there is dirty work, producing an archived-todo
+   * disposition (archive + reset to Todo for re-pickup) rather than
+   * committed-done (which would falsely mark incomplete work as "done").
+   * When there is no dirty work, there is nothing to salvage → no-op.
+   */
   private salvageInScope(): SalvageExecutionResult {
     const dirty = this.dirtyOwnedPaths();
     if (dirty.length === 0) {
+      // No dirty work — nothing to salvage regardless of gate state.
       return this.salvageExecutor.execute(
         { gatePassed: true, treeChanged: false, orphanReset: false, ffReattachPossible: false, ownedPaths: [] },
         this.opts.rickgentDir ? { archiveDir: this.opts.rickgentDir } : {},
       );
     }
+    // Dirty work + incomplete (attrition/deadline) → archived-todo, NOT
+    // committed-done. gatePassed:false → archive and reset to Todo.
     return this.salvageExecutor.execute(
-      { gatePassed: true, treeChanged: true, orphanReset: false, ffReattachPossible: false, ownedPaths: dirty },
+      { gatePassed: false, treeChanged: true, orphanReset: false, ffReattachPossible: false, ownedPaths: dirty },
       this.opts.rickgentDir ? { archiveDir: this.opts.rickgentDir } : {},
     );
   }
@@ -620,7 +679,7 @@ export class MicroverseLoop {
             .split("\n")
             .map((s) => s.trim())
             .filter((s) => s.length > 0);
-          const inScope = filesOut.filter((f) => this.ownedPaths().some((d) => f === d || f.startsWith(d.endsWith("/") ? d : d + "/")));
+          const inScope = filesOut.filter((f) => this.ownedPaths().some((d) => isPathInScope(f, d)));
           commits.push({ sha, subject: subject ?? "", files: inScope });
         }
       } catch {
