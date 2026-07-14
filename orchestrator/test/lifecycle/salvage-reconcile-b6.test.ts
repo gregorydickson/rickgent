@@ -213,6 +213,49 @@ describe("B6 — durable salvage dispositions (verified post-mutation)", () => {
     expect(readFileSync(join(tempDir, "owned.txt"), "utf-8")).toContain("salvaged work");
   });
 
+  it("VAL-SALVAGE-004b: archived-todo archive includes owned UNTRACKED files and is fully restorable", () => {
+    // `git diff HEAD` sees only tracked changes, so an archive built from it
+    // silently drops owned untracked work while still reporting executed:true.
+    commitFile(tempDir, "tracked.txt", "original\n", "seed");
+    writeFileSync(join(tempDir, "tracked.txt"), "original\ntracked salvage\n");
+    // Owned UNTRACKED new file (never committed) — the crux of the defect.
+    writeFileSync(join(tempDir, "brand-new.txt"), "untracked salvaged work\n");
+    // Unowned untracked file: must NEVER enter the owned-paths-only archive.
+    writeFileSync(join(tempDir, "unowned.txt"), "not mine\n");
+
+    const executor = new SalvageExecutor(tempDir);
+    const result = executor.execute(archivedTodoInput(["tracked.txt", "brand-new.txt"]));
+    expect(result.decision.disposition).toBe("archived-todo");
+    expect(result.executed).toBe(true);
+    expect(result.archivePath).toBeTruthy();
+    expect(existsSync(result.archivePath!)).toBe(true);
+
+    const patch = readFileSync(result.archivePath!, "utf-8");
+    expect(patch).toContain("brand-new.txt");
+    expect(patch).toContain("untracked salvaged work");
+    expect(patch).toContain("tracked salvage");
+    // Owned-paths-only: the unowned untracked file is never captured.
+    expect(patch).not.toContain("unowned.txt");
+
+    // Archiving must not leave residual intent-to-add index state behind.
+    const porcelain = git(tempDir, ["status", "--porcelain"]);
+    expect(porcelain).toContain("?? brand-new.txt");
+    expect(porcelain).toContain("?? unowned.txt");
+
+    // Restorable: discard ALL salvaged work (tracked mod + untracked file), then
+    // re-apply the archive and confirm BOTH the tracked change and the untracked
+    // file are reproduced.
+    git(tempDir, ["checkout", "--", "tracked.txt"]);
+    rmSync(join(tempDir, "brand-new.txt"));
+    expect(readFileSync(join(tempDir, "tracked.txt"), "utf-8")).not.toContain("tracked salvage");
+    expect(existsSync(join(tempDir, "brand-new.txt"))).toBe(false);
+
+    git(tempDir, ["apply", result.archivePath!]);
+    expect(readFileSync(join(tempDir, "tracked.txt"), "utf-8")).toContain("tracked salvage");
+    expect(existsSync(join(tempDir, "brand-new.txt"))).toBe(true);
+    expect(readFileSync(join(tempDir, "brand-new.txt"), "utf-8")).toContain("untracked salvaged work");
+  });
+
   it("VAL-SALVAGE-005: archived-todo resets the ticket registry status to Todo", () => {
     commitFile(tempDir, "owned.txt", "original\n", "seed");
     writeFileSync(join(tempDir, "owned.txt"), "original\nwork\n");

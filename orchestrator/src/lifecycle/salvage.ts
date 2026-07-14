@@ -3,8 +3,10 @@
 // §14.8: decide / execute / verify split. R-MACB: never git add -A.
 //
 // B6: dispositions are DURABLE and VERIFIED post-mutation:
-//   - archived-todo writes a restorable patch to disk and resets the ticket to
-//     Todo (registry), rather than returning a diff string that vanishes;
+//   - archived-todo writes a restorable patch to disk (owned-paths-only,
+//     including owned UNTRACKED files which `git diff HEAD` alone would drop) and
+//     resets the ticket to Todo (registry), rather than returning a diff string
+//     that vanishes;
 //   - ff-reattached performs a real `git merge --ff-only` with explicit source
 //     and target refs and reports executed:true only after the fast-forward is
 //     verified (fails closed when the refs are absent);
@@ -116,17 +118,54 @@ export class SalvageExecutor {
   private writeArchive(ownedPaths: string[], ctx: SalvageExecutionContext): string {
     const dir = this.archiveDir(ctx);
     mkdirSync(dir, { recursive: true });
-    // Owned-paths-only diff vs HEAD (both staged and unstaged) — array-argv with
-    // `--` so a hostile path can never be reinterpreted as a git option.
-    const args = ["diff", "HEAD", "--", ...ownedPaths];
-    const patch = execFileSync("git", ownedPaths.length > 0 ? args : ["diff", "HEAD"], {
-      cwd: this.workingDir,
-      encoding: "utf-8",
-      timeout: 10000,
-    });
+    const patch = this.buildOwnedDiff(ownedPaths);
     const label = ctx.ticketId ? ctx.ticketId.replace(/[^A-Za-z0-9_-]/g, "_") : "salvage";
     const file = join(dir, `${label}-${Date.now()}.patch`);
     writeFileSync(file, patch);
     return file;
+  }
+
+  /**
+   * Owned-paths-only, restorable diff vs HEAD. Plain `git diff HEAD` sees only
+   * TRACKED changes, so owned UNTRACKED work would be silently dropped and the
+   * archive non-restorable. We first intent-to-add (`git add -N`) the owned
+   * untracked files so `git diff HEAD` emits them as new-file additions, then
+   * undo the intent-to-add so archiving leaves no residual index state. Only the
+   * untracked files git itself reports under the owned pathspec are added, so the
+   * archive can never capture out-of-scope/unowned files, and array-argv with
+   * `--` keeps a hostile path from being reinterpreted as a git option.
+   */
+  private buildOwnedDiff(ownedPaths: string[]): string {
+    const diff = (paths: string[]): string =>
+      execFileSync("git", paths.length > 0 ? ["diff", "HEAD", "--", ...paths] : ["diff", "HEAD"], {
+        cwd: this.workingDir,
+        encoding: "utf-8",
+        timeout: 10000,
+      });
+
+    if (ownedPaths.length === 0) {
+      return diff(ownedPaths);
+    }
+
+    const untracked = this.ownedUntrackedFiles(ownedPaths);
+    if (untracked.length === 0) {
+      return diff(ownedPaths);
+    }
+
+    execFileSync("git", ["add", "-N", "--", ...untracked], { cwd: this.workingDir, timeout: 10000 });
+    try {
+      return diff(ownedPaths);
+    } finally {
+      execFileSync("git", ["reset", "-q", "--", ...untracked], { cwd: this.workingDir, timeout: 10000 });
+    }
+  }
+
+  private ownedUntrackedFiles(ownedPaths: string[]): string[] {
+    const out = execFileSync(
+      "git",
+      ["ls-files", "-o", "--exclude-standard", "-z", "--", ...ownedPaths],
+      { cwd: this.workingDir, encoding: "utf-8", timeout: 10000 },
+    );
+    return out.split("\0").filter((p) => p.length > 0);
   }
 }
