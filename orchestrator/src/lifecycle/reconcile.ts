@@ -143,41 +143,66 @@ export function reconcile(
   }
 
   // 2. Read the dispatch ledger — the SAME shared schema the Dispatcher writes.
+  //
+  // The ledger is append-only, so the LAST entry for a dispatchId is its current
+  // state. Resume must reconstruct the full queue, not just Done: a killed run
+  // leaves completed (→ Done), in-flight (spawned/db_session_observed, →
+  // In Progress), and still-queued (planned, → Todo) tickets, plus absorbed
+  // failures (→ In Progress, unfinished work to continue). All are recovered so
+  // no queued or in-progress ticket is silently dropped (B3 / VAL-QUEUE-004).
   if (existsSync(ledgerPath)) {
     try {
       const ledger = readFileSync(ledgerPath, "utf-8");
+      const latestByTicket = new Map<string, { entry: Record<string, unknown>; trace: TraceIdentity }>();
       for (const line of ledger.trim().split("\n").filter(Boolean)) {
         try {
           const entry = JSON.parse(line) as Record<string, unknown>;
           const dispatchId = entry["dispatchId"];
           if (typeof dispatchId !== "string") continue; // not the shared schema → skip
-          if (entry["state"] !== "completed") continue;
           const trace = parseDispatchId(dispatchId);
-          if (!trace || tickets[trace.ticketId]) continue; // git truth precedence
-
-          const commitSha = typeof entry["commitSha"] === "string" ? entry["commitSha"] : null;
-          const baselineSha = typeof entry["baselineSha"] === "string" ? entry["baselineSha"] : "";
-          const declaredPaths = Array.isArray(entry["declaredPaths"])
-            ? (entry["declaredPaths"] as unknown[]).filter((p): p is string => typeof p === "string")
-            : [];
-
-          // Oracle validation gates Done — a completed claim whose commit does
-          // not verify is recovered as In Progress (unfinished work to re-run).
-          const done = commitIsComplete(workingDir, commitSha, baselineSha);
-
-          tickets[trace.ticketId] = {
-            id: trace.ticketId,
-            title: typeof entry["title"] === "string" ? entry["title"] : trace.ticketId,
-            status: done ? "Done" : "In Progress",
-            phase: trace.phase || "simplify",
-            declaredPaths,
-            attempt: trace.attempt,
-            completionCommitSha: done ? commitSha : null,
-            updatedAt: new Date().toISOString(),
-          };
+          if (!trace) continue;
+          latestByTicket.set(trace.ticketId, { entry, trace }); // append-only → last wins
         } catch {
           // Skip malformed ledger entries
         }
+      }
+
+      for (const [ticketId, { entry, trace }] of latestByTicket) {
+        if (tickets[ticketId]) continue; // git truth precedence over the ledger
+        const state = typeof entry["state"] === "string" ? entry["state"] : "";
+        const commitSha = typeof entry["commitSha"] === "string" ? entry["commitSha"] : null;
+        const baselineSha = typeof entry["baselineSha"] === "string" ? entry["baselineSha"] : "";
+        const declaredPaths = Array.isArray(entry["declaredPaths"])
+          ? (entry["declaredPaths"] as unknown[]).filter((p): p is string => typeof p === "string")
+          : [];
+
+        let status: TicketState["status"];
+        let completionCommitSha: string | null = null;
+        if (state === "completed") {
+          // Oracle validation gates Done — a completed claim whose commit does
+          // not verify is recovered as In Progress (unfinished work to re-run).
+          const done = commitIsComplete(workingDir, commitSha, baselineSha);
+          status = done ? "Done" : "In Progress";
+          completionCommitSha = done ? commitSha : null;
+        } else if (state === "planned") {
+          status = "Todo"; // still queued — never spawned before the kill
+        } else {
+          // spawned / db_session_observed (in-flight) OR an absorbed terminal
+          // failure (failed/timed_out/killed/salvaged/retried/ignored_late) —
+          // unfinished work the resume continues.
+          status = "In Progress";
+        }
+
+        tickets[ticketId] = {
+          id: ticketId,
+          title: typeof entry["title"] === "string" ? entry["title"] : ticketId,
+          status,
+          phase: trace.phase || "simplify",
+          declaredPaths,
+          attempt: trace.attempt,
+          completionCommitSha,
+          updatedAt: new Date().toISOString(),
+        };
       }
     } catch (err) {
       errors.push(`ledger read failed: ${err instanceof Error ? err.message : String(err)}`);

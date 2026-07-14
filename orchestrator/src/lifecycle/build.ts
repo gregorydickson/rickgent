@@ -23,9 +23,11 @@ import {
   DispatchLedger,
   TicketLock,
   dispatchLedgerPath,
+  dispatchIdString,
   type DispatchEntry,
   type DispatchId,
 } from "../dispatch/dispatch.js";
+import { DispatchQueue } from "../dispatch/queue.js";
 import { Registry, type TicketState } from "./registry.js";
 import { SalvageExecutor } from "./salvage.js";
 import { reconcile } from "./reconcile.js";
@@ -59,7 +61,7 @@ export interface BuildOptions {
   autonomousPrFlow?: boolean;
   featureBranch?: string | undefined;
   runId?: string | undefined;
-  maxConcurrent?: number;
+  maxConcurrent?: number | undefined;
   timeout?: number;
   env?: NodeJS.ProcessEnv;
 }
@@ -236,7 +238,15 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
     );
   }
 
-  // ── Implementation loop — NO human prompts between plan and merge gates ───
+  // ── Implementation loop — a backpressure queue drains all tickets under the
+  // concurrency cap (B3). Recovered-Done tickets are never re-dispatched; the
+  // rest are enqueued (durably recorded `planned`) and drained FIFO, at most
+  // `maxConcurrent` in flight, a slot freeing the instant a dispatch settles.
+  // There are NO human prompts between the plan and merge gates: a failure is
+  // absorbed by the circuit breaker + salvage and the queue keeps draining.
+  const cap = opts.maxConcurrent ?? 2;
+
+  const toDispatch: TicketPlan[] = [];
   for (const ticket of parsed.tickets) {
     if (recoveredDone.has(ticket.id)) {
       base.ticketsRecovered++;
@@ -246,26 +256,52 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
       report.push(`  ${ticket.id}: recovered Done via reconcile (resume) — not re-dispatched`);
       continue;
     }
+    toDispatch.push(ticket);
+  }
+
+  const queue = new DispatchQueue(ledger, cap);
+  const idByTicket = new Map<string, DispatchId>();
+  const ticketByDispatchId = new Map<string, TicketPlan>();
+  for (const ticket of toDispatch) {
+    const id: DispatchId = { runId, ticketId: ticket.id, phase: "implement", attempt: 1, role: "worker" };
+    idByTicket.set(ticket.id, id);
+    ticketByDispatchId.set(dispatchIdString(id), ticket);
+    queue.enqueue(id);
+  }
+
+  // Tickets deferred because the circuit breaker was OPEN at their spawn time —
+  // they were absorbed (disposition recorded), not dispatched.
+  const deferred = new Set<string>();
+
+  const dispatchFn = async (id: DispatchId): Promise<DispatchEntry> => {
+    const ticket = ticketByDispatchId.get(dispatchIdString(id))!;
 
     if (!canExecute(breaker)) {
+      deferred.add(ticket.id);
       recordSalvageDisposition(opts.rickgentDir, {
         ticketId: ticket.id,
         disposition: "breaker-open",
         executed: false,
       });
       report.push(`  ${ticket.id}: circuit breaker OPEN — deferred (absorbed, no prompt)`);
-      continue;
+      return {
+        dispatchId: dispatchIdString(id),
+        state: "failed",
+        pid: null,
+        startedAt: null,
+        completedAt: new Date().toISOString(),
+        exitCode: null,
+        stdout: null,
+        stderr: "breaker-open: deferred, not dispatched",
+      };
     }
 
-    const id: DispatchId = { runId, ticketId: ticket.id, phase: "implement", attempt: 1, role: "worker" };
     const baseline = revParseHead(opts.workingDir, env);
-    base.ticketsDispatched++;
-
-    const entry: DispatchEntry = await dispatcher.dispatch(id, {
+    const entry = await dispatcher.dispatch(id, {
       agentDir: opts.agentDir,
       prompt: ticketPrompt(ticket),
       timeout: opts.timeout ?? 60000,
-      maxConcurrent: opts.maxConcurrent ?? 2,
+      maxConcurrent: cap,
       targetRepo: opts.workingDir,
       dataDir: opts.dataDir,
       declaredPaths: ticket.declaredPaths,
@@ -273,7 +309,6 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
     });
 
     if (entry.state === "completed") {
-      base.ticketsDone++;
       if (registry.getTicketState(ticket.id)) {
         registry.updateTicketState(ticket.id, {
           status: "Done",
@@ -285,11 +320,10 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
         `  ${ticket.id}: Done — dispatch reached the oracle-gated completed state ` +
           `(commit ${(entry.commitSha ?? "?").slice(0, 12)})`,
       );
-      continue;
+      return entry;
     }
 
     // FAILURE ABSORBED — circuit breaker + salvage, never a prompt.
-    base.ticketsFailed++;
     const treeChanged = computeTreeChanged(opts.workingDir, baseline, env);
     const transition = recordIterationResult(breaker, {
       error: entry.stderr || `dispatch terminal state ${entry.state}`,
@@ -318,6 +352,18 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
       `  ${ticket.id}: FAILED (${entry.state}) → salvage=${salvage.decision.disposition} ` +
         `breaker=${transition.transition} — absorbed, continuing non-interactively`,
     );
+    return entry;
+  };
+
+  const drain = await queue.drain(dispatchFn);
+
+  for (const ticket of toDispatch) {
+    if (deferred.has(ticket.id)) continue; // breaker-open: absorbed, not dispatched
+    const entry = drain.results.get(dispatchIdString(idByTicket.get(ticket.id)!));
+    if (!entry) continue;
+    base.ticketsDispatched++;
+    if (entry.state === "completed") base.ticketsDone++;
+    else base.ticketsFailed++;
   }
 
   // ── Merge gate ───────────────────────────────────────────────────────────

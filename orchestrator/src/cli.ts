@@ -193,8 +193,9 @@ function resolveBuildOptions(rest: string[]): {
   resume: boolean;
   autonomousPrFlow: boolean;
   featureBranch: string | undefined;
+  maxConcurrent: number | undefined;
 } | null {
-  const valueFlags = new Set(["--repo", "--agent", "--feature"]);
+  const valueFlags = new Set(["--repo", "--agent", "--feature", "--max-concurrent"]);
   const positionals: string[] = [];
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i]!;
@@ -220,7 +221,10 @@ function resolveBuildOptions(rest: string[]): {
   const resume = rest.includes("--resume");
   const autonomousPrFlow = !rest.includes("--no-autonomous-pr") && process.env.RICKGENT_AUTONOMOUS_PR_FLOW !== "0";
   const featureBranch = flagValue(rest, "--feature") ?? process.env.RICKGENT_FEATURE_BRANCH;
-  return { prdPath, workingDir, rickgentDir, agentDir, dataDir, resume, autonomousPrFlow, featureBranch };
+  const maxConcurrentRaw = flagValue(rest, "--max-concurrent") ?? process.env.RICKGENT_MAX_CONCURRENT;
+  const maxConcurrentParsed = maxConcurrentRaw !== undefined ? parseInt(maxConcurrentRaw, 10) : NaN;
+  const maxConcurrent = Number.isNaN(maxConcurrentParsed) ? undefined : maxConcurrentParsed;
+  return { prdPath, workingDir, rickgentDir, agentDir, dataDir, resume, autonomousPrFlow, featureBranch, maxConcurrent };
 }
 
 async function runBuildCommand(rest: string[]): Promise<void> {

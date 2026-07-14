@@ -26,9 +26,44 @@
 //   FIXTURE_FOREIGN_ITEMS      foreign conversation_items count (default 3)
 
 import { execFileSync } from "child_process";
-import { writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, mkdirSync, rmdirSync } from "fs";
 import { dirname, join, isAbsolute } from "path";
 import { insertConversation } from "./chat-db.mjs";
+
+// Cross-process commit serialization. Under the B3 backpressure queue several
+// fixture workers may run at once against a SHARED repo; concurrent git
+// add/commit race on `.git/index.lock` and the branch ref. In production each
+// omnigent worker is sandboxed to its own git worktree (sandboxing.md), so this
+// contention does not exist; here we serialize the fixture's own git critical
+// section with an atomic lockdir so the shared-repo test harness stays honest.
+function withRepoLock(repo, fn) {
+  const lockDir = join(repo, ".git", "fixture-commit.lock");
+  const deadline = Date.now() + 30000;
+  for (;;) {
+    try {
+      mkdirSync(lockDir); // atomic; throws EEXIST if another worker holds it
+      break;
+    } catch (err) {
+      if (err && err.code !== "EEXIST") throw err;
+      if (Date.now() > deadline) throw new Error("fixture commit lock timeout");
+      // Busy-wait a beat; execFileSync of a no-op is a simple synchronous sleep.
+      try {
+        execFileSync("sh", ["-c", "sleep 0.02"]);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try {
+      rmdirSync(lockDir);
+    } catch {
+      /* ignore */
+    }
+  }
+}
 
 function env(name, fallback = "") {
   const v = process.env[name];
@@ -76,7 +111,7 @@ function promptMode() {
   if (failPaths.includes(relPath)) {
     // Failing ticket: leave an uncommitted in-scope change (salvageable) and
     // exit non-zero. No DB session, no commit → dispatch fails.
-    commitFile(repo, relPath, `partial work for ${relPath}\n`);
+    withRepoLock(repo, () => commitFile(repo, relPath, `partial work for ${relPath}\n`));
     process.exit(1);
   }
 
@@ -86,13 +121,15 @@ function promptMode() {
     const convId = `conv-${relPath.replace(/[^\w]/g, "_")}-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
     insertConversation(dataDir, convId, 2, Date.now());
   }
-  commitFile(repo, relPath, `feature implementation for ${relPath}\n`);
-  execFileSync("git", [
-    "-C", repo,
-    "-c", "user.email=fixture@rickgent.test",
-    "-c", "user.name=Fixture Omnigent",
-    "commit", "-m", `fixture worker commit: ${relPath}`,
-  ]);
+  withRepoLock(repo, () => {
+    commitFile(repo, relPath, `feature implementation for ${relPath}\n`);
+    execFileSync("git", [
+      "-C", repo,
+      "-c", "user.email=fixture@rickgent.test",
+      "-c", "user.name=Fixture Omnigent",
+      "commit", "-m", `fixture worker commit: ${relPath}`,
+    ]);
+  });
   process.exit(0);
 }
 
