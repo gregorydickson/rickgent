@@ -1,0 +1,118 @@
+{
+  "description": "Legacy reference reconstruction manifest for C1 differential testing.",
+  "pinnedCommit": "95f5c416",
+  "sourceRepo": "pickle-rick-claude",
+  "accessMethod": "git show 95f5c416:<path> (READ-ONLY; never checkout/build)",
+  "harnessDir": "conformance/legacy-reference/",
+  "harnessTsconfig": "conformance/legacy-reference/tsconfig.json",
+  "harnessOutDir": "conformance/legacy-reference/dist/",
+  "harnessDeps": "zero pickle-rick-claude runtime dependencies",
+  "predicates": {
+    "salvage": {
+      "status": "legacy-verified",
+      "provenance": "git show 95f5c416:extension/src/lib/salvage-ticket.ts",
+      "harnessSource": "conformance/legacy-reference/src/salvage.ts",
+      "feasibility": "EASY",
+      "stubs": [
+        "git-utils.js (archiveBeforeDestructive, updateTicketFrontmatter) — stubbed with fixture-driven closures",
+        "reconcile-ticket-truth.js (reconcileTicketTruth) — stubbed with fixture-driven TicketTruth"
+      ],
+      "approach": "Extract salvageTicket with deps injected; drive with fixture booleans (gatePassed, treeChanged, orphanReset, ffReattachPossible, ownedPaths). The legacy decision logic runs verbatim — only I/O seams are stubbed.",
+      "fixtures": ["salvage-001", "salvage-002", "salvage-003", "salvage-004", "salvage-005"],
+      "comparison": "disposition (enum) + stagedPaths; reason strings are implementation-specific prose (decision-backed deviation: reason text differs but disposition matches)",
+      "deviations": [
+        {
+          "field": "reason",
+          "justification": "Reason strings are implementation-specific prose (legacy: 'gate_passing_committed', new core: 'gate passing and tree changed'). The typed disposition enum is the authoritative comparison target. Decision: docs/decisions/legacy-differential.md."
+        },
+        {
+          "fixture": "salvage-005",
+          "field": "disposition",
+          "legacyValue": "no-op",
+          "newCoreValue": "error",
+          "justification": "For (gateFailed, no tree changes): the legacy salvageTicket checks dirty first — a clean tree (dirty=false) goes to salvageCleanTree → no-op regardless of gate verdict. The new core decideSalvage checks gate+tree combinations — gate failing with no tree changes falls through to 'error'. The new core is more conservative: it reports an error when salvage cannot determine a disposition (gate failing, nothing to archive), while the legacy silently no-ops because the tree is clean. Decision: docs/decisions/legacy-differential.md."
+        },
+        {
+          "field": "stagedPaths",
+          "justification": "stagedPaths is only present in the new core's output for committed-done and archived-todo dispositions. For ff-reattached, no-op, and error, the new core omits stagedPaths. The legacy harness returns ownedPaths for all cases. Comparison of stagedPaths is only performed for committed-done and archived-todo. Decision: docs/decisions/legacy-differential.md."
+        }
+      ]
+    },
+    "scope": {
+      "status": "legacy-verified",
+      "provenance": "git show 95f5c416:extension/src/bin/check-scope-diff.ts",
+      "harnessSource": "conformance/legacy-reference/src/scope.ts",
+      "feasibility": "MODERATE",
+      "stubs": [],
+      "approach": "Pure copy-extractable isPathInScope/normalizePath (0 stubs). Covers scope-001/002. scope-003 (traversal) and scope-004 (read-allow) are new-core-only behaviors annotated below.",
+      "fixtures": ["scope-001", "scope-002", "scope-003", "scope-004"],
+      "newCoreOnlyCases": [
+        {
+          "fixture": "scope-003",
+          "justification": "Path traversal canonicalization (resolving ..) is a new-core behavior with no legacy counterpart. The legacy isPathInScope uses lexical prefix matching only and does NOT canonicalize .. components. The new core canonicalizes paths before scope checking, correctly denying src/auth/../billing/invoice.py. The legacy would lexically match this to scope src/auth/ (a bug in the legacy that the new core fixes)."
+        },
+        {
+          "fixture": "scope-004",
+          "justification": "Read-allow semantics (isWrite: false → ALLOW) is a new-core behavior with no legacy counterpart. The legacy scope check applies only to staged (write) paths and has no concept of read vs. write. The new core adds read-allow semantics where non-write operations are always permitted."
+        }
+      ]
+    },
+    "breaker": {
+      "status": "adapter-mediated",
+      "provenance": "git show 95f5c416:extension/src/services/circuit-breaker.ts",
+      "harnessSource": "conformance/legacy-reference/src/breaker.ts",
+      "feasibility": "MODERATE",
+      "stubs": [
+        "detectProgress (I/O-bound git operations) — not ported; adapter maps fixture gitTreeChanged → hasProgress",
+        "initCircuitBreaker, readCircuitBreakerState (file I/O) — not ported; adapter uses freshState()",
+        "extractErrorSignature (NDJSON parsing) — not ported; adapter calls normalizeErrorSignature directly"
+      ],
+      "approach": "Extract recordIterationResult + normalizeErrorSignature + canExecute. Write a documented (lossy) state→transition adapter that maps fixture inputs to legacy IterationResult and maps legacy output back to new-core transition names.",
+      "fixtures": ["breaker-001", "breaker-002", "breaker-003"],
+      "adapter": {
+        "description": "Lossy state→transition adapter mapping between legacy CircuitBreakerState (CLOSED/HALF_OPEN/OPEN with consecutive_same_error + consecutive_no_progress) and new-core CircuitBreakerState (open boolean with per-signature errorCounts map).",
+        "lossiness": [
+          "Legacy has HALF_OPEN state; new core does not. When legacy transitions to HALF_OPEN, canExecute is still true (matching new core). The transition field differs (legacy: half-open, new core: closed) — adapter-mediated, not a behavioral deviation.",
+          "Legacy tracks consecutive_same_error (reset on signature change); new core tracks per-signature errorCounts (not reset). For errorCount comparison, legacy consecutive_same_error maps to new-core max(errorCounts.values()). These match when all errors share the same signature.",
+          "Legacy normalizeErrorSignature does NOT strip 'at line N' patterns; new core extractErrorSignature does. This causes a behavioral deviation for breaker-001 (see deviations)."
+        ]
+      },
+      "deviations": [
+        {
+          "fixture": "breaker-001",
+          "field": "errorCount",
+          "legacyValue": 1,
+          "newCoreValue": 3,
+          "justification": "Both surfaces OPEN (canExecute=false, transition=opened), but for different reasons. The new core opens via same-error threshold (extractErrorSignature strips 'line N' patterns, so all 3 errors share signature 'ETIMEDOUT at line N', errorCount=3). The legacy opens via no-progress threshold (consecutive_no_progress=3 >= noProgressThreshold=3; the 3 errors have distinct signatures so consecutive_same_error stays at 1). The canExecute and transition MATCH; the errorCount DIFFERS due to different normalization. This is an intentional improvement in the new core: the legacy's normalization was insufficient to group repeated errors differing only by line number. Decision: docs/decisions/breaker-normalization.md."
+        }
+      ]
+    },
+    "completion": {
+      "status": "unverifiable-by-port",
+      "provenance": "git show 95f5c416:extension/src/services/ticket-completion-evidence.ts",
+      "harnessSource": null,
+      "feasibility": "HARD",
+      "justification": "The legacy ticket-completion-evidence.ts is I/O-bound: it reads git repos (execFileSync for cat-file, rev-parse, log), reads ticket frontmatter files from disk, and does git-log scan-based attribution. The new core evaluateCompletion is a pure function taking pre-computed booleans (shaExists, treeChanged, gateGreen). There is no pure legacy function that takes the same boolean inputs and produces a verdict — the legacy's decision logic (evaluateCompletionEvidence) operates on an EvidenceResult produced by readEvidence (which does I/O). Reconstructing the full I/O pipeline (git repo + frontmatter + scan) for each fixture would require building a mock of the entire pickle-rick extension runtime, which is infeasible without the extension's file/git infrastructure. The new core's completion logic is a simplification of the legacy's evidence-gathering pipeline, not a direct port of a pure function. Per architecture §5, completion is HARD feasibility; per VAL-CONF-008, it carries an explicit unverifiable-by-port annotation with justification and is NOT counted as a passing differential. Spec-conformance (the existing conformance test) validates the new core against fixture expected values.",
+      "fixtures": ["completion-001", "completion-002", "completion-003", "completion-004", "completion-005", "malformed-001", "malformed-002", "malformed-003"],
+      "fallback": "spec-conformance (existing conformance test validates new core against fixture expected values)"
+    },
+    "convergence": {
+      "status": "unverifiable-by-port",
+      "provenance": "git show 95f5c416:extension/src/services/convergence-gate.ts",
+      "harnessSource": null,
+      "feasibility": "HARD",
+      "justification": "The legacy convergence-gate.ts is lock/fs/git-bound: it uses withLock (file locking), spawnSync for git operations, reads baseline files from disk, runs gate commands (typecheck/lint/test) via child_process, and persists baseline state. The new core evaluateConvergenceGate is a pure function operating on pre-computed CheckResult[] and Finding[] arrays. There is no pure legacy function that takes the same inputs and produces a GateVerdict — the legacy's runGate function orchestrates the entire gate execution pipeline (lock, run commands, read/write baseline, compare). Reconstructing this pipeline for synthetic-git fixtures would require building a mock of the full gate execution infrastructure (lock manager, command runner, baseline file I/O). Only sub-pieces (subtractBaseline, filterByScope) are reusable as pure functions, but these are already validated by the new core's unit tests. Per architecture §5, convergence is HARD feasibility; per VAL-CONF-008, it carries an explicit unverifiable-by-port annotation with justification and is NOT counted as a passing differential. Spec-conformance validates the new core against fixture expected values.",
+      "fixtures": ["gate-001", "gate-002", "gate-003", "gate-004"],
+      "fallback": "spec-conformance (existing conformance test validates new core against fixture expected values)"
+    },
+    "prd": {
+      "status": "unverifiable-by-port",
+      "provenance": null,
+      "harnessSource": null,
+      "feasibility": "UNVERIFIABLE-BY-PORT",
+      "justification": "The prd predicate has no file:line provenance in the legacy codebase. The legacy PRD handling is a markdown parser (parses PRD from markdown text into a structured model), while the new core evaluatePrd is an object validator (validates a pre-parsed PrdInput object). These are fundamentally different operations: the legacy parses text → object, the new core validates object → verdict. There is no legacy function that takes a PrdInput and produces a PrdVerdict. Per architecture §5, prd is UNVERIFIABLE-BY-PORT; per VAL-CONF-009, it carries an explicit unverifiable-by-port annotation with justification and falls back to spec-conformance. The prd fixtures are validated by the existing conformance test (spec-conformance), not by a legacy differential.",
+      "fixtures": ["prd-001", "prd-002", "prd-003"],
+      "fallback": "spec-conformance (existing conformance test validates new core against fixture expected values)"
+    }
+  }
+}
