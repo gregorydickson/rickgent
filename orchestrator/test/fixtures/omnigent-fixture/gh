@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Deterministic fixture `gh` shim for build-loop tests. Records its invocation
+# to FAKE_GH_LOG (so a test can assert `gh pr create` was issued) and prints a
+# fake PR URL. Never touches a real GitHub remote.
+if [ -n "$FAKE_GH_LOG" ]; then
+  echo "$*" >> "$FAKE_GH_LOG"
+fi
+echo "https://github.com/fixture/repo/pull/1"
+exit 0

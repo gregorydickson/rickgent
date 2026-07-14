@@ -75,22 +75,12 @@ async function main(): Promise<void> {
   }
 
   if (command === "build") {
-    if (args.includes("--resume")) {
-      console.log("rickgent build --resume: resume not yet wired");
-      return;
-    }
-    console.error(`rickgent: build not yet implemented in v0.1.0-alpha scaffold`);
-    console.error(USAGE);
-    process.exit(1);
+    await runBuildCommand(args.slice(1));
+    return;
   }
 
   if (command === "pipeline") {
-    const prd = args[1];
-    if (!prd) {
-      console.error("rickgent pipeline: missing <prd> argument");
-      process.exit(1);
-    }
-    console.log(`rickgent pipeline: PRD path = ${prd}`);
+    await runPipelineCommand(args.slice(1));
     return;
   }
 
@@ -185,6 +175,88 @@ async function runReconcile(): Promise<void> {
 
   if (!result.ok) {
     process.exit(1);
+  }
+}
+
+function flagValue(args: string[], name: string): string | undefined {
+  const idx = args.indexOf(name);
+  if (idx >= 0 && idx + 1 < args.length) return args[idx + 1];
+  return undefined;
+}
+
+function resolveBuildOptions(rest: string[]): {
+  prdPath: string;
+  workingDir: string;
+  rickgentDir: string;
+  agentDir: string;
+  dataDir: string;
+  resume: boolean;
+  autonomousPrFlow: boolean;
+  featureBranch: string | undefined;
+} | null {
+  const valueFlags = new Set(["--repo", "--agent", "--feature"]);
+  const positionals: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i]!;
+    if (valueFlags.has(a)) {
+      i++; // skip its value
+      continue;
+    }
+    if (a.startsWith("--")) continue;
+    positionals.push(a);
+  }
+  const prdPath = positionals[0];
+  if (!prdPath) {
+    console.error("rickgent build: missing <prd> argument");
+    return null;
+  }
+  const workingDir = flagValue(rest, "--repo") ?? process.env.RICKGENT_TARGET_REPO ?? process.cwd();
+  const rickgentDir = getRickgentDir();
+  const agentDir =
+    flagValue(rest, "--agent") ??
+    process.env.RICKGENT_AGENT_DIR ??
+    join(new URL("../../", import.meta.url).pathname, "agents", "rickgent");
+  const dataDir = process.env.OMNIGENT_DATA_DIR ?? join(rickgentDir, "omnigent-data");
+  const resume = rest.includes("--resume");
+  const autonomousPrFlow = !rest.includes("--no-autonomous-pr") && process.env.RICKGENT_AUTONOMOUS_PR_FLOW !== "0";
+  const featureBranch = flagValue(rest, "--feature") ?? process.env.RICKGENT_FEATURE_BRANCH;
+  return { prdPath, workingDir, rickgentDir, agentDir, dataDir, resume, autonomousPrFlow, featureBranch };
+}
+
+async function runBuildCommand(rest: string[]): Promise<void> {
+  const opts = resolveBuildOptions(rest);
+  if (!opts) {
+    process.exit(1);
+  }
+  const { runBuild } = await import("./lifecycle/build.js");
+  const result = await runBuild(opts);
+  console.log(result.report.join("\n"));
+  console.log(
+    `build: planned=${result.ticketsPlanned} dispatched=${result.ticketsDispatched} ` +
+      `done=${result.ticketsDone} failed=${result.ticketsFailed} recovered=${result.ticketsRecovered} ` +
+      `interventions=${result.interventions} prCreated=${result.prCreated}`,
+  );
+  if (result.exitCode !== 0) {
+    process.exit(result.exitCode);
+  }
+}
+
+async function runPipelineCommand(rest: string[]): Promise<void> {
+  const opts = resolveBuildOptions(rest);
+  if (!opts) {
+    process.exit(1);
+  }
+  const { runPipeline } = await import("./lifecycle/build.js");
+  const result = await runPipeline(opts);
+  console.log(result.report.join("\n"));
+  console.log(
+    `pipeline: planned=${result.ticketsPlanned} dispatched=${result.ticketsDispatched} ` +
+      `done=${result.ticketsDone} failed=${result.ticketsFailed} recovered=${result.ticketsRecovered} ` +
+      `interventions=${result.interventions} prCreated=${result.prCreated} ` +
+      `cleanupReconciled=${result.cleanup.ticketsReconciled}`,
+  );
+  if (result.exitCode !== 0) {
+    process.exit(result.exitCode);
   }
 }
 

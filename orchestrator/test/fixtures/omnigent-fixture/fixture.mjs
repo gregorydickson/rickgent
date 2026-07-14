@@ -35,7 +35,72 @@ function env(name, fallback = "") {
   return v === undefined || v === "" ? fallback : v;
 }
 
+// Prompt-driven mode (build-loop tests). Each dispatch carries a per-ticket
+// prompt via `-p <prompt>` naming the ticket's declared path; the fixture
+// derives its per-ticket behavior from that path so ONE env config drives a
+// multi-ticket build where selected tickets fail and the rest complete.
+function promptArg() {
+  const argv = process.argv;
+  const i = argv.indexOf("-p");
+  return i >= 0 && i + 1 < argv.length ? argv[i + 1] : "";
+}
+
+function pathFromPrompt(prompt) {
+  const m = prompt.match(/[\w./-]+\.\w+/);
+  return m ? m[0] : "";
+}
+
+function commitFile(repo, relPath, content) {
+  const abs = isAbsolute(relPath) ? relPath : join(repo, relPath);
+  mkdirSync(dirname(abs), { recursive: true });
+  writeFileSync(abs, content);
+  execFileSync("git", ["-C", repo, "add", "--", relPath]);
+}
+
+function promptMode() {
+  const prompt = promptArg();
+  process.stdout.write(env("FIXTURE_STDOUT", "fixture worker transcript line") + "\n");
+
+  const relPath = pathFromPrompt(prompt);
+  const repo = env("FIXTURE_TARGET_REPO") || env("PWD");
+  const failPaths = env("FIXTURE_FAIL_PATHS")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (!relPath || !repo) {
+    // Nothing to write — behave as a no-delta failure.
+    process.exit(1);
+  }
+
+  if (failPaths.includes(relPath)) {
+    // Failing ticket: leave an uncommitted in-scope change (salvageable) and
+    // exit non-zero. No DB session, no commit → dispatch fails.
+    commitFile(repo, relPath, `partial work for ${relPath}\n`);
+    process.exit(1);
+  }
+
+  // Succeeding ticket: DB session + non-empty transcript + committed in-scope delta.
+  const dataDir = env("OMNIGENT_DATA_DIR");
+  if (dataDir) {
+    const convId = `conv-${relPath.replace(/[^\w]/g, "_")}-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+    insertConversation(dataDir, convId, 2, Date.now());
+  }
+  commitFile(repo, relPath, `feature implementation for ${relPath}\n`);
+  execFileSync("git", [
+    "-C", repo,
+    "-c", "user.email=fixture@rickgent.test",
+    "-c", "user.name=Fixture Omnigent",
+    "commit", "-m", `fixture worker commit: ${relPath}`,
+  ]);
+  process.exit(0);
+}
+
 function main() {
+  if (env("FIXTURE_MODE") === "prompt") {
+    promptMode();
+    return;
+  }
   const stdoutLine = env("FIXTURE_STDOUT", "fixture worker transcript line");
   process.stdout.write(stdoutLine + "\n");
 
