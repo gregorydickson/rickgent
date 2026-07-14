@@ -343,6 +343,19 @@ export class Dispatcher {
       child.stdout?.on("data", (data: Buffer) => { stdout += data.toString(); });
       child.stderr?.on("data", (data: Buffer) => { stderr += data.toString(); });
 
+      // Handle spawn errors (e.g. ENOENT when the binary is not on PATH).
+      // Without this, Node.js throws an unhandled 'error' event which can
+      // crash the worker thread under parallel test execution.
+      child.on("error", (err: Error) => {
+        finish({
+          dispatchId: idStr, state: "failed", pid: child.pid ?? null,
+          startedAt, completedAt: new Date().toISOString(),
+          exitCode: null, stdout,
+          stderr: stderr + `\n[dispatch] spawn error: ${err.message}`,
+          vendor: opts.vendor ?? null,
+        });
+      });
+
       const timer = setTimeout(() => {
         child.kill("SIGTERM");
         finish({
@@ -413,15 +426,6 @@ export class Dispatcher {
             `dbSession=${evidence.dbObserved} transcript=${evidence.transcriptCount} ` +
             `inScopeDelta=${evidence.inScopePaths.length} oracle=${evidence.oracleVerdict}`,
           conversationId: evidence.conversationId,
-          vendor: opts.vendor ?? null,
-        });
-      });
-
-      child.on("error", (err) => {
-        finish({
-          dispatchId: idStr, state: "failed", pid: child.pid ?? null,
-          startedAt, completedAt: new Date().toISOString(),
-          exitCode: null, stdout, stderr: err.message,
           vendor: opts.vendor ?? null,
         });
       });

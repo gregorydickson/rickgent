@@ -345,47 +345,37 @@ describe("Dispatcher backpressure", () => {
       FIXTURE_EXIT_CODE: "0",
     };
 
-    const saved: Record<string, string | undefined> = {};
-    for (const [k, v] of Object.entries(fixtureEnv)) {
-      saved[k] = process.env[k];
-      process.env[k] = v;
-    }
-    try {
-      const id = makeId();
-      const idStr = dispatchIdString(id);
-      const entry = await dispatcher.dispatch(id, {
-        agentDir: join(dir, "agent"),
-        prompt: "do work",
-        timeout: 20000,
-        maxConcurrent: 2,
-        targetRepo: repo,
-        dataDir,
-        declaredPaths: ["src"],
-        env: fixtureEnv,
-      });
+    // env vars are passed via the dispatch `env` option (not process.env) to
+    // avoid cross-test contamination in vitest's thread pool.
+    const id = makeId();
+    const idStr = dispatchIdString(id);
+    const entry = await dispatcher.dispatch(id, {
+      agentDir: join(dir, "agent"),
+      prompt: "do work",
+      timeout: 20000,
+      maxConcurrent: 2,
+      targetRepo: repo,
+      dataDir,
+      declaredPaths: ["src"],
+      env: fixtureEnv,
+    });
 
-      // The dispatch must NOT be "planned" — it spawned the fixture.
-      expect(entry.state).not.toBe("planned");
-      // The terminal state must be "completed" — the fixture produced a DB
-      // session, transcript, and in-scope git delta.
-      expect(entry.state).toBe("completed");
-      expect(entry.exitCode).toBe(0);
+    // The dispatch must NOT be "planned" — it spawned the fixture.
+    expect(entry.state).not.toBe("planned");
+    // The terminal state must be "completed" — the fixture produced a DB
+    // session, transcript, and in-scope git delta.
+    expect(entry.state).toBe("completed");
+    expect(entry.exitCode).toBe(0);
 
-      // Assert the FULL ordered transition sequence, not just a "spawned"
-      // substring. The legal sequence for a successful dispatch is:
-      //   spawned → db_session_observed → completed
-      const states = ledgerStates(join(dir, "ledger.jsonl"), idStr);
-      expect(states).toEqual(["spawned", "db_session_observed", "completed"]);
+    // Assert the FULL ordered transition sequence, not just a "spawned"
+    // substring. The legal sequence for a successful dispatch is:
+    //   spawned → db_session_observed → completed
+    const states = ledgerStates(join(dir, "ledger.jsonl"), idStr);
+    expect(states).toEqual(["spawned", "db_session_observed", "completed"]);
 
-      // Git-tree-truth: HEAD advanced (the fixture committed an in-scope file).
-      const changed = git(repo, ["diff", "--name-only", "HEAD~1", "HEAD"]);
-      expect(changed).toContain("src/feature.ts");
-    } finally {
-      for (const k of Object.keys(fixtureEnv)) {
-        if (saved[k] === undefined) delete process.env[k];
-        else process.env[k] = saved[k];
-      }
-    }
+    // Git-tree-truth: HEAD advanced (the fixture committed an in-scope file).
+    const changed = git(repo, ["diff", "--name-only", "HEAD~1", "HEAD"]);
+    expect(changed).toContain("src/feature.ts");
   });
 
   // VAL-TESTINT-002 (failure/recovery branch): the under-capacity dispatch
@@ -410,41 +400,31 @@ describe("Dispatcher backpressure", () => {
       FIXTURE_EXIT_CODE: "1",
     };
 
-    const saved: Record<string, string | undefined> = {};
-    for (const [k, v] of Object.entries(fixtureEnv)) {
-      saved[k] = process.env[k];
-      process.env[k] = v;
-    }
-    try {
-      const id = makeId();
-      const idStr = dispatchIdString(id);
-      const entry = await dispatcher.dispatch(id, {
-        agentDir: join(dir, "agent"),
-        prompt: "do work",
-        timeout: 20000,
-        maxConcurrent: 2,
-        targetRepo: repo,
-        dataDir,
-        declaredPaths: ["src"],
-        env: fixtureEnv,
-      });
+    // env vars are passed via the dispatch `env` option (not process.env) to
+    // avoid cross-test contamination in vitest's thread pool.
+    const id = makeId();
+    const idStr = dispatchIdString(id);
+    const entry = await dispatcher.dispatch(id, {
+      agentDir: join(dir, "agent"),
+      prompt: "do work",
+      timeout: 20000,
+      maxConcurrent: 2,
+      targetRepo: repo,
+      dataDir,
+      declaredPaths: ["src"],
+      env: fixtureEnv,
+    });
 
-      // The dispatch spawned (not planned) and reached the "failed" terminal.
-      expect(entry.state).not.toBe("planned");
-      expect(entry.state).toBe("failed");
-      expect(entry.exitCode).toBe(1);
+    // The dispatch spawned (not planned) and reached the "failed" terminal.
+    expect(entry.state).not.toBe("planned");
+    expect(entry.state).toBe("failed");
+    expect(entry.exitCode).toBe(1);
 
-      // Assert the FULL ordered transition sequence for a failing dispatch:
-      //   spawned → failed
-      // (No db_session_observed or completed because exit ≠ 0 short-circuits.)
-      const states = ledgerStates(join(dir, "ledger.jsonl"), idStr);
-      expect(states).toEqual(["spawned", "failed"]);
-    } finally {
-      for (const k of Object.keys(fixtureEnv)) {
-        if (saved[k] === undefined) delete process.env[k];
-        else process.env[k] = saved[k];
-      }
-    }
+    // Assert the FULL ordered transition sequence for a failing dispatch:
+    //   spawned → failed
+    // (No db_session_observed or completed because exit ≠ 0 short-circuits.)
+    const states = ledgerStates(join(dir, "ledger.jsonl"), idStr);
+    expect(states).toEqual(["spawned", "failed"]);
   });
 
   // VAL-TESTINT-002 (no-pass-on-spawn-failure): with the fixture omnigent
@@ -455,34 +435,25 @@ describe("Dispatcher backpressure", () => {
   // failure is observable as "failed" (not silently "completed").
   it("fails closed (failed, not completed) when the fixture omnigent is absent from PATH", async () => {
     // Ensure the fixture is NOT reachable: PATH excludes the fixture dir.
+    // Pass via the dispatch `env` option (not process.env) to avoid cross-test
+    // contamination in vitest's thread pool.
     const fixtureEnv: Record<string, string> = {
       PATH: `/usr/bin:/bin:${process.env.PATH ?? ""}`.replace(FIXTURE_BIN, ""),
     };
 
-    const saved: Record<string, string | undefined> = {};
-    for (const [k, v] of Object.entries(fixtureEnv)) {
-      saved[k] = process.env[k];
-      process.env[k] = v;
-    }
-    try {
-      const id = makeId();
-      const entry = await dispatcher.dispatch(id, {
-        agentDir: "/tmp/agent",
-        prompt: "do work",
-        timeout: 2000,
-        maxConcurrent: 2,
-      });
+    const id = makeId();
+    const entry = await dispatcher.dispatch(id, {
+      agentDir: "/tmp/agent",
+      prompt: "do work",
+      timeout: 2000,
+      maxConcurrent: 2,
+      env: fixtureEnv,
+    });
 
-      // Spawn failed (no omnigent binary) → "failed", NOT "completed".
-      // The old test would have passed here (state !== "planned" + "spawned"
-      // substring). The new test asserts the SPECIFIC terminal: "failed".
-      expect(entry.state).toBe("failed");
-    } finally {
-      for (const k of Object.keys(fixtureEnv)) {
-        if (saved[k] === undefined) delete process.env[k];
-        else process.env[k] = saved[k];
-      }
-    }
+    // Spawn failed (no omnigent binary) → "failed", NOT "completed".
+    // The old test would have passed here (state !== "planned" + "spawned"
+    // substring). The new test asserts the SPECIFIC terminal: "failed".
+    expect(entry.state).toBe("failed");
   });
 });
 

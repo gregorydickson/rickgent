@@ -116,30 +116,20 @@ async function runDispatch(cfg: FixtureConfig, dir: string): Promise<RunResult> 
     fixtureEnv.FIXTURE_FOREIGN_ITEMS = String(cfg.concurrentForeign.items);
   }
 
-  const saved: Record<string, string | undefined> = {};
-  for (const [k, v] of Object.entries(fixtureEnv)) {
-    saved[k] = process.env[k];
-    process.env[k] = v;
-  }
-  try {
-    const id = makeId();
-    const entry = await dispatcher.dispatch(id, {
-      agentDir: join(dir, "agent"),
-      prompt: "do work",
-      timeout: 20000,
-      maxConcurrent: 2,
-      targetRepo: repo,
-      dataDir,
-      declaredPaths: cfg.declaredPaths ?? ["src"],
-      env: fixtureEnv,
-    });
-    return { entry, ledgerPath, dispatchId: dispatchIdString(id), repo, dataDir, baselineHead };
-  } finally {
-    for (const k of Object.keys(fixtureEnv)) {
-      if (saved[k] === undefined) delete process.env[k];
-      else process.env[k] = saved[k];
-    }
-  }
+  // env vars are passed via the dispatch `env` option (not process.env) to
+  // avoid cross-test contamination in vitest's thread pool.
+  const id = makeId();
+  const entry = await dispatcher.dispatch(id, {
+    agentDir: join(dir, "agent"),
+    prompt: "do work",
+    timeout: 20000,
+    maxConcurrent: 2,
+    targetRepo: repo,
+    dataDir,
+    declaredPaths: cfg.declaredPaths ?? ["src"],
+    env: fixtureEnv,
+  });
+  return { entry, ledgerPath, dispatchId: dispatchIdString(id), repo, dataDir, baselineHead };
 }
 
 function ledgerStates(ledgerPath: string, dispatchId: string): string[] {
