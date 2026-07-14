@@ -21,6 +21,8 @@ describe("circuit breaker", () => {
     recordIterationResult(state, { error: "ETIMEDOUT", gitTreeChanged: false, workerClaimedFilesChanged: null });
     recordIterationResult(state, { error: null, gitTreeChanged: true, workerClaimedFilesChanged: null });
     expect(canExecute(state)).toBe(true);
+    expect(state.open).toBe(false);
+    expect(Object.keys(state.errorCounts)).toHaveLength(0);
   });
 
   it("rejects claimed progress without tree change", () => {

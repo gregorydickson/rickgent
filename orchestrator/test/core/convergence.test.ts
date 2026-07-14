@@ -46,6 +46,7 @@ describe("convergence gate", () => {
       current: [],
     });
     expect(result.passed).toBe(false);
+    expect(result.failures).toEqual(expect.arrayContaining(["no checks executed — silence is not success"]));
   });
 });
 

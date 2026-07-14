@@ -1,60 +1,418 @@
 {
-  "version": "1.0",
-  "required_incident_classes": [
-    {"id": "completion-committed", "test": "test/core/completion.test.ts", "covered": true},
-    {"id": "completion-unverified", "test": "test/core/completion.test.ts", "covered": true},
-    {"id": "completion-baseline-sha", "test": "test/core/completion.test.ts", "covered": true},
-    {"id": "completion-no-tree-change", "test": "test/core/completion.test.ts", "covered": true},
-    {"id": "salvage-committed-done", "test": "test/core/salvage.test.ts", "covered": true},
-    {"id": "salvage-archived-todo", "test": "test/core/salvage.test.ts", "covered": true},
-    {"id": "salvage-ff-reattached", "test": "test/core/salvage.test.ts", "covered": true},
-    {"id": "salvage-no-op", "test": "test/core/salvage.test.ts", "covered": true},
-    {"id": "salvage-error", "test": "test/core/salvage.test.ts", "covered": true},
-    {"id": "breaker-trips", "test": "test/core/breaker.test.ts", "covered": true},
-    {"id": "breaker-resets", "test": "test/core/breaker.test.ts", "covered": true},
-    {"id": "breaker-rejects-claimed-progress", "test": "test/core/breaker.test.ts", "covered": true},
-    {"id": "gate-stale-baseline", "test": "test/core/convergence.test.ts", "covered": true},
-    {"id": "gate-silence-not-success", "test": "test/core/convergence.test.ts", "covered": true},
-    {"id": "gate-scope-filtering", "test": "test/core/convergence.test.ts", "covered": true},
-    {"id": "scope-traversal", "test": "test/core/scope.test.ts", "covered": true},
-    {"id": "scope-outside-paths", "test": "test/core/scope.test.ts", "covered": true},
-    {"id": "prd-no-ac", "test": "test/core/prd.test.ts", "covered": true},
-    {"id": "prd-no-simplification", "test": "test/core/prd.test.ts", "covered": true},
-    {"id": "microverse-convergence", "test": "test/lifecycle/microverse.test.ts", "covered": true},
-    {"id": "microverse-rollback", "test": "test/lifecycle/microverse.test.ts", "covered": true},
-    {"id": "microverse-stall", "test": "test/lifecycle/microverse.test.ts", "covered": true},
-    {"id": "dispatch-idempotency", "test": "test/dispatch/dispatch.test.ts", "covered": true},
-    {"id": "dispatch-backpressure", "test": "test/dispatch/dispatch.test.ts", "covered": true},
-    {"id": "malformed-null-input", "test": "test/core/malformed-input.test.ts", "covered": true},
-    {"id": "malformed-wrong-types", "test": "test/core/malformed-input.test.ts", "covered": true},
-    {"id": "drill-false-completion", "test": "rickgent-policies/test/test_drills.py", "covered": true},
-    {"id": "drill-same-vendor", "test": "rickgent-policies/test/test_drills.py", "covered": true},
-    {"id": "drill-shim-exception", "test": "rickgent-policies/test/test_drills.py", "covered": true}
+  "version": "2.0",
+  "generated": true,
+  "incidentClasses": [
+    {
+      "id": "completion-committed",
+      "test": "test/core/completion.test.ts",
+      "testCase": "returns COMMITTED when all checks pass",
+      "source": "src/core/completion.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "completion-unverified",
+      "test": "test/core/completion.test.ts",
+      "testCase": "returns UNVERIFIED when no claimed SHA",
+      "source": "src/core/completion.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "completion-baseline-sha",
+      "test": "test/core/completion.test.ts",
+      "testCase": "returns BASELINE_SHA when claimed SHA equals baseline",
+      "source": "src/core/completion.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "completion-no-tree-change",
+      "test": "test/core/completion.test.ts",
+      "testCase": "returns NO_TREE_CHANGE when tree matches baseline",
+      "source": "src/core/completion.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "salvage-committed-done",
+      "test": "test/core/salvage.test.ts",
+      "testCase": "returns committed-done when gate green and tree changed",
+      "source": "src/core/salvage.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "salvage-archived-todo",
+      "test": "test/core/salvage.test.ts",
+      "testCase": "returns archived-todo when gate failing but tree changed",
+      "source": "src/core/salvage.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "salvage-ff-reattached",
+      "test": "test/core/salvage.test.ts",
+      "testCase": "returns ff-reattached when orphan reset detected and reattach possible",
+      "source": "src/core/salvage.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "salvage-no-op",
+      "test": "test/core/salvage.test.ts",
+      "testCase": "returns no-op when no tree changes",
+      "source": "src/core/salvage.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "salvage-error",
+      "test": "test/core/salvage.test.ts",
+      "testCase": "coerces a non-array ownedPaths to an empty array (VAL-BUG-008)",
+      "source": "src/core/salvage.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "breaker-trips",
+      "test": "test/core/breaker.test.ts",
+      "testCase": "trips after threshold identical errors",
+      "source": "src/core/breaker.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "breaker-resets",
+      "test": "test/core/breaker.test.ts",
+      "testCase": "resets on git tree progress",
+      "source": "src/core/breaker.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "breaker-rejects-claimed-progress",
+      "test": "test/core/breaker.test.ts",
+      "testCase": "rejects claimed progress without tree change",
+      "source": "src/core/breaker.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "gate-stale-baseline",
+      "test": "test/core/convergence.test.ts",
+      "testCase": "detects stale baseline (zero baseline checks)",
+      "source": "src/core/convergence.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "gate-silence-not-success",
+      "test": "test/core/convergence.test.ts",
+      "testCase": "fails on zero current checks (silence is not success)",
+      "source": "src/core/convergence.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "gate-scope-filtering",
+      "test": "test/core/convergence.test.ts",
+      "testCase": "VAL-BUG-001: excludes a sibling directory that shares a name prefix",
+      "source": "src/core/convergence.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "scope-traversal",
+      "test": "test/core/scope.test.ts",
+      "testCase": "denies path traversal attempts",
+      "source": "src/core/scope.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "scope-outside-paths",
+      "test": "test/core/scope.test.ts",
+      "testCase": "denies writes outside declared paths",
+      "source": "src/core/scope.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "prd-no-ac",
+      "test": "test/core/prd.test.ts",
+      "testCase": "rejects PRD without ACs",
+      "source": "src/core/prd.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "prd-no-simplification",
+      "test": "test/core/prd.test.ts",
+      "testCase": "rejects PRD without simplification review",
+      "source": "src/core/prd.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "microverse-convergence",
+      "test": "test/lifecycle/microverse.test.ts",
+      "testCase": "plateau: last N improvement deltas below epsilon converges",
+      "source": "src/lifecycle/microverse.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "microverse-rollback",
+      "test": "test/lifecycle/microverse.test.ts",
+      "testCase": "rollback on regression preserves baseline",
+      "source": "src/lifecycle/microverse.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "microverse-stall",
+      "test": "test/lifecycle/microverse.test.ts",
+      "testCase": "detects stall after stallLimit iterations (attrition, not convergence)",
+      "source": "src/lifecycle/microverse.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "dispatch-idempotency",
+      "test": "test/dispatch/dispatch.test.ts",
+      "testCase": "returns recorded terminal state without re-spawning",
+      "source": "src/dispatch/dispatch.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "dispatch-backpressure",
+      "test": "test/dispatch/dispatch.test.ts",
+      "testCase": "records planned state and does not spawn when maxConcurrent is 0",
+      "source": "src/dispatch/dispatch.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "malformed-null-input",
+      "test": "test/core/malformed-input.test.ts",
+      "testCase": "handles null input by failing closed",
+      "source": "src/core/completion.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "malformed-wrong-types",
+      "test": "test/core/malformed-input.test.ts",
+      "testCase": "handles wrong types by failing closed",
+      "source": "src/core/completion.ts",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "drill-false-completion",
+      "test": "test/test_drills.py",
+      "testCase": "test_denies_done_without_commit",
+      "source": "rickgent_policies/__init__.py",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "drill-same-vendor",
+      "test": "test/test_drills.py",
+      "testCase": "test_denies_same_vendor",
+      "source": "rickgent_policies/__init__.py",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    },
+    {
+      "id": "drill-shim-exception",
+      "test": "test/test_drills.py",
+      "testCase": "test_exception_produces_deny",
+      "source": "rickgent_policies/__init__.py",
+      "fileExists": true,
+      "testCaseExists": true,
+      "guardExists": true,
+      "covered": true
+    }
   ],
-  "required_fixtures": [
-    {"id": "completion-001", "file": "conformance/fixtures/completion-001-committed.json", "covered": true},
-    {"id": "completion-002", "file": "conformance/fixtures/completion-002-unverified-no-sha.json", "covered": true},
-    {"id": "completion-003", "file": "conformance/fixtures/completion-003-baseline-sha.json", "covered": true},
-    {"id": "completion-004", "file": "conformance/fixtures/completion-004-no-tree-change.json", "covered": true},
-    {"id": "completion-005", "file": "conformance/fixtures/completion-005-gate-red.json", "covered": true},
-    {"id": "salvage-001", "file": "conformance/fixtures/salvage-001-committed-done.json", "covered": true},
-    {"id": "salvage-002", "file": "conformance/fixtures/salvage-002-archived-todo.json", "covered": true},
-    {"id": "salvage-003", "file": "conformance/fixtures/salvage-003-ff-reattached.json", "covered": true},
-    {"id": "salvage-004", "file": "conformance/fixtures/salvage-004-no-op-clean-tree.json", "covered": true},
-    {"id": "salvage-005", "file": "conformance/fixtures/salvage-005-error.json", "covered": true},
-    {"id": "breaker-001", "file": "conformance/fixtures/breaker-001-trips-on-threshold.json", "covered": true},
-    {"id": "breaker-002", "file": "conformance/fixtures/breaker-002-resets-on-progress.json", "covered": true},
-    {"id": "breaker-003", "file": "conformance/fixtures/breaker-003-rejects-claimed-progress.json", "covered": true},
-    {"id": "gate-001", "file": "conformance/fixtures/gate-001-fresh-baseline-pass.json", "covered": true},
-    {"id": "gate-002", "file": "conformance/fixtures/gate-002-stale-baseline-zero-checks.json", "covered": true},
-    {"id": "gate-003", "file": "conformance/fixtures/gate-003-silence-not-success.json", "covered": true},
-    {"id": "gate-004", "file": "conformance/fixtures/gate-004-scope-filtering.json", "covered": true},
-    {"id": "scope-001", "file": "conformance/fixtures/scope-001-allows-in-scope.json", "covered": true},
-    {"id": "scope-002", "file": "conformance/fixtures/scope-002-denies-outside-scope.json", "covered": true},
-    {"id": "scope-003", "file": "conformance/fixtures/scope-003-denies-traversal.json", "covered": true},
-    {"id": "scope-004", "file": "conformance/fixtures/scope-004-allows-read.json", "covered": true},
-    {"id": "prd-001", "file": "conformance/fixtures/prd-001-valid.json", "covered": true},
-    {"id": "prd-002", "file": "conformance/fixtures/prd-002-no-ac.json", "covered": true},
-    {"id": "prd-003", "file": "conformance/fixtures/prd-003-no-simplification.json", "covered": true}
+  "requiredFixtures": [
+    {
+      "id": "completion-001-committed",
+      "file": "conformance/fixtures/completion-001-committed.json",
+      "exists": true
+    },
+    {
+      "id": "completion-002-unverified-no-sha",
+      "file": "conformance/fixtures/completion-002-unverified-no-sha.json",
+      "exists": true
+    },
+    {
+      "id": "completion-003-baseline-sha",
+      "file": "conformance/fixtures/completion-003-baseline-sha.json",
+      "exists": true
+    },
+    {
+      "id": "completion-004-no-tree-change",
+      "file": "conformance/fixtures/completion-004-no-tree-change.json",
+      "exists": true
+    },
+    {
+      "id": "completion-005-gate-red",
+      "file": "conformance/fixtures/completion-005-gate-red.json",
+      "exists": true
+    },
+    {
+      "id": "salvage-001-committed-done",
+      "file": "conformance/fixtures/salvage-001-committed-done.json",
+      "exists": true
+    },
+    {
+      "id": "salvage-002-archived-todo",
+      "file": "conformance/fixtures/salvage-002-archived-todo.json",
+      "exists": true
+    },
+    {
+      "id": "salvage-003-ff-reattached",
+      "file": "conformance/fixtures/salvage-003-ff-reattached.json",
+      "exists": true
+    },
+    {
+      "id": "salvage-004-no-op-clean-tree",
+      "file": "conformance/fixtures/salvage-004-no-op-clean-tree.json",
+      "exists": true
+    },
+    {
+      "id": "salvage-005-error",
+      "file": "conformance/fixtures/salvage-005-error.json",
+      "exists": true
+    },
+    {
+      "id": "breaker-001-trips-on-threshold",
+      "file": "conformance/fixtures/breaker-001-trips-on-threshold.json",
+      "exists": true
+    },
+    {
+      "id": "breaker-002-resets-on-progress",
+      "file": "conformance/fixtures/breaker-002-resets-on-progress.json",
+      "exists": true
+    },
+    {
+      "id": "breaker-003-rejects-claimed-progress",
+      "file": "conformance/fixtures/breaker-003-rejects-claimed-progress.json",
+      "exists": true
+    },
+    {
+      "id": "gate-001-fresh-baseline-pass",
+      "file": "conformance/fixtures/gate-001-fresh-baseline-pass.json",
+      "exists": true
+    },
+    {
+      "id": "gate-002-stale-baseline-zero-checks",
+      "file": "conformance/fixtures/gate-002-stale-baseline-zero-checks.json",
+      "exists": true
+    },
+    {
+      "id": "gate-003-silence-not-success",
+      "file": "conformance/fixtures/gate-003-silence-not-success.json",
+      "exists": true
+    },
+    {
+      "id": "gate-004-scope-filtering",
+      "file": "conformance/fixtures/gate-004-scope-filtering.json",
+      "exists": true
+    },
+    {
+      "id": "scope-001-allows-in-scope",
+      "file": "conformance/fixtures/scope-001-allows-in-scope.json",
+      "exists": true
+    },
+    {
+      "id": "scope-002-denies-outside-scope",
+      "file": "conformance/fixtures/scope-002-denies-outside-scope.json",
+      "exists": true
+    },
+    {
+      "id": "scope-003-denies-traversal",
+      "file": "conformance/fixtures/scope-003-denies-traversal.json",
+      "exists": true
+    },
+    {
+      "id": "scope-004-allows-read",
+      "file": "conformance/fixtures/scope-004-allows-read.json",
+      "exists": true
+    },
+    {
+      "id": "prd-001-valid",
+      "file": "conformance/fixtures/prd-001-valid.json",
+      "exists": true
+    },
+    {
+      "id": "prd-002-no-ac",
+      "file": "conformance/fixtures/prd-002-no-ac.json",
+      "exists": true
+    },
+    {
+      "id": "prd-003-no-simplification",
+      "file": "conformance/fixtures/prd-003-no-simplification.json",
+      "exists": true
+    }
   ]
 }

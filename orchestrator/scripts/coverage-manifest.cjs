@@ -1,0 +1,636 @@
+/**
+ * Coverage manifest generator + mutation check (C2 / VAL-COV-001..003).
+ *
+ * The manifest is GENERATED from discovered executable test ids — not hardcoded
+ * booleans. Every referenced file and test case is verified to exist. A
+ * mutation check confirms that removing any incident-class guard fails the
+ * suite (proving the guard is genuinely tested, not pass-on-nothing).
+ *
+ * This is a CommonJS module so it can be imported by vitest tests and also
+ * run as a standalone script.
+ */
+
+"use strict";
+
+const { readFileSync, writeFileSync, existsSync } = require("fs");
+const { join } = require("path");
+const { spawnSync } = require("child_process");
+
+const REPO_ROOT = join(__dirname, "..", "..");
+const ORCH_DIR = join(REPO_ROOT, "orchestrator");
+const POLICIES_DIR = join(REPO_ROOT, "rickgent-policies");
+
+const NODE_PATH = "/Users/gregorydickson/.nvm/versions/node/v24.13.1/bin";
+const PATH_ENV = (extra) => ({
+  PATH: NODE_PATH + ":" + (process.env.PATH || ""),
+  ...Object.fromEntries(
+    Object.entries(process.env).filter(([k]) => k !== "PATH")
+  ),
+});
+
+// ── Incident class definitions ──────────────────────────────────────────────
+// Each incident class maps a guard in the source code to the test that verifies
+// it. The `guardMarker` is a unique substring that proves the guard exists in
+// the source. The `mutate` function applies a minimal change that breaks the
+// guard; if the test suite still passes after mutation, the guard is untested.
+
+const TS_INCIDENT_CLASSES = [
+  // ── Completion (src/core/completion.ts) ──
+  {
+    id: "completion-committed",
+    testFile: "test/core/completion.test.ts",
+    testCase: "returns COMMITTED when all checks pass",
+    sourceFile: "src/core/completion.ts",
+    guardMarker: 'return { verdict: "COMMITTED", commitSha: claimedSha, treeChanged: true };',
+    mutate: (s) => s.replace(
+      'return { verdict: "COMMITTED", commitSha: claimedSha, treeChanged: true };',
+      'return { verdict: "UNVERIFIED", reason: "mutation: committed guard removed" };'
+    ),
+  },
+  {
+    id: "completion-unverified",
+    testFile: "test/core/completion.test.ts",
+    testCase: "returns UNVERIFIED when no claimed SHA",
+    sourceFile: "src/core/completion.ts",
+    guardMarker: "if (!claimedSha || !shaExists) {",
+    mutate: (s) => s.replace(
+      "if (!claimedSha || !shaExists) {",
+      "if (false && (!claimedSha || !shaExists)) {"
+    ),
+  },
+  {
+    id: "completion-baseline-sha",
+    testFile: "test/core/completion.test.ts",
+    testCase: "returns BASELINE_SHA when claimed SHA equals baseline",
+    sourceFile: "src/core/completion.ts",
+    guardMarker: "if (claimedSha === baselineSha) {",
+    mutate: (s) => s.replace(
+      "if (claimedSha === baselineSha) {",
+      "if (false && claimedSha === baselineSha) {"
+    ),
+  },
+  {
+    id: "completion-no-tree-change",
+    testFile: "test/core/completion.test.ts",
+    testCase: "returns NO_TREE_CHANGE when tree matches baseline",
+    sourceFile: "src/core/completion.ts",
+    guardMarker: "if (!treeChanged) {",
+    mutate: (s) => s.replace(
+      "if (!treeChanged) {",
+      "if (false && !treeChanged) {"
+    ),
+  },
+  // ── Salvage (src/core/salvage.ts) ──
+  {
+    id: "salvage-committed-done",
+    testFile: "test/core/salvage.test.ts",
+    testCase: "returns committed-done when gate green and tree changed",
+    sourceFile: "src/core/salvage.ts",
+    guardMarker: "if (gatePassed && treeChanged) {",
+    mutate: (s) => s.replace(
+      "if (gatePassed && treeChanged) {",
+      "if (false && gatePassed && treeChanged) {"
+    ),
+  },
+  {
+    id: "salvage-archived-todo",
+    testFile: "test/core/salvage.test.ts",
+    testCase: "returns archived-todo when gate failing but tree changed",
+    sourceFile: "src/core/salvage.ts",
+    guardMarker: "if (!gatePassed && treeChanged) {",
+    mutate: (s) => s.replace(
+      "if (!gatePassed && treeChanged) {",
+      "if (false && !gatePassed && treeChanged) {"
+    ),
+  },
+  {
+    id: "salvage-ff-reattached",
+    testFile: "test/core/salvage.test.ts",
+    testCase: "returns ff-reattached when orphan reset detected and reattach possible",
+    sourceFile: "src/core/salvage.ts",
+    guardMarker: "if (orphanReset && ffReattachPossible) {",
+    mutate: (s) => s.replace(
+      "if (orphanReset && ffReattachPossible) {",
+      "if (false && orphanReset && ffReattachPossible) {"
+    ),
+  },
+  {
+    id: "salvage-no-op",
+    testFile: "test/core/salvage.test.ts",
+    testCase: "returns no-op when no tree changes",
+    sourceFile: "src/core/salvage.ts",
+    guardMarker: "if (gatePassed && !treeChanged) {",
+    mutate: (s) => s.replace(
+      "if (gatePassed && !treeChanged) {",
+      "if (false && gatePassed && !treeChanged) {"
+    ),
+  },
+  {
+    id: "salvage-error",
+    testFile: "test/core/salvage.test.ts",
+    testCase: "coerces a non-array ownedPaths to an empty array (VAL-BUG-008)",
+    sourceFile: "src/core/salvage.ts",
+    guardMarker: "Array.isArray(input.ownedPaths)",
+    mutate: (s) => s.replace(
+      "Array.isArray(input.ownedPaths)",
+      "true /* mutation: skip array coercion */"
+    ),
+  },
+  // ── Breaker (src/core/breaker.ts) ──
+  {
+    id: "breaker-trips",
+    testFile: "test/core/breaker.test.ts",
+    testCase: "trips after threshold identical errors",
+    sourceFile: "src/core/breaker.ts",
+    guardMarker: "if (state.errorCounts[sig] >= state.threshold) {",
+    mutate: (s) => s.replace(
+      "if (state.errorCounts[sig] >= state.threshold) {",
+      "if (false && state.errorCounts[sig] >= state.threshold) {"
+    ),
+  },
+  {
+    id: "breaker-resets",
+    testFile: "test/core/breaker.test.ts",
+    testCase: "resets on git tree progress",
+    sourceFile: "src/core/breaker.ts",
+    guardMarker: 'reason: "successful iteration with tree change"',
+    mutate: (s) => s.replace(
+      /state\.errorCounts\s*=\s*\{\};\s*\n\s*state\.open\s*=\s*false;\s*\n\s*state\.stallCount\s*=\s*0;\s*\n\s*return\s*\{\s*transition:\s*"reset",\s*canExecute:\s*true,\s*reason:\s*"successful iteration with tree change"/,
+      '/* MUTATION: reset disabled */ return { transition: "closed", canExecute: true, reason: "mutation"'
+    ),
+  },
+  {
+    id: "breaker-rejects-claimed-progress",
+    testFile: "test/core/breaker.test.ts",
+    testCase: "rejects claimed progress without tree change",
+    sourceFile: "src/core/breaker.ts",
+    guardMarker: "// Detect progress via git tree truth, not worker claims",
+    mutate: (s) => s.replace(
+      "// Detect progress via git tree truth, not worker claims\n    if (result.gitTreeChanged) {",
+      "// Detect progress via worker claims (MUTATION)\n    if (result.gitTreeChanged || result.workerClaimedFilesChanged) {"
+    ),
+  },
+  // ── Convergence (src/core/convergence.ts) ──
+  {
+    id: "gate-stale-baseline",
+    testFile: "test/core/convergence.test.ts",
+    testCase: "detects stale baseline (zero baseline checks)",
+    sourceFile: "src/core/convergence.ts",
+    guardMarker: "const staleBaseline = baseline.length === 0 || isBaselineStale(baseline, current);",
+    mutate: (s) => s.replace(
+      "const staleBaseline = baseline.length === 0 || isBaselineStale(baseline, current);",
+      "const staleBaseline = false; /* mutation: stale baseline guard removed */"
+    ),
+  },
+  {
+    id: "gate-silence-not-success",
+    testFile: "test/core/convergence.test.ts",
+    testCase: "fails on zero current checks (silence is not success)",
+    sourceFile: "src/core/convergence.ts",
+    guardMarker: 'failures.push("no checks executed — silence is not success");',
+    mutate: (s) => s.replace(
+      'failures.push("no checks executed — silence is not success");',
+      "/* mutation: silence-is-not-success guard removed */"
+    ),
+  },
+  {
+    id: "gate-scope-filtering",
+    testFile: "test/core/convergence.test.ts",
+    testCase: "VAL-BUG-001: excludes a sibling directory that shares a name prefix",
+    sourceFile: "src/core/convergence.ts",
+    guardMarker: "scope.some((s) => isPathInScope(f.file, s)),",
+    mutate: (s) => s.replace(
+      "scope.some((s) => isPathInScope(f.file, s)),",
+      "scope.some((s) => f.file.startsWith(s)), /* mutation: bypass isPathInScope */"
+    ),
+  },
+  // ── Scope (src/core/scope.ts) ──
+  {
+    id: "scope-traversal",
+    testFile: "test/core/scope.test.ts",
+    testCase: "denies path traversal attempts",
+    sourceFile: "src/core/scope.ts",
+    guardMarker: 'if (part === "..") {',
+    mutate: (s) => s.replace(
+      'if (part === "..") {',
+      'if (false && part === "..") { /* mutation: traversal guard removed */'
+    ),
+  },
+  {
+    id: "scope-outside-paths",
+    testFile: "test/core/scope.test.ts",
+    testCase: "denies writes outside declared paths",
+    sourceFile: "src/core/scope.ts",
+    guardMarker: "for (const declared of declaredPaths) {",
+    mutate: (s) => s.replace(
+      "for (const declared of declaredPaths) {",
+      "for (const declared of []) { /* mutation: skip scope check */"
+    ),
+  },
+  // ── PRD (src/core/prd.ts) ──
+  {
+    id: "prd-no-ac",
+    testFile: "test/core/prd.test.ts",
+    testCase: "rejects PRD without ACs",
+    sourceFile: "src/core/prd.ts",
+    guardMarker: 'errors.push("PRD must have at least one acceptance criterion");',
+    mutate: (s) => s.replace(
+      "if (acceptanceCriteria.length === 0) {",
+      "if (false && acceptanceCriteria.length === 0) {"
+    ),
+  },
+  {
+    id: "prd-no-simplification",
+    testFile: "test/core/prd.test.ts",
+    testCase: "rejects PRD without simplification review",
+    sourceFile: "src/core/prd.ts",
+    guardMarker: 'errors.push("PRD must have a simplification review (subtract before you add)");',
+    mutate: (s) => s.replace(
+      "if (!input.simplificationReview || !input.simplificationReview.reviewed) {",
+      "if (false && (!input.simplificationReview || !input.simplificationReview.reviewed)) {"
+    ),
+  },
+  // ── Microverse (src/lifecycle/microverse.ts) ──
+  {
+    id: "microverse-convergence",
+    testFile: "test/lifecycle/microverse.test.ts",
+    testCase: "plateau: last N improvement deltas below epsilon converges",
+    sourceFile: "src/lifecycle/microverse.ts",
+    guardMarker: "window.every((d) => d < config.epsilon)",
+    mutate: (s) => s.replace(
+      "window.every((d) => d < config.epsilon)",
+      "false /* mutation: plateau detection disabled */"
+    ),
+  },
+  {
+    id: "microverse-rollback",
+    testFile: "test/lifecycle/microverse.test.ts",
+    testCase: "rollback on regression preserves baseline",
+    sourceFile: "src/lifecycle/microverse.ts",
+    guardMarker: 'return { score, classification: "regressed", rolledBack: true };',
+    mutate: (s) => s.replace(
+      'return { score, classification: "regressed", rolledBack: true };',
+      'return { score, classification: "improved", rolledBack: false }; /* mutation: rollback disabled */'
+    ),
+  },
+  {
+    id: "microverse-stall",
+    testFile: "test/lifecycle/microverse.test.ts",
+    testCase: "detects stall after stallLimit iterations (attrition, not convergence)",
+    sourceFile: "src/lifecycle/microverse.ts",
+    guardMarker: 'return this.result(false, "stalled");',
+    mutate: (s) => s.replace(
+      'if (this.stallCount >= this.config.stallLimit) {\n          return this.result(false, "stalled");',
+      'if (false && this.stallCount >= this.config.stallLimit) {\n          return this.result(false, "stalled");'
+    ),
+  },
+  // ── Dispatch (src/dispatch/dispatch.ts) ──
+  {
+    id: "dispatch-idempotency",
+    testFile: "test/dispatch/dispatch.test.ts",
+    testCase: "returns recorded terminal state without re-spawning",
+    sourceFile: "src/dispatch/dispatch.ts",
+    guardMarker: "// Idempotency check — return recorded terminal state without re-spawning",
+    mutate: (s) => s.replace(
+      "if (existing && this.ledger.isTerminal(idStr)) {",
+      "if (false && existing && this.ledger.isTerminal(idStr)) {"
+    ),
+  },
+  {
+    id: "dispatch-backpressure",
+    testFile: "test/dispatch/dispatch.test.ts",
+    testCase: "records planned state and does not spawn when maxConcurrent is 0",
+    sourceFile: "src/dispatch/dispatch.ts",
+    guardMarker: "// Backpressure — at capacity, record planned state and return without spawning",
+    mutate: (s) => s.replace(
+      /if \(this\.active >= opts\.maxConcurrent\) \{/,
+      "if (false && this.active >= opts.maxConcurrent) {"
+    ),
+  },
+  // ── Malformed input (multiple source files) ──
+  {
+    id: "malformed-null-input",
+    testFile: "test/core/malformed-input.test.ts",
+    testCase: "handles null input by failing closed",
+    sourceFile: "src/core/completion.ts",
+    guardMarker: 'if (input == null || typeof input !== "object") {',
+    mutate: (s) => s.replace(
+      'if (input == null || typeof input !== "object") {',
+      "if (false) { /* mutation: null-input guard removed */"
+    ),
+  },
+  {
+    id: "malformed-wrong-types",
+    testFile: "test/core/malformed-input.test.ts",
+    testCase: "handles wrong types by failing closed",
+    sourceFile: "src/core/completion.ts",
+    guardMarker: 'const claimedSha = typeof input.claimedSha === "string" ? input.claimedSha : null;',
+    mutate: (s) => s
+      .replace('const claimedSha = typeof input.claimedSha === "string" ? input.claimedSha : null;', "const claimedSha = input.claimedSha; /* mutation: type coercion removed */")
+      .replace("const shaExists = input.shaExists === true;", "const shaExists = input.shaExists;")
+      .replace("const treeChanged = input.treeChanged === true;", "const treeChanged = input.treeChanged;"),
+  },
+];
+
+const PY_INCIDENT_CLASSES = [
+  {
+    id: "drill-false-completion",
+    testFile: "test/test_drills.py",
+    testCase: "test_denies_done_without_commit",
+    sourceFile: "rickgent_policies/__init__.py",
+    guardMarker: 'if verdict_type != "COMMITTED":',
+    mutate: (s) => s.replace(
+      'if verdict_type != "COMMITTED":',
+      'if False:  # mutation: completion guard removed'
+    ),
+  },
+  {
+    id: "drill-same-vendor",
+    testFile: "test/test_drills.py",
+    testCase: "test_denies_same_vendor",
+    sourceFile: "rickgent_policies/__init__.py",
+    guardMarker: "if implementer == reviewer:",
+    mutate: (s) => s.replace(
+      "if implementer == reviewer:",
+      "if False: # mutation: same-vendor guard removed"
+    ),
+  },
+  {
+    id: "drill-shim-exception",
+    testFile: "test/test_drills.py",
+    testCase: "test_exception_produces_deny",
+    sourceFile: "rickgent_policies/__init__.py",
+    guardMarker: 'f"scope fence: policy shim error: {e}"',
+    mutate: (s) => s.replace(
+      /except Exception as e:\s*\n\s*return \{\s*\n\s*"result": "DENY",\s*\n\s*"reason": f"scope fence: policy shim error: \{e\}",\s*\n\s*"code": "POLICY_SHIM_ERROR",\s*\n\s*\}/,
+      'except Exception as e:\n            raise  # mutation: shim exception guard removed'
+    ),
+  },
+];
+
+const ALL_INCIDENT_CLASSES = [...TS_INCIDENT_CLASSES, ...PY_INCIDENT_CLASSES];
+
+// ── Test case discovery ─────────────────────────────────────────────────────
+
+/**
+ * Discover test case names by scanning a test file.
+ * TS: matches it("..."), test("..."), describe("...")
+ * Python: matches def test_...
+ */
+function discoverTestCases(filePath) {
+  const absPath = resolvePath(filePath);
+  if (!existsSync(absPath)) return [];
+  const content = readFileSync(absPath, "utf-8");
+  const cases = [];
+
+  if (filePath.endsWith(".py")) {
+    const pyRegex = /def\s+(test_\w+)/g;
+    let m;
+    while ((m = pyRegex.exec(content)) !== null) {
+      cases.push(m[1]);
+    }
+  } else {
+    // Match it("..."), it('...'), it(`...`), test("..."), describe("...")
+    const tsRegex = /(?:it|test|describe)\s*\(\s*["'`]([^"'`]+)["'`]/g;
+    let m;
+    while ((m = tsRegex.exec(content)) !== null) {
+      cases.push(m[1]);
+    }
+  }
+  return cases;
+}
+
+// ── Path resolution ─────────────────────────────────────────────────────────
+
+function resolvePath(relPath) {
+  // TS paths are relative to orchestrator/
+  if (!relPath.endsWith(".py") && !relPath.includes("rickgent_policies")) {
+    return join(ORCH_DIR, relPath);
+  }
+  // Python paths are relative to rickgent-policies/
+  return join(POLICIES_DIR, relPath);
+}
+
+function resolveSourcePath(cls) {
+  if (cls.sourceFile.includes("rickgent_policies")) {
+    return join(POLICIES_DIR, cls.sourceFile);
+  }
+  return join(ORCH_DIR, cls.sourceFile);
+}
+
+// ── Manifest generation (VAL-COV-001, VAL-COV-002) ──────────────────────────
+
+/**
+ * Generate the coverage manifest by discovering executable test ids.
+ * Coverage is determined by actual discovery, NOT hardcoded booleans.
+ */
+function generateManifest() {
+  const incidentClasses = ALL_INCIDENT_CLASSES.map((cls) => {
+    const testFilePath = cls.testFile.endsWith(".py")
+      ? join(POLICIES_DIR, cls.testFile)
+      : join(ORCH_DIR, cls.testFile);
+    const sourcePath = resolveSourcePath(cls);
+
+    const fileExists = existsSync(testFilePath);
+    const sourceExists = existsSync(sourcePath);
+    const discoveredCases = discoverTestCases(cls.testFile);
+    const testCaseExists = discoveredCases.includes(cls.testCase);
+
+    let guardExists = false;
+    if (sourceExists) {
+      const sourceContent = readFileSync(sourcePath, "utf-8");
+      guardExists = sourceContent.includes(cls.guardMarker);
+    }
+
+    return {
+      id: cls.id,
+      test: cls.testFile,
+      testCase: cls.testCase,
+      source: cls.sourceFile,
+      fileExists,
+      testCaseExists,
+      guardExists,
+      covered: fileExists && testCaseExists && guardExists,
+    };
+  });
+
+  // Also verify required fixtures exist
+  const fixtureDir = join(REPO_ROOT, "conformance", "fixtures");
+  const requiredFixtures = [
+    "completion-001-committed.json", "completion-002-unverified-no-sha.json",
+    "completion-003-baseline-sha.json", "completion-004-no-tree-change.json",
+    "completion-005-gate-red.json",
+    "salvage-001-committed-done.json", "salvage-002-archived-todo.json",
+    "salvage-003-ff-reattached.json", "salvage-004-no-op-clean-tree.json",
+    "salvage-005-error.json",
+    "breaker-001-trips-on-threshold.json", "breaker-002-resets-on-progress.json",
+    "breaker-003-rejects-claimed-progress.json",
+    "gate-001-fresh-baseline-pass.json", "gate-002-stale-baseline-zero-checks.json",
+    "gate-003-silence-not-success.json", "gate-004-scope-filtering.json",
+    "scope-001-allows-in-scope.json", "scope-002-denies-outside-scope.json",
+    "scope-003-denies-traversal.json", "scope-004-allows-read.json",
+    "prd-001-valid.json", "prd-002-no-ac.json", "prd-003-no-simplification.json",
+  ].map((f) => {
+    const fullPath = join(fixtureDir, f);
+    return { id: f.replace(".json", ""), file: `conformance/fixtures/${f}`, exists: existsSync(fullPath) };
+  });
+
+  return {
+    version: "2.0",
+    generated: true,
+    incidentClasses,
+    requiredFixtures,
+  };
+}
+
+// ── Mutation check (VAL-COV-003) ────────────────────────────────────────────
+
+/**
+ * Run a mutation check for a single incident class.
+ * Applies the mutation, runs the test suite, and checks if the test FAILS
+ * (proving the guard is genuinely tested).
+ *
+ * Returns { id, guardFound, testFailed, error }
+ * - guardFound: the guardMarker was found in the source (guard exists)
+ * - testFailed: the test suite failed with the mutation applied (guard is tested)
+ */
+function runMutationCheck(incidentClassId) {
+  const cls = ALL_INCIDENT_CLASSES.find((c) => c.id === incidentClassId);
+  if (!cls) throw new Error(`Unknown incident class: ${incidentClassId}`);
+
+  const sourcePath = resolveSourcePath(cls);
+  const original = readFileSync(sourcePath, "utf-8");
+
+  // Verify guard exists in source
+  if (!original.includes(cls.guardMarker)) {
+    return {
+      id: incidentClassId,
+      guardFound: false,
+      testFailed: false,
+      error: "Guard marker not found in source file",
+    };
+  }
+
+  // Apply mutation
+  let mutated;
+  try {
+    mutated = cls.mutate(original);
+  } catch (e) {
+    return {
+      id: incidentClassId,
+      guardFound: true,
+      testFailed: false,
+      error: `Mutation function failed: ${e.message}`,
+    };
+  }
+
+  if (mutated === original) {
+    return {
+      id: incidentClassId,
+      guardFound: true,
+      testFailed: false,
+      error: "Mutation produced no change to source",
+    };
+  }
+
+  // Write mutated source
+  writeFileSync(sourcePath, mutated);
+
+  try {
+    // Run the test
+    const isPython = cls.testFile.endsWith(".py");
+    let result;
+
+    if (isPython) {
+      result = spawnSync(
+        "python3",
+        ["-m", "pytest", cls.testFile, "-x", "--no-header", "-q"],
+        {
+          cwd: POLICIES_DIR,
+          encoding: "utf-8",
+          timeout: 60000,
+          env: PATH_ENV(),
+          stdio: ["ignore", "pipe", "pipe"],
+        }
+      );
+    } else {
+      const vitestBin = join(ORCH_DIR, "node_modules", ".bin", "vitest");
+      result = spawnSync(
+        vitestBin,
+        ["run", cls.testFile, "--reporter=verbose"],
+        {
+          cwd: ORCH_DIR,
+          encoding: "utf-8",
+          timeout: 60000,
+          env: PATH_ENV(),
+          stdio: ["ignore", "pipe", "pipe"],
+        }
+      );
+    }
+
+    // If exit code is non-zero, the test failed → mutation caught → PASS
+    const testFailed = result.status !== 0;
+    return {
+      id: incidentClassId,
+      guardFound: true,
+      testFailed,
+      error: testFailed ? null : "Test passed with mutation applied (guard not tested)",
+      stdout: result.stdout ? result.stdout.slice(-500) : undefined,
+      status: result.status,
+    };
+  } catch (e) {
+    return {
+      id: incidentClassId,
+      guardFound: true,
+      testFailed: false,
+      error: `Test execution failed: ${e.message}`,
+    };
+  } finally {
+    // ALWAYS restore original source
+    writeFileSync(sourcePath, original);
+  }
+}
+
+/**
+ * Run mutation checks for all incident classes.
+ * Returns an array of results.
+ */
+function runAllMutationChecks() {
+  return ALL_INCIDENT_CLASSES.map((cls) => runMutationCheck(cls.id));
+}
+
+// ── Exports ─────────────────────────────────────────────────────────────────
+
+module.exports = {
+  INCIDENT_CLASSES: ALL_INCIDENT_CLASSES,
+  discoverTestCases,
+  generateManifest,
+  runMutationCheck,
+  runAllMutationChecks,
+  resolvePath,
+  resolveSourcePath,
+  ORCH_DIR,
+  POLICIES_DIR,
+  REPO_ROOT,
+};
+
+// CLI entry point
+if (require.main === module) {
+  const cmd = process.argv[2];
+  if (cmd === "generate") {
+    const manifest = generateManifest();
+    process.stdout.write(JSON.stringify(manifest, null, 2) + "\n");
+  } else if (cmd === "mutate" && process.argv[3]) {
+    const result = runMutationCheck(process.argv[3]);
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n");
+    process.exit(result.testFailed ? 0 : 1);
+  } else if (cmd === "mutate-all") {
+    const results = runAllMutationChecks();
+    const allPassed = results.every((r) => r.testFailed);
+    process.stdout.write(JSON.stringify(results, null, 2) + "\n");
+    process.exit(allPassed ? 0 : 1);
+  } else {
+    process.stderr.write("Usage: node coverage-manifest.cjs [generate|mutate <id>|mutate-all]\n");
+    process.exit(1);
+  }
+}
