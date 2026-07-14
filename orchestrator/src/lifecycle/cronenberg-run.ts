@@ -7,7 +7,8 @@
 // delegated command owns its own agent lifecycle.
 
 import { execFileSync, spawnSync } from "child_process";
-import { join, resolve } from "path";
+import { mkdirSync, writeFileSync } from "fs";
+import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import {
   buildCronenbergPlan,
@@ -170,6 +171,14 @@ export async function runCronenbergCommand(rest: string[]): Promise<void> {
 
   console.log("");
   console.log("Running the chain…");
+
+  // Materialize the task PRD the pure planner scheduled (pipeline metaphor with
+  // no PRD on disk). The delegated command needs an existing file path.
+  if (plan.taskPrd) {
+    mkdirSync(dirname(plan.taskPrd.path), { recursive: true });
+    writeFileSync(plan.taskPrd.path, plan.taskPrd.content);
+  }
+
   const chain: PlannedCommand[] = [];
   if (plan.refinePrePass) chain.push(plan.refinePrePass);
   chain.push(plan.metaphorCommand);

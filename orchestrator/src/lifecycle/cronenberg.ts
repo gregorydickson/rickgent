@@ -61,6 +61,10 @@ export interface CronenbergPlan {
   refine: { value: boolean; reason: string };
   refinePrePass: PlannedCommand | null;
   metaphorCommand: PlannedCommand;
+  // When the chosen metaphor needs a PRD file but none exists on disk, the
+  // planner records the task PRD the RUNNER must materialize before delegating.
+  // (The planner stays pure — it computes path + content but performs no write.)
+  taskPrd: { path: string; content: string } | null;
 }
 
 const STAGE_KEYWORDS = ["refine", "build", "optimize", "cleanup", "deslop", "szechuan", "anatomy", "review"];
@@ -297,12 +301,18 @@ function decideRefine(
 }
 
 function buildMetaphorCommand(metaphor: Metaphor, task: string, prdPath: string | null, forward: string[]): PlannedCommand {
-  const forwardFlags = forward.filter((a) => a.startsWith("--") || isFlagValue(forward, a));
+  const forwardFlags = forwardedFlags(forward);
   switch (metaphor) {
     case "microverse":
       return { label: "rickgent microverse", argv: ["microverse", "--task", task, ...forward] };
     case "pipeline":
-      return { label: "rickgent pipeline", argv: ["pipeline", task, ...forward] };
+      // `rickgent pipeline` takes a PRD *file path* as its positional, not a
+      // task string. prdPath here is the effective PRD (an existing prd.md or
+      // the materialized task PRD path) resolved by buildCronenbergPlan.
+      return {
+        label: "rickgent pipeline",
+        argv: prdPath ? ["pipeline", prdPath, ...forwardFlags] : ["pipeline", ...forwardFlags],
+      };
     case "build":
     default:
       return {
@@ -312,10 +322,27 @@ function buildMetaphorCommand(metaphor: Metaphor, task: string, prdPath: string 
   }
 }
 
-function isFlagValue(forward: string[], token: string): boolean {
-  const idx = forward.indexOf(token);
-  if (idx <= 0) return false;
-  return forward[idx - 1]!.startsWith("--");
+/** Keep every forwarded `--flag` and, when present, its immediately-following
+ *  value (a token that does not itself start with `--`). Bare positional
+ *  free-text tokens are dropped. This preserves flag-VALUE pairs so a forwarded
+ *  `--repo /x` is never truncated to a bare `--repo`. */
+function forwardedFlags(forward: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < forward.length; i++) {
+    const tok = forward[i]!;
+    if (!tok.startsWith("--")) continue;
+    out.push(tok);
+    const next = forward[i + 1];
+    if (next !== undefined && !next.startsWith("--")) {
+      out.push(next);
+      i++;
+    }
+  }
+  return out;
+}
+
+function renderTaskPrd(task: string): string {
+  return `# Cronenberg Task\n\n${task}\n`;
 }
 
 function selectFollowups(
@@ -328,7 +355,7 @@ function selectFollowups(
   if (flags.noFollowups) return [];
   if (metaphor === "pipeline" || metaphor === "microverse") return [];
 
-  const forwardFlags = forward.filter((a) => a.startsWith("--") || isFlagValue(forward, a));
+  const forwardFlags = forwardedFlags(forward);
   const followups: PlannedCommand[] = [];
   if (s.CITADEL_RISK && prdPath) {
     followups.push({ label: `rickgent citadel --prd ${prdPath}`, argv: ["citadel", "--prd", prdPath, ...forwardFlags] });
@@ -362,19 +389,32 @@ export function buildCronenbergPlan(input: CronenbergInput): CronenbergPlan {
       refine: { value: false, reason: "no input" },
       refinePrePass: null,
       metaphorCommand: { label: "rickgent build", argv: ["build"] },
+      taskPrd: null,
     };
   }
 
   const metaphor = selectMetaphor(signals);
   const refine = decideRefine(signals, input.flags, metaphor);
   const followups = selectFollowups(signals, input.flags, metaphor, prdPath, input.forward);
-  const metaphorCommand = buildMetaphorCommand(metaphor, task, prdPath, input.forward);
+
+  // The pipeline metaphor needs a PRD file that exists. When one is on disk we
+  // hand its path through; otherwise the planner schedules a task PRD for the
+  // runner to materialize and delegates with THAT path (never raw task text).
+  const needsTaskPrd = metaphor === "pipeline" && prdPath === null && task !== "";
+  const taskPrdPath = needsTaskPrd ? join(input.rickgentDir, "cronenberg-task.md") : null;
+  const effectivePrdPath = prdPath ?? taskPrdPath;
+
+  const metaphorCommand = buildMetaphorCommand(metaphor, task, effectivePrdPath, input.forward);
   const refinePrePass: PlannedCommand | null = refine.value
     ? {
         label: prdPath ? `rickgent refine ${prdPath}` : "rickgent refine",
-        argv: prdPath ? ["refine", prdPath, ...input.forward.filter((a) => a.startsWith("--"))] : ["refine", ...input.forward.filter((a) => a.startsWith("--"))],
+        argv: prdPath
+          ? ["refine", prdPath, ...forwardedFlags(input.forward)]
+          : ["refine", ...forwardedFlags(input.forward)],
       }
     : null;
+
+  const taskPrd = taskPrdPath ? { path: taskPrdPath, content: renderTaskPrd(task) } : null;
 
   return {
     ok: true,
@@ -386,6 +426,7 @@ export function buildCronenbergPlan(input: CronenbergInput): CronenbergPlan {
     refine,
     refinePrePass,
     metaphorCommand,
+    taskPrd,
   };
 }
 
