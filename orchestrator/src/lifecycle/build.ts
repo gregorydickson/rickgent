@@ -47,6 +47,8 @@ import {
 } from "./orphan-reaper.js";
 import { routeDispatch, type ModelEntry } from "./routing.js";
 import { recordRun, recordPr } from "./metrics.js";
+import { runConformanceGate } from "./citadel.js";
+import { runDeslopGate } from "./szechuan.js";
 
 export interface BuildOptions {
   prdPath: string;
@@ -801,116 +803,4 @@ function verifyPolicyAttachment(agentDir: string, env: NodeJS.ProcessEnv): Polic
       workerCount: 0,
     };
   }
-}
-
-// ── Conformance gate (citadel) ──────────────────────────────────────────────
-//
-// Post-implementation conformance audit: runs each acceptance criterion's
-// verifyCommand against the working repo. A failing AC is absorbed (salvage
-// disposition recorded), not a human intervention.
-
-import type { AcceptanceCriterion } from "../core/prd.js";
-
-interface ConformanceResult {
-  total: number;
-  passed: number;
-  failed: number;
-  results: Array<{ acId: string; pass: boolean; detail: string }>;
-}
-
-function runConformanceGate(
-  acceptanceCriteria: AcceptanceCriterion[],
-  workingDir: string,
-  env: NodeJS.ProcessEnv,
-): ConformanceResult {
-  const results: Array<{ acId: string; pass: boolean; detail: string }> = [];
-  let passed = 0;
-  let failed = 0;
-
-  for (let i = 0; i < acceptanceCriteria.length; i++) {
-    const ac = acceptanceCriteria[i]!;
-    const acId = `AC-${i + 1}`;
-    // Strip markdown backtick delimiters that the PRD parser preserves.
-    const cmd = ac.verifyCommand.replace(/^`+|`+$/g, "").trim();
-    if (!cmd) {
-      results.push({ acId, pass: true, detail: "no verify command" });
-      passed++;
-      continue;
-    }
-    try {
-      execFileSync("sh", ["-c", cmd], {
-        cwd: workingDir,
-        encoding: "utf-8",
-        timeout: 30000,
-        stdio: ["ignore", "pipe", "pipe"],
-        env,
-      });
-      results.push({ acId, pass: true, detail: "verify command succeeded" });
-      passed++;
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      results.push({ acId, pass: false, detail: `verify command failed: ${detail}` });
-      failed++;
-    }
-  }
-
-  return { total: acceptanceCriteria.length, passed, failed, results };
-}
-
-// ── Deslop gate (szechuan) ──────────────────────────────────────────────────
-//
-// Post-conformance code quality check: scans the changed files for obvious slop
-// patterns (TODO, FIXME, console.log, debugger, etc.). A finding is absorbed
-// (salvage disposition recorded), not a human intervention.
-
-interface DeslopResult {
-  filesChecked: number;
-  findings: number;
-  details: string[];
-}
-
-const DESLOP_PATTERNS: RegExp[] = [
-  /\bTODO\b/i,
-  /\bFIXME\b/i,
-  /\bHACK\b/i,
-  /\bconsole\.log\b/,
-  /\bdebugger\b/,
-  /\beval\s*\(/,
-];
-
-function runDeslopGate(
-  workingDir: string,
-  tickets: TicketPlan[],
-  env: NodeJS.ProcessEnv,
-): DeslopResult {
-  void env;
-  const details: string[] = [];
-  let filesChecked = 0;
-
-  // Collect the set of declared paths from all tickets (the in-scope files).
-  const paths = new Set<string>();
-  for (const ticket of tickets) {
-    for (const p of ticket.declaredPaths) {
-      paths.add(p);
-    }
-  }
-
-  for (const relPath of paths) {
-    const abs = relPath.startsWith("/") ? relPath : join(workingDir, relPath);
-    if (!existsSync(abs)) continue;
-    filesChecked++;
-    try {
-      const content = readFileSync(abs, "utf-8");
-      for (const pattern of DESLOP_PATTERNS) {
-        const match = content.match(pattern);
-        if (match) {
-          details.push(`${relPath}: slop pattern "${match[0]}"`);
-        }
-      }
-    } catch {
-      // Skip unreadable files.
-    }
-  }
-
-  return { filesChecked, findings: details.length, details };
 }
