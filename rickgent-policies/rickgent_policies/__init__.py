@@ -23,14 +23,22 @@ _LOG = logging.getLogger("rickgent_policies")
 _BUILD_COMMIT_OVERRIDE = os.environ.get("RICKGENT_BUILD_COMMIT")
 BUILD_COMMIT = _BUILD_COMMIT_OVERRIDE or "dev"
 
+# Path to the rickgent CLI (set via environment or auto-detected).
+# Defined BEFORE _detect_build_commit so both auto-detect and the parity
+# check (_assert_build_commit) resolve the SAME binary. Under a RICKGENT_BIN
+# override, using the literal "rickgent" in one path and _RICKGENT_BIN in the
+# other would query different binaries and cause a false build-commit-mismatch
+# DENY across completion_evidence / convergence_gate / subtract_before_add.
+_RICKGENT_BIN = os.environ.get("RICKGENT_BIN", "rickgent")
+
 def _detect_build_commit() -> str:
-    """Try to detect build_commit from the rickgent CLI."""
+    """Try to detect build_commit from the rickgent CLI via _RICKGENT_BIN."""
     global BUILD_COMMIT
     if _BUILD_COMMIT_OVERRIDE:
         return _BUILD_COMMIT_OVERRIDE
     try:
         result = subprocess.run(
-            ["rickgent", "--build-commit"],
+            [_RICKGENT_BIN, "--build-commit"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -45,9 +53,6 @@ def _detect_build_commit() -> str:
 # Auto-detect on import for editable installs
 if not _BUILD_COMMIT_OVERRIDE:
     _detect_build_commit()
-
-# Path to the rickgent CLI (set via environment or auto-detected)
-_RICKGENT_BIN = os.environ.get("RICKGENT_BIN", "rickgent")
 
 
 def _rickgent_verdict(check: str, input_data: dict) -> dict:
