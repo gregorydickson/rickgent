@@ -331,6 +331,29 @@ describe("M5 Integration — VAL-INTEGR-001..002: top-level help + no stubs", ()
       expect(res.stderr).not.toMatch(/not yet implemented/i);
     }
   });
+
+  // VAL-INTEGR-002 (explicit stub-exit check for completeness)
+  // The contract specifies `prd --non-interactive` (not --help) as the
+  // invocation for prd. Verify the functional invocation does not emit the
+  // stub message either. Other commands' functional invocations are covered
+  // by VAL-INTEGR-009 below.
+  it("prd --non-interactive does not emit stub message", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "m5-stub-"));
+    const rgDir = join(tmpDir, "rickgent");
+    mkdirSync(rgDir, { recursive: true });
+    try {
+      const res = spawnSync(process.execPath, [CLI_JS, "prd", "--non-interactive", "--output", join(tmpDir, "out.md")], {
+        encoding: "utf-8",
+        input: "",
+        env: { ...process.env, RICKGENT_DIR: rgDir },
+      });
+      expect(res.status).toBe(0);
+      expect(res.stdout).not.toMatch(/not yet implemented/i);
+      expect(res.stderr).not.toMatch(/not yet implemented/i);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ════════════════════════════════════════════════════════════════════════
@@ -584,10 +607,13 @@ describe("M5 Integration — all commands work with fixture omnigent (VAL-INTEGR
   it("build: dispatches tickets via fixture omnigent, exit 0", () => {
     const prdPath = join(ctx.repo, "prd.md");
     writeFileSync(prdPath, VALID_PRD);
-    const r = runFixture(ctx, ["build", prdPath, "--repo", ctx.repo, "--agent", ctx.agentDir, "--no-autonomous-pr"], {
+    // No --no-autonomous-pr: the build completes with autonomous PR creation (exit 0).
+    // --no-autonomous-pr would hit the merge gate and exit non-zero (documented).
+    const r = runFixture(ctx, ["build", prdPath, "--repo", ctx.repo, "--agent", ctx.agentDir], {
       RICKGENT_SKIP_CONFORMANCE: "1",
       RICKGENT_SKIP_DESLOP: "1",
     });
+    expect(r.status).toBe(0);
     expect(r.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
     // Build should produce a registry and dispatch ledger
     expect(existsSync(join(ctx.rickgentDir, "registry.json"))).toBe(true);
@@ -624,6 +650,7 @@ describe("M5 Integration — all commands work with fixture omnigent (VAL-INTEGR
       "--stall-limit",
       "2",
     ], { INT_JUDGE_COUNT: "0" });
+    expect(r.status).toBe(0);
     expect(r.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
     expect(existsSync(join(ctx.rickgentDir, "szechuan.json"))).toBe(true);
   });
@@ -642,10 +669,11 @@ describe("M5 Integration — all commands work with fixture omnigent (VAL-INTEGR
       "--agent",
       ctx.agentDir,
       "--max-iterations",
-      "1",
+      "2",
       "--stall-limit",
       "2",
     ], { INT_REVIEW_FINDINGS: "[]", INT_REVIEW_COUNT: "0" });
+    expect(r.status).toBe(0);
     expect(r.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
     expect(existsSync(join(ctx.rickgentDir, "anatomy-park.json"))).toBe(true);
   });
@@ -666,6 +694,7 @@ describe("M5 Integration — all commands work with fixture omnigent (VAL-INTEGR
       "1",
       "--non-interactive",
     ]);
+    expect(r.status).toBe(0);
     expect(r.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
     expect(existsSync(join(ctx.rickgentDir, "microverse.json"))).toBe(true);
   });
@@ -719,10 +748,11 @@ describe("M5 Integration — full pipeline chain (VAL-INTEGR-010)", () => {
     // which has the right format. Use the shared fixture omnigent for dispatch.
     const buildPrd = join(ctx.repo, "prd.md");
     writeFileSync(buildPrd, VALID_PRD);
-    const buildRes = runFixture(ctx, ["build", buildPrd, "--repo", ctx.repo, "--agent", ctx.agentDir, "--no-autonomous-pr"], {
+    const buildRes = runFixture(ctx, ["build", buildPrd, "--repo", ctx.repo, "--agent", ctx.agentDir], {
       RICKGENT_SKIP_CONFORMANCE: "1",
       RICKGENT_SKIP_DESLOP: "1",
     });
+    expect(buildRes.status).toBe(0);
     expect(buildRes.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
     expect(existsSync(join(ctx.rickgentDir, "registry.json"))).toBe(true);
     expect(existsSync(join(ctx.rickgentDir, "dispatch-ledger.jsonl"))).toBe(true);
@@ -747,6 +777,7 @@ describe("M5 Integration — full pipeline chain (VAL-INTEGR-010)", () => {
       "--stall-limit",
       "2",
     ], { INT_JUDGE_COUNT: "0" });
+    expect(szechuanRes.status).toBe(0);
     expect(szechuanRes.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
     expect(existsSync(join(ctx.rickgentDir, "szechuan.json"))).toBe(true);
     expect(existsSync(join(ctx.rickgentDir, "gap_analysis.md"))).toBe(true);
@@ -765,10 +796,11 @@ describe("M5 Integration — full pipeline chain (VAL-INTEGR-010)", () => {
       "--agent",
       ctx.agentDir,
       "--max-iterations",
-      "1",
+      "2",
       "--stall-limit",
       "2",
     ], { INT_REVIEW_FINDINGS: "[]", INT_REVIEW_COUNT: "0" });
+    expect(anatomyRes.status).toBe(0);
     expect(anatomyRes.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
     expect(existsSync(join(ctx.rickgentDir, "anatomy-park.json"))).toBe(true);
 
@@ -788,6 +820,7 @@ describe("M5 Integration — full pipeline chain (VAL-INTEGR-010)", () => {
       "1",
       "--non-interactive",
     ]);
+    expect(microverseRes.status).toBe(0);
     expect(microverseRes.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
     expect(existsSync(join(ctx.rickgentDir, "microverse.json"))).toBe(true);
     const mvState = JSON.parse(readFileSync(join(ctx.rickgentDir, "microverse.json"), "utf-8"));
@@ -832,6 +865,7 @@ describe("M5 Integration — cronenberg end-to-end (VAL-INTEGR-011)", () => {
     ]);
     // cronenberg prints the plan, then delegates. The microverse child should
     // complete (target 5 == metric 5 → convergence on iteration 1).
+    expect(r.status).toBe(0);
     expect(r.stdout).toContain("metaphor: microverse");
     expect(r.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
     // The delegated microverse child produced state.
@@ -851,7 +885,6 @@ describe("M5 Integration — cronenberg end-to-end (VAL-INTEGR-011)", () => {
       ctx.repo,
       "--agent",
       ctx.agentDir,
-      "--no-autonomous-pr",
       "--no-followups",
       "--no-refine",
     ], {
@@ -860,6 +893,7 @@ describe("M5 Integration — cronenberg end-to-end (VAL-INTEGR-011)", () => {
       RICKGENT_DIR: ctx.rickgentDir,
       INT_SPAWN_LOG: ctx.spawnLog,
     });
+    expect(r.status).toBe(0);
     expect(r.stdout).toContain("metaphor: build");
     expect(r.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
     // The delegated build child produced a registry.
