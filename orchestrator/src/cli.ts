@@ -164,6 +164,12 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "anatomy") {
+    const { runAnatomyCommand } = await import("./lifecycle/anatomy.js");
+    await runAnatomyCommand(args.slice(1));
+    return;
+  }
+
   // Stub for not-yet-implemented commands
   const implemented = [
     "verdict",
@@ -179,6 +185,7 @@ async function main(): Promise<void> {
     "prd",
     "refine",
     "szechuan",
+    "anatomy",
     "--version",
     "--build-commit",
     "--help",
