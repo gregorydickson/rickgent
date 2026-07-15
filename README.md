@@ -8,12 +8,13 @@ Rickgent is an autonomous, multi-vendor engineering platform. Hand it a PRD; it 
 
 The platform is built around one discipline: **git-tree-truth outranks exit codes, which outrank logs, which outrank model claims.** A model that says "I'm done" is not evidence. The repository state is.
 
-**Version:** 0.2.0
+**Version:** 0.3.0
 
-The project shipped across two missions:
+The project shipped across three missions:
 
 - **Mission 1 (v0.1.0-alpha)** — Initial scaffold and the six core verdict algorithms (`completion`, `convergence`, `scope`, `prd`, `salvage`, `breaker`).
 - **Mission 2 (v0.2.0)** — Production hardening: the autonomous build loop, multi-vendor routing, the full 9-gate pipeline, backpressure queue, salvage/reconcile, orphan reaper, and metrics.
+- **Mission 3 (v0.3.0)** — Toolbelt port: the 7 stubbed CLI commands (`prd`, `refine`, `citadel`, `szechuan`, `anatomy`, `microverse`, `cronenberg`) are now fully implemented on rickgent's multi-vendor, fail-closed architecture. 136 validation assertions, 660 TypeScript tests, 488 Python tests, all passing. 39 features completed across 10 milestones (M0-M5 + 5 misc-fix milestones).
 
 ---
 
@@ -66,6 +67,24 @@ Rickgent is a two-language product wrapping the read-only `omnigent` runtime:
 - **Decision Records** (`docs/decisions/`) — ADRs documenting every architectural choice: microverse convergence, model routing, metrics, sandboxing, the build loop, breaker normalization, legacy differential.
 
 The verdict core is intentionally pure and small. Six algorithms, one oracle, one scope matcher. Three independent reviews confirmed they are sound; Mission 2 touched them only for the enumerated defects. The rule is: don't rewrite the core, wire it into a live loop and close the gaps a green test suite hid.
+
+### The CLI Toolbelt (Mission 3)
+
+> *"You don't go to a fight with just a laser, Morty. You bring the *whole bench*. Each tool does one job and the bench routes the right one to the right problem."*
+
+Mission 3 ported `pickle-rick-claude`'s toolbelt to rickgent's multi-vendor, fail-closed architecture. All seven stubbed commands are now fully implemented:
+
+| Command | What it does |
+|---|---|
+| `prd` | Interactive PRD interview (spawns an omnigent run agent) with `--non-interactive` template mode that emits and validates a canonical PRD via `evaluatePrd`. |
+| `refine` | 3-analyst parallel refinement + ticket decomposition. Spawns 3 `omnigent run` workers per cycle (requirements, codebase, risk-scope); produces `prd_refined.md` + atomic tickets with frontmatter, `verify:` ACs, and interface contracts. |
+| `citadel` | Full 19-analyzer conformance audit. Pure deterministic JS analysis over git diff + PRD text (no agent subprocess). Emits a versioned JSON report (schema 1.0). |
+| `szechuan` | Iterative deslopping with 38 coding principles + a `MicroverseLoop` convergence loop (violation-count target 0). LLM judge scores via `omnigent run`. |
+| `anatomy` | Deep subsystem review with a 3-phase protocol (REVIEW -> FIX -> VERIFY). Auto-discovers subsystems; rotation state in `.rickgent/anatomy-park.json`. Worker-managed convergence. |
+| `microverse` | `MicroverseLoop` wrapper with 15 flags, metric/goal convergence, `--task` required, state persistence, and deadline enforcement. |
+| `cronenberg` | Deterministic routing matrix that routes a task to the appropriate command chain based on signals (metric, tickets, diff size, etc.). `--dry-run` shows the plan without executing. |
+
+Each command fail-closes on missing/malformed input, never bypasses the verdict core, and routes agent work through the same `omnigent run` dispatch path the build loop uses.
 
 ---
 
@@ -173,7 +192,7 @@ cd orchestrator && pnpm build
 # TypeScript typecheck and tests
 cd orchestrator
 pnpm typecheck
-pnpm test   # 456 TS tests
+pnpm test   # 660 TS tests
 
 # Python policy tests
 cd ../rickgent-policies
@@ -205,6 +224,130 @@ rickgent metrics --json
 
 # Health check
 rickgent doctor
+```
+
+### The Toolbelt Commands (Mission 3)
+
+> *"You don't point a single tool at every problem, Morty. You point the *right* tool at the *right* problem. That's the whole bench."*
+
+**`prd` — PRD interview**
+
+```bash
+# Interactive interview (spawns an omnigent run agent)
+rickgent prd --agent ./agents/rickgent --repo /path/to/repo
+
+# Non-interactive: emit the canonical PRD template + validate --from
+rickgent prd --non-interactive --output .rickgent/prd.md
+rickgent prd --non-interactive --from path/to/prd.md   # validate via evaluatePrd
+
+Flags:
+  --non-interactive       Template mode — no agent, no stdin
+  --from <file>           Validate an existing PRD via evaluatePrd
+  --repo <dir>            Target git repo (default: RICKGENT_TARGET_REPO or cwd)
+  --agent <dir>           omnigent agent bundle (required in interactive mode)
+  --output <path>         Write the template/PRD here (default: .rickgent/prd.md)
+```
+
+**`refine` — 3-analyst refinement + ticket decomposition**
+
+```bash
+rickgent refine path/to/prd.md --agent ./agents/rickgent --repo /path/to/repo
+rickgent refine path/to/prd.md --agent ./agents/rickgent --run   # auto-launch build
+
+Flags:
+  --run                   Auto-launch `rickgent build` after refine completes
+  --cycles <N>            Refinement cycles (default: 3)
+  --max-turns <N>         Per-analyst turn budget
+  --non-interactive       Accepted-but-ignored (refine never reads stdin)
+  --repo <dir>            Target git repo
+  --agent <dir>           omnigent agent bundle (required)
+```
+
+**`citadel` — 19-analyzer conformance audit**
+
+```bash
+rickgent citadel --prd path/to/prd.md --repo /path/to/repo
+rickgent citadel path/to/prd.md --diff main..feature --strict --report report.json
+
+Flags:
+  --prd <path>            PRD markdown file to audit against
+  --diff <base..head>     Git diff range to walk (default: HEAD~1..HEAD)
+  --strict                Exit non-zero on High findings (default: only Critical)
+  --report <path>         Write the versioned JSON report here
+  --print-stubs           Print test skeletons for unguarded trap doors
+  --repo <dir>            Target git repo (default: cwd)
+```
+
+**`szechuan` — iterative deslopping (38 principles + convergence loop)**
+
+```bash
+rickgent szechuan --repo /path/to/repo --agent ./agents/rickgent
+rickgent szechuan --dry-run   # catalog violations only, no fixes/commits
+
+Flags:
+  --dry-run               Catalog violations without fixing or committing
+  --domain <name>         Load supplemental domain principles (api, ui, testing)
+  --focus "<text>"        Elevate specific concerns to higher priority
+  --design-safe           Mark visual/UI findings as report-only
+  --max-iterations <N>    Iteration cap (default: 50)
+  --stall-limit <N>       Consecutive non-improving iterations before stopping (default: 5)
+  --repo <dir>            Target git repo (default: cwd)
+  --agent <dir>           omnigent agent bundle directory
+  --resume                Continue from .rickgent/szechuan.json
+```
+
+**`anatomy` — deep subsystem review (REVIEW -> FIX -> VERIFY)**
+
+```bash
+rickgent anatomy --repo /path/to/repo --agent ./agents/rickgent
+rickgent anatomy --dry-run   # review all subsystems, catalog findings, no fixes
+
+Flags:
+  --dry-run               Review all subsystems, catalog findings, stop (no fixes)
+  --max-iterations <N>    Iteration cap (default: 100)
+  --stall-limit <N>       Per-subsystem stall limit (default: 3)
+  --repo <dir>            Target git repo (default: cwd)
+  --agent <dir>           omnigent agent bundle directory
+  --resume                Continue from .rickgent/anatomy-park.json
+```
+
+**`microverse` — convergence loop wrapper**
+
+```bash
+rickgent microverse --metric "pnpm test 2>&1 | grep -oE '[0-9]+ passing'" --task "fix the failing tests"
+rickgent microverse --goal "all tests pass" --task "fix the failing tests" --direction higher --target 1
+
+Flags (15 total):
+  --metric <cmd>          Shell command whose last numeric stdout line is the score
+  --goal <text>           Natural-language goal scored by an omnigent-run LLM judge
+  --task <text>           What each worker iteration should attempt (REQUIRED)
+  --direction higher|lower  Improvement direction (default: higher)
+  --max-iterations <N>    Iteration cap (default: 50)
+  --stall-limit <N>       Consecutive non-improving iterations before stopping (default: 5)
+  --epsilon <F>           Plateau delta threshold (default: 1.0)
+  --window <N>            Plateau window of recent deltas (default: 3)
+  --target <F>            Converge as soon as the score meets/crosses this target
+  --repo <dir>            Target git repo (default: cwd)
+  --agent <dir>           omnigent agent bundle directory
+  --owned-paths <list>    Comma/space-separated in-scope path prefixes (default: .)
+  --iteration-deadline-ms <N>  Per-iteration hard deadline in ms (default: 300000)
+  --non-interactive       Never prompt stdin
+  --resume                Continue from .rickgent/microverse.json
+```
+
+**`cronenberg` — meta-router (deterministic routing matrix)**
+
+```bash
+rickgent cronenberg --task "reduce test failures to zero"
+rickgent cronenberg --task "add a /health endpoint" --dry-run   # show the plan only
+
+Flags:
+  --dry-run               Print the plan and stop without running the chain
+  --no-followups          Skip the cleanup/review followup chain
+  --no-refine             Force-skip the refinement pre-pass
+  --refine                Force-include the refinement pre-pass
+  --task <text>           The goal to route (or pass free text)
+  --repo <dir>            Target repo (default: cwd)
 ```
 
 Sit back. The gates handle the rest.
@@ -328,6 +471,20 @@ A conformance harness that diffs new-core outputs against a reconstructed legacy
 
 Generated from discovered test IDs (not hardcoded), with mutation checks confirming that removing any incident-class guard fails the test suite. The coverage manifest is the proof that every guard is actually load-bearing — pull one out and something breaks. No decorative tests, no placebo guards.
 
+### 🥒 The Toolbelt (Mission 3 Commands)
+
+> *"I didn't build one tool, Morty. I built a *bench*. Each one does one job, and the bench knows which one to hand you."*
+
+Mission 3 ported `pickle-rick-claude`'s toolbelt onto rickgent's multi-vendor, fail-closed architecture. The seven commands share the same dispatch path (`omnigent run`), the same verdict core, and the same fail-closed discipline as the build loop.
+
+- **`prd`** — Interactive PRD interview. Spawns an omnigent run agent that interviews the user, explores the codebase, and drafts a `prd.md` with machine-checkable ACs. `--non-interactive` mode emits the canonical template and validates an existing PRD with `evaluatePrd`. Fail-closes on missing `--agent` (interactive), missing `--from` file, or unparseable PRD.
+- **`refine`** — 3-analyst parallel refinement. Per cycle, three `omnigent run` workers (requirements, codebase, risk-scope) decompose the PRD; 3 cycles default. Produces `prd_refined.md` plus atomic tickets carrying frontmatter, `verify:` ACs, and interface contracts. Emits a wiring ticket plus hardening tickets. `--run` auto-launches `rickgent build`.
+- **`citadel`** — The conformance gate as a standalone command. 19 deterministic analyzers (no agent subprocess) walk the git diff + PRD text: PRD graph composition, diff walker, project shape detection, endpoint contract conformance, trap-door coverage, state-transition audit, frontend prop drift, AC shape audit, AC coverage scorecard, diff hygiene, sibling auth, rule-set invariants, schema registry drift, test authenticity, stale references, crossfile behavior drift, banned constructs/casts, pattern conformance, skeptic lens. Emits a versioned JSON report (schema 1.0). `--strict` exits non-zero on High findings.
+- **`szechuan`** — Iterative deslopping. 38 coding principles plus a `MicroverseLoop` with violation-count convergence (target 0). Phase 0 contract discovery, then per-iteration P0-P4 violation fix / test / commit. An `omnigent run` LLM judge scores each iteration. `--dry-run` catalogs violations without touching the tree.
+- **`anatomy`** — Deep subsystem review with a 3-phase protocol: REVIEW -> FIX -> VERIFY. Auto-discovers subsystems from the repo; rotation state persists in `.rickgent/anatomy-park.json`. Trap doors route findings to `CLAUDE.md`. Worker-managed convergence via a custom loop (not `MicroverseLoop`).
+- **`microverse`** — The convergence loop as a standalone command. 15 flags covering metric vs goal scoring, direction, plateau detection (`--epsilon`/`--window`), target threshold, iteration/stall caps, owned-paths scoping, per-iteration deadline, and resume. State persists to `.rickgent/microverse.json`. `--task` is required.
+- **`cronenberg`** — The meta-router. A deterministic routing matrix inspects signals (metric, tickets, diff size, etc.) and dispatches the task to the appropriate command chain (refine -> build -> citadel -> szechuan, with followups). `--dry-run` prints the plan without executing. `--refine`/`--no-refine` force the refinement pre-pass on/off.
+
 ---
 
 ## Project Structure
@@ -359,7 +516,7 @@ rickgent/
 │   │   │   ├── queue/             #   backpressure queue
 │   │   │   └── evidence/          #   evidence collection
 │   │   └── cli.ts                 # CLI entrypoint
-│   ├── test/                      # Test suite (456 TS tests)
+│   ├── test/                      # Test suite (660 TS tests)
 │   │   └── fixtures/
 │   │       └── omnigent-fixture/  # Deterministic fixture omnigent
 │   └── package.json
@@ -420,7 +577,7 @@ cd orchestrator
 pnpm vitest run test/lifecycle/e2e-gated-pipeline.test.ts
 ```
 
-The suite ships with 456 TypeScript tests and 488 Python tests. Mission 2's test-integrity workstream exists because the original green suite hid every gap the platform needed to close: tests must exercise the real transport (a deterministic fixture `omnigent`) and diff against the legacy reference, or they will hide the next round of gaps the same way.
+The suite ships with 660 TypeScript tests and 488 Python tests (136 validation assertions, all passing). Mission 2's test-integrity workstream exists because the original green suite hid every gap the platform needed to close: tests must exercise the real transport (a deterministic fixture `omnigent`) and diff against the legacy reference, or they will hide the next round of gaps the same way. Mission 3 extended the same discipline to the toolbelt commands — each new command ships tests that drive the real CLI entrypoint and observe the real effect (file written, JSON report emitted, convergence state persisted), not a mock's return.
 
 ---
 

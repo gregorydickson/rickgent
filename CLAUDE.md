@@ -64,8 +64,8 @@ Entry point: `orchestrator/src/cli.ts`. Run the built binary via `node orchestra
 | Command | Flags | Description |
 | --- | --- | --- |
 | `rickgent` | (none) | Launch the default agent (interactive) |
-| `rickgent prd` | `--from <file>` | PRD interview; adopt an existing PRD file |
-| `rickgent refine <prd.md>` | `--run` | 3-analyst refinement + ticket decomposition; `--run` auto-launches |
+| `rickgent prd` | `--from <file>`, `--non-interactive`, `--repo <dir>`, `--agent <dir>`, `--output <path>` | PRD interview (interactive via omnigent run) or template emission |
+| `rickgent refine` | `--run`, `--cycles N`, `--max-turns N`, `--non-interactive`, `--repo <dir>`, `--agent <dir>` | 3-analyst parallel refinement + ticket decomposition |
 | `rickgent build <prd>` | `--repo <dir>`, `--agent <dir>`, `--feature <branch>`, `--max-concurrent <n>`, `--roster <file>`, `--cost-budget <usd>`, `--soft-threshold <usd>`, `--resume`, `--no-autonomous-pr`, `--max-iterations N` | Implement all tickets through the 8-phase loop |
 | `rickgent pipeline <prd>` | same flags as `build` | Full lifecycle: build + convergence + reconcile cleanup |
 | `rickgent metrics` | `--json` | Report interventions/run and rolling matured-PR quality |
@@ -73,11 +73,14 @@ Entry point: `orchestrator/src/cli.ts`. Run the built binary via `node orchestra
 | `rickgent reconcile` | (none) | Rebuild registry from git + dispatch ledger |
 | `rickgent doctor` | (none) | Behavioral smoke test (build_commit, omnigent import, policies, attachments) |
 | `rickgent verdict <check>` | `--json` | Run a single verdict-core check with JSON stdin/stdout |
+| `rickgent citadel` | `--prd <file>` (required), `--diff <range>`, `--strict`, `--report <path>`, `--print-stubs`, `--repo <dir>` | 19-analyzer conformance audit (pure JS, no agents) |
+| `rickgent szechuan` | `--dry-run`, `--domain <name>`, `--focus <principle>`, `--design-safe`, `--max-iterations N`, `--stall-limit N`, `--repo <dir>`, `--agent <dir>`, `--resume` | Iterative deslopping with 38 coding principles + MicroverseLoop convergence |
+| `rickgent anatomy` | `--dry-run`, `--max-iterations N`, `--stall-limit N`, `--repo <dir>`, `--agent <dir>`, `--resume` | Deep subsystem review: 3-phase REVIEW/FIX/VERIFY protocol |
+| `rickgent microverse` | `--metric <cmd>`, `--goal <text>`, `--task <text>` (req), `--direction higher\|lower`, `--max-iterations N`, `--stall-limit N`, `--epsilon F`, `--window N`, `--target F`, `--repo <dir>`, `--agent <dir>`, `--owned-paths <list>`, `--iteration-deadline-ms N`, `--non-interactive`, `--resume` | MicroverseLoop wrapper for metric/goal convergence |
+| `rickgent cronenberg` | `--dry-run`, `--task <text>` (req), `--metric <cmd>`, `--repo <dir>`, `--agent <dir>` | Deterministic routing matrix; delegates to other commands |
 | `rickgent --version` | | Print version + build commit |
 | `rickgent --build-commit` | | Print build commit only |
 | `rickgent --help` | | Show usage |
-
-Not-yet-implemented commands (stubbed, exit 1): `citadel`, `szechuan`, `anatomy`, `microverse`, `cronenberg`. See `cli.ts` USAGE for their planned flags.
 
 ## Running a Build
 
@@ -103,6 +106,20 @@ Not-yet-implemented commands (stubbed, exit 1): `citadel`, `szechuan`, `anatomy`
 
 Failures are absorbed by salvage, the circuit breaker, and reconciliation, not by prompting a human. The only human gates are PRD, plan, and merge.
 
+## The Toolbelt Commands
+
+All 7 toolbelt commands are implemented and tested:
+
+- **`rickgent prd`** — Interactive PRD interview via `omnigent run`, or non-interactive template emission with `evaluatePrd` validation.
+- **`rickgent refine`** — 3-analyst parallel refinement (requirements, codebase, risk-scope) over 3 cycles, producing `prd_refined.md` + atomic tickets with wiring and hardening tickets.
+- **`rickgent citadel`** — 19-analyzer conformance audit (pure deterministic JS, no agent subprocess). Versioned JSON report (schema 1.0).
+- **`rickgent szechuan`** — Iterative deslopping with 38 coding principles, MicroverseLoop convergence (violation count → 0), Phase 0 contract discovery.
+- **`rickgent anatomy`** — Deep subsystem review with 3-phase REVIEW → FIX → VERIFY protocol, auto-discovery, trap doors to `CLAUDE.md`.
+- **`rickgent microverse`** — MicroverseLoop wrapper for metric/goal convergence with 15 flags.
+- **`rickgent cronenberg`** — Deterministic routing matrix that delegates to the appropriate command chain based on signals.
+
+All commands use `omnigent run` for agent spawning and store state in `.rickgent/`.
+
 ## Monitoring
 
 All run state lives in `.rickgent/` under the working directory (override via `RICKGENT_DIR`).
@@ -116,6 +133,13 @@ All run state lives in `.rickgent/` under the working directory (override via `R
 | `prs.jsonl` | Durable PR ledger for rolling quality measurement |
 | `defects.jsonl` | Defect ledger; late defects reopen matured PRs |
 | `omnigent-data/` | omnigent SQLite data dir (override via `OMNIGENT_DATA_DIR`) |
+| `szechuan.json` | Szechuan convergence state (violations, iterations, principles catalog) |
+| `gap_analysis.md` | Szechuan Phase 0 contract discovery (exports, importers, gaps) |
+| `anatomy-park.json` | Anatomy subsystem rotation state (current_index, stall_counts, findings_history) |
+| `refinement/` | Refine analysis reports + refined PRD + tickets |
+| `rick_ticket_*/` | Refine ticket directories (impl, wiring, hardening) |
+| `rick_ticket_parent.md` | Refine parent ticket with task breakdown table |
+| `refinement_manifest.json` | Refine manifest (analyst reports, AC smells, ticket justifications) |
 
 Commands to observe state:
 
@@ -147,6 +171,7 @@ Circuit breaker state: when OPEN, deferred tickets are absorbed (not prompted) a
 | `RICKGENT_AUTONOMOUS_PR_FLOW` | Set to `0` to disable autonomous PR flow | enabled |
 | `RICKGENT_ORPHAN_REAP` | Set to `off` to disable orphan reaper | enabled |
 | `OMNIGENT_DATA_DIR` | Override omnigent data directory | `<rickgentDir>/omnigent-data` |
+| `SZECHUAN_OWNED_PATHS` | Szechuan owned-paths override (colon-separated) | - |
 
 ## Architecture Quick Reference
 
@@ -157,7 +182,9 @@ rickgent CLI (orchestrator/src/cli.ts)
    |     completion, convergence, scope, prd, salvage, breaker, verdict-cli
    |
    +-- LIFECYCLE (TS)                  orchestrator/src/lifecycle/*
-   |     build, microverse, salvage, reconcile, registry, orphan-reaper, doctor, metrics, routing
+   |     build, microverse, salvage, reconcile, registry, orphan-reaper, doctor, metrics, routing, pr-flow,
+   |     citadel/ (19-analyzer audit), szechuan (principles + convergence), anatomy (3-phase review),
+   |     prd-interview, refine, cronenberg, microverse-cli
    |
    +-- DISPATCH (TS)                   orchestrator/src/dispatch/*
          DispatchLedger, TicketLock, Dispatcher -> `omnigent run <agentDir> -p <prompt>`
@@ -207,6 +234,14 @@ Specific test files for key areas:
 | Orphan reaper | `orchestrator/test/lifecycle/orphan-reaper.test.ts` |
 | Doctor / attachment | `orchestrator/test/lifecycle/doctor-attachment.test.ts` |
 | CLI commands | `orchestrator/test/lifecycle/cli-commands.test.ts` |
+| Citadel conformance audit | `orchestrator/test/lifecycle/citadel-cli.test.ts` |
+| Szechuan deslopping | `orchestrator/test/lifecycle/szechuan-cli.test.ts` |
+| Anatomy subsystem review | `orchestrator/test/lifecycle/anatomy-cli.test.ts` |
+| Microverse CLI | `orchestrator/test/lifecycle/microverse-cli.test.ts` |
+| Cronenberg routing | `orchestrator/test/lifecycle/cronenberg-cli.test.ts` |
+| PRD interview | `orchestrator/test/lifecycle/prd-interview.test.ts` |
+| Refine | `orchestrator/test/lifecycle/refine.test.ts` |
+| Integration (M5) | `orchestrator/test/lifecycle/m5-integration.test.ts` |
 | Conformance (legacy differential) | `orchestrator/test/conformance/` |
 | Core verdicts | `orchestrator/test/core/` |
 
@@ -219,6 +254,15 @@ Always prefix piped validator commands with `set -o pipefail` so the true exit c
 | `orchestrator/src/cli.ts` | CLI entrypoint (command/flag parsing) |
 | `orchestrator/src/core/` | Pure verdict core: `completion/`, `convergence/`, `scope/`, `prd/`, `salvage/`, `breaker/`, `verdict-cli/` |
 | `orchestrator/src/lifecycle/` | `build/`, `microverse/`, `salvage/`, `reconcile/`, `registry/`, `orphan-reaper/`, `doctor/`, `metrics/`, `routing/`, `pr-flow/` |
+| `orchestrator/src/lifecycle/citadel/` | 19-analyzer conformance audit (reporter, diff-walker, prd-audit-parser, project-shape, endpoint-conformance, trap-door, state-transition, ac-coverage, banned, skeptic, misc-analyzers, audit-runner) |
+| `orchestrator/src/lifecycle/szechuan-principles.ts` | 38 coding principles (P0-P4) + domain supplements |
+| `orchestrator/src/lifecycle/szechuan-cli.ts` | Szechuan CLI: MicroverseLoop with violation-count convergence |
+| `orchestrator/src/lifecycle/anatomy.ts` | Anatomy CLI: 3-phase REVIEW/FIX/VERIFY + subsystem rotation |
+| `orchestrator/src/lifecycle/prd-interview.ts` | PRD interview (interactive + non-interactive template) |
+| `orchestrator/src/lifecycle/refine.ts` | 3-analyst parallel refinement + ticket decomposition |
+| `orchestrator/src/lifecycle/cronenberg.ts` | Deterministic routing matrix (signals -> command chain) |
+| `orchestrator/src/lifecycle/cronenberg-run.ts` | Cronenberg CLI handler (delegation + dry-run) |
+| `orchestrator/src/lifecycle/microverse-cli.ts` | Microverse CLI wrapper (MicroverseLoop) |
 | `orchestrator/src/dispatch/` | `dispatch.ts` (ledger, lock, Dispatcher), `queue.ts` (backpressure), `evidence.ts` |
 | `orchestrator/src/fom.ts` | FOM disciplines (salvage/breaker guard heuristic) |
 | `rickgent-policies/rickgent_policies/__init__.py` | 6 policy shims + `select_model` router + `POLICY_REGISTRY` |
@@ -246,6 +290,9 @@ When modifying rickgent code, follow these rules (from `AGENTS.md`, enforced acr
 12. **Use `set -o pipefail` in shell pipelines** so a failing validator is not masked by `tail`/`grep`/`head`.
 13. **No new runtime dependencies** without a decision doc. `omnigent` is pinned at 0.6.0.dev0 and READ-ONLY.
 14. **Edit scope:** write only inside `rickgent/`. `omnigent/` is read-only; `pickle-rick-claude/` is a live pipeline, access the legacy reference ONLY via `git -C <repo> show 95f5c416:<path>`, never checkout/build/run it.
+15. **Document command-specific env vars.** When a command introduces env vars, document them in `library/environment.md`.
+16. **MicroverseLoop usage.** Use MicroverseLoop for single-metric convergence (microverse, szechuan). Custom loops permitted for multi-phase protocols (anatomy's REVIEW/FIX/VERIFY).
+17. **State file naming convention.** Use snake_case for all persisted JSON state file fields in `.rickgent/`.
 
 ## Decision Records
 
