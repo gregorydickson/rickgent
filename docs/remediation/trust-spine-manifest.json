@@ -3,19 +3,20 @@
     {
       "id": "t00",
       "title": "Decide the evolving Omnigent compatibility and observation contract",
-      "description": "Milestone 0 contract decision. Inspect the real current Omnigent FunctionPolicy/config/session seams and commit a repo-owned current-compatible contract before any policy, routing, packaging, or release work. Decide mounted-root versus installed-package discovery, string config encoding, orchestrator-owned context provenance, independently observed harness/model fields, alias normalization, and reviewer-distinction rules. Do not record or require an external commit SHA unless this decision explicitly proves exact pinning is a product requirement. Touchpoints: `docs/architecture/reliability/`, `artifacts/reliability/`, and a non-mutating compatibility verifier under `orchestrator/scripts/`.",
+      "description": "Milestone 0 contract decision. Inspect the real current Omnigent FunctionPolicy/config/session seams and commit a repo-owned current-compatible contract before any policy, routing, packaging, or release work. Use mounted-root Python-module discovery bound to an explicit interpreter, string config encoding, orchestrator-owned context provenance, observation-strength profiles, explicit alias normalization, and reviewer-distinction rules. Do not record or require an external commit SHA. Touchpoints: `docs/architecture/reliability/`, `artifacts/reliability/`, and a non-mutating compatibility verifier under `orchestrator/scripts/`.",
       "acceptance_criteria": [
         "`artifacts/reliability/omnigent-compatibility-contract.json` is schema-versioned and names the discovery mode, required FunctionPolicy/config/session seams, native event fields, config encoding limits, observed identity source, and supported compatibility probe.",
         "The decision explicitly classifies Omnigent as a current-compatible evolving external system and states that absence or incompatible behavior is a non-skipping failure.",
         "The decision defines how authoritative context is produced outside agent-controlled event/context data and how replay, missing config, conflicting identity, and unknown ABI versions fail closed.",
-        "The contract defines canonical requested/invoked/observed identity and the implementer/reviewer distinction rule without using transcript prose or copied router labels.",
-        "No fixed sibling SHA or `freeze_contract.sha_source` is introduced by this refinement; if implementation elects pinning, the decision must record the evidence and update downstream contracts deliberately."
+        "The contract defines canonical requested/invoked/observed identity, honestly classifies observation strength, and defines the implementer/reviewer distinction rule without using transcript prose or copied router labels.",
+        "Strict identity completion and cross-vendor claims remain unavailable under the offline profile until a separate protected live profile proves runtime-reported model and provider identity.",
+        "No fixed sibling SHA, `required_sha`, or `sha_source` is recorded."
       ],
       "verification": [
-        "test -n \"$OMNIGENT_ROOT\" && test -f \"$OMNIGENT_ROOT/omnigent/policies/function.py\"",
-        "node orchestrator/scripts/verify-omnigent-contract.mjs --root \"$OMNIGENT_ROOT\" --contract artifacts/reliability/omnigent-compatibility-contract.json",
-        "node -e \"const f=require('fs');const p='artifacts/reliability/omnigent-compatibility-contract.json';const x=JSON.parse(f.readFileSync(p));if(!x.schema_version||x.contract_mode!=='current-compatible'||!x.required_seams?.length||!x.observed_identity_source)process.exit(1);if('required_sha' in x||'sha_source' in x)process.exit(2)\"",
-        "test -f docs/architecture/reliability/omnigent-contract.md"
+        "test -n \"$OMNIGENT_ROOT\" && test -f \"$OMNIGENT_ROOT/omnigent/policies/function.py\" && test -n \"$OMNIGENT_PYTHON\" && test -x \"$OMNIGENT_PYTHON\"",
+        "node orchestrator/scripts/verify-omnigent-contract.mjs --root \"$OMNIGENT_ROOT\" --python \"$OMNIGENT_PYTHON\" --contract artifacts/reliability/omnigent-compatibility-contract.json",
+        "node -e \"const f=require('fs');const x=JSON.parse(f.readFileSync('artifacts/reliability/omnigent-compatibility-contract.json'));const o=x.identity_observation_profiles;if(x.schema_version!=='1.0.0'||x.contract_mode!=='current-compatible'||x.discovery?.mode!=='mounted-root-python-module'||!x.required_seams?.length)process.exit(1);if(o?.['effective-session-v1']?.allows_strict_identity_completion!==false||o?.['effective-session-v1']?.allows_cross_vendor_claim!==false||o?.['runtime-reported-identity-v1']?.status!=='unavailable-until-live-proof')process.exit(2);if('required_sha' in x||'sha_source' in x)process.exit(3)\"",
+        "test -f artifacts/reliability/omnigent-contract-probe-result.json && test -f docs/architecture/reliability/omnigent-contract.md"
       ],
       "verification_env": {
         "mode": "merge",
@@ -23,20 +24,27 @@
           {
             "name": "OMNIGENT_ROOT",
             "format": "string"
+          },
+          {
+            "name": "OMNIGENT_PYTHON",
+            "format": "string"
           }
         ],
         "vars": {}
       },
       "output_artifacts": [
         "artifacts/reliability/omnigent-compatibility-contract.json",
+        "artifacts/reliability/omnigent-contract-probe-result.json",
         "docs/architecture/reliability/omnigent-contract.md",
-        "orchestrator/scripts/verify-omnigent-contract.mjs"
+        "orchestrator/scripts/verify-omnigent-contract.mjs",
+        "orchestrator/scripts/omnigent-contract-probe.py"
       ],
-      "freeze_contract": {
+      "compatibility_contract": {
         "artifact_path": "artifacts/reliability/omnigent-compatibility-contract.json",
+        "mode": "mounted-root-python-module",
         "sibling": "omnigent",
         "root_env": "OMNIGENT_ROOT",
-        "sha_source": ""
+        "python_env": "OMNIGENT_PYTHON"
       },
       "contract_decision": true,
       "priority": "P0",

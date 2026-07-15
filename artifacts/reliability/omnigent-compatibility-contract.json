@@ -1,0 +1,348 @@
+{
+  "schema_version": "1.0.0",
+  "contract_id": "rickgent-omnigent-current-compatible-v1",
+  "contract_mode": "current-compatible",
+  "external_system": "omnigent",
+  "compatibility_authority": {
+    "kind": "behavioral-probe",
+    "version_is_informational": true,
+    "exact_commit_pin": false,
+    "compatible_when": "Every required offline probe passes against the same mounted module origin used for execution.",
+    "incompatible_when": "Discovery is absent, the import origin differs, or any required behavior probe fails.",
+    "failure_is_skippable": false
+  },
+  "discovery": {
+    "mode": "mounted-root-python-module",
+    "root_env": "OMNIGENT_ROOT",
+    "python_env": "OMNIGENT_PYTHON",
+    "runtime_invocation": "selected-python-module",
+    "module": "omnigent",
+    "required_import_origin": "<OMNIGENT_ROOT>/omnigent",
+    "version_source": "omnigent.version.VERSION",
+    "path_command_is_authoritative": false
+  },
+  "required_seams": [
+    "function-policy.event-config-arity",
+    "function-policy.native-event-shape",
+    "function-policy.function-arguments-factory-only",
+    "function-policy.function-on-self-selection",
+    "function-policy.engine-exception-deny",
+    "function-policy.return-shape",
+    "spec.function-config",
+    "identity.harness-alias-corpus",
+    "session.root-conversation-identity",
+    "session.model-harness-overrides",
+    "session.usage-by-model"
+  ],
+  "function_policy_abi": {
+    "abi_version": "omnigent-function-policy/current-v1",
+    "callable": {
+      "direct_signature": [
+        "event",
+        "config"
+      ],
+      "config_source": "guardrails.policies.<policy-name>.config",
+      "factory_arguments_source": "guardrails.policies.<policy-name>.function.arguments",
+      "factory_arguments_are_runtime_config": false,
+      "function_on_is_enforced_by_engine": false,
+      "unrelated_well_formed_event_result": "ALLOW",
+      "none_return_semantics": "ALLOW"
+    },
+    "event": {
+      "required_top_level_fields": [
+        "type",
+        "target",
+        "data",
+        "context",
+        "session_state",
+        "llm_client"
+      ],
+      "optional_top_level_fields": [
+        "request_data"
+      ],
+      "phase_values": [
+        "request",
+        "tool_call",
+        "tool_result",
+        "response",
+        "llm_request",
+        "llm_response"
+      ],
+      "tool_call": {
+        "target": "tool name",
+        "data_required_fields": [
+          "name",
+          "arguments"
+        ]
+      },
+      "tool_result": {
+        "target": "tool name",
+        "data_required_fields": [
+          "result"
+        ],
+        "request_data_required_fields": [
+          "name",
+          "arguments"
+        ]
+      },
+      "additive_unknown_fields": "tolerate-but-never-authoritative",
+      "unknown_phase": "DENY",
+      "unknown_tool_on_governed_tool_phase": "DENY",
+      "malformed_required_field": "DENY"
+    },
+    "config_encoding": {
+      "container": "mapping",
+      "key_type": "string",
+      "value_type": "string",
+      "structured_values_inline": false,
+      "structured_context_transport": "digest-bound-file-reference",
+      "runtime_parser_currently_enforces": "mapping-only",
+      "rickgent_consumer_must_enforce": "all-keys-and-values-are-strings",
+      "required_keys": [
+        "rickgent_policy_abi",
+        "context_path",
+        "context_sha256",
+        "context_owner_token_sha256",
+        "lease_path",
+        "receipt_path",
+        "dispatch_id"
+      ],
+      "maximum_context_bytes": 1048576
+    },
+    "result_encoding": {
+      "decisions": [
+        "ALLOW",
+        "ASK",
+        "DENY"
+      ],
+      "preserved_mapping_keys": [
+        "result",
+        "reason",
+        "data",
+        "state_updates",
+        "set_labels"
+      ],
+      "extra_code_key_is_preserved": false,
+      "stable_code_transport": "reason-prefix-and-rickgent-receipt"
+    }
+  },
+  "trusted_context": {
+    "schema_version": "rickgent-attempt-context/v1",
+    "authority": "orchestrator-owned-capability-bound-file",
+    "event_context_is_authoritative": false,
+    "location": "outside-target-worktree-and-template-source",
+    "directory_mode": "0700",
+    "file_mode": "0600",
+    "open_requirements": [
+      "absolute-path",
+      "canonical-trusted-state-root",
+      "no-symlink-components",
+      "regular-file",
+      "orchestrator-uid-owner",
+      "open-no-follow",
+      "fstat-after-open",
+      "size-at-most-maximum_context_bytes",
+      "sha256-before-json-parse",
+      "reject-duplicate-json-keys"
+    ],
+    "required_fields": [
+      "schema_version",
+      "policy_abi_version",
+      "dispatch_id",
+      "run_id",
+      "ticket_id",
+      "attempt",
+      "role",
+      "target_repo_realpath",
+      "worktree_realpath",
+      "ticket_contract_digest",
+      "declared_paths",
+      "requested_identity",
+      "owner_token_sha256",
+      "nonce"
+    ],
+    "binding": {
+      "same_active_attempt_events_are_replay": false,
+      "different_dispatch_or_owner_token": "DENY",
+      "closed_or_expired_lease": "DENY",
+      "nonce_reuse_by_new_dispatch": "DENY",
+      "conversation_binding": "unique-materialized-bundle-plus-isolated-data-dir-plus-exactly-one-root-conversation",
+      "function_policy_exposes_conversation_id": false
+    },
+    "threat_model": {
+      "worker_raw_shell": false,
+      "worker_can_write_trusted_state_root": false,
+      "same_uid_arbitrary_process_is_excluded": true,
+      "mode_0600_alone_authenticates_against_same_uid_process": false
+    }
+  },
+  "session_seam": {
+    "store": "isolated-omnigent-chat-db",
+    "conversation_table": "conversations",
+    "conversation_item_table": "conversation_items",
+    "required_conversation_columns": [
+      "id",
+      "created_at",
+      "parent_conversation_id",
+      "root_conversation_id",
+      "agent_id",
+      "model_override",
+      "harness_override",
+      "session_usage"
+    ],
+    "required_conversation_item_columns": [
+      "conversation_id"
+    ],
+    "root_observation_rule": "Exactly one new row whose parent_conversation_id is null and whose root_conversation_id equals id.",
+    "newest_row_is_sufficient": false,
+    "usage_model_path": "response.completed.response.usage.model",
+    "persisted_model_path": "conversations.session_usage.by_model"
+  },
+  "observed_identity_source": {
+    "requested": {
+      "source": "immutable-attempt-context",
+      "strength": "requested"
+    },
+    "invoked": {
+      "source": "actual-array-argv-plus-materialized-bundle-digest",
+      "strength": "invoked"
+    },
+    "conversation_id": {
+      "source": "exactly-one-new-root-row-in-isolated-omnigent-chat-db",
+      "strength": "runtime-observed"
+    },
+    "harness": {
+      "source": "omnigent-effective-session-harness-or-materialized-session-bundle",
+      "strength": "effective-runtime-config",
+      "generic_sdk_independently_reports_harness": false
+    },
+    "model": {
+      "source": "llm_response-event.data.usage.model-corroborated-by-session_usage.by_model",
+      "strength": "harness-reported-or-config-fallback",
+      "source_provenance_bit_available": false
+    },
+    "provider_vendor": {
+      "source": null,
+      "strength": "unavailable-generically",
+      "single_vendor_harness_derivation_requires_live_profile": true
+    },
+    "transcript_prose_is_observation": false,
+    "router_or_ledger_label_is_observation": false
+  },
+  "identity_observation_profiles": {
+    "effective-session-v1": {
+      "status": "offline-structurally-probed",
+      "harness_strength": "effective-runtime-config",
+      "model_strength": "harness-reported-or-config-fallback",
+      "provider_strength": "unavailable-generically",
+      "allows_strict_identity_completion": false,
+      "allows_cross_vendor_claim": false
+    },
+    "runtime-reported-identity-v1": {
+      "status": "unavailable-until-live-proof",
+      "activation": {
+        "requires_separate_live_probe": true,
+        "requires_non_config_derived_model_receipt": true,
+        "requires_provider_or_proven-single-vendor-harness": true,
+        "requires_separate_implementer_and_reviewer_receipts": true
+      },
+      "allows_strict_identity_completion": false,
+      "allows_cross_vendor_claim": false
+    }
+  },
+  "identity_normalization": {
+    "schema_version": "rickgent-identity-normalization/v1",
+    "preserve_raw_values": true,
+    "heuristic_model_rewriting": false,
+    "harness_aliases": {
+      "agy": "antigravity",
+      "claude": "claude-sdk",
+      "github-copilot": "copilot",
+      "google-antigravity": "antigravity",
+      "kimi-code": "kimi",
+      "native-antigravity": "antigravity-native",
+      "native-goose": "goose-native",
+      "native-hermes": "hermes-native",
+      "native-kimi": "kimi-native",
+      "native-kiro": "kiro-native",
+      "native-opencode": "opencode-native",
+      "native-pi": "pi-native",
+      "native-qwen": "qwen-native",
+      "openai-agents-sdk": "openai-agents",
+      "opencode": "opencode-native",
+      "qwen-code": "qwen"
+    },
+    "dynamic_harness_alias_cases": {
+      "acp:probe": "acp"
+    },
+    "identity_fields": [
+      "harness",
+      "provider_vendor",
+      "model_id",
+      "bundle_config_digest",
+      "role",
+      "conversation_id",
+      "receipt_provenance"
+    ],
+    "requested_invoked_observed_equality": "exact-after-versioned-explicit-normalization"
+  },
+  "reviewer_distinction": {
+    "independent_review_requires": [
+      "implementer-and-reviewer-role-differ",
+      "process-id-differs",
+      "root-conversation-id-differs",
+      "reviewer-tools-are-read-only",
+      "reviewer-input-is-immutable-diff",
+      "separate-valid-identity-receipts"
+    ],
+    "cross_vendor_additionally_requires": [
+      "canonical-observed-vendors-differ",
+      "both-vendor-observations-have-live-profile-strength"
+    ],
+    "different-process-alone-is_cross_vendor": false,
+    "different-harness-string-alone-is_cross_vendor": false,
+    "multi_provider_harness_without_provider_receipt": "DENY"
+  },
+  "failure_semantics": {
+    "pre_dispatch": {
+      "missing_root_or_python": "OMNIGENT_UNAVAILABLE",
+      "import_origin_mismatch": "OMNIGENT_IMPORT_ORIGIN_MISMATCH",
+      "behavior_probe_failure": "OMNIGENT_ABI_INCOMPATIBLE"
+    },
+    "policy": {
+      "missing_config": "RICKGENT_POLICY_CONFIG_MISSING",
+      "unknown_policy_abi": "RICKGENT_POLICY_ABI_UNSUPPORTED",
+      "untrusted_context_path": "RICKGENT_CONTEXT_PATH_UNTRUSTED",
+      "context_integrity_failure": "RICKGENT_CONTEXT_INTEGRITY_FAILED",
+      "context_replay": "RICKGENT_CONTEXT_REPLAYED",
+      "malformed_event": "RICKGENT_POLICY_EVENT_MALFORMED",
+      "identity_missing": "RICKGENT_IDENTITY_MISSING",
+      "identity_conflict": "RICKGENT_IDENTITY_CONFLICT",
+      "unsupported_identity_profile": "RICKGENT_IDENTITY_PROFILE_UNAVAILABLE"
+    },
+    "stable_policy_code_encoding": "<CODE>: <human-readable reason>",
+    "post_execution_missing_identity_receipt": "completion-oracle-deny",
+    "transport_note": "Omnigent request/tool-call policy bridge failures fail closed; LLM and tool-result bridge timeouts fail open, so Rickgent completion must independently require receipts."
+  },
+  "supported_compatibility_probe": {
+    "id": "omnigent-function-policy-current-v1",
+    "runner": "orchestrator/scripts/verify-omnigent-contract.mjs",
+    "python_probe": "orchestrator/scripts/omnigent-contract-probe.py",
+    "result_artifact": "artifacts/reliability/omnigent-contract-probe-result.json",
+    "offline": true,
+    "network": "denied",
+    "mutates_omnigent_root": false,
+    "result_is_deterministic_and_redacted": true,
+    "required_checks": [
+      "import-origin",
+      "config-parser",
+      "factory-config-separation",
+      "six-phase-event-shape",
+      "function-self-selection",
+      "engine-failure-deny",
+      "return-shape-code-discard",
+      "harness-alias-corpus",
+      "session-schema"
+    ]
+  }
+}

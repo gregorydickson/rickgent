@@ -1,0 +1,79 @@
+{
+  "checks": [
+    {
+      "id": "import-origin",
+      "origins": {
+        "function_policy": "omnigent/policies/function.py",
+        "package": "omnigent/__init__.py",
+        "parser": "omnigent/spec/parser.py"
+      },
+      "status": "pass",
+      "version_source": "omnigent.version.VERSION"
+    },
+    {
+      "id": "config-parser",
+      "status": "pass",
+      "string_values_preserved": true
+    },
+    {
+      "id": "factory-config-separation",
+      "status": "pass"
+    },
+    {
+      "function_on_is_self_selected": true,
+      "id": "function-self-selection",
+      "status": "pass"
+    },
+    {
+      "id": "six-phase-event-shape",
+      "phase_values": [
+        "request",
+        "tool_call",
+        "tool_result",
+        "response",
+        "llm_request",
+        "llm_response"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "engine-failure-deny",
+      "status": "pass"
+    },
+    {
+      "id": "return-shape-code-discard",
+      "stable_code_transport": "reason-prefix-and-rickgent-receipt",
+      "status": "pass"
+    },
+    {
+      "case_count": 17,
+      "id": "harness-alias-corpus",
+      "status": "pass"
+    },
+    {
+      "conversation_columns": [
+        "agent_id",
+        "created_at",
+        "harness_override",
+        "id",
+        "model_override",
+        "parent_conversation_id",
+        "root_conversation_id",
+        "session_usage"
+      ],
+      "conversation_item_columns": [
+        "conversation_id"
+      ],
+      "exactly_one_root_conversation_required": true,
+      "id": "session-schema",
+      "status": "pass"
+    }
+  ],
+  "contract_id": "rickgent-omnigent-current-compatible-v1",
+  "contract_mode": "current-compatible",
+  "network": "denied",
+  "probe_id": "omnigent-function-policy-current-v1",
+  "runtime_version_policy": "informational-not-persisted",
+  "schema_version": "1.0.0",
+  "status": "compatible"
+}
