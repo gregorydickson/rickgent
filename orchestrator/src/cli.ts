@@ -140,6 +140,12 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "citadel") {
+    const { runCitadelCommand } = await import("./lifecycle/citadel-cli.js");
+    await runCitadelCommand(args.slice(1));
+    return;
+  }
+
   // Stub for not-yet-implemented commands
   const implemented = [
     "verdict",
@@ -151,6 +157,7 @@ async function main(): Promise<void> {
     "metrics",
     "microverse",
     "cronenberg",
+    "citadel",
     "--version",
     "--build-commit",
     "--help",
