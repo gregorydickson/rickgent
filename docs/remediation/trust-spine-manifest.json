@@ -1,0 +1,1413 @@
+{
+  "tickets": [
+    {
+      "id": "t00",
+      "title": "Decide the evolving Omnigent compatibility and observation contract",
+      "description": "Milestone 0 contract decision. Inspect the real current Omnigent FunctionPolicy/config/session seams and commit a repo-owned current-compatible contract before any policy, routing, packaging, or release work. Decide mounted-root versus installed-package discovery, string config encoding, orchestrator-owned context provenance, independently observed harness/model fields, alias normalization, and reviewer-distinction rules. Do not record or require an external commit SHA unless this decision explicitly proves exact pinning is a product requirement. Touchpoints: `docs/architecture/reliability/`, `artifacts/reliability/`, and a non-mutating compatibility verifier under `orchestrator/scripts/`.",
+      "acceptance_criteria": [
+        "`artifacts/reliability/omnigent-compatibility-contract.json` is schema-versioned and names the discovery mode, required FunctionPolicy/config/session seams, native event fields, config encoding limits, observed identity source, and supported compatibility probe.",
+        "The decision explicitly classifies Omnigent as a current-compatible evolving external system and states that absence or incompatible behavior is a non-skipping failure.",
+        "The decision defines how authoritative context is produced outside agent-controlled event/context data and how replay, missing config, conflicting identity, and unknown ABI versions fail closed.",
+        "The contract defines canonical requested/invoked/observed identity and the implementer/reviewer distinction rule without using transcript prose or copied router labels.",
+        "No fixed sibling SHA or `freeze_contract.sha_source` is introduced by this refinement; if implementation elects pinning, the decision must record the evidence and update downstream contracts deliberately."
+      ],
+      "verification": [
+        "test -n \"$OMNIGENT_ROOT\" && test -f \"$OMNIGENT_ROOT/omnigent/policies/function.py\"",
+        "node orchestrator/scripts/verify-omnigent-contract.mjs --root \"$OMNIGENT_ROOT\" --contract artifacts/reliability/omnigent-compatibility-contract.json",
+        "node -e \"const f=require('fs');const p='artifacts/reliability/omnigent-compatibility-contract.json';const x=JSON.parse(f.readFileSync(p));if(!x.schema_version||x.contract_mode!=='current-compatible'||!x.required_seams?.length||!x.observed_identity_source)process.exit(1);if('required_sha' in x||'sha_source' in x)process.exit(2)\"",
+        "test -f docs/architecture/reliability/omnigent-contract.md"
+      ],
+      "verification_env": {
+        "mode": "merge",
+        "required": [
+          {
+            "name": "OMNIGENT_ROOT",
+            "format": "string"
+          }
+        ],
+        "vars": {}
+      },
+      "output_artifacts": [
+        "artifacts/reliability/omnigent-compatibility-contract.json",
+        "docs/architecture/reliability/omnigent-contract.md",
+        "orchestrator/scripts/verify-omnigent-contract.mjs"
+      ],
+      "freeze_contract": {
+        "artifact_path": "artifacts/reliability/omnigent-compatibility-contract.json",
+        "sibling": "omnigent",
+        "root_env": "OMNIGENT_ROOT",
+        "sha_source": ""
+      },
+      "contract_decision": true,
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": []
+    },
+    {
+      "id": "t01",
+      "title": "Adopt evidence provenance and the clean-baseline contract",
+      "description": "Milestone 0 provenance ticket. Intentionally add the currently untracked reliability review as a tracked authority artifact, record its historical reviewed commit without pinning implementation HEAD, and define clean-handoff rules for sequential Codex execution. The implementation base is captured from `git rev-parse HEAD` at ticket execution and may advance normally. No production behavior changes.",
+      "acceptance_criteria": [
+        "`docs/project-completion-reliability-review-2026-07-15.md` is tracked and available in clean worktrees.",
+        "`docs/architecture/reliability/evidence-provenance.md` distinguishes the review's historical SHA from the implementation base and from external compatibility authority.",
+        "The provenance contract records how pre-existing user changes are detected and preserved, and forbids implementation tickets from silently absorbing unrelated dirty files.",
+        "The handoff contract requires every sequential ticket to leave committed, independently verifiable outputs for its dependent ticket."
+      ],
+      "verification": [
+        "git ls-files --error-unmatch docs/project-completion-reliability-review-2026-07-15.md",
+        "test -f docs/architecture/reliability/evidence-provenance.md",
+        "rg -n \"historical reviewed commit|implementation base|unrelated user changes|sequential\" docs/architecture/reliability/evidence-provenance.md",
+        "git diff --check"
+      ],
+      "output_artifacts": [
+        "docs/project-completion-reliability-review-2026-07-15.md",
+        "docs/architecture/reliability/evidence-provenance.md"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t00"
+      ]
+    },
+    {
+      "id": "t02",
+      "title": "Decide execution, ticket, terminal, sandbox, and toolchain contracts",
+      "description": "Milestone 0 prerequisite contract decision. Commit executable schemas/examples for direct worker spawning, strict TicketContract hashing, ready-for-delivery versus delivered semantics, orchestrator-owned commits, structured verification argv, macOS/Linux sandbox backends, state-root derivation, no-op rejection, and the package-manager/Node/Python platform contract. These decisions constrain all downstream callers but enable no capability by themselves.",
+      "acceptance_criteria": [
+        "A versioned trust-spine contract states that production phases spawn an attempt-specific structured worker bundle directly and that only the orchestrator creates the authoritative commit.",
+        "Executable TicketContract fixtures cover unique IDs, dependencies, AC/interface mapping, canonical scope/change kinds, structured verification argv, budgets, and a deterministic SHA-256 contract digest.",
+        "Terminal semantics reserve delivered/`Done` for verified remote delivery and define `ready_for_delivery` as local oracle completion after promotion and cleanup.",
+        "Verification commands are argv-only and require a proven `sandbox-exec` or `bwrap` backend with allowlisted environment, denied network, explicit writable outputs, resource limits, and shared process supervision; unavailable sandbox support is an infrastructure error.",
+        "No-op is rejected, POSIX macOS/Linux is the supported remediation matrix, Windows fails stably, and exact Node/Python/pnpm versions or ranges are repository-owned and machine-checkable."
+      ],
+      "verification": [
+        "node orchestrator/scripts/validate-trust-spine-contract.mjs docs/architecture/reliability/trust-spine-contract.json",
+        "node -e \"const p=require('./orchestrator/package.json');if(!/^pnpm@/.test(p.packageManager||''))process.exit(1);if(!p.engines?.node)process.exit(2)\"",
+        "node orchestrator/scripts/validate-ticket-contract-fixtures.mjs orchestrator/test/fixtures/ticket-contract",
+        "rg -n \"ready_for_delivery|delivered|orchestrator-owned|sandbox-exec|bwrap|no-op|Windows\" docs/architecture/reliability/trust-spine-contract.md"
+      ],
+      "output_artifacts": [
+        "docs/architecture/reliability/trust-spine-contract.md",
+        "docs/architecture/reliability/trust-spine-contract.json",
+        "orchestrator/scripts/validate-trust-spine-contract.mjs",
+        "orchestrator/scripts/validate-ticket-contract-fixtures.mjs",
+        "orchestrator/test/fixtures/ticket-contract/valid.json",
+        "orchestrator/test/fixtures/ticket-contract/invalid.json"
+      ],
+      "contract_decision": true,
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t01"
+      ]
+    },
+    {
+      "id": "t03",
+      "title": "Install capability kill switches and strict CLI parsing",
+      "description": "Milestone 1 containment. Add one typed capability registry consumed by CLI and direct library boundaries. Default autonomous dispatch to fixture-only and make resume/retry, reconcile, parallel dispatch, cross-vendor review, automatic delivery, and raw shell unavailable with stable nonzero errors. Reject unknown flags and production `RICKGENT_SKIP_*` bypasses; direct callers cannot bypass the registry.",
+      "acceptance_criteria": [
+        "Capability entries expose `unavailable|fixture_only|enabled`, stable code, reason, and proof version through startup and doctor output.",
+        "`--resume`, reconcile, `--max-concurrent 2`, delivery flags, raw-shell configuration, stale config, environment bypasses, and direct library calls cannot activate unavailable behavior.",
+        "Unknown flags and advertised-but-unparsed flags fail nonzero instead of disappearing silently.",
+        "Test-only bypasses exist only through explicit dependency injection and are unreachable from production environment variables."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/capability-contraction.test.ts test/lifecycle/cli-commands.test.ts",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test",
+        "! rg -n \"RICKGENT_SKIP_(POLICY_ATTACH|CONFORMANCE|DESLOP)\" orchestrator/src --glob '*.ts'"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/capabilities/registry.ts",
+        "orchestrator/test/reliability/capability-contraction.test.ts"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t02"
+      ]
+    },
+    {
+      "id": "t04",
+      "title": "Make run aggregation fail closed",
+      "description": "Milestone 1 containment. Replace success-on-any-work aggregation with an explicit run outcome that is nonzero for zero completion, partial failure, any required existing gate failure, unverifiable evidence, cleanup failure, or unavailable required capability. Make push/PR code structurally unreachable while automatic delivery is unavailable and keep exit selection at the CLI boundary.",
+      "acceptance_criteria": [
+        "All-failed, zero-ticket, partial, gate-failed, evidence-unverifiable, cleanup-failed, and infrastructure-error subprocess scenarios exit nonzero.",
+        "Every planned ticket must satisfy the active local profile; one completed ticket cannot mask another failure.",
+        "Fail-fast fake `git push` and `gh` executables are never invoked under the unavailable-delivery profile.",
+        "Lifecycle modules return typed results and do not call `process.exit`; CLI maps the complete result to one exit code with documented precedence."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/fail-closed-aggregation.test.ts test/lifecycle/build-loop.test.ts test/lifecycle/e2e-gated-pipeline.test.ts",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test",
+        "rg -n \"zero_completion|partial_failure|cleanup_failed|evidence_unverifiable\" orchestrator/test/reliability/fail-closed-aggregation.test.ts"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/lifecycle/run-outcome.ts",
+        "orchestrator/test/reliability/fail-closed-aggregation.test.ts"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t03"
+      ]
+    },
+    {
+      "id": "t05",
+      "title": "Implement strict TicketContract normalization and hashing",
+      "description": "Milestone 1 contract implementation. Replace tolerant executable identity with a versioned strict TicketContract normalizer used before run allocation. Preserve human Markdown parsing only as an input adapter whose result must pass strict validation. Carry ticket-specific ACs, interfaces, dependencies, scopes/change kinds, structured verification specs, budgets, and contract digest.",
+      "acceptance_criteria": [
+        "Explicit unique ticket/AC IDs are mandatory; duplicates, unknown references, dependency cycles, empty scopes, and unsafe active-scope overlap are rejected before dispatch.",
+        "Paths normalize to canonical repository-relative declarations and reject absolute/traversal, `.git`/state roots, escaping symlinks, submodules, and unsupported rename/delete declarations.",
+        "Verification is a typed argv specification; legacy shell strings and malformed cwd/environment/output policies are rejected.",
+        "Canonical serialization and SHA-256 hashing are deterministic across property order and change whenever any executable contract field changes.",
+        "Prompt input and downstream interfaces accept the normalized contract rather than a lossy `TicketPlan`."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/ticket-contract.test.ts test/lifecycle/manifest.test.ts",
+        "node orchestrator/scripts/validate-ticket-contract-fixtures.mjs orchestrator/test/fixtures/ticket-contract",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/contracts/ticket-contract.ts",
+        "orchestrator/test/reliability/ticket-contract.test.ts",
+        "orchestrator/test/fixtures/ticket-contract/negative-corpus.json"
+      ],
+      "proof_corpus": [
+        "orchestrator/test/fixtures/ticket-contract/valid.json",
+        "orchestrator/test/fixtures/ticket-contract/invalid.json",
+        "orchestrator/test/fixtures/ticket-contract/negative-corpus.json"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t04"
+      ]
+    },
+    {
+      "id": "t06",
+      "title": "Provision the sequential pre-mutation run worktree",
+      "description": "Milestone 1 isolation seam. Resolve the target repository and delivery baseline, create one clean dedicated run ref/worktree before any fixture worker spawn, force concurrency one, and directly materialize/spawn the structured worker template selected by `t02`. Do not let the manager bundle or caller checkout become a mutation authority. Milestone 4 will replace this run-level seam with per-attempt ownership.",
+      "acceptance_criteria": [
+        "No product worker can spawn before the dedicated run ref/worktree exists and passes clean baseline checks.",
+        "Worker cwd is the run worktree; caller HEAD, branch, index, tracked changes, and untracked files remain byte-for-byte unchanged after success and failure.",
+        "`maxConcurrent` is exactly one and values greater than one are rejected rather than clamped or ignored.",
+        "The actual spawn target is an attempt-specific materialization of `agents/rickgent/agents/worker`; the manager bundle and its raw shell are not used.",
+        "Protected-branch mutation and dirty/invalid baseline cases fail before spawn with cleanup evidence."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/run-workspace.test.ts test/lifecycle/build-routing.test.ts",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test",
+        "rg -n \"agents/rickgent/agents/worker|caller.*unchanged|maxConcurrent\" orchestrator/test/reliability/run-workspace.test.ts"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/git/run-workspace.ts",
+        "orchestrator/test/reliability/run-workspace.test.ts"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t05"
+      ]
+    },
+    {
+      "id": "t07",
+      "title": "Publish the reliability-preview CLI and documentation contract",
+      "description": "Milestone 1 claim alignment. Publish a command/capability matrix for build, pipeline, resume, reconcile, status, delivery, and concurrency. CLI help, doctor, README, and runtime output must derive from or be checked against the same capability registry. Describe fixture-only versus public behavior precisely and remove production-ready/multi-vendor/fail-closed claims not yet proven.",
+      "acceptance_criteria": [
+        "README/help/doctor call the current boundary a reliability preview and distinguish `ready_for_delivery` from delivered/`Done`.",
+        "Unavailable commands/flags and their stable error codes match runtime behavior exactly.",
+        "No documentation claims public autonomous mutation, resume, reconciliation, parallel dispatch, cross-vendor review, automatic delivery, or raw shell when the registry marks them unavailable.",
+        "A claim-contract test fails on future docs/runtime drift."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/claims-contract.test.ts test/lifecycle/doctor-attachment.test.ts",
+        "cd orchestrator && pnpm build",
+        "node orchestrator/dist/cli.js --help",
+        "node orchestrator/dist/cli.js doctor --json",
+        "cd orchestrator && pnpm test"
+      ],
+      "output_artifacts": [
+        "docs/reliability-preview.md",
+        "orchestrator/test/reliability/claims-contract.test.ts",
+        "README.md"
+      ],
+      "priority": "P1",
+      "status": "Todo",
+      "depends_on": [
+        "t06"
+      ]
+    },
+    {
+      "id": "t08",
+      "title": "Implement the canonical native policy adapter",
+      "description": "Milestone 2 native boundary. Split a strict adapter out of the Python monolith. It accepts the exact native FunctionPolicy event and trusted config contract selected in `t00`, parses tool arguments once, and returns a discriminated canonical event or named denial. It must distinguish well-formed unrelated events (abstain) from malformed/unknown/unauthenticated authority requests (deny).",
+      "acceptance_criteria": [
+        "The adapter consumes native `{type,target,data,context,session_state,...}` plus trusted policy config and no policy probes legacy top-level keys directly.",
+        "Malformed `data`, missing/duplicate/conflicting config, absent authentication, unsupported event/context ABI, replay, and unknown tools return stable fail-closed denial codes.",
+        "Canonical events contain normalized tool/action, source/destination endpoints, immutable attempt/context digest, role/phase, scope, and model identity fields from trusted config.",
+        "Real Omnigent FunctionPolicy tests prove valid structured read/write events reach the wrapped tool and every denial prevents tool execution.",
+        "The native policy corpus inventory is complete and rejects missing event/verdict entries rather than sampling a subset."
+      ],
+      "verification": [
+        "test -n \"$OMNIGENT_ROOT\" && node orchestrator/scripts/verify-omnigent-contract.mjs --root \"$OMNIGENT_ROOT\" --contract artifacts/reliability/omnigent-compatibility-contract.json",
+        "cd rickgent-policies && PYTHONPATH=\"$OMNIGENT_ROOT:$PWD\" python3 -m pytest -q test/test_native_policy_adapter.py",
+        "cd rickgent-policies && python3 -m pytest -q",
+        "node -e \"const f=require('fs');const x=JSON.parse(f.readFileSync('rickgent-policies/test/fixtures/native-policy-corpus/manifest.json'));if(!x.complete||!x.events?.length||!x.policies?.length)process.exit(1)\""
+      ],
+      "verification_env": {
+        "mode": "merge",
+        "required": [
+          {
+            "name": "OMNIGENT_ROOT",
+            "format": "string"
+          }
+        ],
+        "vars": {}
+      },
+      "output_artifacts": [
+        "rickgent-policies/rickgent_policies/policy_event.py",
+        "rickgent-policies/test/test_native_policy_adapter.py",
+        "rickgent-policies/test/fixtures/native-policy-corpus/manifest.json",
+        "rickgent-policies/test/fixtures/native-policy-corpus/events.jsonl",
+        "rickgent-policies/test/fixtures/native-policy-corpus/expected-verdicts.json"
+      ],
+      "proof_corpus": [
+        "rickgent-policies/test/fixtures/native-policy-corpus/manifest.json",
+        "rickgent-policies/test/fixtures/native-policy-corpus/events.jsonl",
+        "rickgent-policies/test/fixtures/native-policy-corpus/expected-verdicts.json"
+      ],
+      "freeze_contract": {
+        "artifact_path": "artifacts/reliability/omnigent-compatibility-contract.json",
+        "sibling": "omnigent",
+        "root_env": "OMNIGENT_ROOT",
+        "sha_source": ""
+      },
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t07"
+      ]
+    },
+    {
+      "id": "t09",
+      "title": "Materialize and authenticate per-attempt policy context",
+      "description": "Milestone 2 context producer. Create an immutable TypeScript ExecutionContext projection under the safe state root, render an attempt-specific worker bundle/config outside the target worktree, and bind its reference/digest/owner token to the final spawn environment. Python verifies that trusted context and ignores agent-controlled context identity. Context is in-memory/file authoritative in this milestone; Milestone 3 makes it transactional.",
+      "acceptance_criteria": [
+        "Context includes canonical repo/worktree/state roots, run/ticket/attempt, phase/role, TicketContract digest/scope, requested identity, bundle digest, and schema versions.",
+        "Context and materialized bundle are mode-restricted, outside worker scope, immutable for the phase, and deleted or quarantined only after cleanup.",
+        "Policy startup rejects missing reference, unsafe/symlinked reference, wrong owner/digest, stale attempt, conflicting event values, and incompatible config/event versions before tool execution.",
+        "Mutating every agent-controlled event/context identity field does not change the authoritative canonical identity.",
+        "Array/object scope values use the exact string encoding proven compatible by `t00`."
+      ],
+      "verification": [
+        "test -n \"$OMNIGENT_ROOT\" && node orchestrator/scripts/verify-omnigent-contract.mjs --root \"$OMNIGENT_ROOT\" --contract artifacts/reliability/omnigent-compatibility-contract.json",
+        "cd orchestrator && pnpm exec vitest run test/reliability/policy-context.test.ts",
+        "cd rickgent-policies && PYTHONPATH=\"$OMNIGENT_ROOT:$PWD\" python3 -m pytest -q test/test_native_policy_context.py",
+        "cd orchestrator && pnpm typecheck",
+        "cd rickgent-policies && python3 -m pytest -q"
+      ],
+      "verification_env": {
+        "mode": "merge",
+        "required": [
+          {
+            "name": "OMNIGENT_ROOT",
+            "format": "string"
+          }
+        ],
+        "vars": {}
+      },
+      "output_artifacts": [
+        "orchestrator/src/policy/policy-bundle.ts",
+        "orchestrator/src/context/execution-context.ts",
+        "rickgent-policies/rickgent_policies/context.py",
+        "orchestrator/test/reliability/policy-context.test.ts",
+        "rickgent-policies/test/test_native_policy_context.py"
+      ],
+      "proof_corpus": [
+        "rickgent-policies/test/fixtures/native-policy-corpus/manifest.json",
+        "rickgent-policies/test/fixtures/native-policy-corpus/events.jsonl",
+        "rickgent-policies/test/fixtures/native-policy-corpus/expected-verdicts.json"
+      ],
+      "freeze_contract": {
+        "artifact_path": "artifacts/reliability/omnigent-compatibility-contract.json",
+        "sibling": "omnigent",
+        "root_env": "OMNIGENT_ROOT",
+        "sha_source": ""
+      },
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t08"
+      ]
+    },
+    {
+      "id": "t10",
+      "title": "Enforce canonical scope and structured-tool containment",
+      "description": "Milestone 2 scope authority. Make scope policy consume only canonical events and prove the canonical authorized root, every declared path, and every operation endpoint remains contained after realpath resolution. Cover not-yet-created targets by resolving the nearest existing parent. Deny raw shell and unknown tools by default rather than classifying command names heuristically.",
+      "acceptance_criteria": [
+        "Valid in-scope structured reads/writes/edits succeed through real FunctionPolicy; unrelated read events abstain only when no Rickgent authority is requested.",
+        "Absolute/traversal paths, declared-path symlink escape, target symlink escape, not-yet-created child under symlink parent, and source/destination escape for rename/link are denied before execution.",
+        "The authorized root and each resolved declaration are first proven beneath the canonical worktree root; `.git`, state, bundle, and policy context roots are never writable scope.",
+        "Unknown tools and all raw shell entry points are denied regardless of apparent command read-only status.",
+        "TypeScript/Python scope semantics use the same fixture inventory and do not diverge on path/change-kind verdicts."
+      ],
+      "verification": [
+        "test -n \"$OMNIGENT_ROOT\" && cd rickgent-policies && PYTHONPATH=\"$OMNIGENT_ROOT:$PWD\" python3 -m pytest -q test/test_native_scope_corpus.py",
+        "cd orchestrator && pnpm exec vitest run test/core/scope-resolved.test.ts test/reliability/scope-contract.test.ts",
+        "cd rickgent-policies && python3 -m pytest -q",
+        "cd orchestrator && pnpm test"
+      ],
+      "verification_env": {
+        "mode": "merge",
+        "required": [
+          {
+            "name": "OMNIGENT_ROOT",
+            "format": "string"
+          }
+        ],
+        "vars": {}
+      },
+      "output_artifacts": [
+        "rickgent-policies/rickgent_policies/scope.py",
+        "rickgent-policies/test/test_native_scope_corpus.py",
+        "orchestrator/test/reliability/scope-contract.test.ts"
+      ],
+      "proof_corpus": [
+        "rickgent-policies/test/fixtures/native-policy-corpus/manifest.json",
+        "rickgent-policies/test/fixtures/native-policy-corpus/events.jsonl",
+        "rickgent-policies/test/fixtures/native-policy-corpus/expected-verdicts.json"
+      ],
+      "freeze_contract": {
+        "artifact_path": "artifacts/reliability/omnigent-compatibility-contract.json",
+        "sibling": "omnigent",
+        "root_env": "OMNIGENT_ROOT",
+        "sha_source": ""
+      },
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t09"
+      ]
+    },
+    {
+      "id": "t11",
+      "title": "Migrate every attached policy and prove full bundle composition",
+      "description": "Milestone 2 cutover. Move scope_fence, completion_evidence, convergence_gate, subtract_before_add, cross_vendor_review, and autonomous_pr_flow to canonical events; prove builtin blast-radius composition and the exact manager/worker attachment inventories through real Omnigent FunctionPolicy. Delete legacy top-level event probing only after the complete positive/negative corpus is green.",
+      "acceptance_criteria": [
+        "The corpus enumerates every policy attached by both bundles, including builtin composition, and fails if a policy/event/verdict/tool-executed assertion is missing.",
+        "False completion, missing commit/evidence, convergence bypass, simplification bypass, reviewer-equality/cross-vendor bypass, protected push, force push, and PR-before-push are denied through native events.",
+        "Positive cases prove legitimate policy-applicable structured operations and later authorized delivery events are not accidentally deny-all.",
+        "Agent startup fails when any required policy is missing, incompatible, or lacks attempt config; static name resolution alone cannot pass.",
+        "No production policy reads legacy `tool_name`, `ticket_id`, path, phase, vendor, or completion values directly from untrusted top-level event fields."
+      ],
+      "verification": [
+        "test -n \"$OMNIGENT_ROOT\" && cd rickgent-policies && PYTHONPATH=\"$OMNIGENT_ROOT:$PWD\" python3 -m pytest -q test/test_native_function_policy_corpus.py test/test_manager_attachment.py test/test_worker_attachment.py",
+        "cd rickgent-policies && python3 -m pytest -q",
+        "cd orchestrator && pnpm exec vitest run test/lifecycle/doctor-attachment.test.ts test/reliability/native-policy-attachment.test.ts",
+        "cd orchestrator && pnpm test",
+        "! rg -n \"event\\.(tool_name|ticket_id|declared_paths|worktree_root|phase|vendor)\" rickgent-policies/rickgent_policies"
+      ],
+      "verification_env": {
+        "mode": "merge",
+        "required": [
+          {
+            "name": "OMNIGENT_ROOT",
+            "format": "string"
+          }
+        ],
+        "vars": {}
+      },
+      "output_artifacts": [
+        "rickgent-policies/test/test_native_function_policy_corpus.py",
+        "orchestrator/test/reliability/native-policy-attachment.test.ts",
+        "agents/rickgent/config.yaml",
+        "agents/rickgent/agents/worker/config.yaml"
+      ],
+      "proof_corpus": [
+        "rickgent-policies/test/fixtures/native-policy-corpus/manifest.json",
+        "rickgent-policies/test/fixtures/native-policy-corpus/events.jsonl",
+        "rickgent-policies/test/fixtures/native-policy-corpus/expected-verdicts.json"
+      ],
+      "freeze_contract": {
+        "artifact_path": "artifacts/reliability/omnigent-compatibility-contract.json",
+        "sibling": "omnigent",
+        "root_env": "OMNIGENT_ROOT",
+        "sha_source": ""
+      },
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t10"
+      ]
+    },
+    {
+      "id": "t12",
+      "title": "Decide state schema, promotion, lifecycle, and terminal semantics",
+      "description": "Milestone 3 contract decision. Commit the complete SQLite entity/constraint/transaction model, repository-derived state-root rules, legacy quarantine policy, attempt resource identities, lifecycle edges, pure oracle input references, sequential fast-forward promotion, and ready-versus-delivered state machine before migrations/callers. The schema reserves later resource/delivery rows without pretending those capabilities are implemented.",
+      "acceptance_criteria": [
+        "The state contract defines numbered migrations, foreign keys, uniqueness, immutable evidence, compare-and-set transitions, owner-checked leases, WAL/busy/durability settings, and corruption/future-schema errors.",
+        "State resolves from the canonical Git common directory of `--repo`, rejects unsafe/symlink roots, and is independent of caller CWD.",
+        "Ordinary builds always allocate new runs; retry allocates the next attempt before spawn; resume names an explicit run and rejects contract/oracle/context incompatibility.",
+        "Legacy JSON/JSONL/locks/Git subjects are quarantined or diagnostic read-only and can never import terminal state; long-lived dual writes are forbidden.",
+        "Accepted ticket commits form a compare-and-swap fast-forward delivery chain, and only the oracle/finalization service can produce `ready_for_delivery`."
+      ],
+      "verification": [
+        "node orchestrator/scripts/validate-state-contract.mjs docs/architecture/reliability/state-and-lifecycle-contract.json",
+        "cd orchestrator && pnpm exec vitest run test/reliability/state-contract.test.ts",
+        "cd orchestrator && pnpm typecheck",
+        "rg -n \"WAL|foreign key|busy|compare-and-swap|legacy|ready_for_delivery|fast-forward\" docs/architecture/reliability/state-and-lifecycle-contract.md"
+      ],
+      "output_artifacts": [
+        "docs/architecture/reliability/state-and-lifecycle-contract.md",
+        "docs/architecture/reliability/state-and-lifecycle-contract.json",
+        "orchestrator/scripts/validate-state-contract.mjs",
+        "orchestrator/src/state/schema.ts",
+        "orchestrator/test/reliability/state-contract.test.ts"
+      ],
+      "contract_decision": true,
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t11"
+      ]
+    },
+    {
+      "id": "t13",
+      "title": "Implement the versioned transactional SQLite store",
+      "description": "Milestone 3 persistence primitive. Implement `node:sqlite` migrations and repositories for runs, contracts, attempts, transitions, leases/resources, process/evidence/gates, review, commits, cleanup/oracle, and delivery records. Enforce safe state discovery, file permissions, integrity, transactions, idempotency, bounded busy behavior, and corruption/future-version failure. Do not yet migrate production callers.",
+      "acceptance_criteria": [
+        "Fresh database creation and every numbered migration are deterministic, foreign-key clean, mode restricted, and transactionally atomic.",
+        "Concurrent OS processes cannot violate unique run/ticket/attempt, live lease, evidence idempotency, or transition sequence constraints.",
+        "Injected transaction failure leaves old-or-new state, never partial rows, and busy timeout returns a typed infrastructure error.",
+        "Corrupt, partial, or future-schema databases fail with quarantine/recovery instructions and are never treated as empty state.",
+        "Repository A invoked from repository B with `--repo A` writes only A's canonical state location."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/state-store.test.ts test/lifecycle/registry.test.ts",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test",
+        "node -e \"const s=require('fs').readFileSync('orchestrator/src/state/schema.ts','utf8');for(const x of ['runs','attempts','leases','evidence','gate','cleanup','delivery'])if(!s.includes(x))process.exit(1)\""
+      ],
+      "output_artifacts": [
+        "orchestrator/src/state/store.ts",
+        "orchestrator/src/state/migrations.ts",
+        "orchestrator/test/reliability/state-store.test.ts"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t12"
+      ]
+    },
+    {
+      "id": "t14",
+      "title": "Allocate immutable runs, tickets, attempts, and execution contexts",
+      "description": "Milestone 3 identity service. Resolve canonical repository/state inputs once, transactionally create a new run for ordinary builds, persist normalized contracts, allocate attempts before resource/spawn activity, and derive immutable per-phase ExecutionContexts with capability/model/budget/scope digests. Make explicit resume/retry selection APIs without enabling their public capabilities yet.",
+      "acceptance_criteria": [
+        "Two ordinary builds produce distinct immutable run IDs even for identical ticket IDs/contracts and state roots.",
+        "Retry allocates and commits monotonically increasing attempt numbers before spawn; prior attempts/evidence remain immutable.",
+        "Resume requires an explicit run selector and exact compatible contract/oracle/context schema; caller CWD and old terminal dispatch IDs cannot select work.",
+        "ExecutionContext contains repository/state roots, run/ticket/attempt, phase/role, contract/capability/bundle/model digests, budgets, timeout, and scope with no wholesale `process.env`.",
+        "Concurrent allocators preserve uniqueness and never split metrics, ledger, and state identities."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/identity-allocation.test.ts test/lifecycle/metrics.test.ts",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test",
+        "rg -n \"allocateAttempt|contractDigest|capabilityDigest|canonical.*repo\" orchestrator/src/context orchestrator/src/state"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/context/resolver.ts",
+        "orchestrator/src/context/execution-context.ts",
+        "orchestrator/test/reliability/identity-allocation.test.ts"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t13"
+      ]
+    },
+    {
+      "id": "t15",
+      "title": "Persist legal phase, receipt, evidence, and terminalization transitions",
+      "description": "Milestone 3 transition authority. Implement the contract table from `t12` as transaction-scoped compare-and-set operations. Phase start/finish, immutable receipts/evidence, gate values, cleanup, oracle evaluation, promotion, and delivery each have legal source/target states. Expose no direct ready/delivered writer; terminalization accepts only a versioned oracle decision and required references.",
+      "acceptance_criteria": [
+        "Every legal transition atomically records sequence, prior state, next state, owner/context digest, receipt/evidence references, and idempotency key.",
+        "Illegal, repeated-with-different-input, out-of-order, wrong-owner, missing-evidence, and direct terminal transitions fail without state change.",
+        "Workers, dispatchers, CLI, status, and reconciliation modules cannot import a method that directly writes `ready_for_delivery`, `delivered`, or `Done`.",
+        "Concurrent transitions choose one winner and retries of the same idempotency key return the existing result.",
+        "Crash immediately before/after transaction commit produces exactly old or new state."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/transition-authority.test.ts test/lifecycle/phase.test.ts",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test",
+        "! rg -n \"updateTicketState\\([^\\n]*Done|status:\\s*[\\\"']Done\" orchestrator/src --glob '*.ts'"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/state/transitions.ts",
+        "orchestrator/test/reliability/transition-authority.test.ts"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t14"
+      ]
+    },
+    {
+      "id": "t16",
+      "title": "Cut over registry and ledger callers and quarantine legacy state",
+      "description": "Milestone 3 authority cutover. Migrate build/dispatch/status/metrics/salvage callers to SQLite and remove registry JSON, terminal dispatch JSONL replay, ad hoc TicketLock identity, and Git-subject completion as authorities. Legacy files may be inventory/quarantined for diagnostics but never dual-written or imported as terminal. Reconcile remains unavailable.",
+      "acceptance_criteria": [
+        "Production run/ticket/attempt/phase/receipt/evidence identity is read and written only through the transactional store.",
+        "Existing valid/corrupt registry JSON, ledgers, locks, stale terminal entries, duplicate ticket IDs, and commit subjects cannot skip spawn or manufacture completion.",
+        "Ordinary rerun never returns a cached terminal entry; changed contract digest is incompatible rather than a cache hit.",
+        "Legacy discovery produces an explicit diagnostic/quarantine record and nonzero recovery guidance, never silent empty state.",
+        "No long-lived dual-write code or all-history `ticket: <id>` completion scan remains in production."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/legacy-state-quarantine.test.ts test/lifecycle/reconcile.test.ts test/dispatch/dispatch.test.ts",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test",
+        "! rg -n \"git log --oneline --all|registry\\.json.*write|new TicketLock\" orchestrator/src --glob '*.ts'"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/state/legacy-quarantine.ts",
+        "orchestrator/test/reliability/legacy-state-quarantine.test.ts"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t15"
+      ]
+    },
+    {
+      "id": "t17",
+      "title": "Prove structured restart and retry across the full state crash corpus",
+      "description": "Milestone 3 recovery proof. Build a subprocess fault harness that kills before/after every state transaction and retry boundary defined by the corpus. Restart from the same canonical state directory and assert readability, uniqueness, old-or-new state, explicit cleanup-pending work, new attempts on retry, and no replay/manufactured terminal result. This proves internal recovery primitives but does not yet enable public resume.",
+      "acceptance_criteria": [
+        "The corpus covers run creation, contract insert, attempt allocation, lease acquisition, phase start/finish, spawn, commit, every gate, oracle, cleanup, promotion, delivery intent, remote observation, PR observation, and terminal commit on both sides of commit acknowledgement.",
+        "Every fault restarts to exactly one authoritative old-or-new state with an integrity-clean database and immutable prior evidence.",
+        "Retry always creates one new attempt before spawn and cannot overwrite or reuse failed/timed-out terminal dispatch identity.",
+        "Two recovery processes cannot both own or advance the same attempt; busy/infrastructure failures are not counted as caught faults.",
+        "The harness inventory fails when any required fault point or assertion is absent."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/state-crash-corpus.test.ts --no-file-parallelism",
+        "node -e \"const f=require('fs');const x=JSON.parse(f.readFileSync('orchestrator/test/fixtures/crash-matrix/manifest.json'));if(!x.complete||x.fault_points.length<20||!x.assertions.includes('no_manufactured_terminal'))process.exit(1)\"",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test"
+      ],
+      "output_artifacts": [
+        "orchestrator/test/reliability/state-crash-corpus.test.ts",
+        "orchestrator/test/fixtures/crash-matrix/manifest.json",
+        "orchestrator/test/fixtures/crash-matrix/fault-points.json",
+        "artifacts/reliability/state-crash-summary.json"
+      ],
+      "proof_corpus": [
+        "orchestrator/test/fixtures/crash-matrix/manifest.json",
+        "orchestrator/test/fixtures/crash-matrix/fault-points.json"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t16"
+      ]
+    },
+    {
+      "id": "t18",
+      "title": "Implement owner-checked leases and per-attempt resource allocation",
+      "description": "Milestone 4 resource primitive. Replace the interim run worktree seam with transactionally allocated attempt branch/ref, worktree, isolated index, immutable baseline, resource rows, and owner-token lease. Verify repository/ref/worktree cleanliness and ownership before any policy materialization or spawn. Release and stale recovery compare the current owner and proven process liveness.",
+      "acceptance_criteria": [
+        "One attempt owns exactly one run/ticket/attempt identity, owner token, lease, baseline, ref, worktree, and index recorded transactionally.",
+        "Two processes cannot acquire the same active attempt; an old/wrong owner cannot heartbeat, mutate, reclaim, or release a newer lease.",
+        "Stale recovery requires expired heartbeat plus proven owner/process death and enters cleanup before reuse.",
+        "Dirty caller repositories are preserved, while dirty/new/foreign attempt resources fail before spawn and are quarantined.",
+        "Worktree/state roots and refs use canonical, collision-resistant names and reject symlink/path traversal."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/attempt-ownership.test.ts test/dispatch/dispatch-lock-race.test.ts test/dispatch/dispatch-lock-failclosed.test.ts",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test",
+        "rg -n \"ownerToken|compare.*owner|git.*worktree|isolated.*index\" orchestrator/src/git/attempt-workspace.ts orchestrator/src/state/leases.ts"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/git/attempt-workspace.ts",
+        "orchestrator/src/state/leases.ts",
+        "orchestrator/test/reliability/attempt-ownership.test.ts"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t17"
+      ]
+    },
+    {
+      "id": "t19",
+      "title": "Implement the POSIX process-group supervisor",
+      "description": "Milestone 4 process primitive. Centralize array-argv spawn, allowlisted environment, new process group/session, capped stdout/stderr files, hashes/tails, timeout escalation, confirmed group death, and typed exit/infrastructure receipts. Worker, reviewer, remediation, gate, and delivery subprocesses will reuse this service. Unsupported platforms fail before spawn.",
+      "acceptance_criteria": [
+        "Every spawn creates and persists a PID/PGID/owner/context receipt before work can advance and never passes wholesale `process.env`.",
+        "Output flood is streamed to bounded artifacts; state stores path/hash/original size/truncation/bounded tail and never accumulates unbounded strings.",
+        "Timeout sends group TERM, waits the configured grace, sends group KILL, and remains cleanup-pending until all descendants are confirmed dead.",
+        "Fixtures cover ignored TERM, child/grandchild/double-fork, closed stdio with continued execution, post-parent mutation, output flood, spawn failure, and unkillable/infrastructure outcomes.",
+        "macOS/Linux behavior is tested; Windows returns the stable unsupported-platform code without spawning."
+      ],
+      "verification": [
+        "node -e \"if(!['darwin','linux'].includes(process.platform))process.exit(77)\"",
+        "cd orchestrator && pnpm exec vitest run test/reliability/process-supervisor-corpus.test.ts --no-file-parallelism",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/process/supervisor.ts",
+        "orchestrator/test/reliability/process-supervisor-corpus.test.ts",
+        "orchestrator/test/fixtures/process-supervisor/stubborn-tree.mjs",
+        "orchestrator/test/fixtures/process-supervisor/output-flood.mjs"
+      ],
+      "proof_corpus": [
+        "orchestrator/test/fixtures/process-supervisor/stubborn-tree.mjs",
+        "orchestrator/test/fixtures/process-supervisor/output-flood.mjs"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t18"
+      ]
+    },
+    {
+      "id": "t20",
+      "title": "Implement orchestrator-owned commit attribution",
+      "description": "Milestone 4 Git authority. After a clean phase result, inspect the attempt workspace against its immutable baseline, stage only allowed normalized changes, and create the final acceptance commit from the orchestrator. Persist parent/tree/commit/contract/context/path-kind receipts and validate ancestry, exact scope, expected change kinds, cleanliness, and delivery-baseline freshness. The model receives no Git mutation primitive.",
+      "acceptance_criteria": [
+        "The service rejects no change, dirty/untracked foreign delta, out-of-scope addition/modification/deletion/rename, unexpected mode/submodule change, symlink escape, foreign commit, non-descendant commit, multiple unowned commits, and moved delivery ref.",
+        "The accepted commit descends from the exact attempt baseline and its tree equals the staged allowed delta with no foreign paths.",
+        "The receipt records attempt owner, baseline/parent/tree/commit OIDs, contract/context digests, exact canonical paths/change kinds/modes, and command output hashes.",
+        "The worker bundle/instructions no longer demand or expose commit/shell capability.",
+        "Temporary-repository cases cover binary/untracked files, renames/deletes, dirty caller tree, and an in-scope file combined with foreign delta."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/git-attribution-corpus.test.ts test/dispatch/dispatch-evidence.test.ts",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test",
+        "! rg -n \"ensure your work is committed|git commit\" agents/rickgent/agents/worker/config.yaml"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/git/commit-service.ts",
+        "orchestrator/test/reliability/git-attribution-corpus.test.ts",
+        "orchestrator/test/fixtures/git-attribution/manifest.json"
+      ],
+      "proof_corpus": [
+        "orchestrator/test/fixtures/git-attribution/manifest.json"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t19"
+      ]
+    },
+    {
+      "id": "t21",
+      "title": "Implement salvage, quarantine, restore, and cleanup proof",
+      "description": "Milestone 4 failure ownership. Replace patch-only archived-todo with attributable salvage for committed, uncommitted, untracked, binary, empty, and partially cleaned work. Preserve hashes/metadata outside the delivery worktree, restore/remove only attempt-owned resources, verify the delivery ref/tree is unchanged, and release only through compare-owner cleanup finalization.",
+      "acceptance_criteria": [
+        "Every failed-work form produces an accurate disposition and bounded artifact receipt; empty salvage is distinguished from capture failure.",
+        "Committed and uncommitted failed delta is absent from the run delivery ref/tree and caller checkout after cleanup.",
+        "Cleanup proves process-group death, worktree removal/quarantine, index/ref disposition, bundle/context disposition, and delivery-ref equality before lease release.",
+        "Cleanup failure remains nonterminal/nonzero with ownership retained or explicitly quarantined; a blind `finally` release is impossible.",
+        "Wrong-owner cleanup and partial cleanup cannot delete another attempt's resources."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/salvage-corpus.test.ts test/lifecycle/salvage-executor.test.ts",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test",
+        "rg -n \"delivery.*unchanged|process.*dead|compare.*owner|binary|committed\" orchestrator/test/reliability/salvage-corpus.test.ts"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/lifecycle/salvage.ts",
+        "orchestrator/src/lifecycle/cleanup.ts",
+        "orchestrator/test/reliability/salvage-corpus.test.ts",
+        "orchestrator/test/fixtures/salvage/manifest.json"
+      ],
+      "proof_corpus": [
+        "orchestrator/test/fixtures/salvage/manifest.json"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t20"
+      ]
+    },
+    {
+      "id": "t22",
+      "title": "Integrate the attempt ownership critical section",
+      "description": "Milestone 4 integration. Introduce one AttemptRunner that enforces the fixed order: allocate identity/owner, acquire lease/resources, materialize policy context, supervise phase, collect evidence/commit, cleanup, oracle eligibility, compare-and-swap promote, remove attempt resources, compare-owner release, then finalize state. On every error/timeout it supervises death and salvage before terminal failure. Replace the interim run-worktree dispatch seam.",
+      "acceptance_criteria": [
+        "Production follows the documented acquisition/finalization order, with persisted receipts and no lease release before process/resource cleanup proof.",
+        "A successful attempt promotes only its attributable descendant commit from the recorded delivery baseline; ref movement fails and requires a new attempt.",
+        "Timeout, spawn failure, policy denial, evidence failure, commit failure, promotion conflict, cleanup failure, and state crash each take the safe failure/cleanup path and never contaminate delivery.",
+        "Caller checkout/HEAD/index remains unchanged and the interim run-level worktree no longer serves as the production ownership model.",
+        "All former Dispatcher/build lock, timeout, Git sampling, and finally-release call sites delegate to the new services."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/attempt-critical-section.test.ts test/dispatch/dispatch.test.ts test/lifecycle/build-loop.test.ts",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test",
+        "! rg -n \"kill\\(child\\.pid|lock\\.release\\(\\).*finally|cwd:\\s*opts\\.targetRepo\" orchestrator/src/dispatch orchestrator/src/lifecycle/build.ts"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/lifecycle/attempt-runner.ts",
+        "orchestrator/test/reliability/attempt-critical-section.test.ts"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t21"
+      ]
+    },
+    {
+      "id": "t23",
+      "title": "Prove conflicting concurrency isolation without enabling production parallelism",
+      "description": "Milestone 4 restoration proof. Exercise allocator/supervisor/commit/cleanup APIs from multiple OS processes in disposable repositories under overlapping scopes, competing leases, foreign commits, ref movement, stubborn descendants, and output flood. Run repeated stress iterations and publish a complete corpus summary. Keep `parallel_dispatch` unavailable after proof; activation is a later explicit capability choice.",
+      "acceptance_criteria": [
+        "Conflicting attempts cannot observe or mutate each other's worktree, index, HEAD/ref, lease, process group, policy context, output, evidence, commit, or cleanup artifacts.",
+        "No attempt can claim another attempt's commit or release its lease, including during stale-owner races and delivery-ref movement.",
+        "At least the configured 50 deterministic stress iterations complete with zero shared-state violations; infrastructure failures fail the test rather than count as caught races.",
+        "The corpus inventory covers all required Git/process/resource conflicts and fails when an entry/assertion is removed.",
+        "Production `maxConcurrent>1` remains rejected after this ticket."
+      ],
+      "verification": [
+        "cd orchestrator && RICKGENT_STRESS_ITERATIONS=50 pnpm exec vitest run test/reliability/concurrency-corpus.test.ts --no-file-parallelism",
+        "node -e \"const f=require('fs');const x=JSON.parse(f.readFileSync('orchestrator/test/fixtures/concurrency-corpus/manifest.json'));if(!x.complete||x.required_iterations<50||!x.conflicts?.length)process.exit(1)\"",
+        "cd orchestrator && pnpm test",
+        "node -e \"const f=require('fs');const x=JSON.parse(f.readFileSync('artifacts/reliability/concurrency-summary.json'));if(x.shared_state_violations!==0||x.infrastructure_errors!==0)process.exit(1)\""
+      ],
+      "verification_env": {
+        "mode": "merge",
+        "required": [],
+        "vars": {
+          "RICKGENT_STRESS_ITERATIONS": {
+            "type": "literal",
+            "value": "50"
+          }
+        }
+      },
+      "output_artifacts": [
+        "orchestrator/test/reliability/concurrency-corpus.test.ts",
+        "orchestrator/test/fixtures/concurrency-corpus/manifest.json",
+        "orchestrator/test/fixtures/concurrency-corpus/worker-fixtures.mjs",
+        "artifacts/reliability/concurrency-summary.json"
+      ],
+      "proof_corpus": [
+        "orchestrator/test/fixtures/concurrency-corpus/manifest.json",
+        "orchestrator/test/fixtures/concurrency-corpus/worker-fixtures.mjs"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t22"
+      ]
+    },
+    {
+      "id": "t24",
+      "title": "Implement the persisted lifecycle transition table",
+      "description": "Milestone 5 lifecycle authority. Replace the unused boolean phase scaffold with one production LifecycleEngine backed by the transactional transition API. Implement planned, implementing, implementation_captured, reviewing, bounded remediating loop, verifying, converging, cleanup_pending, oracle_evaluation, and ready_for_delivery edges with explicit start/finish receipts and failure cleanup edges.",
+      "acceptance_criteria": [
+        "One versioned typed transition table defines every legal edge, guard, evidence producer, role, retry/remediation budget, and failure target.",
+        "Production integration persists the exact required phase sequence; implementation-only dispatch can no longer mark completion.",
+        "Review accept enters verification; review reject enters remediation only while budget remains; exhaustion enters cleanup/failure.",
+        "Crash/restart in each phase resumes from persisted receipts without replaying completed side effects or skipping required work.",
+        "Skipped/unavailable/infrastructure phase results cannot advance as success."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/lifecycle-transitions.test.ts test/lifecycle/phase.test.ts",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test",
+        "rg -n \"implementation_captured|reviewing|remediating|verifying|converging|cleanup_pending|oracle_evaluation|ready_for_delivery\" orchestrator/src/lifecycle/phase.ts"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/lifecycle/engine.ts",
+        "orchestrator/src/lifecycle/phase.ts",
+        "orchestrator/test/reliability/lifecycle-transitions.test.ts"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t23"
+      ]
+    },
+    {
+      "id": "t25",
+      "title": "Propagate the full ticket contract through every phase",
+      "description": "Milestone 5 data flow. Replace lossy `ticketPrompt` construction with role-specific renderers that include the immutable ticket ID/title/description, ACs and structured verification definitions, interface/ownership assertions, normalized scope/change kinds, dependencies, budgets, contract digest, baseline/diff identity, and required output schema. Persist prompt/input digests in every phase receipt.",
+      "acceptance_criteria": [
+        "Implementation, review, remediation, verification, and convergence receive the same normalized contract/digest and phase-appropriate immutable evidence.",
+        "No renderer drops ACs, interface contracts, dependencies, structured verification specs, change kinds, or budgets.",
+        "Review receives immutable baseline/final-tree/diff and cannot trust implementation transcript claims; remediation receives structured findings only.",
+        "Prompt receipts are deterministic, redacted, content-hashed, and reject contract/context mismatch on resume.",
+        "Ticket-specific gates replace the current global execution of every PRD AC."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/contract-propagation.test.ts test/lifecycle/gate-extraction.test.ts",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test",
+        "! rg -n \"Ticket .*Description:.*Declared paths\" orchestrator/src/lifecycle/build.ts"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/lifecycle/prompts.ts",
+        "orchestrator/test/reliability/contract-propagation.test.ts"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t24"
+      ]
+    },
+    {
+      "id": "t26",
+      "title": "Implement the sandboxed structured gate runner",
+      "description": "Milestone 5 verification authority. Replace acceptance `sh -c` with structured TicketContract argv executed through the common supervisor and the proven macOS/Linux sandbox backend. Produce typed pass/fail/missing/stale/infrastructure receipts for ticket acceptance, compile, typecheck, lint, unit, integration, scope, evidence, conformance, and convergence adapters. Verification may write only declared disposable outputs.",
+      "acceptance_criteria": [
+        "No PRD/manifest text is executed as shell source; executable/args/cwd/environment/timeout/network/writable outputs come only from the validated contract.",
+        "The sandbox denies injected credentials, network when disabled, Git common dir/ref/index mutation, writes outside declared outputs, and surviving descendants; output/resource caps are enforced.",
+        "Missing sandbox backend, executable, fixture, or dependency is `infrastructure_error` and blocks advancement rather than skip/pass.",
+        "Every gate result contains contract/context/phase digest, supervisor receipt, output hashes/tails, timestamps, and a typed status; null/unavailable/skipped is never green for required gates.",
+        "Positive compile/test cases work in disposable verification worktrees so containment does not become deny-all."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/gate-runner.test.ts test/reliability/gate-sandbox.test.ts --no-file-parallelism",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test",
+        "! rg -n \"sh\\s*,?\\s*[-\\\"']c|sh -c\" orchestrator/src/lifecycle/citadel.ts orchestrator/src/verification"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/verification/gate-runner.ts",
+        "orchestrator/src/verification/sandbox.ts",
+        "orchestrator/test/reliability/gate-runner.test.ts",
+        "orchestrator/test/reliability/gate-sandbox.test.ts"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t25"
+      ]
+    },
+    {
+      "id": "t27",
+      "title": "Implement independent review and bounded remediation",
+      "description": "Milestone 5 review authority. Run review in a fresh supervised process/conversation with a reviewer role, read-only tools, immutable contract/baseline/diff/tree/gate input, and structured verdict/finding schema. A rejection enters a bounded remediation process with structured tools and then a fresh re-review; exhaustion fails and cleans up. Same-model review is allowed but is never labeled cross-vendor.",
+      "acceptance_criteria": [
+        "Reviewer process/conversation/role differs from implementation, has no write/terminal-state authority, and receives no mutable implementation session state.",
+        "Review outputs a validated accept/reject verdict with finding IDs, severity, paths/interfaces, evidence references, and context/contract digest.",
+        "Rejection enters remediation only within the contract budget, remediation changes remain in the same owned attempt scope, and each cycle uses a fresh reviewer process.",
+        "Reviewer crash, malformed/missing verdict, attempted write, stale diff, role equality, or exhausted budget blocks later phases and enters cleanup/failure.",
+        "Documentation and receipts call this independent review, not cross-vendor review, until the model-identity gate passes."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/review-remediation.test.ts --no-file-parallelism",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test",
+        "rg -n \"fresh.*review|read.only|budget|stale.*diff|cross.vendor\" orchestrator/test/reliability/review-remediation.test.ts"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/lifecycle/review.ts",
+        "orchestrator/src/lifecycle/remediation.ts",
+        "orchestrator/test/reliability/review-remediation.test.ts"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t26"
+      ]
+    },
+    {
+      "id": "t28",
+      "title": "Integrate the shared versioned completion oracle",
+      "description": "Milestone 5 completion authority. Extend the pure completion core once to consume persisted TicketContract/context, dependency, workspace/lease/process, commit attribution, exact phase, independent review, every required gate, convergence, cleanup, and profile-required model evidence. The transition/finalization service persists the input/output digest and is the sole route to ready_for_delivery. Run the complete gate-failure corpus.",
+      "acceptance_criteria": [
+        "The oracle has a versioned typed input and pure typed result listing every missing/failed/stale/conflicting input; `null`, skipped, unavailable, and infrastructure error fail required gates.",
+        "Accepted input requires the attributable scope-clean descendant commit, exact lifecycle receipts, independent accepted review, all active gates, process death, resource cleanup, and contract/context/oracle freshness.",
+        "Live execution and persisted re-evaluation call the same oracle/version; no second lifecycle-complete predicate or nullable gate shortcut exists.",
+        "Independent fault injection for every gate asserts no forbidden later phase, ready state, delivery-ref promotion, push, or PR.",
+        "A caller audit proves workers, CLI, status, reconcile, and gate modules cannot bypass the completion service."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/completion-oracle-integration.test.ts test/reliability/gate-failure-corpus.test.ts test/core/caller-audit.test.ts --no-file-parallelism",
+        "node -e \"const f=require('fs');const x=JSON.parse(f.readFileSync('orchestrator/test/fixtures/gate-corpus/manifest.json'));if(!x.complete||!x.required_gates?.length||!x.statuses.includes('infrastructure_error'))process.exit(1)\"",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/core/completion.ts",
+        "orchestrator/src/lifecycle/completion-service.ts",
+        "orchestrator/test/reliability/completion-oracle-integration.test.ts",
+        "orchestrator/test/reliability/gate-failure-corpus.test.ts",
+        "orchestrator/test/fixtures/gate-corpus/manifest.json",
+        "orchestrator/test/fixtures/gate-corpus/faults.json"
+      ],
+      "proof_corpus": [
+        "orchestrator/test/fixtures/gate-corpus/manifest.json",
+        "orchestrator/test/fixtures/gate-corpus/faults.json"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t27"
+      ]
+    },
+    {
+      "id": "t29",
+      "title": "Make resume and structured reconciliation use lifecycle-oracle parity",
+      "description": "Milestone 5 recovery integration. Implement explicit-run resume and retry from authoritative SQLite receipts through the same LifecycleEngine and completion oracle. Structured reconciliation may rebuild derived views only from run/attempt-attributed immutable receipts and persists transactionally; commit-message prose never becomes authority. Enable `resume_retry` only after the full recovery parity/crash tests pass; keep reconciliation unavailable unless its complete gate passes.",
+      "acceptance_criteria": [
+        "`resume --run <id>` resolves the canonical repository state, validates contract/context/oracle versions, resumes cleanup or the next safe phase, and does not require caller CWD state.",
+        "Failed/interrupted attempts are never respawned with the same attempt number; completed side effects are idempotently observed from receipts.",
+        "Crashes before/after commit, receipt, every gate, oracle, promotion, cleanup, push, and PR observation resume without stale terminal replay or duplicate side effects.",
+        "Structured reconciliation uses the shared oracle and transactionally persisted run-attributed receipts; Git subjects and cross-run ticket IDs are ignored.",
+        "The public capability registry changes only after the exact activation proof is green and continues to reject incompatible/stale state."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/recovery-parity.test.ts test/reliability/state-crash-corpus.test.ts test/lifecycle/reconcile.test.ts --no-file-parallelism",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test",
+        "! rg -n \"ticket:\\s*<id>|git log --oneline --all|runId:\\s*[\\\"']reconciled\" orchestrator/src/lifecycle/reconcile.ts"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/lifecycle/recovery.ts",
+        "orchestrator/src/lifecycle/reconcile.ts",
+        "orchestrator/test/reliability/recovery-parity.test.ts"
+      ],
+      "proof_corpus": [
+        "orchestrator/test/fixtures/crash-matrix/manifest.json",
+        "orchestrator/test/fixtures/crash-matrix/fault-points.json"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t28"
+      ]
+    },
+    {
+      "id": "t30",
+      "title": "Remove duplicate lifecycle and terminal shortcuts",
+      "description": "Milestone 5 cutover cleanup. Delete the implementation-only production path, dead/test-only lifecycle representations, direct nullable completion calls, obsolete registry/ledger terminal adapters, and report-only gate namesakes that conflict with the real engine. Keep useful pure functions by wiring them to the one lifecycle. Add import/caller audits that fail if a second terminal writer or predicate appears.",
+      "acceptance_criteria": [
+        "Production build/pipeline enters only LifecycleEngine and no longer marks a ticket complete after one implement dispatch.",
+        "There is one phase table, one completion oracle, one terminalization service, one transactional state authority, and one process supervisor in production imports.",
+        "Obsolete `gateGreen: null`, direct `Done`, JSON registry authority, terminal ledger replay, and commit-subject reconciliation call sites are absent.",
+        "Existing useful pure verdict/parser/Git utilities remain covered and behaviorally compatible where their contracts are still valid.",
+        "A terminal-writer/import-graph audit fails on reintroduced shortcuts."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/terminal-writer-audit.test.ts test/reliability/lifecycle-transitions.test.ts test/lifecycle/e2e-gated-pipeline.test.ts",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test",
+        "! rg -n \"gateGreen:\\s*null|updateTicketState\\([^\\n]*Done|terminal.*ledger.*return\" orchestrator/src --glob '*.ts'"
+      ],
+      "output_artifacts": [
+        "orchestrator/test/reliability/terminal-writer-audit.test.ts",
+        "artifacts/reliability/production-import-audit.json"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t29"
+      ]
+    },
+    {
+      "id": "t31",
+      "title": "Make selected harness and model control invocation and persist observed identity",
+      "description": "Milestone 6 routing truth. Thread the router's selected harness/provider/model/bundle digest into ExecutionContext, materialize it into the actual Omnigent invocation using array argv/config, and persist requested and invoked receipts from separate producers. Extract independently observed native session identity through the `t00` seam and reject missing/alias-ambiguous/mismatched identity before completion.",
+      "acceptance_criteria": [
+        "A selection differing from bundle defaults changes the actual Omnigent `--harness`/`--model` invocation rather than only ledger metadata.",
+        "Requested, invoked, and observed receipts independently record canonical harness/provider/model, bundle/config digest, role, session/conversation ID, provenance, and context digest.",
+        "Each field mismatch, missing receipt, unsupported alias, spoofed transcript text, stale session, and bundle-default fallback blocks the phase and ticket oracle.",
+        "Observed identity comes only from the external seam validated by `t00`, not argv echoed into the same receipt or router labels.",
+        "The full identity corpus inventory is executed through real compatible Omnigent with a deterministic local harness fixture."
+      ],
+      "verification": [
+        "test -n \"$OMNIGENT_ROOT\" && node orchestrator/scripts/verify-omnigent-contract.mjs --root \"$OMNIGENT_ROOT\" --contract artifacts/reliability/omnigent-compatibility-contract.json",
+        "cd orchestrator && OMNIGENT_ROOT=\"$OMNIGENT_ROOT\" pnpm exec vitest run test/reliability/model-identity-corpus.test.ts --no-file-parallelism",
+        "node -e \"const f=require('fs');const x=JSON.parse(f.readFileSync('orchestrator/test/fixtures/model-identity-corpus/manifest.json'));if(!x.complete||!x.mismatch_fields?.includes('model')||!x.mismatch_fields?.includes('harness'))process.exit(1)\"",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test"
+      ],
+      "verification_env": {
+        "mode": "merge",
+        "required": [
+          {
+            "name": "OMNIGENT_ROOT",
+            "format": "string"
+          }
+        ],
+        "vars": {}
+      },
+      "output_artifacts": [
+        "orchestrator/src/dispatch/model-identity.ts",
+        "orchestrator/test/reliability/model-identity-corpus.test.ts",
+        "orchestrator/test/fixtures/model-identity-corpus/manifest.json",
+        "orchestrator/test/fixtures/model-identity-corpus/session-fixtures.json"
+      ],
+      "proof_corpus": [
+        "orchestrator/test/fixtures/model-identity-corpus/manifest.json",
+        "orchestrator/test/fixtures/model-identity-corpus/session-fixtures.json"
+      ],
+      "freeze_contract": {
+        "artifact_path": "artifacts/reliability/omnigent-compatibility-contract.json",
+        "sibling": "omnigent",
+        "root_env": "OMNIGENT_ROOT",
+        "sha_source": ""
+      },
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t30"
+      ]
+    },
+    {
+      "id": "t32",
+      "title": "Prove routing and cross-vendor reviewer distinction",
+      "description": "Milestone 6 routing restoration proof. Make the lifecycle use the actual routed implementer/reviewer selections and compare independently observed canonical identities under the `t00` distinction rule. Run mismatch, equal-reviewer, missing-receipt, alias, and role/session isolation cases. Keep the capability default-off until this complete proof and the protected real-model slice pass; same-vendor independent review remains supported.",
+      "acceptance_criteria": [
+        "Routing selects and invokes the intended phase-specific harness/model; no unreachable role branch or vendor-only metadata remains.",
+        "Cross-vendor acceptance requires observed implementer and reviewer identities to satisfy the recorded distinction rule plus different process/conversation/role receipts.",
+        "Equal/ambiguous/spoofed/missing/stale reviewer identity blocks the cross-vendor claim without invalidating honest same-vendor independent-review mode.",
+        "Every requested/invoked/observed field is falsified independently by the corpus and no router/ledger label alone can satisfy the gate.",
+        "Capability output remains truthful: implementation/proof may exist while public cross-vendor enablement waits for the release profile."
+      ],
+      "verification": [
+        "test -n \"$OMNIGENT_ROOT\" && cd orchestrator && OMNIGENT_ROOT=\"$OMNIGENT_ROOT\" pnpm exec vitest run test/reliability/cross-vendor-review.test.ts test/reliability/model-identity-corpus.test.ts --no-file-parallelism",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test",
+        "node -e \"const f=require('fs');const x=JSON.parse(f.readFileSync('artifacts/reliability/model-identity-summary.json'));if(x.uncovered_cases?.length||x.label_only_acceptances)process.exit(1)\""
+      ],
+      "verification_env": {
+        "mode": "merge",
+        "required": [
+          {
+            "name": "OMNIGENT_ROOT",
+            "format": "string"
+          }
+        ],
+        "vars": {}
+      },
+      "output_artifacts": [
+        "orchestrator/test/reliability/cross-vendor-review.test.ts",
+        "artifacts/reliability/model-identity-summary.json"
+      ],
+      "proof_corpus": [
+        "orchestrator/test/fixtures/model-identity-corpus/manifest.json",
+        "orchestrator/test/fixtures/model-identity-corpus/session-fixtures.json"
+      ],
+      "freeze_contract": {
+        "artifact_path": "artifacts/reliability/omnigent-compatibility-contract.json",
+        "sibling": "omnigent",
+        "root_env": "OMNIGENT_ROOT",
+        "sha_source": ""
+      },
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t31"
+      ]
+    },
+    {
+      "id": "t33",
+      "title": "Implement verified push with observed remote OID",
+      "description": "Milestone 6 delivery stage one. Accept only a run whose every planned ticket is ready and cleanup-verified. Persist delivery intent with exact local delivery OID/remote/branch/expected old remote OID, execute array-argv non-force push, then observe `git ls-remote` and require equality. Use disposable local bare repositories for deterministic success, missing/rejected/non-fast-forward/stale/auth-like failure and crash recovery.",
+      "acceptance_criteria": [
+        "Push is unreachable unless all planned tickets are oracle-complete/ready, cleanup is verified, and the local delivery ref equals the persisted delivery OID.",
+        "The service executes `git push origin <oid>:refs/heads/<branch>` with array argv and no force, then records an independent `ls-remote` observation equal to that OID.",
+        "Missing origin, wrong remote, rejected/non-fast-forward push, stale branch/expected OID, command failure, observation mismatch, timeout, and crash leave the run non-delivered/nonzero and PR-unreachable.",
+        "Push success followed by crash resumes idempotently from persisted intent/observation and never silently pushes a different OID.",
+        "Tests assert actual remote refs in disposable bare repositories; a fake always-zero push cannot satisfy the gate."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/push-protocol.test.ts --no-file-parallelism",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test",
+        "rg -n \"ls-remote|non.fast.forward|expected.*OID|PR.*unreachable\" orchestrator/test/reliability/push-protocol.test.ts"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/delivery/push.ts",
+        "orchestrator/test/reliability/push-protocol.test.ts",
+        "orchestrator/test/fixtures/delivery-corpus/manifest.json"
+      ],
+      "proof_corpus": [
+        "orchestrator/test/fixtures/delivery-corpus/manifest.json"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t32"
+      ]
+    },
+    {
+      "id": "t34",
+      "title": "Implement verified and idempotent pull-request creation",
+      "description": "Milestone 6 delivery stage two. Create or resolve a PR only after a verified remote push observation. Use structured `gh` JSON, verify target repository/base/head branch, independently query PR head OID, and require equality with the persisted delivery OID before marking delivered. Cover local/provider adapter failures and crash/idempotency semantics; the protected real provider run remains in `t38`.",
+      "acceptance_criteria": [
+        "PR creation is impossible before a verified remote OID receipt equal to the delivery OID.",
+        "Structured provider output is validated for repository, base, head branch, PR identity/URL, and independently queried head OID equal to delivery OID.",
+        "Missing `gh`, auth/provider failure, wrong repository, stale/wrong head, existing wrong-head PR, head lag, malformed JSON, timeout, and cleanup failure leave the run non-delivered/nonzero.",
+        "Crash before/after PR creation or receipt persistence resumes idempotently by resolving the exact existing PR; it neither duplicates PRs nor accepts a different head.",
+        "Every negative case asserts no delivered/`Done` state, and the delivery corpus inventory is complete."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/delivery-negative.test.ts test/reliability/pr-protocol.test.ts --no-file-parallelism",
+        "node -e \"const f=require('fs');const x=JSON.parse(f.readFileSync('orchestrator/test/fixtures/delivery-corpus/manifest.json'));if(!x.complete||!x.pr_failures?.length||!x.push_failures?.length)process.exit(1)\"",
+        "cd orchestrator && pnpm typecheck",
+        "cd orchestrator && pnpm test"
+      ],
+      "output_artifacts": [
+        "orchestrator/src/delivery/pull-request.ts",
+        "orchestrator/test/reliability/delivery-negative.test.ts",
+        "orchestrator/test/reliability/pr-protocol.test.ts",
+        "artifacts/reliability/delivery-corpus-summary.json"
+      ],
+      "proof_corpus": [
+        "orchestrator/test/fixtures/delivery-corpus/manifest.json"
+      ],
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t33"
+      ]
+    },
+    {
+      "id": "t35",
+      "title": "Unify the release manifest, package contents, installer, and license",
+      "description": "Milestone 6 packaging contract. Add one release manifest that generates/checks npm, Python, CLI, build identity, current-compatible Omnigent constraint, supported Node/Python/pnpm/platform matrix, and documentation version. Decide and implement the supported assembled artifact so packed installation contains or installs the CLI, agent bundles, Python policies, license, and runtime lookup metadata without repository-relative fallback. Enforce compatibility behavior, not a silently unused pin.",
+      "acceptance_criteria": [
+        "One machine-readable release manifest is authoritative and all npm/Python/CLI/build/docs version and compatibility values are generated or checked against it.",
+        "The npm/package inventory excludes tests/source-only fixtures/secrets and includes the executable plus required agent/policy/runtime resources or an explicit verified installer assembly plan.",
+        "`install.sh` installs/links the `rickgent` executable, installs the compatible Omnigent/policy contract, fails on behavioral doctor failure, and preserves unrelated user data.",
+        "A real Apache-2.0 LICENSE and matching npm/Python metadata are present.",
+        "`pnpm pack --dry-run --json` and Python wheel inventory are parsed into assertions; archive creation alone is not success."
+      ],
+      "verification": [
+        "node orchestrator/scripts/validate-release-manifest.mjs release-manifest.json",
+        "cd orchestrator && pnpm build && pnpm pack --dry-run --json > ../artifacts/reliability/npm-pack-inventory.json",
+        "python3 -m build rickgent-policies --outdir artifacts/reliability/python-dist",
+        "node orchestrator/scripts/assert-package-inventory.mjs artifacts/reliability/npm-pack-inventory.json artifacts/reliability/python-dist",
+        "test -f LICENSE && rg -n \"Apache License|Version 2.0\" LICENSE"
+      ],
+      "output_artifacts": [
+        "release-manifest.json",
+        "orchestrator/scripts/validate-release-manifest.mjs",
+        "orchestrator/scripts/assert-package-inventory.mjs",
+        "artifacts/reliability/npm-pack-inventory.json",
+        "artifacts/reliability/python-dist",
+        "LICENSE"
+      ],
+      "priority": "P1",
+      "status": "Todo",
+      "depends_on": [
+        "t34"
+      ]
+    },
+    {
+      "id": "t36",
+      "title": "Add real lint, typecheck, coverage, mutation, and CI gates",
+      "description": "Milestone 6 quality/release enforcement. Install and configure real TypeScript/Python lint/typecheck tools, numeric statement/branch/function/line and Python thresholds, pinned package manager/toolchains, clean CI setup, and fault/mutation execution in temporary copies/worktrees. CI must run focused seam suites, full regressions, package inventories, clean-install smoke, and upload redacted proof summaries. Infrastructure failures cannot count as killed mutants.",
+      "acceptance_criteria": [
+        "`pnpm lint`, `pnpm typecheck`, `pnpm test`, configured coverage thresholds, Python lint/typecheck/pytest/coverage, and package checks are real blocking commands in CI.",
+        "Toolchain versions are pinned from repository metadata and clean CI explicitly installs the package manager and Python build/test tools.",
+        "Mutation/fault testing operates only in temporary copies/worktrees and records assertion-detected kill separately from timeout, spawn, missing dependency, and infrastructure error.",
+        "The coverage manifest discovers executable tests/guards and covers every trust-spine incident class; removing a guard causes an assertion failure, not merely any nonzero status.",
+        "CI uploads proof summaries/inventories and does not silently skip real required paths because environment/dependencies are absent."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm lint && pnpm typecheck && pnpm test -- --coverage",
+        "cd rickgent-policies && python3 -m ruff check . && python3 -m mypy rickgent_policies && python3 -m pytest -q --cov=rickgent_policies --cov-fail-under=90",
+        "node orchestrator/scripts/coverage-manifest.cjs --verify --temp-worktrees-only",
+        "node -e \"const f=require('fs');const x=JSON.parse(f.readFileSync('artifacts/reliability/quality-gates-summary.json'));if(x.skipped_required?.length||x.infrastructure_errors?.length||!x.thresholds_passed)process.exit(1)\""
+      ],
+      "output_artifacts": [
+        ".github/workflows/ci.yml",
+        "orchestrator/eslint.config.js",
+        "orchestrator/scripts/coverage-manifest.cjs",
+        "artifacts/reliability/quality-gates-summary.json",
+        "orchestrator/test/fixtures/mutation-corpus/manifest.json"
+      ],
+      "proof_corpus": [
+        "orchestrator/test/fixtures/mutation-corpus/manifest.json",
+        "orchestrator/test/lifecycle_coverage_manifest.json"
+      ],
+      "priority": "P1",
+      "status": "Todo",
+      "depends_on": [
+        "t35"
+      ]
+    },
+    {
+      "id": "t37",
+      "title": "Prove clean packed installation and behavioral doctor",
+      "description": "Milestone 6 installed-artifact proof. Pack the supported artifacts, install only those archives into an isolated prefix/virtualenv with no source checkout on module/resource paths, invoke the installed CLI, resolve default agent bundles and Python policies, validate release/compatibility/build identity, and run doctor through a real native FunctionPolicy plus deterministic Omnigent model/session smoke. No source-tree fallback or editable install may satisfy it.",
+      "acceptance_criteria": [
+        "The installed `rickgent` executable resolves from the isolated prefix and all agent/policy resources resolve from packed/installed locations.",
+        "npm/Python/CLI/build/docs versions and the current-compatible Omnigent contract agree with the release manifest independently.",
+        "Behavioral doctor executes a native positive and denied policy call, an actual selected harness/model invocation with observed receipt, state-store write/read, and disposable Git workspace check.",
+        "Source checkout is removed from PATH/PYTHONPATH/resource search during smoke; editable/source fallback makes the test fail.",
+        "Packed inventory and doctor receipts are redacted, hashed, classified as installed-artifact evidence, and contain no skipped required check."
+      ],
+      "verification": [
+        "test -n \"$OMNIGENT_ROOT\" && cd orchestrator && OMNIGENT_ROOT=\"$OMNIGENT_ROOT\" pnpm exec vitest run test/reliability/packed-install.test.ts --no-file-parallelism",
+        "node -e \"const f=require('fs');const x=JSON.parse(f.readFileSync('artifacts/reliability/packed-install-summary.json'));if(!x.cli_resolved||x.source_fallback||x.skipped_required?.length||!x.behavioral_doctor_passed)process.exit(1)\"",
+        "cd orchestrator && pnpm lint && pnpm typecheck && pnpm test",
+        "cd rickgent-policies && python3 -m pytest -q"
+      ],
+      "verification_env": {
+        "mode": "merge",
+        "required": [
+          {
+            "name": "OMNIGENT_ROOT",
+            "format": "string"
+          }
+        ],
+        "vars": {}
+      },
+      "output_artifacts": [
+        "orchestrator/test/reliability/packed-install.test.ts",
+        "orchestrator/src/lifecycle/doctor.ts",
+        "artifacts/reliability/packed-install-summary.json",
+        "orchestrator/test/fixtures/packaging-corpus/manifest.json"
+      ],
+      "proof_corpus": [
+        "orchestrator/test/fixtures/packaging-corpus/manifest.json",
+        "rickgent-policies/test/fixtures/native-policy-corpus/manifest.json",
+        "orchestrator/test/fixtures/model-identity-corpus/manifest.json"
+      ],
+      "freeze_contract": {
+        "artifact_path": "artifacts/reliability/omnigent-compatibility-contract.json",
+        "sibling": "omnigent",
+        "root_env": "OMNIGENT_ROOT",
+        "sha_source": ""
+      },
+      "priority": "P1",
+      "status": "Todo",
+      "depends_on": [
+        "t36"
+      ]
+    },
+    {
+      "id": "t38",
+      "title": "Pass the protected real installed vertical slice",
+      "description": "Milestone 6 program release gate. In a protected opt-in CI job, install only packed artifacts, use the `t00` compatible real Omnigent, an explicitly authenticated real selected harness/model, and a dedicated disposable hosted Git repository. Run the full sequential lifecycle, force interruption after persisted work, resume the same run/state directory, prove native policy enforcement, attempt ownership, owned commit, independent review, blocking gates, cleanup, verified push, and PR head equality. Execute twice against the same persistent state root with unique runs and clean all hosted resources even on failure.",
+      "acceptance_criteria": [
+        "Preflight validates dedicated remote ownership/allowlist, scoped credentials, current-compatible Omnigent behavior, explicit harness/model auth, clean packed install, and safe teardown before mutation.",
+        "The installed runtime—not source fixtures—observes requested/invoked/observed identity equality, real native FunctionPolicy allow/deny behavior, one owned worktree/ref/index/lease/process group, and a scope-clean orchestrator commit.",
+        "A forced crash at the configured lifecycle boundary resumes from the same SQLite state directory, allocates/reuses only contractually correct identities, and never replays stale terminal work.",
+        "Independent review, remediation if injected, every blocking gate, oracle completion, cleanup, delivery-ref promotion, remote push observation, and PR head OID equality are evidenced end to end.",
+        "The complete proof-corpus inventories are asserted; infrastructure errors/skips/mocks fail; the slice completes twice with distinct run IDs and teardown removes/closes branch/PR/repository resources according to the protected-job contract."
+      ],
+      "verification": [
+        "test -n \"$OMNIGENT_ROOT\" && test -n \"$RICKGENT_RELEASE_REMOTE\" && test -n \"$GH_TOKEN\" && test -n \"$RICKGENT_TEST_HARNESS\" && test -n \"$RICKGENT_TEST_MODEL\"",
+        "cd orchestrator && OMNIGENT_ROOT=\"$OMNIGENT_ROOT\" RICKGENT_RELEASE_REPEAT_COUNT=2 pnpm exec vitest run test/reliability/installed-vertical-slice.test.ts --no-file-parallelism",
+        "node -e \"const f=require('fs');const x=JSON.parse(f.readFileSync('artifacts/reliability/vertical-slice-receipt.json'));if(x.repeat_count!==2||x.mocked||x.skipped_required?.length||x.infrastructure_errors?.length||!x.pr_head_matches_delivery_oid||!x.remote_cleanup_verified)process.exit(1)\"",
+        "cd orchestrator && pnpm lint && pnpm typecheck && pnpm test",
+        "cd rickgent-policies && python3 -m pytest -q"
+      ],
+      "verification_env": {
+        "mode": "merge",
+        "required": [
+          {
+            "name": "OMNIGENT_ROOT",
+            "format": "string"
+          },
+          {
+            "name": "RICKGENT_RELEASE_REMOTE",
+            "format": "string"
+          },
+          {
+            "name": "GH_TOKEN",
+            "format": "string"
+          },
+          {
+            "name": "RICKGENT_TEST_HARNESS",
+            "format": "string"
+          },
+          {
+            "name": "RICKGENT_TEST_MODEL",
+            "format": "string"
+          }
+        ],
+        "vars": {
+          "RICKGENT_RELEASE_REPEAT_COUNT": {
+            "type": "literal",
+            "value": "2"
+          }
+        }
+      },
+      "output_artifacts": [
+        "orchestrator/test/reliability/installed-vertical-slice.test.ts",
+        ".github/workflows/release-trust-spine.yml",
+        "artifacts/reliability/vertical-slice-receipt.json"
+      ],
+      "proof_corpus": [
+        "rickgent-policies/test/fixtures/native-policy-corpus/manifest.json",
+        "orchestrator/test/fixtures/crash-matrix/manifest.json",
+        "orchestrator/test/fixtures/git-attribution/manifest.json",
+        "orchestrator/test/fixtures/process-supervisor/stubborn-tree.mjs",
+        "orchestrator/test/fixtures/gate-corpus/manifest.json",
+        "orchestrator/test/fixtures/model-identity-corpus/manifest.json",
+        "orchestrator/test/fixtures/delivery-corpus/manifest.json",
+        "orchestrator/test/fixtures/packaging-corpus/manifest.json"
+      ],
+      "freeze_contract": {
+        "artifact_path": "artifacts/reliability/omnigent-compatibility-contract.json",
+        "sibling": "omnigent",
+        "root_env": "OMNIGENT_ROOT",
+        "sha_source": ""
+      },
+      "priority": "P0",
+      "status": "Todo",
+      "depends_on": [
+        "t37"
+      ]
+    },
+    {
+      "id": "t39",
+      "title": "Restore only proven capabilities and release claims",
+      "description": "Milestone 6 final claim/activation ticket. Read the committed/CI-retained proof versions and set each capability to the exact supported state. Enable automatic delivery and resume only if `t38` proves the release profile; enable cross-vendor or parallel dispatch only if their complete proof and required installed-profile evidence exist. Keep reconciliation and raw shell unavailable unless separately proven. Align README, changelog, CLI help, doctor, version claims, and reliability contract with the actual registry.",
+      "acceptance_criteria": [
+        "Each enabled capability names the exact proof corpus/version and startup verifies that proof contract; implementation existence alone cannot enable it.",
+        "Automatic delivery and resume activation require the protected real vertical-slice receipt; cross-vendor/parallel activation additionally requires their dedicated complete corpora.",
+        "Raw shell remains unavailable, and reconciliation remains unavailable unless its structured oracle/persistence activation criteria are explicitly and completely met.",
+        "README/changelog/help/doctor/package metadata describe only the enabled contract and distinguish local ready state from delivered/`Done`.",
+        "Full TypeScript/Python/quality/package/claims suites pass and a claim mutation causes the contract test to fail."
+      ],
+      "verification": [
+        "cd orchestrator && pnpm exec vitest run test/reliability/claims-contract.test.ts test/reliability/capability-restoration.test.ts",
+        "cd orchestrator && pnpm lint && pnpm typecheck && pnpm test",
+        "cd rickgent-policies && python3 -m pytest -q",
+        "node orchestrator/scripts/validate-release-manifest.mjs release-manifest.json",
+        "node -e \"const f=require('fs');const x=JSON.parse(f.readFileSync('artifacts/reliability/vertical-slice-receipt.json'));if(!x.pr_head_matches_delivery_oid||x.infrastructure_errors?.length)process.exit(1)\""
+      ],
+      "output_artifacts": [
+        "orchestrator/test/reliability/capability-restoration.test.ts",
+        "docs/reliability-contract.md",
+        "README.md",
+        "CHANGELOG.md"
+      ],
+      "proof_corpus": [
+        "rickgent-policies/test/fixtures/native-policy-corpus/manifest.json",
+        "orchestrator/test/fixtures/crash-matrix/manifest.json",
+        "orchestrator/test/fixtures/concurrency-corpus/manifest.json",
+        "orchestrator/test/fixtures/gate-corpus/manifest.json",
+        "orchestrator/test/fixtures/model-identity-corpus/manifest.json",
+        "orchestrator/test/fixtures/delivery-corpus/manifest.json",
+        "orchestrator/test/fixtures/packaging-corpus/manifest.json"
+      ],
+      "priority": "P1",
+      "status": "Todo",
+      "depends_on": [
+        "t38"
+      ]
+    }
+  ]
+}
