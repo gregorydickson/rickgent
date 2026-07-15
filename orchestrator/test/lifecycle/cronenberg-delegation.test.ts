@@ -216,12 +216,12 @@ describe("cronenberg non-dry-run delegation — CLI pipeline path", () => {
     rmSync(ctx.root, { recursive: true, force: true });
   });
 
-  it("pipeline delegation with an existing prd.md reads the PRD (records a run)", () => {
+  it("pipeline delegation with an untracked in-repo PRD fails the clean baseline gate", () => {
     writeFileSync(join(ctx.repo, "prd.md"), VALID_PRD);
     const r = run(ctx, ["--task", "refine and build the export module", "--repo", ctx.repo]);
     expect(r.stdout).toContain("metaphor: pipeline");
-    // The pipeline could only record a run if it READ a valid PRD path.
-    expect(existsSync(join(ctx.rickgentDir, "runs.jsonl"))).toBe(true);
+    expect(existsSync(join(ctx.rickgentDir, "runs.jsonl"))).toBe(false);
+    expect(r.stdout).toContain("RUN_WORKSPACE_DIRTY_BASELINE");
   });
 
   it("pipeline delegation with no prd materializes a task PRD but does not infer a contract", () => {

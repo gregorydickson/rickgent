@@ -12,6 +12,7 @@ import {
   type DispatchId,
 } from "../../src/dispatch/dispatch.js";
 import { FIXTURE_CAPABILITY_GATE } from "../helpers/capabilities.js";
+import type { ReadyRunWorkspace } from "../../src/git/run-workspace.js";
 
 const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
 
@@ -241,7 +242,7 @@ describe("Dispatcher idempotency", () => {
       agentDir: "/tmp/agent",
       prompt: "do work",
       timeout: 1000,
-      maxConcurrent: 2,
+      maxConcurrent: 1,
     });
 
     expect(result.state).toBe("completed");
@@ -259,7 +260,7 @@ describe("Dispatcher idempotency", () => {
       agentDir: "/tmp/agent",
       prompt: "do work",
       timeout: 1000,
-      maxConcurrent: 2,
+      maxConcurrent: 1,
     });
 
     expect(result.state).toBe("failed");
@@ -275,7 +276,7 @@ describe("Dispatcher idempotency", () => {
       agentDir: "/tmp/agent",
       prompt: "do work",
       timeout: 1000,
-      maxConcurrent: 2,
+      maxConcurrent: 1,
     });
 
     expect(result.state).toBe("timed_out");
@@ -300,42 +301,25 @@ describe("Dispatcher backpressure", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("records planned state and does not spawn when maxConcurrent is 0", async () => {
+  it("rejects maxConcurrent 0 before ledger or spawn side effects", async () => {
     const id = makeId();
     const idStr = dispatchIdString(id);
 
-    const result = await dispatcher.dispatch(id, {
+    await expect(dispatcher.dispatch(id, {
       agentDir: "/tmp/agent",
       prompt: "do work",
       timeout: 1000,
       maxConcurrent: 0,
-    });
-
-    expect(result.state).toBe("planned");
-    expect(result.pid).toBeNull();
-    // Should not have spawned
+    })).rejects.toThrow("maxConcurrent must be exactly 1");
     expect(dispatcher.activeCount).toBe(0);
-
-    // Ledger should contain the planned entry
-    const found = ledger.find(idStr);
-    expect(found).not.toBeNull();
-    expect(found!.state).toBe("planned");
+    expect(ledger.find(idStr)).toBeNull();
   });
 
-  // VAL-TESTINT-002: The under-capacity dispatch test uses a DETERMINISTIC
-  // fixture omnigent on PATH (not the absent real binary) and asserts the FULL
-  // legal transition sequence, not "pass-on-spawn-failure." The old test passed
-  // when spawn failed (omnigent not installed) by merely checking state !==
-  // "planned" and a "spawned" substring — a pass-on-nothing anti-pattern.
-  it("under-capacity dispatch drives the full success transition sequence via fixture omnigent", async () => {
+  it("does not preserve a caller-repository or raw-agent compatibility spawn path", async () => {
     const repo = join(dir, "repo");
     initFixtureRepo(repo);
     const dataDir = join(dir, "data");
     mkdirSync(dataDir, { recursive: true });
-
-    // Put the fixture omnigent ahead of everything on PATH so the Dispatcher
-    // spawns IT, not the absent real binary. If the fixture is missing, spawn
-    // fails and this test FAILS (does not pass on spawn failure).
     const fixtureEnv: Record<string, string> = {
       PATH: `${FIXTURE_BIN}:${process.env.PATH ?? ""}`,
       OMNIGENT_DATA_DIR: dataDir,
@@ -345,119 +329,19 @@ describe("Dispatcher backpressure", () => {
       FIXTURE_GIT_FILE: "src/feature.ts",
       FIXTURE_EXIT_CODE: "0",
     };
-
-    // env vars are passed via the dispatch `env` option (not process.env) to
-    // avoid cross-test contamination in vitest's thread pool.
     const id = makeId();
     const idStr = dispatchIdString(id);
-    const entry = await dispatcher.dispatch(id, {
+    await expect(dispatcher.dispatch(id, {
       agentDir: join(dir, "agent"),
       prompt: "do work",
       timeout: 20000,
-      maxConcurrent: 2,
-      targetRepo: repo,
+      maxConcurrent: 1,
       dataDir,
       declaredPaths: ["src"],
       env: fixtureEnv,
-    });
-
-    // The dispatch must NOT be "planned" — it spawned the fixture.
-    expect(entry.state).not.toBe("planned");
-    // The terminal state must be "completed" — the fixture produced a DB
-    // session, transcript, and in-scope git delta.
-    expect(entry.state).toBe("completed");
-    expect(entry.exitCode).toBe(0);
-
-    // Assert the FULL ordered transition sequence, not just a "spawned"
-    // substring. The legal sequence for a successful dispatch is:
-    //   spawned → db_session_observed → completed
-    const states = ledgerStates(join(dir, "ledger.jsonl"), idStr);
-    expect(states).toEqual(["spawned", "db_session_observed", "completed"]);
-
-    // Git-tree-truth: HEAD advanced (the fixture committed an in-scope file).
-    const changed = git(repo, ["diff", "--name-only", "HEAD~1", "HEAD"]);
-    expect(changed).toContain("src/feature.ts");
-  });
-
-  // VAL-TESTINT-002 (failure/recovery branch): the under-capacity dispatch
-  // also asserts a failure/recovery transition sequence via the fixture
-  // omnigent. A fixture worker configured to exit non-zero drives:
-  //   spawned → failed
-  // This proves the test does not pass-on-spawn-failure and observes the REAL
-  // terminal state the Dispatcher records for a genuinely failing worker.
-  it("under-capacity dispatch drives the failure transition sequence via fixture omnigent", async () => {
-    const repo = join(dir, "repo");
-    initFixtureRepo(repo);
-    const dataDir = join(dir, "data");
-    mkdirSync(dataDir, { recursive: true });
-
-    const fixtureEnv: Record<string, string> = {
-      PATH: `${FIXTURE_BIN}:${process.env.PATH ?? ""}`,
-      OMNIGENT_DATA_DIR: dataDir,
-      FIXTURE_TARGET_REPO: repo,
-      FIXTURE_WRITE_DB: "1",
-      FIXTURE_TRANSCRIPT_ITEMS: "1",
-      // No git file → no in-scope delta, and exit 1 → the evidence check fails.
-      FIXTURE_EXIT_CODE: "1",
-    };
-
-    // env vars are passed via the dispatch `env` option (not process.env) to
-    // avoid cross-test contamination in vitest's thread pool.
-    const id = makeId();
-    const idStr = dispatchIdString(id);
-    const entry = await dispatcher.dispatch(id, {
-      agentDir: join(dir, "agent"),
-      prompt: "do work",
-      timeout: 20000,
-      maxConcurrent: 2,
-      targetRepo: repo,
-      dataDir,
-      declaredPaths: ["src"],
-      env: fixtureEnv,
-    });
-
-    // The dispatch spawned (not planned) and reached the "failed" terminal.
-    expect(entry.state).not.toBe("planned");
-    expect(entry.state).toBe("failed");
-    expect(entry.exitCode).toBe(1);
-
-    // Assert the FULL ordered transition sequence for a failing dispatch:
-    //   spawned → failed
-    // (No db_session_observed or completed because exit ≠ 0 short-circuits.)
-    const states = ledgerStates(join(dir, "ledger.jsonl"), idStr);
-    expect(states).toEqual(["spawned", "failed"]);
-  });
-
-  // VAL-TESTINT-002 (no-pass-on-spawn-failure): with the fixture omnigent
-  // intentionally NOT on PATH, the dispatch spawn fails. The test must NOT
-  // pass by merely checking "not planned" + "spawned" — it must assert a
-  // specific terminal state that only a REAL fixture run could produce. This
-  // test confirms the anti-pattern is gone: when the fixture is absent, the
-  // failure is observable as "failed" (not silently "completed").
-  it("fails closed (failed, not completed) when the fixture omnigent is absent from PATH", async () => {
-    // Ensure NO omnigent (fixture OR real) is reachable: use a minimal PATH
-    // that excludes the fixture dir AND any real omnigent install (e.g. pyenv
-    // shims), so spawn('omnigent') gets an immediate ENOENT -> "failed"
-    // deterministically, with no race against the timeout under full-suite load.
-    // Pass via the dispatch `env` option (not process.env) to avoid cross-test
-    // contamination in vitest's thread pool.
-    const fixtureEnv: Record<string, string> = {
-      PATH: "/usr/bin:/bin",
-    };
-
-    const id = makeId();
-    const entry = await dispatcher.dispatch(id, {
-      agentDir: "/tmp/agent",
-      prompt: "do work",
-      timeout: 2000,
-      maxConcurrent: 2,
-      env: fixtureEnv,
-    });
-
-    // Spawn failed (no omnigent binary) → "failed", NOT "completed".
-    // The old test would have passed here (state !== "planned" + "spawned"
-    // substring). The new test asserts the SPECIFIC terminal: "failed".
-    expect(entry.state).toBe("failed");
+    })).rejects.toThrow("verified run workspace");
+    expect(ledger.find(idStr)).toBeNull();
+    expect(git(repo, ["status", "--porcelain", "--untracked-files=all"])).toBe("");
   });
 });
 
@@ -476,6 +360,9 @@ describe("Dispatcher lock failure", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  // Lock denial happens before the dispatcher dereferences workspace identity.
+  const unreachableWorkspace = {} as ReadyRunWorkspace;
+
   it("fails closed when ticket lock is held", async () => {
     // Pre-acquire the lock with a separate lock instance
     const otherLock = new TicketLock(join(dir, "locks"));
@@ -489,7 +376,9 @@ describe("Dispatcher lock failure", () => {
       agentDir: "/tmp/agent",
       prompt: "do work",
       timeout: 1000,
-      maxConcurrent: 2,
+      maxConcurrent: 1,
+      workspace: unreachableWorkspace,
+      materializationRoot: join(dir, "materialized"),
     });
 
     expect(result.state).toBe("failed");
@@ -513,7 +402,9 @@ describe("Dispatcher lock failure", () => {
       agentDir: "/tmp/agent",
       prompt: "do work",
       timeout: 1000,
-      maxConcurrent: 2,
+      maxConcurrent: 1,
+      workspace: unreachableWorkspace,
+      materializationRoot: join(dir, "materialized"),
     });
 
     // Fail closed on the lock — the specific lock stderr proves B did not steal

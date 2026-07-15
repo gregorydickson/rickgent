@@ -235,7 +235,7 @@
     {
       "id": "dispatch-backpressure",
       "test": "test/dispatch/dispatch.test.ts",
-      "testCase": "records planned state and does not spawn when maxConcurrent is 0",
+      "testCase": "rejects maxConcurrent 0 before ledger or spawn side effects",
       "source": "src/dispatch/dispatch.ts",
       "fileExists": true,
       "testCaseExists": true,

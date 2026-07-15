@@ -127,28 +127,16 @@ describe("Dispatcher vendor label in spawned entries (VAL-ROUTE-004)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("includes the vendor label in every ledger entry the Dispatcher writes", async () => {
+  it("does not write a vendor-labelled spawn entry without a verified workspace", async () => {
     const id = makeId();
-    const result = await dispatcher.dispatch(id, {
+    await expect(dispatcher.dispatch(id, {
       agentDir: "/tmp/agent",
       prompt: "do work",
       timeout: 1000,
       maxConcurrent: 1,
       vendor: "openai",
-    });
-
-    // The dispatch will fail (omnigent not installed in test env), but every
-    // entry the Dispatcher wrote must still carry the vendor label.
-    expect(result.vendor).toBe("openai");
-
-    // Verify the raw ledger contains the vendor in every line.
-    const raw = readFileSync(join(dir, "ledger.jsonl"), "utf-8").trim();
-    const lines = raw.split("\n");
-    expect(lines.length).toBeGreaterThan(0);
-    for (const line of lines) {
-      const parsed = JSON.parse(line);
-      expect(parsed.vendor).toBe("openai");
-    }
+    })).rejects.toThrow("verified run workspace");
+    expect(ledger.find(dispatchIdString(id))).toBeNull();
   });
 
   // NOTE: The previous "defaults vendor to null when not provided" test was
@@ -163,22 +151,17 @@ describe("Dispatcher vendor label in spawned entries (VAL-ROUTE-004)", () => {
   // does not call the router itself), but this is no longer tested as a
   // production behavior — it is an internal contract, not the production path.
 
-  it("backpressure planned entry carries the vendor label", async () => {
+  it("rejects a non-sequential maxConcurrent value before writing a planned entry", async () => {
     const id = makeId();
-    const result = await dispatcher.dispatch(id, {
+    await expect(dispatcher.dispatch(id, {
       agentDir: "/tmp/agent",
       prompt: "do work",
       timeout: 1000,
-      maxConcurrent: 0, // at capacity → planned
+      maxConcurrent: 0,
       vendor: "alibaba",
-    });
-
-    expect(result.state).toBe("planned");
-    expect(result.vendor).toBe("alibaba");
+    })).rejects.toThrow("maxConcurrent must be exactly 1");
 
     const idStr = dispatchIdString(id);
-    const found = ledger.find(idStr);
-    expect(found).not.toBeNull();
-    expect(found!.vendor).toBe("alibaba");
+    expect(ledger.find(idStr)).toBeNull();
   });
 });

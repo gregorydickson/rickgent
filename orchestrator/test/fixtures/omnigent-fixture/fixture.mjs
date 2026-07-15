@@ -10,7 +10,7 @@
 // a live LLM:
 //
 //   OMNIGENT_DATA_DIR       chat.db location honored for DB-session writes
-//   FIXTURE_TARGET_REPO     git repo the "worker" mutates (write + add + commit)
+//   RICKGENT_TARGET_REPO    dispatcher-pinned run worktree for hostile direct modes
 //   FIXTURE_STDOUT          transcript/stdout line to print (may be a success token)
 //   FIXTURE_EXIT_CODE       process exit code (default 0)
 //   FIXTURE_WRITE_DB        "1" → create a NEW conversation row (a DB session)
@@ -28,44 +28,9 @@
 //                              without producing completion evidence
 
 import { execFileSync } from "child_process";
-import { writeFileSync, mkdirSync, rmdirSync } from "fs";
+import { writeFileSync, readFileSync, mkdirSync } from "fs";
 import { dirname, join, isAbsolute } from "path";
 import { insertConversation } from "./chat-db.mjs";
-
-// Cross-process commit serialization. Under the B3 backpressure queue several
-// fixture workers may run at once against a SHARED repo; concurrent git
-// add/commit race on `.git/index.lock` and the branch ref. In production each
-// omnigent worker is sandboxed to its own git worktree (sandboxing.md), so this
-// contention does not exist; here we serialize the fixture's own git critical
-// section with an atomic lockdir so the shared-repo test harness stays honest.
-function withRepoLock(repo, fn) {
-  const lockDir = join(repo, ".git", "fixture-commit.lock");
-  const deadline = Date.now() + 30000;
-  for (;;) {
-    try {
-      mkdirSync(lockDir); // atomic; throws EEXIST if another worker holds it
-      break;
-    } catch (err) {
-      if (err && err.code !== "EEXIST") throw err;
-      if (Date.now() > deadline) throw new Error("fixture commit lock timeout");
-      // Busy-wait a beat; execFileSync of a no-op is a simple synchronous sleep.
-      try {
-        execFileSync("sh", ["-c", "sleep 0.02"]);
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-  try {
-    return fn();
-  } finally {
-    try {
-      rmdirSync(lockDir);
-    } catch {
-      /* ignore */
-    }
-  }
-}
 
 function env(name, fallback = "") {
   const v = process.env[name];
@@ -75,7 +40,8 @@ function env(name, fallback = "") {
 // Prompt-driven mode (build-loop tests). Each dispatch carries a per-ticket
 // prompt via `-p <prompt>` naming the ticket's declared path; the fixture
 // derives its per-ticket behavior from that path so ONE env config drives a
-// multi-ticket build where selected tickets fail and the rest complete.
+// multi-ticket build where selected tickets fail and the first safe worker can
+// leave a nonterminal capture. A retained delta blocks later spawns in M1.
 function promptArg() {
   const argv = process.argv;
   const i = argv.indexOf("-p");
@@ -87,11 +53,40 @@ function pathFromPrompt(prompt) {
   return m ? m[0] : "";
 }
 
-function commitFile(repo, relPath, content) {
+function writeFixtureFile(repo, relPath, content) {
   const abs = isAbsolute(relPath) ? relPath : join(repo, relPath);
   mkdirSync(dirname(abs), { recursive: true });
   writeFileSync(abs, content);
-  execFileSync("git", ["-C", repo, "add", "--", relPath]);
+}
+
+function recordSpawn() {
+  const record = env("FIXTURE_SPAWN_RECORD");
+  if (!record) return;
+  const bundle = process.argv[3] || "";
+  let config = "";
+  try {
+    config = readFileSync(join(bundle, "config.yaml"), "utf-8");
+  } catch {
+    config = "";
+  }
+  mkdirSync(dirname(record), { recursive: true });
+  let git = null;
+  try {
+    git = {
+      head: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf-8" }).trim(),
+      branch: execFileSync("git", ["symbolic-ref", "-q", "HEAD"], { encoding: "utf-8" }).trim(),
+      status: execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { encoding: "utf-8" }),
+    };
+  } catch {
+    git = null;
+  }
+  writeFileSync(record, JSON.stringify({
+    argv: process.argv.slice(2),
+    cwd: process.cwd(),
+    bundle,
+    config,
+    git,
+  }));
 }
 
 function promptMode() {
@@ -99,7 +94,7 @@ function promptMode() {
   process.stdout.write(env("FIXTURE_STDOUT", "fixture worker transcript line") + "\n");
 
   const relPath = pathFromPrompt(prompt);
-  const repo = env("FIXTURE_TARGET_REPO") || env("PWD");
+  const repo = process.cwd();
   const failPaths = env("FIXTURE_FAIL_PATHS")
     .split(",")
     .map((s) => s.trim())
@@ -115,9 +110,9 @@ function promptMode() {
   }
 
   if (failPaths.includes(relPath)) {
-    // Failing ticket: leave an uncommitted in-scope change (salvageable) and
-    // exit non-zero. No DB session, no commit → dispatch fails.
-    withRepoLock(repo, () => commitFile(repo, relPath, `partial work for ${relPath}\n`));
+    // Failing ticket: leave an unstaged in-scope change for quarantine and
+    // exit non-zero. The fixture never stages or commits capture-mode work.
+    writeFixtureFile(repo, relPath, `partial work for ${relPath}\n`);
     process.exit(1);
   }
 
@@ -127,25 +122,18 @@ function promptMode() {
     process.exit(0);
   }
 
-  // Succeeding ticket: DB session + non-empty transcript + committed in-scope delta.
+  // Succeeding ticket: DB session + non-empty transcript + unstaged in-scope delta.
   const dataDir = env("OMNIGENT_DATA_DIR");
   if (dataDir) {
     const convId = `conv-${relPath.replace(/[^\w]/g, "_")}-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
     insertConversation(dataDir, convId, 2, Date.now());
   }
-  withRepoLock(repo, () => {
-    commitFile(repo, relPath, `feature implementation for ${relPath}\n`);
-    execFileSync("git", [
-      "-C", repo,
-      "-c", "user.email=fixture@rickgent.test",
-      "-c", "user.name=Fixture Omnigent",
-      "commit", "-m", `fixture worker commit: ${relPath}`,
-    ]);
-  });
+  writeFixtureFile(repo, relPath, `feature implementation for ${relPath}\n`);
   process.exit(0);
 }
 
 function main() {
+  recordSpawn();
   if (env("FIXTURE_MODE") === "prompt") {
     promptMode();
     return;
@@ -174,16 +162,19 @@ function main() {
     insertConversation(foreignDir, foreignId, Number.isNaN(foreignItems) ? 3 : foreignItems, Date.now());
   }
 
-  // --- git mutation (deterministic write + add + commit) ---
+  // --- hostile direct-mode Git mutation (staging/commit rejection fixtures) ---
   const gitFile = env("FIXTURE_GIT_FILE");
-  const repo = env("FIXTURE_TARGET_REPO");
+  const repo = env("RICKGENT_TARGET_REPO") || env("FIXTURE_TARGET_REPO");
   if (gitFile && repo) {
     const abs = isAbsolute(gitFile) ? gitFile : join(repo, gitFile);
     mkdirSync(dirname(abs), { recursive: true });
     const content = env("FIXTURE_GIT_CONTENT", `fixture change ${Date.now()}\n`);
     writeFileSync(abs, content);
-    execFileSync("git", ["-C", repo, "add", "--", gitFile]);
-    if (env("FIXTURE_GIT_COMMIT", "1") !== "0") {
+    const mutationMode = env("FIXTURE_GIT_COMMIT", "1");
+    if (mutationMode !== "capture") {
+      execFileSync("git", ["-C", repo, "add", "--", gitFile]);
+    }
+    if (mutationMode !== "0" && mutationMode !== "capture") {
       execFileSync("git", [
         "-C", repo,
         "-c", "user.email=fixture@rickgent.test",

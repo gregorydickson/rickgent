@@ -302,12 +302,12 @@ const TS_INCIDENT_CLASSES = [
   {
     id: "dispatch-backpressure",
     testFile: "test/dispatch/dispatch.test.ts",
-    testCase: "records planned state and does not spawn when maxConcurrent is 0",
+    testCase: "rejects maxConcurrent 0 before ledger or spawn side effects",
     sourceFile: "src/dispatch/dispatch.ts",
-    guardMarker: "// Backpressure — at capacity, record planned state and return without spawning",
+    guardMarker: "if (opts.maxConcurrent !== 1) {",
     mutate: (s) => s.replace(
-      /if \(this\.active >= opts\.maxConcurrent\) \{/,
-      "if (false && this.active >= opts.maxConcurrent) {"
+      "if (opts.maxConcurrent !== 1) {",
+      "if (false && opts.maxConcurrent !== 1) {"
     ),
   },
   // ── Malformed input (multiple source files) ──

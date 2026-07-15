@@ -313,6 +313,18 @@ function clearSpawnLog(ctx: Ctx): void {
   }
 }
 
+function cleanupRunWorktrees(repo: string): void {
+  if (!existsSync(repo)) return;
+  const current = git(repo, ["rev-parse", "--show-toplevel"]);
+  for (const line of git(repo, ["worktree", "list", "--porcelain"]).split("\n")) {
+    if (!line.startsWith("worktree ")) continue;
+    const worktree = line.slice("worktree ".length);
+    if (worktree !== current) {
+      try { git(repo, ["worktree", "remove", "--force", worktree]); } catch { /* test cleanup */ }
+    }
+  }
+}
+
 function metaphorLine(stdout: string): string {
   return (stdout.split("\n").find((l) => l.startsWith("metaphor:")) ?? "").trim();
 }
@@ -589,6 +601,7 @@ describe("M5 Integration — all commands work with fixture omnigent (VAL-INTEGR
     initRepo(ctx.repo);
   });
   afterEach(() => {
+    cleanupRunWorktrees(ctx.repo);
     rmSync(ctx.root, { recursive: true, force: true });
   });
 
@@ -623,13 +636,13 @@ describe("M5 Integration — all commands work with fixture omnigent (VAL-INTEGR
     expect(existsSync(join(ctx.rickgentDir, "prd_refined.md"))).toBe(true);
   });
 
-  it("build: dispatches tickets via fixture omnigent, exit 0", () => {
-    const prdPath = join(ctx.repo, "prd.md");
+  it("build: dispatches tickets via fixture omnigent and captures nonterminal work", () => {
+    const prdPath = join(ctx.root, "build-prd.md");
     writeFileSync(prdPath, VALID_PRD);
-    // No --no-autonomous-pr: the build completes with autonomous PR creation (exit 0).
-    // --no-autonomous-pr would hit the merge gate and exit non-zero (documented).
+    // Delivery flags remain absent; M1 may only capture nonterminal fixture work.
     const r = runFixture(ctx, ["build", prdPath, "--repo", ctx.repo, "--agent", ctx.agentDir]);
-    expect(r.status).toBe(0);
+    expect(r.status).toBe(5);
+    expect(r.stdout).toContain("captured=1 done=0");
     expect(r.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
     // Build should produce a registry and dispatch ledger
     expect(existsSync(join(ctx.rickgentDir, "registry.json"))).toBe(true);
@@ -727,6 +740,7 @@ describe("M5 Integration — full pipeline chain (VAL-INTEGR-010)", () => {
     initRepo(ctx.repo);
   });
   afterEach(() => {
+    cleanupRunWorktrees(ctx.repo);
     rmSync(ctx.root, { recursive: true, force: true });
   });
 
@@ -762,15 +776,22 @@ describe("M5 Integration — full pipeline chain (VAL-INTEGR-010)", () => {
     // ── Stage 3: build → registry.json + dispatch-ledger.jsonl ──
     // Build needs a PRD with tickets and declaredPaths. Use the original PRD
     // which has the right format. Use the shared fixture omnigent for dispatch.
-    const buildPrd = join(ctx.repo, "prd.md");
+    const buildPrd = prdPath;
     writeFileSync(buildPrd, VALID_PRD);
     const buildRes = runFixture(ctx, ["build", buildPrd, "--repo", ctx.repo, "--agent", ctx.agentDir]);
-    expect(buildRes.status).toBe(0);
+    expect(buildRes.status).toBe(5);
+    expect(buildRes.stdout).toContain("captured=1 done=0");
     expect(buildRes.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
     expect(existsSync(join(ctx.rickgentDir, "registry.json"))).toBe(true);
     expect(existsSync(join(ctx.rickgentDir, "dispatch-ledger.jsonl"))).toBe(true);
 
     // ── Stage 4: citadel → citadel_report.json ──
+    // Capture no longer creates a caller-repository commit. Seed a second
+    // caller commit so Citadel's historical HEAD~1 comparison remains valid.
+    mkdirSync(join(ctx.repo, "src"), { recursive: true });
+    writeFileSync(join(ctx.repo, "src", "audit-seed.ts"), "export const auditSeed = 1;\n");
+    git(ctx.repo, ["add", "--", "src/audit-seed.ts"]);
+    git(ctx.repo, ["commit", "-q", "-m", "seed citadel comparison"]);
     const citadelRes = runStub(ctx, "citadel", ["--prd", buildPrd, "--repo", ctx.repo, "--report", join(ctx.rickgentDir, "citadel_report.json")]);
     expect(citadelRes.status).toBe(0);
     expect(existsSync(join(ctx.rickgentDir, "citadel_report.json"))).toBe(true);
@@ -853,6 +874,7 @@ describe("M5 Integration — cronenberg end-to-end (VAL-INTEGR-011)", () => {
     initRepo(ctx.repo);
   });
   afterEach(() => {
+    cleanupRunWorktrees(ctx.repo);
     rmSync(ctx.root, { recursive: true, force: true });
   });
 
@@ -889,6 +911,8 @@ describe("M5 Integration — cronenberg end-to-end (VAL-INTEGR-011)", () => {
     // Use a 3-ticket task with a PRD on disk so cronenberg routes to build.
     const prdPath = join(ctx.repo, "prd.md");
     writeFileSync(prdPath, MULTI_TICKET_PRD);
+    git(ctx.repo, ["add", "--", "prd.md"]);
+    git(ctx.repo, ["commit", "-q", "-m", "add build contract"]);
     // Use the shared fixture omnigent for the build dispatch
     const r = runFixture(ctx, [
       "cronenberg",
@@ -904,7 +928,7 @@ describe("M5 Integration — cronenberg end-to-end (VAL-INTEGR-011)", () => {
       RICKGENT_DIR: ctx.rickgentDir,
       INT_SPAWN_LOG: ctx.spawnLog,
     });
-    expect(r.status).toBe(0);
+    expect(r.status).toBe(5);
     expect(r.stdout).toContain("metaphor: build");
     expect(r.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
     // The delegated build child produced a registry.

@@ -1,321 +1,139 @@
-// B2 — evidence-based dispatch completion (VAL-DISPATCH-001..009).
-//
-// Drives the REAL Dispatcher against the deterministic fixture omnigent
-// (architecture §4) and observes REAL effects (git HEAD, chat.db rows, ledger
-// state) — never a mock's return value. A dispatch may reach `completed` ONLY
-// after all four evidence conditions hold AND the completion oracle passes;
-// exit 0 alone, false success tokens, and out-of-scope deltas do not complete.
+// M1 dispatch evidence is capture-only. The dispatcher has no compatibility
+// path that can turn a worker-created commit into completion evidence.
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync } from "child_process";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join, dirname } from "path";
+import { join } from "path";
 import {
   DispatchLedger,
-  TicketLock,
   Dispatcher,
-  dispatchIdString,
+  TicketLock,
   type DispatchEntry,
   type DispatchId,
 } from "../../src/dispatch/dispatch.js";
+import {
+  finalizeRunWorkspace,
+  provisionRunWorkspace,
+  type ReadyRunWorkspace,
+} from "../../src/git/run-workspace.js";
 import { FIXTURE_CAPABILITY_GATE } from "../helpers/capabilities.js";
-import { insertConversation } from "../fixtures/omnigent-fixture/chat-db.mjs";
 
 const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
-
-function makeId(ticketId = "T-1"): DispatchId {
-  return { runId: "run-1", ticketId, phase: "implement", attempt: 1, role: "worker" };
-}
+const AGENT_ROOT = join(import.meta.dirname, "../../../agents/rickgent");
 
 function git(repo: string, args: string[]): string {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf-8" }).trim();
 }
 
-function initGitRepo(repo: string): void {
+function initRepo(repo: string): void {
   mkdirSync(repo, { recursive: true });
   git(repo, ["init", "-q"]);
-  git(repo, ["config", "user.email", "test@rickgent.test"]);
-  git(repo, ["config", "user.name", "Rickgent Test"]);
+  git(repo, ["config", "user.email", "fixture@rickgent.test"]);
+  git(repo, ["config", "user.name", "Rickgent Fixture"]);
   writeFileSync(join(repo, "README.md"), "seed\n");
   git(repo, ["add", "--", "README.md"]);
   git(repo, ["commit", "-q", "-m", "initial"]);
 }
 
-interface FixtureConfig {
-  writeDb?: boolean;
-  ownConversationId?: string;
-  transcriptItems?: number;
-  gitFile?: string;
-  exitCode?: number;
-  stdout?: string;
-  declaredPaths?: string[];
-  seedConversation?: { id: string; items: number; createdAt: number };
-  preDirtyFile?: string;
-  /**
-   * Simulate a CONCURRENT foreign dispatch that writes its conversation into
-   * the SHARED store (the root dataDir) during this run — the store the
-   * pre-fix observer read directly. It must never be attributed here.
-   */
-  concurrentForeign?: { id: string; items: number };
+function states(path: string): string[] {
+  return readFileSync(path, "utf-8").trim().split("\n").filter(Boolean)
+    .map((line) => (JSON.parse(line) as DispatchEntry).state);
 }
 
-interface RunResult {
-  entry: DispatchEntry;
-  ledgerPath: string;
-  dispatchId: string;
-  repo: string;
-  dataDir: string;
-  baselineHead: string;
-}
-
-// process.env is set (not just opts.env) so the child fixture is reachable and
-// data-isolated regardless of whether the code under test forwards opts.env —
-// this keeps the red-first assertions honest (they fail on the completion
-// logic, not on an unreachable binary).
-async function runDispatch(cfg: FixtureConfig, dir: string): Promise<RunResult> {
-  const repo = join(dir, "repo");
-  initGitRepo(repo);
-  const dataDir = join(dir, "data");
-  mkdirSync(dataDir, { recursive: true });
-
-  if (cfg.seedConversation) {
-    insertConversation(dataDir, cfg.seedConversation.id, cfg.seedConversation.items, cfg.seedConversation.createdAt);
-  }
-  if (cfg.preDirtyFile) {
-    const abs = join(repo, cfg.preDirtyFile);
-    mkdirSync(dirname(abs), { recursive: true });
-    writeFileSync(abs, "pre-existing dirty content\n");
-  }
-
-  const baselineHead = git(repo, ["rev-parse", "HEAD"]);
-
-  const ledgerPath = join(dir, "ledger.jsonl");
-  const ledger = new DispatchLedger(ledgerPath);
-  const lock = new TicketLock(join(dir, "locks"));
-  const dispatcher = new Dispatcher(ledger, lock, dir, FIXTURE_CAPABILITY_GATE);
-
-  const fixtureEnv: Record<string, string> = {
-    PATH: `${FIXTURE_BIN}:${process.env.PATH ?? ""}`,
-    OMNIGENT_DATA_DIR: dataDir,
-    FIXTURE_TARGET_REPO: repo,
-    FIXTURE_STDOUT: cfg.stdout ?? "fixture worker transcript line",
-    FIXTURE_EXIT_CODE: String(cfg.exitCode ?? 0),
+describe("M1 capture-only dispatch evidence", () => {
+  let root: string;
+  let repo: string;
+  let workspace: ReadyRunWorkspace;
+  let ledgerPath: string;
+  let dispatcher: Dispatcher;
+  const id: DispatchId = {
+    runId: "run-evidence",
+    ticketId: "t01",
+    phase: "implement",
+    attempt: 1,
+    role: "worker",
   };
-  if (cfg.writeDb) {
-    fixtureEnv.FIXTURE_WRITE_DB = "1";
-    fixtureEnv.FIXTURE_TRANSCRIPT_ITEMS = String(cfg.transcriptItems ?? 1);
-    if (cfg.ownConversationId) fixtureEnv.FIXTURE_CONV_ID = cfg.ownConversationId;
-  }
-  if (cfg.gitFile) fixtureEnv.FIXTURE_GIT_FILE = cfg.gitFile;
-  if (cfg.concurrentForeign) {
-    // The shared store is the root dataDir — exactly what the pre-fix observer
-    // read directly (opts.dataDir). Per-dispatch isolation moves THIS
-    // dispatch's chat.db to a subdir, so this foreign row is out of view.
-    fixtureEnv.FIXTURE_FOREIGN_DATA_DIR = dataDir;
-    fixtureEnv.FIXTURE_FOREIGN_CONV_ID = cfg.concurrentForeign.id;
-    fixtureEnv.FIXTURE_FOREIGN_ITEMS = String(cfg.concurrentForeign.items);
-  }
-
-  // env vars are passed via the dispatch `env` option (not process.env) to
-  // avoid cross-test contamination in vitest's thread pool.
-  const id = makeId();
-  const entry = await dispatcher.dispatch(id, {
-    agentDir: join(dir, "agent"),
-    prompt: "do work",
-    timeout: 20000,
-    maxConcurrent: 2,
-    targetRepo: repo,
-    dataDir,
-    declaredPaths: cfg.declaredPaths ?? ["src"],
-    env: fixtureEnv,
-  });
-  return { entry, ledgerPath, dispatchId: dispatchIdString(id), repo, dataDir, baselineHead };
-}
-
-function ledgerStates(ledgerPath: string, dispatchId: string): string[] {
-  const raw = readFileSync(ledgerPath, "utf-8").trim();
-  return raw
-    .split("\n")
-    .map((l) => JSON.parse(l) as DispatchEntry)
-    .filter((e) => e.dispatchId === dispatchId)
-    .map((e) => e.state);
-}
-
-describe("B2 evidence-based dispatch completion", () => {
-  let dir: string;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "rickgent-b2-"));
+    root = mkdtempSync(join(tmpdir(), "rickgent-dispatch-evidence-"));
+    repo = join(root, "repo");
+    initRepo(repo);
+    const provisioned = provisionRunWorkspace({ targetRepo: repo, runId: id.runId });
+    if (!provisioned.ok) throw new Error(provisioned.detail);
+    workspace = provisioned.workspace;
+    ledgerPath = join(root, "ledger.jsonl");
+    dispatcher = new Dispatcher(
+      new DispatchLedger(ledgerPath),
+      new TicketLock(join(root, "locks")),
+      root,
+      FIXTURE_CAPABILITY_GATE,
+    );
   });
+
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    finalizeRunWorkspace(workspace, false);
+    rmSync(root, { recursive: true, force: true });
   });
 
-  // VAL-DISPATCH-001
-  it("exit 0 with no git delta is NOT completed", async () => {
-    const r = await runDispatch({ writeDb: true, transcriptItems: 1 }, dir);
-    expect(r.entry.state).not.toBe("completed");
-    // git-tree-truth: HEAD unchanged from baseline.
-    expect(git(r.repo, ["rev-parse", "HEAD"])).toBe(r.baselineHead);
-    expect(ledgerStates(r.ledgerPath, r.dispatchId)).not.toContain("completed");
-  });
-
-  // VAL-DISPATCH-002
-  it("emits db_session_observed BEFORE completed for a fully-satisfying dispatch", async () => {
-    const r = await runDispatch({ writeDb: true, transcriptItems: 2, gitFile: "src/feature.ts" }, dir);
-    expect(r.entry.state).toBe("completed");
-    const states = ledgerStates(r.ledgerPath, r.dispatchId);
-    const obs = states.indexOf("db_session_observed");
-    const done = states.indexOf("completed");
-    expect(obs).toBeGreaterThanOrEqual(0);
-    expect(done).toBeGreaterThanOrEqual(0);
-    expect(obs).toBeLessThan(done);
-    expect(r.entry.conversationId).toBeTruthy();
-  });
-
-  // VAL-DISPATCH-003
-  it("missing DB session blocks completion", async () => {
-    const r = await runDispatch({ writeDb: false, gitFile: "src/feature.ts" }, dir);
-    expect(r.entry.state).not.toBe("completed");
-    const states = ledgerStates(r.ledgerPath, r.dispatchId);
-    expect(states).not.toContain("db_session_observed");
-    expect(states).not.toContain("completed");
-  });
-
-  // VAL-DISPATCH-004
-  it("empty transcript blocks completion", async () => {
-    const r = await runDispatch({ writeDb: true, transcriptItems: 0, gitFile: "src/feature.ts" }, dir);
-    expect(r.entry.state).not.toBe("completed");
-    expect(ledgerStates(r.ledgerPath, r.dispatchId)).not.toContain("completed");
-  });
-
-  // VAL-DISPATCH-005 — positive plus each single condition dropped.
-  it("completion requires all four evidence conditions AND an oracle pass", async () => {
-    const full = await runDispatch(
-      { writeDb: true, transcriptItems: 1, gitFile: "src/feature.ts" },
-      mkdtempSync(join(tmpdir(), "rickgent-b2-full-")),
-    );
-    expect(full.entry.state).toBe("completed");
-
-    // (a) drop DB session
-    const noDb = await runDispatch(
-      { writeDb: false, gitFile: "src/feature.ts" },
-      mkdtempSync(join(tmpdir(), "rickgent-b2-nodb-")),
-    );
-    expect(noDb.entry.state).not.toBe("completed");
-
-    // (b) drop transcript
-    const noTx = await runDispatch(
-      { writeDb: true, transcriptItems: 0, gitFile: "src/feature.ts" },
-      mkdtempSync(join(tmpdir(), "rickgent-b2-notx-")),
-    );
-    expect(noTx.entry.state).not.toBe("completed");
-
-    // (c) drop in-scope git delta
-    const noDelta = await runDispatch(
-      { writeDb: true, transcriptItems: 1 },
-      mkdtempSync(join(tmpdir(), "rickgent-b2-nodelta-")),
-    );
-    expect(noDelta.entry.state).not.toBe("completed");
-  });
-
-  // VAL-DISPATCH-006
-  it("false success token without a git delta is rejected (git-truth over claims)", async () => {
-    const r = await runDispatch(
-      { writeDb: true, transcriptItems: 1, stdout: "DONE ✅ ALL TESTS PASS SUCCESS" },
-      dir,
-    );
-    expect(r.entry.state).not.toBe("completed");
-    // The success token was really printed, yet ignored — HEAD is unchanged.
-    expect(r.entry.stdout).toContain("SUCCESS");
-    expect(git(r.repo, ["rev-parse", "HEAD"])).toBe(r.baselineHead);
-  });
-
-  // VAL-DISPATCH-007
-  it("out-of-scope git delta does not satisfy completion", async () => {
-    const r = await runDispatch(
-      { writeDb: true, transcriptItems: 1, gitFile: "other/x.ts", declaredPaths: ["src"] },
-      dir,
-    );
-    expect(r.entry.state).not.toBe("completed");
-    // A real commit landed (HEAD advanced) but only out-of-scope files changed.
-    expect(git(r.repo, ["rev-parse", "HEAD"])).not.toBe(r.baselineHead);
-    const changed = git(r.repo, ["diff", "--name-only", r.baselineHead, "HEAD"]);
-    expect(changed).toContain("other/x.ts");
-  });
-
-  // VAL-DISPATCH-008
-  it("a pre-existing/foreign DB session does not count — must be created by THIS dispatch", async () => {
-    const r = await runDispatch(
-      {
-        writeDb: false, // this dispatch creates NO new conversation
-        gitFile: "src/feature.ts",
-        seedConversation: { id: "foreign-conv", items: 3, createdAt: 1000 },
+  async function dispatch(extra: Record<string, string> = {}): Promise<DispatchEntry> {
+    return dispatcher.dispatch(id, {
+      agentDir: AGENT_ROOT,
+      prompt: "implement src/feature.ts",
+      timeout: 20_000,
+      maxConcurrent: 1,
+      workspace,
+      materializationRoot: join(root, "materialized"),
+      dataDir: join(root, "data"),
+      declaredPaths: ["src/feature.ts"],
+      env: {
+        ...process.env,
+        PATH: `${FIXTURE_BIN}:${process.env.PATH ?? ""}`,
+        FIXTURE_MODE: "direct",
+        FIXTURE_WRITE_DB: "1",
+        FIXTURE_TRANSCRIPT_ITEMS: "2",
+        FIXTURE_GIT_FILE: "src/feature.ts",
+        FIXTURE_GIT_COMMIT: "capture",
+        ...extra,
       },
-      dir,
-    );
-    expect(r.entry.state).not.toBe("completed");
-    const states = ledgerStates(r.ledgerPath, r.dispatchId);
-    expect(states).not.toContain("db_session_observed");
-    expect(states).not.toContain("completed");
+    });
+  }
+
+  it("emits db observation then implementation_captured, never completed", async () => {
+    const callerHead = git(repo, ["rev-parse", "HEAD"]);
+    const entry = await dispatch();
+    expect(entry.state).toBe("implementation_captured");
+    expect(entry.captureReceipt).toMatchObject({ kind: "implementation_captured_nonterminal" });
+    expect(states(ledgerPath)).toEqual(["spawned", "db_session_observed", "implementation_captured"]);
+    expect(states(ledgerPath)).not.toContain("completed");
+    expect(git(repo, ["rev-parse", "HEAD"])).toBe(callerHead);
   });
 
-  // VAL-DISPATCH-008 (concurrent-foreign): a conversations row created by a
-  // CONCURRENT foreign dispatch writing to a shared chat.db must NOT be
-  // attributed to THIS dispatch. THIS dispatch's own worker creates no session,
-  // yet has an in-scope git delta — so the ONLY thing that could (wrongly) mark
-  // it completed is mis-attributing the foreign row. Fails against the pre-fix
-  // shared-store observer; passes once each dispatch observes an isolated store.
-  it("a concurrent foreign dispatch's session in a shared store is NOT mis-attributed", async () => {
-    const r = await runDispatch(
-      {
-        writeDb: false, // THIS dispatch's worker creates NO conversation
-        gitFile: "src/feature.ts", // real in-scope delta present
-        concurrentForeign: { id: "concurrent-foreign", items: 3 },
-      },
-      dir,
-    );
-    expect(r.entry.state).not.toBe("completed");
-    const states = ledgerStates(r.ledgerPath, r.dispatchId);
-    expect(states).not.toContain("db_session_observed");
-    expect(states).not.toContain("completed");
-    expect(r.entry.conversationId ?? null).not.toBe("concurrent-foreign");
+  it.each([
+    ["no-op", { FIXTURE_GIT_FILE: "" }],
+    ["staged", { FIXTURE_GIT_COMMIT: "0" }],
+    ["committed", { FIXTURE_GIT_COMMIT: "1" }],
+  ])("rejects %s worker output without completion", async (_label, env) => {
+    const entry = await dispatch(env);
+    expect(entry.state).toBe("failed");
+    expect(states(ledgerPath)).not.toContain("completed");
   });
 
-  // VAL-DISPATCH-008 (no regression): a foreign row coexisting in the shared
-  // store does not corrupt attribution — THIS dispatch's own session still
-  // completes and the attributed conversation id is its own, never the foreign.
-  it("attributes only THIS dispatch's own session when a foreign row also exists", async () => {
-    const r = await runDispatch(
-      {
-        writeDb: true,
-        ownConversationId: "own-session",
-        transcriptItems: 2,
-        gitFile: "src/feature.ts",
-        concurrentForeign: { id: "concurrent-foreign", items: 5 },
-      },
-      dir,
+  it("rejects an unverified mutation cwd before ledger or spawn work", async () => {
+    const isolatedLedger = new DispatchLedger(join(root, "isolated-ledger.jsonl"));
+    const isolated = new Dispatcher(
+      isolatedLedger,
+      new TicketLock(join(root, "isolated-locks")),
+      root,
+      FIXTURE_CAPABILITY_GATE,
     );
-    expect(r.entry.state).toBe("completed");
-    expect(r.entry.conversationId).toBe("own-session");
-    expect(r.entry.conversationId).not.toBe("concurrent-foreign");
-  });
-
-  // VAL-DISPATCH-009
-  it("the required git delta is measured against the pre-dispatch baseline", async () => {
-    const r = await runDispatch(
-      {
-        writeDb: true,
-        transcriptItems: 1,
-        preDirtyFile: "src/already-dirty.ts", // in-scope change present BEFORE dispatch
-        // no gitFile → this dispatch performs no new mutation
-      },
-      dir,
-    );
-    expect(r.entry.state).not.toBe("completed");
-    // HEAD is unchanged; the pre-existing dirty file is not this dispatch's delta.
-    expect(git(r.repo, ["rev-parse", "HEAD"])).toBe(r.baselineHead);
-    expect(ledgerStates(r.ledgerPath, r.dispatchId)).not.toContain("completed");
+    await expect(isolated.dispatch(id, {
+      agentDir: AGENT_ROOT,
+      prompt: "do work",
+      timeout: 1000,
+      maxConcurrent: 1,
+    })).rejects.toThrow("verified run workspace");
+    expect(isolatedLedger.find("run-evidence/t01/implement/1/worker")).toBeNull();
   });
 });

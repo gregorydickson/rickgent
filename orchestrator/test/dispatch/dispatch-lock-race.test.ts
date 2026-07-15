@@ -25,6 +25,7 @@ vi.mock("fs", async (importOriginal) => {
 
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { DispatchLedger, TicketLock, Dispatcher, dispatchIdString, type DispatchId } from "../../src/dispatch/dispatch.js";
+import type { ReadyRunWorkspace } from "../../src/git/run-workspace.js";
 import { FIXTURE_CAPABILITY_GATE } from "../helpers/capabilities.js";
 
 function makeId(ticketId = "T-1"): DispatchId {
@@ -64,11 +65,11 @@ describe("TicketLock concurrent-release race (VAL-BUG-013)", () => {
       agentDir: "/tmp/agent",
       prompt: "do work",
       timeout: 1000,
-      maxConcurrent: 2,
+      maxConcurrent: 1,
+      workspace: {} as ReadyRunWorkspace,
+      materializationRoot: join(dir, "materialized"),
     });
-
-    // dispatch resolves (does not reject with ENOENT); the entry is recorded.
     expect(result.dispatchId).toBe(dispatchIdString(id));
-    expect(result).toBeDefined();
+    expect(result.state).toBe("failed");
   });
 });

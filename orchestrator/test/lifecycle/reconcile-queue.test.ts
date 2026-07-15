@@ -122,7 +122,7 @@ describe("B3 resume — reconcile reconstructs in-flight + planned (VAL-QUEUE-00
   it("a planned entry later superseded by completed is reconstructed as Done (latest state wins)", () => {
     const baselineSha = commitFile(tempDir, "base.txt", "base", "baseline");
     const sha = commitFile(tempDir, "src/foo.ts", "export const y = 2;", "work");
-    const queue = new DispatchQueue(new DispatchLedger(dispatchLedgerPath(rickgentDir)), 2, FIXTURE_CAPABILITY_GATE);
+    const queue = new DispatchQueue(new DispatchLedger(dispatchLedgerPath(rickgentDir)), 1, FIXTURE_CAPABILITY_GATE);
     // enqueue writes planned; then a completed supersedes it.
     queue.enqueue(id("T-SUP"));
     const ledger = new DispatchLedger(dispatchLedgerPath(rickgentDir));

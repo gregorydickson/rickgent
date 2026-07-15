@@ -2,10 +2,8 @@
 //
 // Drives the REAL `rickgent` CLI (dist/cli.js) against the deterministic fixture
 // omnigent and observes REAL effects: the dispatch ledger, the registry, git
-// commits, the intervention ledger, and the salvage-disposition ledger. No mocks —
-// every Done is the terminal `completed` state of a real Dispatcher path (only
-// reachable through the completion oracle), failures are absorbed by
-// salvage/breaker, and a human-gate hit exits non-zero + records an intervention.
+// nonterminal capture receipts, the intervention ledger, and the
+// salvage-disposition ledger. No fixture worker commit can terminalize a ticket.
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawnSync, execFileSync } from "child_process";
@@ -37,6 +35,19 @@ function initGitRepo(repo: string): void {
   writeFileSync(join(repo, "README.md"), "seed\n");
   git(repo, ["add", "--", "README.md"]);
   git(repo, ["commit", "-q", "-m", "initial"]);
+}
+
+function cleanupRunWorktrees(repo: string): void {
+  if (!existsSync(repo)) return;
+  const current = git(repo, ["rev-parse", "--show-toplevel"]);
+  const lines = git(repo, ["worktree", "list", "--porcelain"]).split("\n");
+  for (const line of lines) {
+    if (!line.startsWith("worktree ")) continue;
+    const worktree = line.slice("worktree ".length);
+    if (worktree !== current) {
+      try { git(repo, ["worktree", "remove", "--force", worktree]); } catch { /* test cleanup */ }
+    }
+  }
 }
 
 interface Dirs {
@@ -141,13 +152,14 @@ describe("B1 build loop", () => {
     d = setupDirs();
   });
   afterEach(() => {
+    cleanupRunWorktrees(d.repo);
     rmSync(d.root, { recursive: true, force: true });
   });
 
   // VAL-BUILD-001
   it("decomposes >=1 ticket and dispatches via a real Dispatcher path", () => {
     const out = runCli(["build", PRD_MIN, "--repo", d.repo, "--agent", d.agentDir], d);
-    expect(out.status).toBe(0);
+    expect(out.status).toBe(5);
     const s = summary(out.stdout);
     expect(Number(s.planned)).toBeGreaterThanOrEqual(1);
     expect(Number(s.dispatched)).toBeGreaterThanOrEqual(1);
@@ -158,34 +170,32 @@ describe("B1 build loop", () => {
     expect(spawned.every((e) => typeof e.dispatchId === "string" && (e.dispatchId as string).includes("/t01/"))).toBe(true);
   });
 
-  // VAL-BUILD-002 — positive routing: Done is the completed dispatch state,
-  // which is only reachable through evaluateCompletion (dispatch.completion).
-  it("every Done routes through evaluateCompletion (oracle-gated completed state)", () => {
+  // VAL-BUILD-002 is intentionally contracted in M1: fixture output is a
+  // nonterminal capture and cannot reach legacy completion authority.
+  it("captures implementation without producing completed or Done", () => {
     const out = runCli(["build", PRD_MIN, "--repo", d.repo, "--agent", d.agentDir], d);
-    expect(out.status).toBe(0);
+    expect(out.status).toBe(5);
     const entries = ledgerEntries(d.rickgentDir);
     const completed = entries.filter((e) => e.state === "completed");
-    expect(completed.length).toBeGreaterThanOrEqual(1);
-    // Oracle evidence is present on every completed entry (proves the delta was
-    // verified, not exit-code-only): a real commit sha + tree change.
-    for (const c of completed) {
-      expect(typeof c.commitSha).toBe("string");
-      expect(c.treeChanged).toBe(true);
-    }
-    // The registry Done ticket carries that same oracle-verified commit.
+    expect(completed).toEqual([]);
+    const captured = entries.filter((e) => e.state === "implementation_captured");
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.captureReceipt).toMatchObject({ kind: "implementation_captured_nonterminal" });
     const reg = JSON.parse(readFileSync(join(d.rickgentDir, "registry.json"), "utf-8"));
     const done = Object.values(reg.tickets).filter((t: any) => t.status === "Done");
-    expect(done.length).toBeGreaterThanOrEqual(1);
-    for (const t of done as any[]) {
-      expect(typeof t.completionCommitSha).toBe("string");
-    }
+    expect(done).toEqual([]);
+    expect(reg.tickets.t01).toMatchObject({
+      status: "In Progress",
+      phase: "implementation_captured",
+      completionCommitSha: null,
+    });
   });
 
   // VAL-BUILD-003
-  it("completes with zero human interventions and non-interactively", () => {
+  it("captures with zero human interventions and non-interactively", () => {
     const prd = writeMultiPrd(d.root, ["src/a.ts", "src/b.ts"]);
     const out = runCli(["build", prd, "--repo", d.repo, "--agent", d.agentDir], d);
-    expect(out.status).toBe(0);
+    expect(out.status).toBe(5);
     const s = summary(out.stdout);
     expect(Number(s.interventions)).toBe(0);
     expect(existsSync(join(d.rickgentDir, "interventions.jsonl"))).toBe(false);
@@ -207,11 +217,11 @@ describe("B1 build loop", () => {
   });
 
   // VAL-BUILD-005
-  it("completes the local profile without invoking delivery", () => {
+  it("finishes the nonterminal local profile without invoking delivery", () => {
+    const callerHead = git(d.repo, ["rev-parse", "HEAD"]);
     const out = runCli(["build", PRD_MIN, "--repo", d.repo, "--agent", d.agentDir], d);
-    expect(out.status).toBe(0);
-    const branches = git(d.repo, ["branch", "--list"]);
-    expect(branches).not.toMatch(/rickgent\//);
+    expect(out.status).toBe(5);
+    expect(git(d.repo, ["rev-parse", "HEAD"])).toBe(callerHead);
     expect(existsSync(d.ghLog)).toBe(false);
     expect(out.stdout).toContain("automatic delivery is structurally absent");
   });
@@ -219,7 +229,7 @@ describe("B1 build loop", () => {
   // VAL-BUILD-006
   it("pipeline runs build then the cleanup chain", () => {
     const out = runCli(["pipeline", PRD_MIN, "--repo", d.repo, "--agent", d.agentDir], d);
-    expect(out.status).toBe(0);
+    expect(out.status).toBe(5);
     const s = summary(out.stdout);
     expect(Number(s.dispatched)).toBeGreaterThanOrEqual(1);
     expect(out.stdout).toContain("cleanup: orphan-reaper");
@@ -237,7 +247,7 @@ describe("B1 build loop", () => {
     expect(Number(s.planned)).toBe(2);
     expect(Number(s.done)).toBe(0);
     expect(Number(s.failed)).toBe(2);
-    expect(Number(s.done) + Number(s.failed) + Number(s.recovered)).toBe(Number(s.planned));
+    expect(Number(s.captured) + Number(s.done) + Number(s.failed) + Number(s.recovered)).toBe(Number(s.planned));
     expect(out.stdout).toContain("zero_completion");
   });
 

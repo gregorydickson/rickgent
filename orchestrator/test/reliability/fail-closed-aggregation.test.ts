@@ -64,6 +64,18 @@ function setupDirs(): Dirs {
   return { root, repo, dataDir, rickgentDir, agentDir };
 }
 
+function cleanupRunWorktrees(repo: string): void {
+  if (!existsSync(repo)) return;
+  const current = git(repo, ["rev-parse", "--show-toplevel"]);
+  for (const line of git(repo, ["worktree", "list", "--porcelain"]).split("\n")) {
+    if (!line.startsWith("worktree ")) continue;
+    const worktree = line.slice("worktree ".length);
+    if (worktree !== current) {
+      try { git(repo, ["worktree", "remove", "--force", worktree]); } catch { /* test cleanup */ }
+    }
+  }
+}
+
 function writePrd(d: Dirs, paths: string[], verify = "true"): string {
   const tickets = paths.map((path, index) =>
     `### Ticket ${String(index + 1).padStart(2, "0")}: implement ${path}\n` +
@@ -151,6 +163,7 @@ describe("fail-closed run aggregation", () => {
   });
 
   afterEach(() => {
+    cleanupRunWorktrees(d.repo);
     rmSync(d.root, { recursive: true, force: true });
   });
 
@@ -183,26 +196,28 @@ describe("fail-closed run aggregation", () => {
     expect(allFailed.stdout).toContain("zero_completion");
   });
 
-  it("one completed ticket cannot mask partial_failure of another planned ticket", () => {
+  it("one capture cannot mask another planned ticket failure", () => {
     const result = runFixture(d, "build", writePrd(d, ["src/a.ts", "src/b.ts"]), {
       FIXTURE_FAIL_PATHS: "src/b.ts",
     });
     expect(result.status).toBe(5);
-    expect(result.stdout).toContain("partial_failure");
-    expect(result.stdout).toMatch(/planned=2 .*done=1 failed=1/);
+    expect(result.stdout).toContain("zero_completion");
+    expect(result.stdout).toMatch(/planned=2 .*captured=1 done=0 failed=1/);
   });
 
-  it("failed and skipped required local gates exit as verification failures", () => {
+  it("keeps required local gates unreachable without a verified completion", () => {
     const failed = runFixture(d, "build", writePrd(d, ["src/a.ts"], "false"));
-    expect(failed.status).toBe(6);
-    expect(failed.stdout).toContain("required_gate_failed");
+    expect(failed.status).toBe(5);
+    expect(failed.stdout).toContain("conformance gate — skipped (no tickets completed)");
+    expect(failed.stdout).not.toContain("required_gate_failed");
 
     rmSync(d.rickgentDir, { recursive: true, force: true });
     const skipped = runFixture(d, "build", writePrd(d, ["src/b.ts"]), {
       RICKGENT_FIXTURE_SKIP_CONFORMANCE: "1",
     });
-    expect(skipped.status).toBe(6);
-    expect(skipped.stdout).toContain("required_gate_failed");
+    expect(skipped.status).toBe(5);
+    expect(skipped.stdout).not.toContain("conformance gate");
+    expect(skipped.stdout).not.toContain("required_gate_failed");
   });
 
   it("exit zero without oracle evidence is evidence_unverifiable", () => {
@@ -249,8 +264,9 @@ describe("fail-closed run aggregation", () => {
       RICKGENT_SANDBOX: "none",
     });
     expect(result.status).toBe(7);
-    expect(result.stdout).toContain("partial_failure");
-    expect(result.stdout).toContain("required_gate_failed");
+    expect(result.stdout).toContain("ticket_failed");
+    expect(result.stdout).toContain("zero_completion");
+    expect(result.stdout).not.toContain("required_gate_failed");
     expect(result.stdout).toContain("cleanup_failed");
     expect(result.stdout).toContain("pipeline: outcome=failed primary=cleanup");
   });
@@ -270,7 +286,7 @@ describe("fail-closed run aggregation", () => {
     const result = runFixture(d, "build", writePrd(d, ["src/a.ts"]), {
       PATH: `${deliveryBin}:${FIXTURE_BIN}:${process.env.PATH ?? ""}`,
     });
-    expect(result.status).toBe(0);
+    expect(result.status).toBe(5);
     expect(existsSync(pushMarker)).toBe(false);
     expect(existsSync(ghMarker)).toBe(false);
 

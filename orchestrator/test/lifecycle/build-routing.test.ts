@@ -15,7 +15,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawnSync, execFileSync } from "child_process";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from "fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, realpathSync, writeFileSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { runBuild } from "../../src/lifecycle/build.js";
@@ -27,6 +27,7 @@ const fixtureBuild = (options: Parameters<typeof runBuild>[0]) =>
 
 const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
 const PRD_MIN = join(import.meta.dirname, "../../../fixtures/prd-min.md");
+const AGENT_ROOT = join(import.meta.dirname, "../../../agents/rickgent");
 
 function git(repo: string, args: string[]): string {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf-8" }).trim();
@@ -40,6 +41,18 @@ function initGitRepo(repo: string): void {
   writeFileSync(join(repo, "README.md"), "seed\n");
   git(repo, ["add", "--", "README.md"]);
   git(repo, ["commit", "-q", "-m", "initial"]);
+}
+
+function cleanupDedicatedWorktrees(repo: string): void {
+  if (!existsSync(repo)) return;
+  const list = git(repo, ["worktree", "list", "--porcelain"]);
+  for (const line of list.split("\n")) {
+    if (!line.startsWith("worktree ")) continue;
+    const path = line.slice("worktree ".length);
+    if (realpathSync(path) !== realpathSync(repo)) {
+      try { git(repo, ["worktree", "remove", "--force", path]); } catch { /* test cleanup */ }
+    }
+  }
 }
 
 interface Dirs {
@@ -56,9 +69,8 @@ function setupDirs(): Dirs {
   initGitRepo(repo);
   const dataDir = join(root, "data");
   const rickgentDir = join(root, ".rickgent");
-  const agentDir = join(root, "agent");
+  const agentDir = AGENT_ROOT;
   mkdirSync(dataDir, { recursive: true });
-  mkdirSync(agentDir, { recursive: true });
   return { root, repo, dataDir, rickgentDir, agentDir };
 }
 
@@ -106,7 +118,10 @@ function fixtureEnv(d: Dirs, extra: Record<string, string> = {}): NodeJS.Process
 describe("M4 fix: build path calls select_model before each dispatch", () => {
   let d: Dirs;
   beforeEach(() => { d = setupDirs(); });
-  afterEach(() => { rmSync(d.root, { recursive: true, force: true }); });
+  afterEach(() => {
+    cleanupDedicatedWorktrees(d.repo);
+    rmSync(d.root, { recursive: true, force: true });
+  });
 
   // VAL-ROUTE-WIRING-001: the production build path populates the vendor label
   // from the router's selection. Ledger entries have vendor != null.
@@ -121,9 +136,10 @@ describe("M4 fix: build path calls select_model before each dispatch", () => {
       costBudgetUsd: 10.0,
       env: fixtureEnv(d),
     });
-    expect(result.outcome.status).toBe("succeeded");
+    expect(result.outcome.status).toBe("failed");
+    expect(result.ticketsCaptured).toBe(1);
     const entries = ledgerEntries(d.rickgentDir);
-    const spawned = entries.filter((e) => e.state === "spawned" || e.state === "completed");
+    const spawned = entries.filter((e) => e.state === "spawned" || e.state === "implementation_captured");
     expect(spawned.length).toBeGreaterThan(0);
     // Every spawned/completed entry carries a non-null vendor from the router.
     for (const e of spawned) {
@@ -153,7 +169,8 @@ describe("M4 fix: build path calls select_model before each dispatch", () => {
       costBudgetUsd: 10.0,
       env: fixtureEnv(d),
     });
-    expect(result.outcome.status).toBe("succeeded");
+    expect(result.outcome.status).toBe("failed");
+    expect(result.ticketsCaptured).toBe(1);
     const entries = ledgerEntries(d.rickgentDir);
     const spawned = entries.filter((e) => e.state === "spawned");
     expect(spawned.length).toBeGreaterThan(0);
@@ -166,7 +183,10 @@ describe("M4 fix: build path calls select_model before each dispatch", () => {
 describe("M4 fix: pre-dispatch cost gate is enforced in the build path", () => {
   let d: Dirs;
   beforeEach(() => { d = setupDirs(); });
-  afterEach(() => { rmSync(d.root, { recursive: true, force: true }); });
+  afterEach(() => {
+    cleanupDedicatedWorktrees(d.repo);
+    rmSync(d.root, { recursive: true, force: true });
+  });
 
   // VAL-ROUTE-WIRING-003: an all-unpriced roster → DENY → no dispatch spawns.
   it("DENYs dispatch on an all-unpriced roster (no spawned entries)", async () => {

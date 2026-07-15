@@ -1,8 +1,6 @@
-// B3 — backpressure queue drains through the REAL build loop (VAL-QUEUE-001,
-// 002, 005). Drives the actual `rickgent build` CLI against the deterministic
-// fixture omnigent with 5 tickets and a 2-slot cap, then reads the durable
-// dispatch ledger: every ticket drains past `planned`, the spawn order is FIFO,
-// and a failing ticket's slot frees so the queue keeps draining.
+// M1 sequential queue coverage through the REAL build loop. Parallel dispatch
+// is unavailable: maxConcurrent must be exactly one and every admitted spawn
+// remains FIFO.
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawnSync, execFileSync } from "child_process";
@@ -128,60 +126,49 @@ describe("B3 backpressure queue via the real build loop", () => {
 
   const FIVE = ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts", "src/e.ts"];
 
-  // VAL-QUEUE-001 + VAL-QUEUE-002: all 5 tickets drain under a 2-slot cap, none
-  // left 'planned', spawned in FIFO (enqueue) order.
-  it("drains all 5 tickets under a 2-slot cap in FIFO order (none left planned)", () => {
+  it("drains admitted work sequentially in FIFO order", () => {
     const prd = writeMultiPrd(d.root, FIVE);
-    const out = runCli(["build", prd, "--repo", d.repo, "--agent", d.agentDir, "--max-concurrent", "2"], d);
-    expect(out.status).toBe(0);
+    const out = runCli(["build", prd, "--repo", d.repo, "--agent", d.agentDir, "--max-concurrent", "1"], d);
+    expect(out.status).toBe(5);
 
     const entries = ledgerEntries(d.rickgentDir);
     const tickets = ["t01", "t02", "t03", "t04", "t05"];
 
-    // Every ticket was queued (planned recorded) AND spawned.
+    // Every ticket was durably queued. Only the first can spawn: its retained
+    // nonterminal delta makes the run-level worktree dirty, so later workers
+    // fail closed before spawn until per-attempt ownership lands.
     for (const t of tickets) {
       expect(entries.some((e) => ticketOf(String(e.dispatchId)) === t && e.state === "planned")).toBe(true);
-      expect(entries.some((e) => ticketOf(String(e.dispatchId)) === t && e.state === "spawned")).toBe(true);
     }
+    expect(entries.filter((entry) => entry.state === "spawned").map((entry) => ticketOf(String(entry.dispatchId)))).toEqual(["t01"]);
 
     // No ticket is left stuck: its latest state is beyond 'planned'.
     const latest = latestStateByTicket(entries);
     for (const t of tickets) {
       expect(latest[t]).toBeDefined();
       expect(latest[t]).not.toBe("planned");
-      expect(latest[t]).toBe("completed");
+      expect(latest[t]).not.toBe("completed");
     }
 
-    // FIFO: the first spawn of each ticket follows normalized ticket order.
+    // The only safe spawn is the FIFO head.
     const firstSpawnOrder: string[] = [];
     for (const e of entries) {
       if (e.state !== "spawned") continue;
       const t = ticketOf(String(e.dispatchId));
       if (!firstSpawnOrder.includes(t)) firstSpawnOrder.push(t);
     }
-    expect(firstSpawnOrder).toEqual(tickets);
+    expect(firstSpawnOrder).toEqual(["t01"]);
+    expect(entries.filter((entry) => entry.state === "implementation_captured")).toHaveLength(1);
+    expect(Object.values(latest).filter((state) => state === "failed")).toHaveLength(4);
   });
 
-  // VAL-QUEUE-005: a failing dispatch frees its slot and the queue keeps
-  // draining — the other four still complete, none left permanently planned.
-  it("a failing dispatch frees its slot and the queue keeps draining", () => {
+  it("rejects maxConcurrent greater than one before allocation or spawn", () => {
     const prd = writeMultiPrd(d.root, FIVE);
-    // t03 (src/c.ts) fails; its slot must free so t04/t05 still drain.
     const out = runCli(["build", prd, "--repo", d.repo, "--agent", d.agentDir, "--max-concurrent", "2"], d, {
       FIXTURE_FAIL_PATHS: "src/c.ts",
     });
-    expect(out.status).toBe(5);
-
-    const entries = ledgerEntries(d.rickgentDir);
-    const latest = latestStateByTicket(entries);
-    // The failing ticket reached a terminal non-completed state.
-    expect(latest["t03"]).not.toBe("completed");
-    expect(latest["t03"]).not.toBe("planned");
-    // The other four drained to completion despite the failure.
-    for (const t of ["t01", "t02", "t04", "t05"]) {
-      expect(latest[t]).toBe("completed");
-    }
-    // Ledger shows the failing slot freed and later tickets spawned after it.
-    expect(entries.some((e) => ticketOf(String(e.dispatchId)) === "t05" && e.state === "spawned")).toBe(true);
+    expect(out.status).toBe(2);
+    expect(out.stderr).toContain("--max-concurrent must be exactly 1");
+    expect(existsSync(join(d.rickgentDir, "dispatch-ledger.jsonl"))).toBe(false);
   });
 });

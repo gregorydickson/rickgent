@@ -69,12 +69,11 @@ describe("DispatchQueue backpressure (B3)", () => {
     return out;
   }
 
-  // VAL-QUEUE-003 + VAL-QUEUE-001: 5 tickets, 2 slots — the cap is never
-  // exceeded, concurrency actually reaches the cap, and all 5 drain (none left
-  // stuck 'planned').
-  it("drains 5 tickets under a 2-slot cap, never exceeding the cap, none left planned", async () => {
+  // M1 is deliberately sequential: all tickets drain, and active work never
+  // exceeds the single admitted slot.
+  it("drains 5 tickets sequentially, never exceeding one active dispatch", async () => {
     const ids = ["T1", "T2", "T3", "T4", "T5"].map(makeId);
-    const queue = new DispatchQueue(ledger, 2, FIXTURE_CAPABILITY_GATE);
+    const queue = new DispatchQueue(ledger, 1, FIXTURE_CAPABILITY_GATE);
     for (const id of ids) queue.enqueue(id);
 
     let active = 0;
@@ -82,7 +81,7 @@ describe("DispatchQueue backpressure (B3)", () => {
     const dispatchFn = async (id: DispatchId): Promise<DispatchEntry> => {
       active++;
       if (active > peak) peak = active;
-      expect(active).toBeLessThanOrEqual(2); // cap never exceeded, observed live
+      expect(active).toBeLessThanOrEqual(1);
       await tick();
       const entry = terminalEntry(dispatchIdString(id), "completed");
       ledger.append(entry); // the real Dispatcher writes spawned→terminal; simulate it
@@ -92,8 +91,8 @@ describe("DispatchQueue backpressure (B3)", () => {
 
     const result = await queue.drain(dispatchFn);
 
-    expect(peak).toBe(2); // concurrency genuinely reached the cap
-    expect(result.maxActiveObserved).toBe(2);
+    expect(peak).toBe(1);
+    expect(result.maxActiveObserved).toBe(1);
     expect(result.results.size).toBe(5);
     for (const id of ids) {
       const entry = result.results.get(dispatchIdString(id));
@@ -109,7 +108,7 @@ describe("DispatchQueue backpressure (B3)", () => {
   // VAL-QUEUE-002: queued tickets drain in FIFO (enqueue) order.
   it("spawns queued tickets in FIFO (enqueue) order", async () => {
     const ids = ["A", "B", "C", "D", "E"].map(makeId);
-    const queue = new DispatchQueue(ledger, 2, FIXTURE_CAPABILITY_GATE);
+    const queue = new DispatchQueue(ledger, 1, FIXTURE_CAPABILITY_GATE);
     for (const id of ids) queue.enqueue(id);
 
     const dispatchFn = async (id: DispatchId): Promise<DispatchEntry> => {
@@ -125,7 +124,7 @@ describe("DispatchQueue backpressure (B3)", () => {
   // draining; no ticket is left permanently 'planned'.
   it("frees the slot of a failing dispatch and keeps draining the queue", async () => {
     const ids = ["T1", "T2", "T3", "T4", "T5"].map(makeId);
-    const queue = new DispatchQueue(ledger, 2, FIXTURE_CAPABILITY_GATE);
+    const queue = new DispatchQueue(ledger, 1, FIXTURE_CAPABILITY_GATE);
     for (const id of ids) queue.enqueue(id);
 
     let active = 0;
@@ -133,7 +132,7 @@ describe("DispatchQueue backpressure (B3)", () => {
     const dispatchFn = async (id: DispatchId): Promise<DispatchEntry> => {
       active++;
       if (active > peak) peak = active;
-      expect(active).toBeLessThanOrEqual(2);
+      expect(active).toBeLessThanOrEqual(1);
       await tick();
       const failing = id.ticketId === "T2";
       const entry = terminalEntry(dispatchIdString(id), failing ? "failed" : "completed");
@@ -151,7 +150,7 @@ describe("DispatchQueue backpressure (B3)", () => {
       (id) => result.results.get(dispatchIdString(id))?.state === "completed",
     );
     expect(drained.length).toBe(4); // the other four drained past the failure
-    expect(peak).toBe(2);
+    expect(peak).toBe(1);
     const latest = latestStateByTicket();
     for (const id of ids) {
       expect(latest[dispatchIdString(id)]).not.toBe("planned");
@@ -162,7 +161,7 @@ describe("DispatchQueue backpressure (B3)", () => {
   // and is recorded as a failed terminal entry, not left in flight forever.
   it("a throwing dispatch is recorded failed and its slot is freed", async () => {
     const ids = ["T1", "T2", "T3"].map(makeId);
-    const queue = new DispatchQueue(ledger, 2, FIXTURE_CAPABILITY_GATE);
+    const queue = new DispatchQueue(ledger, 1, FIXTURE_CAPABILITY_GATE);
     for (const id of ids) queue.enqueue(id);
 
     const dispatchFn = async (id: DispatchId): Promise<DispatchEntry> => {
@@ -180,7 +179,7 @@ describe("DispatchQueue backpressure (B3)", () => {
 
   it("enqueue records a durable 'planned' ledger entry for each ticket (resume-visible)", () => {
     const ids = ["T1", "T2", "T3"].map(makeId);
-    const queue = new DispatchQueue(ledger, 2, FIXTURE_CAPABILITY_GATE);
+    const queue = new DispatchQueue(ledger, 1, FIXTURE_CAPABILITY_GATE);
     for (const id of ids) queue.enqueue(id);
     for (const id of ids) {
       const found = ledger.find(dispatchIdString(id));

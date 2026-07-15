@@ -234,6 +234,16 @@ describe("B9 metrics — contained build profile", () => {
     d = { root, repo, dataDir, rickgentDir, agentDir };
   });
   afterEach(() => {
+    if (existsSync(d.repo)) {
+      const current = git(d.repo, ["rev-parse", "--show-toplevel"]);
+      for (const line of git(d.repo, ["worktree", "list", "--porcelain"]).split("\n")) {
+        if (!line.startsWith("worktree ")) continue;
+        const worktree = line.slice("worktree ".length);
+        if (worktree !== current) {
+          try { git(d.repo, ["worktree", "remove", "--force", worktree]); } catch { /* test cleanup */ }
+        }
+      }
+    }
     rmSync(d.root, { recursive: true, force: true });
   });
 
@@ -267,7 +277,7 @@ describe("B9 metrics — contained build profile", () => {
     expect(out.json["interventionsPerRun"]).toBe(0);
   });
 
-  it("a successful local build records a run but cannot manufacture delivery metrics", () => {
+  it("a nonterminal capture records a run but cannot manufacture delivery metrics", () => {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       PATH: `${FIXTURE_BIN}:${process.env.PATH ?? ""}`,
@@ -286,7 +296,7 @@ describe("B9 metrics — contained build profile", () => {
       input: "",
       timeout: 90000,
     });
-    expect(build.status).toBe(0);
+    expect(build.status).toBe(5);
     const prPath = join(d.rickgentDir, "prs.jsonl");
     expect(existsSync(prPath)).toBe(false);
     expect(existsSync(join(d.root, "gh.log"))).toBe(false);

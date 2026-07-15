@@ -9,8 +9,10 @@ description: >
 instructions: |
   You are a Rickgent worker. You execute a single lifecycle phase for a ticket.
   Work only within the declared paths for the ticket. Do not modify files
-  outside your declared scope. When you are done, ensure your work is committed
-  with a clear commit message. Do not claim done without a real commit.
+  outside your declared scope. Use only the structured read, write, and edit
+  tools. Do not stage or commit changes, mutate Git refs, or run Git mutation
+  commands. Never claim completion, a terminal state, delivery, or Done. The
+  orchestrator will inspect the nonterminal working-tree delta after you exit.
 
 executor:
   type: omnigent
@@ -38,17 +40,16 @@ tools:
     - sys_os_write
     - sys_os_edit
 
-# Policy ATTACHMENT (B4/C4). The worker executes real writes and pushes, so it
-# must carry the SAME required policy set as the manager — attached here via the
+# Policy ATTACHMENT (B4/C4). The worker executes scoped structured writes, so it
+# carries the required policy set — attached here via the
 # top-level `guardrails:` block (NOT `policy_modules`). The effective attached
 # set is read statically via `omnigent.spec.parser.parse(...).guardrails.policies`.
 # Composition precedence is DENY > ASK > ALLOW; `None` = abstain.
 guardrails:
   ask_timeout: 86400
   policies:
-    # Omnigent builtin — bounds shell blast radius. gate_pushes=True keeps the
-    # ASK-class gate on push/merge/deploy; an ungated worker blast_radius is the
-    # live push risk. autonomous_pr_flow layers the narrow own-branch ALLOW.
+    # Omnigent builtin retained for defense in depth. The worker has no raw
+    # shell tool and its instructions forbid Git mutation or delivery.
     blast_radius:
       type: function
       function:

@@ -1,13 +1,10 @@
 // M6 E2E — full gated pipeline twice consecutively (VAL-E2E-001..004).
 //
-// This is the Mission 1 end-to-end validation: `rickgent build` runs the
-// fixture PRD with every active local gate live, completes with zero required
-// human interventions, and the full gated local profile runs clean
-// end-to-end at least twice consecutively. This flow is DISTINCT from the M3
-// single-build assertions (full gated pipeline, twice, not one build).
+// M1 end-to-end validation: `rickgent build` may capture implementation, but it
+// must remain nonterminal and keep later verification/delivery gates unreachable.
 //
 // Drives the REAL `rickgent` CLI (dist/cli.js) against the deterministic
-// fixture omnigent and observes REAL effects: the dispatch ledger, git commits,
+// fixture omnigent and observes REAL effects: the dispatch ledger, isolated deltas,
 // the intervention ledger, and the build report
 // output enumerating each enforced gate.
 
@@ -42,6 +39,18 @@ function initGitRepo(repo: string): void {
   writeFileSync(join(repo, "README.md"), "seed\n");
   git(repo, ["add", "--", "README.md"]);
   git(repo, ["commit", "-q", "-m", "initial"]);
+}
+
+function cleanupRunWorktrees(repo: string): void {
+  if (!existsSync(repo)) return;
+  const current = git(repo, ["rev-parse", "--show-toplevel"]);
+  for (const line of git(repo, ["worktree", "list", "--porcelain"]).split("\n")) {
+    if (!line.startsWith("worktree ")) continue;
+    const worktree = line.slice("worktree ".length);
+    if (worktree !== current) {
+      try { git(repo, ["worktree", "remove", "--force", worktree]); } catch { /* test cleanup */ }
+    }
+  }
 }
 
 /** Reset a fixture repo to its initial state (remove feature branches, reset HEAD). */
@@ -141,7 +150,7 @@ function ledgerEntries(rickgentDir: string): Array<Record<string, unknown>> {
 /** Gate evidence markers that the E2E test checks for in the build output. */
 const GATE_MARKERS = {
   policyAttachment: /policy attachment/i,
-  evidenceDispatch: /oracle|completed|db_session/i,
+  evidenceDispatch: /implementation captured|db_session/i,
   salvage: /salvage|breaker/i,
   crossVendor: /router|routing|roster|vendor/i,
   conformance: /conformance/i,
@@ -155,24 +164,24 @@ describe("M6 E2E — full gated pipeline (VAL-E2E-001..004)", () => {
     d = setupDirs();
   });
   afterEach(() => {
+    cleanupRunWorktrees(d.repo);
     rmSync(d.root, { recursive: true, force: true });
   });
 
-  // VAL-E2E-001: rickgent build runs the fixture PRD end-to-end with ALL gates live
-  it("runs the fixture PRD end-to-end with all gates observably invoked", () => {
+  it("runs capture end-to-end while later gates remain observably unreachable", () => {
     const out = runCli(["build", PRD_MIN, "--repo", d.repo, "--agent", AGENT_DIR], d);
-    expect(out.status).toBe(0);
+    expect(out.status).toBe(5);
 
     // Each named gate must be observably invoked in the build report.
     // Policy attachment verification at startup.
     expect(out.stdout).toMatch(GATE_MARKERS.policyAttachment);
-    // Evidence-based dispatch (B2): oracle-gated completion.
+    // Fixture evidence settles only as a nonterminal capture.
     expect(out.stdout).toMatch(GATE_MARKERS.evidenceDispatch);
     // Salvage/breaker infrastructure (observable even on success path).
     expect(out.stdout).toMatch(GATE_MARKERS.salvage);
     // Cross-vendor routing (B8).
     expect(out.stdout).toMatch(GATE_MARKERS.crossVendor);
-    // Conformance audit gate.
+    // Later gates are reported as skipped because nothing completed.
     expect(out.stdout).toMatch(GATE_MARKERS.conformance);
     // Deslop gate.
     expect(out.stdout).toMatch(GATE_MARKERS.deslop);
@@ -183,14 +192,16 @@ describe("M6 E2E — full gated pipeline (VAL-E2E-001..004)", () => {
     expect(Number(s.planned)).toBeGreaterThanOrEqual(1);
     expect(Number(s.dispatched)).toBeGreaterThanOrEqual(1);
 
-    expect(s.outcome).toBe("succeeded");
+    expect(Number(s.captured)).toBe(1);
+    expect(Number(s.done)).toBe(0);
+    expect(s.outcome).toBe("failed");
     expect(existsSync(d.ghLog)).toBe(false);
   });
 
   // VAL-E2E-002: zero required human interventions
-  it("completes the local profile with zero required human interventions", () => {
+  it("captures with zero required human interventions", () => {
     const out = runCli(["build", PRD_MIN, "--repo", d.repo, "--agent", AGENT_DIR], d);
-    expect(out.status).toBe(0);
+    expect(out.status).toBe(5);
     const s = summary(out.stdout);
     expect(Number(s.interventions)).toBe(0);
     // No intervention ledger file created (0 interventions = no file).
@@ -199,14 +210,14 @@ describe("M6 E2E — full gated pipeline (VAL-E2E-001..004)", () => {
     expect(out.stdout).not.toMatch(/run this yourself|press enter|awaiting input|\? \(y\/n\)/i);
   });
 
-  // VAL-E2E-003: the full gated pipeline runs clean end-to-end at least twice consecutively
-  it("runs the full gated pipeline clean end-to-end twice consecutively", () => {
+  it("runs the nonterminal capture seam twice consecutively", () => {
     // ── Run 1 ──────────────────────────────────────────────────────────
     const out1 = runCli(["build", PRD_MIN, "--repo", d.repo, "--agent", AGENT_DIR], d);
-    expect(out1.status).toBe(0);
+    expect(out1.status).toBe(5);
     const s1 = summary(out1.stdout);
     expect(Number(s1.interventions)).toBe(0);
-    expect(s1.outcome).toBe("succeeded");
+    expect(s1.outcome).toBe("failed");
+    expect(Number(s1.captured)).toBe(1);
     // All gates observable in run 1.
     expect(out1.stdout).toMatch(GATE_MARKERS.conformance);
     expect(out1.stdout).toMatch(GATE_MARKERS.deslop);
@@ -214,6 +225,7 @@ describe("M6 E2E — full gated pipeline (VAL-E2E-001..004)", () => {
 
     // ── Reset fixture state between runs ────────────────────────────────
     // Reset the git repo to initial state (no residue from run 1).
+    cleanupRunWorktrees(d.repo);
     resetRepo(d.repo);
     // Use a fresh .rickgent dir + data dir for run 2 (no ledger/registry residue).
     const rickgentDir2 = join(d.root, ".rickgent-2");
@@ -225,10 +237,11 @@ describe("M6 E2E — full gated pipeline (VAL-E2E-001..004)", () => {
 
     // ── Run 2 ──────────────────────────────────────────────────────────
     const out2 = runCli(["build", PRD_MIN, "--repo", d.repo, "--agent", AGENT_DIR], d2);
-    expect(out2.status).toBe(0);
+    expect(out2.status).toBe(5);
     const s2 = summary(out2.stdout);
     expect(Number(s2.interventions)).toBe(0);
-    expect(s2.outcome).toBe("succeeded");
+    expect(s2.outcome).toBe("failed");
+    expect(Number(s2.captured)).toBe(1);
     // All gates observable in run 2 (not inherited from run 1).
     expect(out2.stdout).toMatch(GATE_MARKERS.conformance);
     expect(out2.stdout).toMatch(GATE_MARKERS.deslop);
@@ -238,41 +251,34 @@ describe("M6 E2E — full gated pipeline (VAL-E2E-001..004)", () => {
     expect(existsSync(d.ghLog)).toBe(false);
     expect(existsSync(ghLog2)).toBe(false);
 
-    // Summary: 2/2 clean.
-    const run1Clean = out1.status === 0 && Number(s1.interventions) === 0 && s1.outcome === "succeeded";
-    const run2Clean = out2.status === 0 && Number(s2.interventions) === 0 && s2.outcome === "succeeded";
-    expect(run1Clean && run2Clean).toBe(true);
+    expect(Number(s1.done) + Number(s2.done)).toBe(0);
   });
 
   // VAL-E2E-004: E2E flow is distinct from M3 single-build assertions
-  it("fails closed when the required conformance gate is disabled", () => {
-    // Control run: skip the conformance gate via test-only env var.
+  it("does not invoke conformance for a capture-only run", () => {
     const controlOut = runCli(
       ["build", PRD_MIN, "--repo", d.repo, "--agent", AGENT_DIR],
       d,
       { RICKGENT_FIXTURE_SKIP_CONFORMANCE: "1" },
     );
-    expect(controlOut.status).toBe(6);
-    expect(controlOut.stdout).toContain("conformance gate — skipped");
-    expect(controlOut.stdout).toContain("required_gate_failed");
+    expect(controlOut.status).toBe(5);
+    expect(controlOut.stdout).not.toContain("conformance gate");
 
     const s = summary(controlOut.stdout);
     expect(Number(s.planned)).toBeGreaterThanOrEqual(1);
     expect(Number(s.dispatched)).toBeGreaterThanOrEqual(1);
     expect(s.outcome).toBe("failed");
 
-    // Missing required gate evidence is a verification failure.
   });
 
-  it("fails closed when the required deslop gate is disabled", () => {
+  it("does not invoke deslop for a capture-only run", () => {
     const controlOut = runCli(
       ["build", PRD_MIN, "--repo", d.repo, "--agent", AGENT_DIR],
       d,
       { RICKGENT_FIXTURE_SKIP_DESLOP: "1" },
     );
-    expect(controlOut.status).toBe(6);
-    expect(controlOut.stdout).toContain("deslop gate — skipped");
-    expect(controlOut.stdout).toContain("required_gate_failed");
+    expect(controlOut.status).toBe(5);
+    expect(controlOut.stdout).not.toContain("deslop gate");
     const s = summary(controlOut.stdout);
     expect(s.outcome).toBe("failed");
   });

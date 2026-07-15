@@ -1,14 +1,12 @@
 // Build loop (B1) — the contained PRD → local-profile lifecycle.
 //
 // `runBuild` decomposes a PRD into ≥1 ticket and dispatches each through the
-// REAL production `Dispatcher` path. Every Done is the terminal `completed`
-// state of a dispatch, which is only reachable through the single completion
-// oracle (`evaluateCompletion`, caller `dispatch.completion`) — the build never
-// declares Done by any other path. After the plan gate, the loop is strictly
-// non-interactive: a ticket failure is ABSORBED by the circuit breaker + salvage
-// executor and the run continues; it never prompts a human or prints a "run this
-// yourself" instruction. Required local gates and every planned ticket are
-// aggregated before a typed outcome is returned.
+// REAL production `Dispatcher` path. The M1 fixture path can only capture a
+// nonterminal implementation delta; it cannot create commits or declare Done.
+// After the plan gate, the loop is strictly non-interactive: a ticket failure
+// is absorbed by the circuit breaker and retained-workspace evidence, and the
+// queue continues without prompting a human. Required local gates and every
+// planned ticket are aggregated before a typed outcome is returned.
 //
 // `runPipeline` runs the full build then the cleanup chain (orphan-reaper +
 // reconcile). `runBuild({resume:true})` recovers the completed tickets from the
@@ -28,7 +26,6 @@ import {
 } from "../dispatch/dispatch.js";
 import { DispatchQueue } from "../dispatch/queue.js";
 import { Registry, type TicketState } from "./registry.js";
-import { SalvageExecutor } from "./salvage.js";
 import { reconcile, type ReconcileResult } from "./reconcile.js";
 import {
   createBreakerState,
@@ -55,6 +52,7 @@ import { runContractConformanceGate } from "./citadel.js";
 import { runDeslopGate } from "./szechuan.js";
 import {
   CapabilityUnavailableError,
+  InputContractError,
   PRODUCTION_CAPABILITY_GATE,
   assertNoProductionBypasses,
   type CapabilityGate,
@@ -65,14 +63,22 @@ import {
   type RunIssue,
   type RunOutcome,
 } from "./run-outcome.js";
+import {
+  callerRepositoryUnchanged,
+  finalizeRunWorkspace,
+  provisionRunWorkspace,
+  type ReadyRunWorkspace,
+  type RunWorkspaceCleanupEvidence,
+} from "../git/run-workspace.js";
+import type { ImplementationCapturedReceipt } from "../git/mutation-capture.js";
 
 export interface BuildOptions {
   prdPath: string;
-  /** Target git repo the workers mutate. */
+  /** Caller repository used only to provision the isolated run worktree. */
   workingDir: string;
   /** `.rickgent` state dir (ledger, registry, interventions, salvage). */
   rickgentDir: string;
-  /** omnigent agent bundle dir the Dispatcher spawns. */
+  /** Rickgent agent root containing the sole admitted agents/worker template. */
   agentDir: string;
   /** OMNIGENT_DATA_DIR root for per-dispatch DB-session isolation. */
   dataDir: string;
@@ -120,10 +126,13 @@ export interface BuildResult {
   ticketsPlanned: number;
   ticketsDispatched: number;
   ticketsDone: number;
+  ticketsCaptured: number;
   ticketsFailed: number;
   ticketsRecovered: number;
   interventions: number;
   report: string[];
+  captureReceipts: ImplementationCapturedReceipt[];
+  workspaceCleanup: RunWorkspaceCleanupEvidence | null;
 }
 
 type BuildObservation = Omit<BuildResult, "outcome">;
@@ -136,19 +145,6 @@ function finishBuild(base: BuildObservation, issues: readonly RunIssue[]): Build
       `code=${outcome.stableCode} issues=${reasons}`,
   );
   return { ...base, outcome };
-}
-
-function verifiedCompletion(entry: DispatchEntry): boolean {
-  return entry.state === "completed" &&
-    entry.exitCode === 0 &&
-    typeof entry.conversationId === "string" &&
-    entry.conversationId.length > 0 &&
-    typeof entry.commitSha === "string" &&
-    entry.commitSha.length > 0 &&
-    typeof entry.baselineSha === "string" &&
-    entry.baselineSha.length > 0 &&
-    entry.treeChanged === true &&
-    Array.isArray(entry.declaredPaths);
 }
 
 export function interventionLedgerPath(rickgentDir: string): string {
@@ -281,9 +277,12 @@ export async function runBuild(
 ): Promise<BuildResult> {
   const env = opts.env ?? process.env;
   (dependencies.assertEnvironment ?? assertNoProductionBypasses)(env);
+  const cap = opts.maxConcurrent ?? 1;
+  if (cap !== 1) {
+    throw new InputContractError("maxConcurrent must be exactly 1 for the sequential fixture profile");
+  }
   const capabilityGate = dependencies.capabilityGate ?? PRODUCTION_CAPABILITY_GATE;
   if (opts.resume) capabilityGate.require("resume_retry");
-  if ((opts.maxConcurrent ?? 1) > 1) capabilityGate.require("parallel_dispatch");
   if (opts.deliveryConfigured || opts.featureBranch !== undefined || opts.autonomousPrFlow !== undefined) {
     capabilityGate.require("automatic_delivery");
   }
@@ -297,10 +296,13 @@ export async function runBuild(
     ticketsPlanned: 0,
     ticketsDispatched: 0,
     ticketsDone: 0,
+    ticketsCaptured: 0,
     ticketsFailed: 0,
     ticketsRecovered: 0,
     interventions: 0,
     report,
+    captureReceipts: [],
+    workspaceCleanup: null,
   };
   const issues: RunIssue[] = [];
 
@@ -361,10 +363,7 @@ export async function runBuild(
     }, issues);
   }
 
-  mkdirSync(opts.rickgentDir, { recursive: true });
-  // Durable allocation begins only after the complete contract set is admitted.
   const requestedRunId = opts.runId ?? `run-${Date.now()}`;
-  recordRun(opts.rickgentDir, requestedRunId, parsed.prd.title);
 
   // ── Policy attachment verification (B4 gate) ─────────────────────────────
   // Before any dispatch, verify that the manager + worker bundles attach the
@@ -430,12 +429,45 @@ export async function runBuild(
   // pass it to the router for cross-vendor exclusion.
   const implementerVendorByTicket = new Map<string, string>();
 
+  // ── Dedicated fixture run workspace ─────────────────────────────────────
+  // No mutation-capable child can exist before this clean ref/worktree is
+  // allocated and verified. Public callers never reach this seam because the
+  // production capability gate above remains fixture-only.
+  const provisioned = provisionRunWorkspace({
+    targetRepo: opts.workingDir,
+    runId: requestedRunId,
+    externalRoots: [opts.rickgentDir, opts.dataDir],
+  });
+  if (!provisioned.ok) {
+    report.push(`build: RUN WORKSPACE GATE hit — ${provisioned.code}: ${provisioned.detail}`);
+    issues.push(runIssue({
+      reason: "input_contract_error",
+      class: "input_contract",
+      detail: `${provisioned.code}: ${provisioned.detail}`,
+      gate: "run-workspace",
+    }));
+    return finishBuild({
+      ...base,
+      gateHit: "run-workspace-gate",
+      workspaceCleanup: provisioned.cleanup,
+    }, issues);
+  }
+  const runWorkspace: ReadyRunWorkspace = provisioned.workspace;
+  report.push(
+    `build: dedicated run workspace ready — ref=${runWorkspace.runRef} ` +
+      `baseline=${runWorkspace.baselineSha.slice(0, 12)}`,
+  );
+
+  mkdirSync(opts.rickgentDir, { recursive: true });
+  // Durable state allocation begins only after normalized tickets and the
+  // clean mutation owner have both been admitted.
+  recordRun(opts.rickgentDir, requestedRunId, parsed.prd.title);
+
   // ── Dispatch infra ───────────────────────────────────────────────────────
   const ledger = new DispatchLedger(dispatchLedgerPath(opts.rickgentDir));
   const lock = new TicketLock(join(opts.rickgentDir, "locks"));
   const dispatcher = new Dispatcher(ledger, lock, opts.rickgentDir, capabilityGate);
   const registry = new Registry(join(opts.rickgentDir, "registry.json"));
-  const salvageExec = new SalvageExecutor(opts.workingDir);
   const breaker: CircuitBreakerState = createBreakerState();
 
   const runId = seedRegistry(registry, requestedRunId, tickets);
@@ -459,8 +491,6 @@ export async function runBuild(
   // `maxConcurrent` in flight, a slot freeing the instant a dispatch settles.
   // There are NO human prompts after the plan gate: a failure is absorbed by
   // the circuit breaker + salvage and the queue keeps draining.
-  const cap = opts.maxConcurrent ?? 1;
-
   const toDispatch: TicketContract[] = [];
   for (const ticket of tickets) {
     if (recoveredDone.has(ticket.id)) {
@@ -548,28 +578,18 @@ export async function runBuild(
       ledger.append(failedEntry);
 
       // Absorb via salvage/breaker, same as any other dispatch failure.
-      const treeChanged = computeTreeChanged(opts.workingDir, revParseHead(opts.workingDir, env), env);
+      const treeChanged = computeTreeChanged(runWorkspace.worktreeDir, runWorkspace.baselineSha, env);
       const transition = recordIterationResult(breaker, {
         error: reason,
         gitTreeChanged: treeChanged,
         workerClaimedFilesChanged: null,
       });
-      const salvage = salvageExec.execute(
-        {
-          gatePassed: false,
-          treeChanged,
-          orphanReset: false,
-          ffReattachPossible: false,
-          ownedPaths: ticketOwnedPaths(ticket),
-        },
-        { ticketId: ticket.id, registry },
-      );
       recordSalvageDisposition(opts.rickgentDir, {
         ticketId: ticket.id,
         dispatchState: "failed",
-        disposition: salvage.decision.disposition,
-        executed: salvage.executed,
-        archivePath: salvage.archivePath,
+        disposition: treeChanged ? "retained-run-workspace" : "no-op",
+        executed: false,
+        archivePath: null,
         breaker: transition.transition,
         routerVerdict: v.result,
         routerCode: v.code,
@@ -583,61 +603,52 @@ export async function runBuild(
       implementerVendorByTicket.set(ticket.id, selectedVendor);
     }
 
-    const baseline = revParseHead(opts.workingDir, env);
     const entry = await dispatcher.dispatch(id, {
       agentDir: opts.agentDir,
       prompt: ticketPrompt(ticket),
       timeout: opts.timeout ?? 60000,
       maxConcurrent: cap,
-      targetRepo: opts.workingDir,
+      workspace: runWorkspace,
+      materializationRoot: join(opts.rickgentDir, "materialized-workers"),
       dataDir: opts.dataDir,
       declaredPaths: ticketOwnedPaths(ticket),
       env,
       vendor: selectedVendor,
     });
 
-    if (entry.state === "completed") {
+    if (entry.state === "implementation_captured" && entry.captureReceipt) {
       if (registry.getTicketState(ticket.id)) {
         registry.updateTicketState(ticket.id, {
-          status: "Done",
-          phase: "implement",
-          completionCommitSha: entry.commitSha ?? null,
+          status: "In Progress",
+          phase: "implementation_captured",
+          completionCommitSha: null,
+          attempt: id.attempt,
         });
       }
       report.push(
-        `  ${ticket.id}: Done — dispatch reached the oracle-gated completed state ` +
-          `(commit ${(entry.commitSha ?? "?").slice(0, 12)})`,
+        `  ${ticket.id}: implementation captured (nonterminal) — ` +
+          `${entry.captureReceipt.changedPaths.length} observed path(s)`,
       );
       return entry;
     }
 
     // FAILURE ABSORBED — circuit breaker + salvage, never a prompt.
-    const treeChanged = computeTreeChanged(opts.workingDir, baseline, env);
+    const treeChanged = computeTreeChanged(runWorkspace.worktreeDir, runWorkspace.baselineSha, env);
     const transition = recordIterationResult(breaker, {
       error: entry.stderr || `dispatch terminal state ${entry.state}`,
       gitTreeChanged: treeChanged,
       workerClaimedFilesChanged: null,
     });
-    const salvage = salvageExec.execute(
-      {
-        gatePassed: false,
-        treeChanged,
-        orphanReset: false,
-        ffReattachPossible: false,
-        ownedPaths: ticketOwnedPaths(ticket),
-      },
-      { ticketId: ticket.id, registry },
-    );
     recordSalvageDisposition(opts.rickgentDir, {
       ticketId: ticket.id,
       dispatchState: entry.state,
-      disposition: salvage.decision.disposition,
-      executed: salvage.executed,
-      archivePath: salvage.archivePath,
+      disposition: treeChanged ? "retained-run-workspace" : "no-op",
+      executed: false,
+      archivePath: null,
       breaker: transition.transition,
     });
     report.push(
-      `  ${ticket.id}: FAILED (${entry.state}) → salvage=${salvage.decision.disposition} ` +
+      `  ${ticket.id}: FAILED (${entry.state}) → workspace=${treeChanged ? "retained" : "clean"} ` +
         `breaker=${transition.transition} — absorbed, continuing non-interactively`,
     );
     return entry;
@@ -661,11 +672,11 @@ export async function runBuild(
     }
 
     base.ticketsDispatched++;
-    if (verifiedCompletion(entry)) {
-      base.ticketsDone++;
+    if (entry.state === "implementation_captured" && entry.captureReceipt) {
+      base.ticketsCaptured++;
+      base.captureReceipts.push(entry.captureReceipt);
       continue;
     }
-
     base.ticketsFailed++;
     if (entry.state === "completed" || entry.terminalReason === "evidence_unverifiable" || entry.exitCode === 0) {
       issues.push(runIssue({
@@ -691,7 +702,7 @@ export async function runBuild(
     }
   }
 
-  const accounted = base.ticketsDone + base.ticketsFailed + base.ticketsRecovered;
+  const accounted = base.ticketsDone + base.ticketsCaptured + base.ticketsFailed + base.ticketsRecovered;
   if (accounted !== base.ticketsPlanned) {
     issues.push(runIssue({
       reason: "infrastructure_error",
@@ -836,6 +847,21 @@ export async function runBuild(
   }
 
   report.push("build: local profile complete; automatic delivery is structurally absent");
+  const retainWorkspace = computeTreeChanged(runWorkspace.worktreeDir, runWorkspace.baselineSha, env);
+  base.workspaceCleanup = finalizeRunWorkspace(runWorkspace, retainWorkspace);
+  const callerCheck = callerRepositoryUnchanged(runWorkspace);
+  report.push(
+    `build: caller checkout — ${callerCheck.unchanged ? "unchanged" : "CHANGED"}; ` +
+      `run workspace=${base.workspaceCleanup.disposition}`,
+  );
+  if (!callerCheck.unchanged) {
+    issues.push(runIssue({
+      reason: "infrastructure_error",
+      class: "infrastructure",
+      detail: callerCheck.detail,
+      gate: "caller-integrity",
+    }));
+  }
   return finishBuild({
     ...base,
     interventions: countInterventions(opts.rickgentDir),

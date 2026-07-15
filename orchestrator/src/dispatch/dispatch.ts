@@ -6,19 +6,30 @@ import { spawn } from "child_process";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, appendFileSync, rmSync } from "fs";
 import { join } from "path";
 import {
-  captureGitBaseline,
   captureConversationIds,
-  gatherCompletionEvidence,
   isolatedDataDir,
-  type CompletionEvidenceContext,
+  observeDbSession,
 } from "./evidence.js";
 import {
   PRODUCTION_CAPABILITY_GATE,
   type CapabilityGate,
+  InputContractError,
 } from "../capabilities/registry.js";
+import {
+  runWorkspaceReadyForSpawn,
+  type ReadyRunWorkspace,
+} from "../git/run-workspace.js";
+import {
+  captureNonterminalMutation,
+  type ImplementationCapturedReceipt,
+} from "../git/mutation-capture.js";
+import {
+  materializeWorkerBundle,
+  type MaterializedWorkerBundle,
+} from "./worker-materialization.js";
 
 export type DispatchState =
-  | "planned" | "spawned" | "db_session_observed" | "completed"
+  | "planned" | "spawned" | "db_session_observed" | "implementation_captured" | "completed"
   | "timed_out" | "killed" | "salvage_started" | "salvaged"
   | "failed" | "retried" | "ignored_late";
 
@@ -69,6 +80,8 @@ export interface DispatchEntry {
    * Null when no router was consulted (no silent hardcoded default).
    */
   vendor?: string | null;
+  /** M1 fixture-only observation. It is deliberately nonterminal and has no worker commit. */
+  captureReceipt?: ImplementationCapturedReceipt;
 }
 
 const TERMINAL_STATES: ReadonlySet<DispatchState> = new Set([
@@ -174,15 +187,15 @@ export class TicketLock {
 }
 
 export interface DispatchOptions {
+  /** Rickgent agent root. The M1 capture path resolves only agents/worker beneath it. */
   agentDir: string;
   prompt: string;
   timeout: number;
   maxConcurrent: number;
-  /**
-   * Target git repo the worker mutates. Required to observe an in-scope git
-   * delta; without it completion cannot be verified and fails closed.
-   */
-  targetRepo?: string;
+  /** Verified M1 mutation owner. No free-form mutation cwd is admitted. */
+  workspace?: ReadyRunWorkspace;
+  /** External root for attempt-specific structured worker materializations. */
+  materializationRoot?: string;
   /** Ticket's declared scope (repo-relative path prefixes) for the delta filter. */
   declaredPaths?: string[];
   /**
@@ -216,7 +229,9 @@ export class Dispatcher {
   }
 
   async dispatch(id: DispatchId, opts: DispatchOptions): Promise<DispatchEntry> {
-    if (opts.maxConcurrent > 1) this.capabilityGate.require("parallel_dispatch");
+    if (opts.maxConcurrent !== 1) {
+      throw new InputContractError("maxConcurrent must be exactly 1 for the sequential fixture profile");
+    }
     this.capabilityGate.require("autonomous_dispatch");
     const idStr = dispatchIdString(id);
 
@@ -224,6 +239,11 @@ export class Dispatcher {
     const existing = this.ledger.find(idStr);
     if (existing && this.ledger.isTerminal(idStr)) {
       return existing;
+    }
+    if (!opts.workspace || !opts.materializationRoot) {
+      throw new InputContractError(
+        "dispatch requires a verified run workspace and attempt-specific worker materialization root",
+      );
     }
 
     // Backpressure — at capacity, record planned state and return without spawning
@@ -272,10 +292,42 @@ export class Dispatcher {
       const sessionDataDir = opts.dataDir ? isolatedDataDir(opts.dataDir, idStr) : null;
       if (sessionDataDir) mkdirSync(sessionDataDir, { recursive: true });
 
-      // Capture the pre-dispatch evidence baseline BEFORE spawning: the git
-      // HEAD the delta is measured against and the conversations that already
-      // exist (so a DB session created by THIS dispatch is distinguishable).
-      const evidenceCtx = this.captureEvidenceContext(opts, sessionDataDir);
+      const readiness = runWorkspaceReadyForSpawn(opts.workspace);
+      if (!readiness.ready) {
+        const failed: DispatchEntry = {
+          dispatchId: idStr, state: "failed", pid: null,
+          startedAt: null, completedAt: new Date().toISOString(),
+          exitCode: null, stdout: null,
+          stderr: `run workspace rejected before spawn: ${readiness.detail}`,
+          // A retained prior-worker delta is an expected M1 isolation stop:
+          // this ticket could not execute safely until per-attempt ownership
+          // lands. Identity/caller failures remain infrastructure failures.
+          terminalReason: readiness.code === "dirty" ? "worker_failed" : "infrastructure_error",
+          vendor: opts.vendor ?? null,
+        };
+        this.ledger.append(failed);
+        return failed;
+      }
+
+      let materializedBundle: MaterializedWorkerBundle;
+      try {
+        materializedBundle = materializeWorkerBundle(opts.agentDir, opts.materializationRoot, id);
+      } catch (error) {
+        const failed: DispatchEntry = {
+          dispatchId: idStr, state: "failed", pid: null,
+          startedAt: null, completedAt: new Date().toISOString(),
+          exitCode: null, stdout: null,
+          stderr: `worker materialization failed before spawn: ${error instanceof Error ? error.message : String(error)}`,
+          terminalReason: "infrastructure_error",
+          vendor: opts.vendor ?? null,
+        };
+        this.ledger.append(failed);
+        return failed;
+      }
+
+      const baselineConvIds = sessionDataDir
+        ? captureConversationIds(sessionDataDir)
+        : new Set<string>();
 
       // Capture the spawn timestamp once and reuse it for every ledger entry
       // produced by this dispatch. The "spawned" entry is the source of truth
@@ -294,46 +346,30 @@ export class Dispatcher {
       });
 
       // Dispatch via omnigent run one-shot
-      return await this.runOneShot(idStr, opts, startedAt, evidenceCtx, sessionDataDir);
+      return await this.runOneShot(id, idStr, opts, startedAt, baselineConvIds, sessionDataDir, materializedBundle);
     } finally {
       this.active--;
       this.lock.release(id.ticketId);
     }
   }
 
-  // Assemble the evidence baseline captured at dispatch start. Returns null
-  // when the caller did not supply the repo + data dir needed to verify
-  // completion — in that case a bare exit 0 must fail closed. Evidence is
-  // observed from the per-dispatch isolated data dir, not the shared root.
-  private captureEvidenceContext(
-    opts: DispatchOptions,
-    sessionDataDir: string | null,
-  ): CompletionEvidenceContext | null {
-    if (!opts.targetRepo || !sessionDataDir) return null;
-    return {
-      repoDir: opts.targetRepo,
-      dataDir: sessionDataDir,
-      baseline: captureGitBaseline(opts.targetRepo),
-      baselineConvIds: captureConversationIds(sessionDataDir),
-      declaredPaths: Array.isArray(opts.declaredPaths) ? opts.declaredPaths : [],
-    };
-  }
-
   private async runOneShot(
+    id: DispatchId,
     idStr: string,
     opts: DispatchOptions,
     startedAt: string,
-    evidenceCtx: CompletionEvidenceContext | null,
+    baselineConvIds: Set<string>,
     sessionDataDir: string | null,
+    materializedBundle: MaterializedWorkerBundle,
   ): Promise<DispatchEntry> {
     return new Promise((resolve) => {
       // W3: do NOT pass `timeout` to spawn() — the manual timer below is the
       // single source of truth for timeout enforcement. Passing both creates a
       // race where Node's internal timeout and our timer can both fire and
       // produce conflicting ledger entries.
-      const child = spawn("omnigent", ["run", opts.agentDir, "-p", opts.prompt], {
+      const child = spawn("omnigent", ["run", materializedBundle.bundleDir, "-p", opts.prompt], {
         stdio: ["pipe", "pipe", "pipe"],
-        cwd: opts.targetRepo || undefined,
+        cwd: opts.workspace!.worktreeDir,
         // OMNIGENT_DATA_DIR is pinned LAST to the per-dispatch isolated dir so
         // neither the inherited env nor opts.env can redirect the worker back
         // to a shared store — the worker writes its session where this dispatch
@@ -341,6 +377,8 @@ export class Dispatcher {
         env: {
           ...process.env,
           ...(opts.env ?? {}),
+          PWD: opts.workspace!.worktreeDir,
+          RICKGENT_TARGET_REPO: opts.workspace!.worktreeDir,
           ...(sessionDataDir ? { OMNIGENT_DATA_DIR: sessionDataDir } : {}),
         },
       });
@@ -400,53 +438,42 @@ export class Dispatcher {
           return;
         }
 
-        // Exit 0 with no way to verify evidence fails closed.
-        if (!evidenceCtx) {
-          finish({
-            dispatchId: idStr, state: "failed", pid,
-            startedAt, completedAt, exitCode: code, stdout,
-            stderr: stderr + "\n[dispatch] exit 0 but no evidence context (targetRepo/dataDir) — cannot verify completion",
-            terminalReason: "evidence_unverifiable",
-            vendor: opts.vendor ?? null,
-          });
-          return;
-        }
-
-        // Gather the four evidence conditions + oracle verdict (fail-closed).
-        const evidence = gatherCompletionEvidence(evidenceCtx);
-
-        // Emit db_session_observed BEFORE completed, only when a conversation
-        // created by THIS dispatch is observed.
-        if (evidence.dbObserved) {
+        const observation = sessionDataDir
+          ? observeDbSession(sessionDataDir, baselineConvIds)
+          : { conversationId: null, transcriptCount: 0 };
+        if (observation.conversationId !== null) {
           this.ledger.append({
             dispatchId: idStr, state: "db_session_observed", pid,
             startedAt, completedAt: null, exitCode: code, stdout, stderr,
-            conversationId: evidence.conversationId,
+            conversationId: observation.conversationId,
             vendor: opts.vendor ?? null,
           });
         }
-
-        if (evidence.completed) {
+        const captured = captureNonterminalMutation(
+          id,
+          opts.workspace!,
+          materializedBundle,
+          Array.isArray(opts.declaredPaths) ? opts.declaredPaths : [],
+          observation,
+        );
+        if (captured.ok) {
           finish({
-            dispatchId: idStr, state: "completed", pid,
+            dispatchId: idStr, state: "implementation_captured", pid,
             startedAt, completedAt, exitCode: code, stdout, stderr,
-            conversationId: evidence.conversationId,
-            commitSha: evidence.commitSha,
-            baselineSha: evidence.baselineSha,
-            treeChanged: evidence.treeChanged,
+            conversationId: observation.conversationId,
+            baselineSha: opts.workspace!.baselineSha,
+            treeChanged: true,
             declaredPaths: Array.isArray(opts.declaredPaths) ? opts.declaredPaths : [],
             vendor: opts.vendor ?? null,
+            captureReceipt: captured.receipt,
           });
           return;
         }
-
         finish({
           dispatchId: idStr, state: "failed", pid,
           startedAt, completedAt, exitCode: code, stdout,
-          stderr: stderr + `\n[dispatch] completion evidence incomplete: ` +
-            `dbSession=${evidence.dbObserved} transcript=${evidence.transcriptCount} ` +
-            `inScopeDelta=${evidence.inScopePaths.length} oracle=${evidence.oracleVerdict}`,
-          conversationId: evidence.conversationId,
+          stderr: `${stderr}\n[dispatch] ${captured.detail}`,
+          conversationId: observation.conversationId,
           terminalReason: "evidence_unverifiable",
           vendor: opts.vendor ?? null,
         });

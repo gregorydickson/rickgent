@@ -264,8 +264,8 @@ function resolveBuildOptions(rest: string[]): BuildOptions {
   if (!prdPath && !resume) throw new InputContractError("missing <prd> argument");
 
   const maxConcurrent = strictPositiveNumber(flagValue(rest, "--max-concurrent"), "--max-concurrent", true);
-  if (maxConcurrent !== undefined && maxConcurrent < 1) {
-    throw new InputContractError("--max-concurrent must be at least 1");
+  if (maxConcurrent !== undefined && maxConcurrent !== 1) {
+    throw new InputContractError("--max-concurrent must be exactly 1 for the sequential fixture profile");
   }
   const costBudgetUsd = strictPositiveNumber(flagValue(rest, "--cost-budget"), "--cost-budget", false);
   const softThresholdUsd = strictPositiveNumber(flagValue(rest, "--soft-threshold"), "--soft-threshold", false);
@@ -295,8 +295,6 @@ function resolveBuildOptions(rest: string[]): BuildOptions {
 
 function requireBuildCapabilities(rest: string[], gate: CapabilityGate): void {
   if (rest.includes("--resume")) gate.require("resume_retry");
-  const cap = flagValue(rest, "--max-concurrent");
-  if (cap !== undefined && Number(cap) > 1) gate.require("parallel_dispatch");
   if (rest.includes("--feature") || rest.includes("--no-autonomous-pr")) gate.require("automatic_delivery");
   if (rest.includes("--raw-shell")) gate.require("raw_shell");
   gate.require("autonomous_dispatch");
@@ -361,7 +359,7 @@ async function runBuildCommand(rest: string[], pipeline: boolean, dependencies: 
   console.log(result.report.join("\n"));
   const summary =
     `${pipeline ? "pipeline" : "build"}: planned=${result.ticketsPlanned} ` +
-    `dispatched=${result.ticketsDispatched} done=${result.ticketsDone} ` +
+    `dispatched=${result.ticketsDispatched} captured=${result.ticketsCaptured} done=${result.ticketsDone} ` +
     `failed=${result.ticketsFailed} recovered=${result.ticketsRecovered} ` +
     `interventions=${result.interventions} outcome=${result.outcome.status} ` +
     `primary=${result.outcome.primary}`;

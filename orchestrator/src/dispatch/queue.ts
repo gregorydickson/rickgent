@@ -1,16 +1,10 @@
-// Backpressure queue (B3) — a durable FIFO scheduler that drains queued
-// dispatches under a concurrency cap.
+// Sequential queue (M1) — a durable FIFO scheduler for fixture dispatches.
 //
 // Every enqueued ticket is recorded `planned` in the shared dispatch ledger, so
 // a killed run can reconstruct the queued (planned) state on resume (reconcile
-// reads it back). The drain then dispatches each in enqueue (FIFO) order,
-// keeping at most `maxConcurrent` in flight at once. A slot frees the instant a
-// dispatch settles — success OR failure — so a failing dispatch never wedges a
-// slot and the queue keeps draining. A `dispatchFn` that throws is captured as
-// a fail-closed `failed` terminal entry rather than aborting the whole drain.
-//
-// The scheduler owns backpressure; the concurrency cap is the queue's cap, so
-// no ticket is ever left permanently stranded by capacity pressure (goal 2).
+// reads it back). The M1 fixture profile admits exactly one dispatch at a time;
+// a throwing dispatch is captured fail-closed and the remaining FIFO work keeps
+// draining.
 
 import {
   DispatchLedger,
@@ -21,6 +15,7 @@ import {
 import {
   PRODUCTION_CAPABILITY_GATE,
   type CapabilityGate,
+  InputContractError,
 } from "../capabilities/registry.js";
 
 /** Dispatches one ticket and resolves with its terminal/interim ledger entry. */
@@ -74,15 +69,17 @@ export class DispatchQueue {
 
   constructor(
     private ledger: DispatchLedger,
-    private maxConcurrent: number,
-    capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
+    maxConcurrent: number,
+    _capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
   ) {
-    if (this.cap > 1) capabilityGate.require("parallel_dispatch");
+    if (maxConcurrent !== 1) {
+      throw new InputContractError("maxConcurrent must be exactly 1 for the sequential fixture profile");
+    }
   }
 
-  /** Cap the queue enforces (always ≥ 1). */
+  /** M1 is deliberately sequential; later milestones replace this scheduler. */
   get cap(): number {
-    return Math.max(1, Math.floor(this.maxConcurrent));
+    return 1;
   }
 
   get length(): number {
@@ -102,65 +99,30 @@ export class DispatchQueue {
     }
   }
 
-  /**
-   * Drain the queue: dispatch every enqueued ticket in FIFO order, at most
-   * `cap` in flight at once, freeing a slot the moment a dispatch settles.
-   * Resolves once every ticket has settled.
-   */
-  drain(dispatchFn: DispatchFn, hooks?: DrainHooks): Promise<DrainResult> {
+  /** Drain every queued ticket in FIFO order through the single M1 slot. */
+  async drain(dispatchFn: DispatchFn, hooks?: DrainHooks): Promise<DrainResult> {
     const results = new Map<string, DispatchEntry>();
     const spawnOrder: string[] = [];
-    const cap = this.cap;
-    const queue = this.queued;
-
-    let active = 0;
-    let maxActive = 0;
-    let cursor = 0;
-
-    return new Promise<DrainResult>((resolve) => {
-      if (queue.length === 0) {
-        resolve({ results, spawnOrder, maxActiveObserved: 0 });
-        return;
+    for (const id of this.queued) {
+      const idStr = dispatchIdString(id);
+      spawnOrder.push(idStr);
+      hooks?.onSpawn?.(idStr, 1);
+      let entry: DispatchEntry;
+      try {
+        entry = await dispatchFn(id);
+      } catch (error) {
+        entry = failClosedEntry(
+          idStr,
+          `dispatch threw (fail-closed): ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
-
-      const settle = (idStr: string, entry: DispatchEntry): void => {
-        results.set(idStr, entry);
-        active--;
-        hooks?.onSettle?.(idStr, entry, active);
-        if (cursor >= queue.length && active === 0) {
-          resolve({ results, spawnOrder, maxActiveObserved: maxActive });
-          return;
-        }
-        pump();
-      };
-
-      const pump = (): void => {
-        while (active < cap && cursor < queue.length) {
-          const id = queue[cursor++]!;
-          const idStr = dispatchIdString(id);
-          active++;
-          if (active > maxActive) maxActive = active;
-          spawnOrder.push(idStr);
-          hooks?.onSpawn?.(idStr, active);
-          // A throw is captured fail-closed so one bad dispatch cannot abort the
-          // whole drain or leak a never-freed slot.
-          Promise.resolve()
-            .then(() => dispatchFn(id))
-            .then(
-              (entry) => settle(idStr, entry),
-              (err) =>
-                settle(
-                  idStr,
-                  failClosedEntry(
-                    idStr,
-                    `dispatch threw (fail-closed): ${err instanceof Error ? err.message : String(err)}`,
-                  ),
-                ),
-            );
-        }
-      };
-
-      pump();
-    });
+      results.set(idStr, entry);
+      hooks?.onSettle?.(idStr, entry, 0);
+    }
+    return {
+      results,
+      spawnOrder,
+      maxActiveObserved: this.queued.length === 0 ? 0 : 1,
+    };
   }
 }

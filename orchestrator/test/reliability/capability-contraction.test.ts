@@ -105,8 +105,8 @@ describe("M1 capability contraction", () => {
     expect(resume.stderr).toContain("RICKGENT_RESUME_UNAVAILABLE");
 
     const parallel = cli(["build", opts.prdPath, "--max-concurrent", "2"]);
-    expect(parallel.status).toBe(3);
-    expect(parallel.stderr).toContain("RICKGENT_PARALLEL_DISPATCH_UNAVAILABLE");
+    expect(parallel.status).toBe(2);
+    expect(parallel.stderr).toContain("--max-concurrent must be exactly 1");
 
     for (const args of [["--feature", "topic"], ["--no-autonomous-pr"]]) {
       const delivery = cli(["build", opts.prdPath, ...args]);
@@ -134,7 +134,7 @@ describe("M1 capability contraction", () => {
       { agentDir: root, prompt: "x", timeout: 1, maxConcurrent: 1 },
     )).rejects.toBeInstanceOf(CapabilityUnavailableError);
 
-    expect(() => new DispatchQueue(ledger, 2)).toThrow("RICKGENT_PARALLEL_DISPATCH_UNAVAILABLE");
+    expect(() => new DispatchQueue(ledger, 2)).toThrow("maxConcurrent must be exactly 1");
     expect(() => reconcile(root, state)).toThrow("RICKGENT_RECONCILIATION_UNAVAILABLE");
 
     const roster: ModelEntry[] = [{
