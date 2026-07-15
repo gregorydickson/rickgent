@@ -146,6 +146,12 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "prd") {
+    const { runPrdCommand } = await import("./lifecycle/prd-interview.js");
+    await runPrdCommand(args.slice(1));
+    return;
+  }
+
   // Stub for not-yet-implemented commands
   const implemented = [
     "verdict",
@@ -158,6 +164,7 @@ async function main(): Promise<void> {
     "microverse",
     "cronenberg",
     "citadel",
+    "prd",
     "--version",
     "--build-commit",
     "--help",
