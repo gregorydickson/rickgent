@@ -93,24 +93,54 @@
       "description": "Milestone 0 prerequisite contract decision. Commit executable schemas/examples for direct worker spawning, strict TicketContract hashing, ready-for-delivery versus delivered semantics, orchestrator-owned commits, structured verification argv, macOS/Linux sandbox backends, state-root derivation, no-op rejection, and the package-manager/Node/Python platform contract. These decisions constrain all downstream callers but enable no capability by themselves.",
       "acceptance_criteria": [
         "A versioned trust-spine contract states that production phases spawn an attempt-specific structured worker bundle directly and that only the orchestrator creates the authoritative commit.",
-        "Executable TicketContract fixtures cover unique IDs, dependencies, AC/interface mapping, canonical scope/change kinds, structured verification argv, budgets, and a deterministic SHA-256 contract digest.",
+        "The strict TicketContract v1 schema and executable fixtures cover unique IDs, dependencies, AC/interface mapping, canonical scope/change kinds, structured verification argv, budgets, stable negative errors, and a deterministic RFC-8785-equivalent SHA-256 contract digest.",
         "Terminal semantics reserve delivered/`Done` for verified remote delivery and define `ready_for_delivery` as local oracle completion after promotion and cleanup.",
         "Verification commands are argv-only and require a proven `sandbox-exec` or `bwrap` backend with allowlisted environment, denied network, explicit writable outputs, resource limits, and shared process supervision; unavailable sandbox support is an infrastructure error.",
+        "The contract freezes state-root derivation, state graphs and transition owners, capability activation boundaries, the public M1 mutation matrix, exit/error ownership, and fixture-only dispatch that cannot terminalize work.",
         "No-op is rejected, POSIX macOS/Linux is the supported remediation matrix, Windows fails stably, and exact Node/Python/pnpm versions or ranges are repository-owned and machine-checkable."
       ],
       "verification": [
         "node orchestrator/scripts/validate-trust-spine-contract.mjs docs/architecture/reliability/trust-spine-contract.json",
-        "node -e \"const p=require('./orchestrator/package.json');if(!/^pnpm@/.test(p.packageManager||''))process.exit(1);if(!p.engines?.node)process.exit(2)\"",
         "node orchestrator/scripts/validate-ticket-contract-fixtures.mjs orchestrator/test/fixtures/ticket-contract",
-        "rg -n \"ready_for_delivery|delivered|orchestrator-owned|sandbox-exec|bwrap|no-op|Windows\" docs/architecture/reliability/trust-spine-contract.md"
+        "node -e \"const fs=require('node:fs');const p=JSON.parse(fs.readFileSync('orchestrator/package.json','utf8'));const s=JSON.parse(fs.readFileSync('docs/architecture/reliability/ticket-contract.schema.json','utf8'));if(p.packageManager!=='pnpm@10.22.0'||p.engines?.node!=='>=24.0.0 <25.0.0'||p.rickgentToolchain?.python?.range!=='>=3.12.0 <3.15.0'||s.additionalProperties!==false||s.properties?.schema_version?.const!=='1.0.0')process.exit(1)\"",
+        "rg -n \"ready_for_delivery|delivered|orchestrator-owned|sandbox-exec|bwrap|no-op|Windows|fixture_only|state root\" docs/architecture/reliability/trust-spine-contract.md",
+        "git diff --check"
       ],
       "output_artifacts": [
         "docs/architecture/reliability/trust-spine-contract.md",
         "docs/architecture/reliability/trust-spine-contract.json",
+        "docs/architecture/reliability/ticket-contract.schema.json",
+        "docs/remediation/trust-spine-manifest.json",
         "orchestrator/scripts/validate-trust-spine-contract.mjs",
         "orchestrator/scripts/validate-ticket-contract-fixtures.mjs",
         "orchestrator/test/fixtures/ticket-contract/valid.json",
-        "orchestrator/test/fixtures/ticket-contract/invalid.json"
+        "orchestrator/test/fixtures/ticket-contract/canonicalization-vectors.json",
+        "orchestrator/test/fixtures/ticket-contract/invalid/absolute-path.json",
+        "orchestrator/test/fixtures/ticket-contract/invalid/dependency-cycle.json",
+        "orchestrator/test/fixtures/ticket-contract/invalid/digest-mismatch.json",
+        "orchestrator/test/fixtures/ticket-contract/invalid/empty-scope.json",
+        "orchestrator/test/fixtures/ticket-contract/invalid/network-enabled.json",
+        "orchestrator/test/fixtures/ticket-contract/invalid/reserved-path.json",
+        "orchestrator/test/fixtures/ticket-contract/invalid/shell-verification.json",
+        "orchestrator/test/fixtures/ticket-contract/invalid/traversal-path.json",
+        "orchestrator/test/fixtures/ticket-contract/invalid/unknown-field.json",
+        "orchestrator/test/fixtures/ticket-contract/invalid/unknown-interface.json",
+        "orchestrator/package.json",
+        "rickgent-policies/pyproject.toml"
+      ],
+      "artifact_scope": "minimum_required_outputs_not_changed_path_allowlist",
+      "reviewed_change_set": [
+        "docs/architecture/reliability/ticket-contract.schema.json",
+        "docs/architecture/reliability/trust-spine-contract.json",
+        "docs/architecture/reliability/trust-spine-contract.md",
+        "docs/remediation/trust-spine-manifest.json",
+        "orchestrator/package.json",
+        "orchestrator/scripts/validate-ticket-contract-fixtures.mjs",
+        "orchestrator/scripts/validate-trust-spine-contract.mjs",
+        "orchestrator/test/fixtures/ticket-contract/canonicalization-vectors.json",
+        "orchestrator/test/fixtures/ticket-contract/invalid",
+        "orchestrator/test/fixtures/ticket-contract/valid.json",
+        "rickgent-policies/pyproject.toml"
       ],
       "contract_decision": true,
       "priority": "P0",
@@ -122,23 +152,34 @@
     {
       "id": "t03",
       "title": "Install capability kill switches and strict CLI parsing",
-      "description": "Milestone 1 containment. Add one typed capability registry consumed by CLI and direct library boundaries. Default autonomous dispatch to fixture-only and make resume/retry, reconcile, parallel dispatch, cross-vendor review, automatic delivery, and raw shell unavailable with stable nonzero errors. Reject unknown flags and production `RICKGENT_SKIP_*` bypasses; direct callers cannot bypass the registry.",
+      "description": "Milestone 1 containment. Add one typed capability registry consumed by CLI and direct library boundaries. Default autonomous dispatch to fixture-only and make resume/retry, reconcile, parallel dispatch, cross-vendor review, automatic delivery, and raw shell unavailable with stable nonzero errors. Reject unknown flags and production `RICKGENT_SKIP_*` bypasses; direct callers cannot bypass the registry. Make clean-checkout CLI tests compile the local artifact without rewriting tracked build identity, and move mutation tests to disposable copies/worktrees before the first full-suite gate.",
       "acceptance_criteria": [
         "Capability entries expose `unavailable|fixture_only|enabled`, stable code, reason, and proof version through startup and doctor output.",
         "`--resume`, reconcile, `--max-concurrent 2`, delivery flags, raw-shell configuration, stale config, environment bypasses, and direct library calls cannot activate unavailable behavior.",
         "Unknown flags and advertised-but-unparsed flags fail nonzero instead of disappearing silently.",
-        "Test-only bypasses exist only through explicit dependency injection and are unreachable from production environment variables."
+        "Test-only bypasses exist only through explicit dependency injection and are unreachable from production environment variables.",
+        "Capability tests set every legacy `RICKGENT_SKIP_*` variable and prove capability and gate outcomes do not change; the source may name those variables only to reject them.",
+        "Tests that consume `dist/` build it from the current checkout first, and mutation tooling never rewrites production source in the implementation checkout."
       ],
       "verification": [
-        "cd orchestrator && pnpm exec vitest run test/reliability/capability-contraction.test.ts test/lifecycle/cli-commands.test.ts",
-        "cd orchestrator && pnpm typecheck",
-        "cd orchestrator && pnpm test",
-        "! rg -n \"RICKGENT_SKIP_(POLICY_ATTACH|CONFORMANCE|DESLOP)\" orchestrator/src --glob '*.ts'"
+        "(cd orchestrator && npm exec --offline -- tsc)",
+        "git diff --exit-code -- orchestrator/src/build-commit.ts",
+        "(cd orchestrator && npm exec --offline -- vitest run test/reliability/capability-contraction.test.ts test/lifecycle/cli-commands.test.ts)",
+        "(cd orchestrator && npm exec --offline -- vitest run test/reliability/capability-contraction.test.ts -t \"rejects production environment bypasses without changing capability outcomes\")",
+        "(cd orchestrator && npm run typecheck)",
+        "(cd orchestrator && npm test)"
       ],
       "output_artifacts": [
         "orchestrator/src/capabilities/registry.ts",
-        "orchestrator/test/reliability/capability-contraction.test.ts"
+        "orchestrator/src/cli.ts",
+        "orchestrator/src/commands/doctor.ts",
+        "orchestrator/scripts/coverage-manifest.cjs",
+        "orchestrator/test/reliability/capability-contraction.test.ts",
+        "orchestrator/test/lifecycle/cli-commands.test.ts",
+        "orchestrator/test/lifecycle/manifest.test.ts"
       ],
+      "artifact_scope": "minimum_required_outputs_not_changed_path_allowlist",
+      "reviewed_change_set_required": true,
       "priority": "P0",
       "status": "Todo",
       "depends_on": [
@@ -156,15 +197,23 @@
         "Lifecycle modules return typed results and do not call `process.exit`; CLI maps the complete result to one exit code with documented precedence."
       ],
       "verification": [
-        "cd orchestrator && pnpm exec vitest run test/reliability/fail-closed-aggregation.test.ts test/lifecycle/build-loop.test.ts test/lifecycle/e2e-gated-pipeline.test.ts",
-        "cd orchestrator && pnpm typecheck",
-        "cd orchestrator && pnpm test",
+        "(cd orchestrator && npm exec --offline -- tsc)",
+        "git diff --exit-code -- orchestrator/src/build-commit.ts",
+        "(cd orchestrator && npm exec --offline -- vitest run test/reliability/fail-closed-aggregation.test.ts test/lifecycle/build-loop.test.ts test/lifecycle/e2e-gated-pipeline.test.ts)",
+        "(cd orchestrator && npm run typecheck)",
+        "(cd orchestrator && npm test)",
         "rg -n \"zero_completion|partial_failure|cleanup_failed|evidence_unverifiable\" orchestrator/test/reliability/fail-closed-aggregation.test.ts"
       ],
       "output_artifacts": [
         "orchestrator/src/lifecycle/run-outcome.ts",
-        "orchestrator/test/reliability/fail-closed-aggregation.test.ts"
+        "orchestrator/src/lifecycle/build.ts",
+        "orchestrator/src/cli.ts",
+        "orchestrator/test/reliability/fail-closed-aggregation.test.ts",
+        "orchestrator/test/lifecycle/build-loop.test.ts",
+        "orchestrator/test/lifecycle/e2e-gated-pipeline.test.ts"
       ],
+      "artifact_scope": "minimum_required_outputs_not_changed_path_allowlist",
+      "reviewed_change_set_required": true,
       "priority": "P0",
       "status": "Todo",
       "depends_on": [
@@ -183,21 +232,29 @@
         "Prompt input and downstream interfaces accept the normalized contract rather than a lossy `TicketPlan`."
       ],
       "verification": [
-        "cd orchestrator && pnpm exec vitest run test/reliability/ticket-contract.test.ts test/lifecycle/manifest.test.ts",
+        "(cd orchestrator && npm exec --offline -- tsc)",
+        "git diff --exit-code -- orchestrator/src/build-commit.ts",
+        "(cd orchestrator && npm exec --offline -- vitest run test/reliability/ticket-contract.test.ts test/reliability/prd-ticket-adapter.test.ts)",
         "node orchestrator/scripts/validate-ticket-contract-fixtures.mjs orchestrator/test/fixtures/ticket-contract",
-        "cd orchestrator && pnpm typecheck",
-        "cd orchestrator && pnpm test"
+        "(cd orchestrator && npm run typecheck)",
+        "(cd orchestrator && npm test)"
       ],
       "output_artifacts": [
         "orchestrator/src/contracts/ticket-contract.ts",
+        "orchestrator/src/lifecycle/prd-parse.ts",
+        "orchestrator/src/core/prd.ts",
         "orchestrator/test/reliability/ticket-contract.test.ts",
+        "orchestrator/test/reliability/prd-ticket-adapter.test.ts",
         "orchestrator/test/fixtures/ticket-contract/negative-corpus.json"
       ],
       "proof_corpus": [
         "orchestrator/test/fixtures/ticket-contract/valid.json",
-        "orchestrator/test/fixtures/ticket-contract/invalid.json",
+        "orchestrator/test/fixtures/ticket-contract/canonicalization-vectors.json",
+        "orchestrator/test/fixtures/ticket-contract/invalid",
         "orchestrator/test/fixtures/ticket-contract/negative-corpus.json"
       ],
+      "artifact_scope": "minimum_required_outputs_not_changed_path_allowlist",
+      "reviewed_change_set_required": true,
       "priority": "P0",
       "status": "Todo",
       "depends_on": [
@@ -207,24 +264,34 @@
     {
       "id": "t06",
       "title": "Provision the sequential pre-mutation run worktree",
-      "description": "Milestone 1 isolation seam. Resolve the target repository and delivery baseline, create one clean dedicated run ref/worktree before any fixture worker spawn, force concurrency one, and directly materialize/spawn the structured worker template selected by `t02`. Do not let the manager bundle or caller checkout become a mutation authority. Milestone 4 will replace this run-level seam with per-attempt ownership.",
+      "description": "Milestone 1 isolation seam for fixture-only mutation capture. Resolve the target repository and delivery baseline, create one clean dedicated run ref/worktree before any fixture worker spawn, force concurrency one, and directly materialize/spawn the structured worker template selected by `t02`. Do not let the manager bundle or caller checkout become a mutation authority. Captured mutation is explicitly nonterminal: t06 cannot claim completion and cannot treat a worker commit as evidence; orchestrator-owned commit authority is implemented by t20. Milestone 4 will replace this run-level seam with per-attempt ownership.",
       "acceptance_criteria": [
-        "No product worker can spawn before the dedicated run ref/worktree exists and passes clean baseline checks.",
+        "No fixture worker can spawn before the dedicated run ref/worktree exists and passes clean baseline checks; public product mutation remains unavailable.",
         "Worker cwd is the run worktree; caller HEAD, branch, index, tracked changes, and untracked files remain byte-for-byte unchanged after success and failure.",
         "`maxConcurrent` is exactly one and values greater than one are rejected rather than clamped or ignored.",
-        "The actual spawn target is an attempt-specific materialization of `agents/rickgent/agents/worker`; the manager bundle and its raw shell are not used.",
-        "Protected-branch mutation and dirty/invalid baseline cases fail before spawn with cleanup evidence."
+        "The actual spawn target is an attempt-specific materialization of `agents/rickgent/agents/worker`; the manager bundle and its raw shell are not used, and the materialized instructions cannot ask the worker to commit.",
+        "Protected-branch mutation and dirty/invalid baseline cases fail before spawn with cleanup evidence.",
+        "A captured delta produces only an `implementation_captured_nonterminal` fixture receipt. `verified`, `ready_for_delivery`, `delivered`, and `Done` are unreachable until t20 commit authority and later oracle tickets land."
       ],
       "verification": [
-        "cd orchestrator && pnpm exec vitest run test/reliability/run-workspace.test.ts test/lifecycle/build-routing.test.ts",
-        "cd orchestrator && pnpm typecheck",
-        "cd orchestrator && pnpm test",
+        "(cd orchestrator && npm exec --offline -- tsc)",
+        "git diff --exit-code -- orchestrator/src/build-commit.ts",
+        "(cd orchestrator && npm exec --offline -- vitest run test/reliability/run-workspace.test.ts test/reliability/fixture-mutation-capture.test.ts test/lifecycle/build-routing.test.ts)",
+        "(cd orchestrator && npm run typecheck)",
+        "(cd orchestrator && npm test)",
         "rg -n \"agents/rickgent/agents/worker|caller.*unchanged|maxConcurrent\" orchestrator/test/reliability/run-workspace.test.ts"
       ],
       "output_artifacts": [
         "orchestrator/src/git/run-workspace.ts",
-        "orchestrator/test/reliability/run-workspace.test.ts"
+        "orchestrator/src/dispatch/dispatch.ts",
+        "orchestrator/src/lifecycle/build.ts",
+        "agents/rickgent/agents/worker/config.yaml",
+        "orchestrator/test/reliability/run-workspace.test.ts",
+        "orchestrator/test/reliability/fixture-mutation-capture.test.ts",
+        "orchestrator/test/lifecycle/build-routing.test.ts"
       ],
+      "artifact_scope": "minimum_required_outputs_not_changed_path_allowlist",
+      "reviewed_change_set_required": true,
       "priority": "P0",
       "status": "Todo",
       "depends_on": [
@@ -242,17 +309,24 @@
         "A claim-contract test fails on future docs/runtime drift."
       ],
       "verification": [
-        "cd orchestrator && pnpm exec vitest run test/reliability/claims-contract.test.ts test/lifecycle/doctor-attachment.test.ts",
-        "cd orchestrator && pnpm build",
+        "(cd orchestrator && npm exec --offline -- tsc)",
+        "git diff --exit-code -- orchestrator/src/build-commit.ts",
+        "(cd orchestrator && npm exec --offline -- vitest run test/reliability/claims-contract.test.ts test/lifecycle/doctor-attachment.test.ts)",
         "node orchestrator/dist/cli.js --help",
-        "node orchestrator/dist/cli.js doctor --json",
-        "cd orchestrator && pnpm test"
+        "node -e \"const {spawnSync}=require('node:child_process');const r=spawnSync(process.execPath,['orchestrator/dist/cli.js','doctor','--json'],{encoding:'utf8'});if(r.status!==0)process.exit(r.status??1);const x=JSON.parse(r.stdout);if(x.schema_version!=='1.0.0'||x.release_channel!=='reliability_preview'||!x.capabilities||x.terminal_semantics?.ready_for_delivery!=='local_oracle_complete'||x.terminal_semantics?.delivered!=='remote_delivery_verified')process.exit(2)\"",
+        "(cd orchestrator && npm test)"
       ],
       "output_artifacts": [
         "docs/reliability-preview.md",
+        "orchestrator/src/capabilities/registry.ts",
+        "orchestrator/src/cli.ts",
+        "orchestrator/src/commands/doctor.ts",
         "orchestrator/test/reliability/claims-contract.test.ts",
+        "orchestrator/test/lifecycle/doctor-attachment.test.ts",
         "README.md"
       ],
+      "artifact_scope": "minimum_required_outputs_not_changed_path_allowlist",
+      "reviewed_change_set_required": true,
       "priority": "P1",
       "status": "Todo",
       "depends_on": [

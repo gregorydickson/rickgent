@@ -1,0 +1,7 @@
+{
+  "name": "unknown top-level fields are rejected",
+  "expected_error": "TICKET_SCHEMA_UNKNOWN_FIELD",
+  "mutations": [
+    { "op": "set", "path": ["shell"], "value": "npm test" }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "empty scope is a contractual no-op",
+  "expected_error": "TICKET_NO_OP",
+  "mutations": [
+    { "op": "set", "path": ["scope"], "value": [] }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "acceptance criteria cannot reference unknown interfaces",
+  "expected_error": "TICKET_INTERFACE_REFERENCE_UNKNOWN",
+  "mutations": [
+    { "op": "set", "path": ["acceptance_criteria", 0, "interface_ids"], "value": ["INTERFACE-UNKNOWN"] }
+  ]
+}

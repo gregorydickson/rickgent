@@ -1,0 +1,7 @@
+{
+  "name": "digest mismatch is rejected",
+  "expected_error": "TICKET_DIGEST_MISMATCH",
+  "mutations": [
+    { "op": "set", "path": ["title"], "value": "Changed after hashing" }
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "schema_version": "1.0.0",
+  "id": "t02",
+  "title": "Freeze trust-spine execution contracts",
+  "description": "Create executable, decision-only contracts without enabling production mutation.",
+  "depends_on": ["t01"],
+  "scope": [
+    {
+      "path": "docs/architecture/reliability/ticket-contract.schema.json",
+      "change_kind": "create",
+      "directory": false
+    },
+    {
+      "path": "orchestrator/scripts/validate-ticket-contract-fixtures.mjs",
+      "change_kind": "create",
+      "directory": false
+    }
+  ],
+  "interfaces": [
+    {
+      "id": "INTERFACE-TICKET-CONTRACT",
+      "direction": "provides",
+      "path": "docs/architecture/reliability/ticket-contract.schema.json",
+      "owner": "orchestrator contract normalizer",
+      "description": "The strict TicketContract v1 schema consumed before run allocation."
+    }
+  ],
+  "acceptance_criteria": [
+    {
+      "id": "AC-CONTRACT-01",
+      "description": "Canonical ticket identity validates and hashes deterministically.",
+      "interface_ids": ["INTERFACE-TICKET-CONTRACT"],
+      "verification_ids": ["VERIFY-CONTRACT-FIXTURES"]
+    }
+  ],
+  "verifications": [
+    {
+      "id": "VERIFY-CONTRACT-FIXTURES",
+      "executable": "node",
+      "args": [
+        "orchestrator/scripts/validate-ticket-contract-fixtures.mjs",
+        "orchestrator/test/fixtures/ticket-contract"
+      ],
+      "cwd_class": "repository_root",
+      "env_allowlist": ["PATH"],
+      "timeout_ms": 30000,
+      "network": "deny",
+      "writable_outputs": ["artifacts/reliability/t02"],
+      "expected_exit_codes": [0]
+    }
+  ],
+  "budgets": {
+    "max_attempts": 2,
+    "max_review_cycles": 1,
+    "wall_clock_ms": 900000,
+    "remediation_limit": 1
+  },
+  "digest": "sha256:560d57df17f16a52879403b2794fd0c1dbf36ef1c72d4b2af2cc2ab315cc5116"
+}

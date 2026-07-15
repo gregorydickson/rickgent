@@ -1,0 +1,7 @@
+{
+  "name": "self dependency is a cycle",
+  "expected_error": "TICKET_DEPENDENCY_CYCLE",
+  "mutations": [
+    { "op": "set", "path": ["depends_on"], "value": ["t02"] }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "path traversal is rejected",
+  "expected_error": "TICKET_SCOPE_PATH_TRAVERSAL",
+  "mutations": [
+    { "op": "set", "path": ["scope", 0, "path"], "value": "docs/../outside" }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "name": "verification network access is forbidden",
+  "expected_error": "TICKET_VERIFICATION_NETWORK_FORBIDDEN",
+  "mutations": [
+    { "op": "set", "path": ["verifications", 0, "network"], "value": "allow" }
+  ]
+}

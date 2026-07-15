@@ -1,0 +1,7 @@
+{
+  "name": "absolute scope paths are rejected",
+  "expected_error": "TICKET_SCOPE_PATH_ABSOLUTE",
+  "mutations": [
+    { "op": "set", "path": ["scope", 0, "path"], "value": "/tmp/escape" }
+  ]
+}

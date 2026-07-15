@@ -1,0 +1,8 @@
+{
+  "name": "raw shell verification is forbidden",
+  "expected_error": "TICKET_VERIFICATION_SHELL_FORBIDDEN",
+  "mutations": [
+    { "op": "set", "path": ["verifications", 0, "executable"], "value": "sh" },
+    { "op": "set", "path": ["verifications", 0, "args"], "value": ["-c", "npm test"] }
+  ]
+}

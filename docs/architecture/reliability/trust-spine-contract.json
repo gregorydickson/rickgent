@@ -1,0 +1,252 @@
+{
+  "schema_version": "1.0.0",
+  "contract_id": "rickgent-trust-spine-v1",
+  "decision_status": "frozen_decision_only",
+  "activation_boundary": {
+    "decision_artifacts_enable_capabilities": false,
+    "default_state": "unavailable",
+    "activation_requires": [
+      "named proof corpus passes in the supported runtime profile",
+      "capability registry state changes in a separately reviewed ticket",
+      "CLI, direct-library, doctor, and documentation surfaces agree"
+    ],
+    "missing_proof_result": "RICKGENT_CAPABILITY_UNAVAILABLE"
+  },
+  "ticket_contract": {
+    "schema": "docs/architecture/reliability/ticket-contract.schema.json",
+    "schema_version": "1.0.0",
+    "canonicalization": "rickgent-canonical-json-v1",
+    "canonicalization_domain": "RFC-8785-equivalent for schema-admitted strings, booleans, null, arrays, objects with ASCII schema keys, and safe integers",
+    "digest": "sha256 over UTF-8 canonical bytes excluding the top-level digest field",
+    "normalization_owner": "orchestrator",
+    "validation_time": "before run allocation",
+    "raw_shell_allowed": false,
+    "no_op_result": "RICKGENT_NO_OP_REJECTED",
+    "runtime_path_checks": [
+      "canonical repository-relative path",
+      "realpath or nearest-existing-parent containment",
+      "no Git administrative or state root",
+      "no escaping symlink",
+      "no submodule boundary",
+      "declared change kind matches observed delta",
+      "no unsafe overlap with another active ticket"
+    ]
+  },
+  "state_root": {
+    "repository_identity": "realpath(target repository) plus canonical Git common directory",
+    "derivation_command": ["git", "-C", "<target-repository>", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    "default": "<canonical-git-common-dir>/rickgent/state.sqlite3",
+    "directory_mode": "0700",
+    "file_mode": "0600",
+    "caller_cwd_authoritative": false,
+    "symlink_allowed": false,
+    "unsafe_root_result": "RICKGENT_STATE_ROOT_UNSAFE"
+  },
+  "state_graphs": {
+    "attempt": {
+      "initial": "planned",
+      "states": ["planned", "implementing", "implementation_captured", "reviewing", "remediating", "remediation_captured", "verification_queued", "verifying", "converging", "cleanup_pending", "oracle_evaluation", "failed_clean", "quarantined", "verified"],
+      "transitions": [
+        ["planned", "implementing"],
+        ["implementing", "implementation_captured"],
+        ["implementation_captured", "reviewing"],
+        ["reviewing", "verification_queued"],
+        ["reviewing", "remediating"],
+        ["remediating", "remediation_captured"],
+        ["remediation_captured", "reviewing"],
+        ["verification_queued", "verifying"],
+        ["verifying", "converging"],
+        ["converging", "cleanup_pending"],
+        ["cleanup_pending", "oracle_evaluation"],
+        ["oracle_evaluation", "verified"],
+        ["cleanup_pending", "failed_clean"],
+        ["cleanup_pending", "quarantined"]
+      ],
+      "terminal": ["failed_clean", "quarantined", "verified"],
+      "transition_owner": "transactional transition service",
+      "timeout_is_terminal": false
+    },
+    "ticket": {
+      "initial": "planned",
+      "states": ["planned", "active", "cleanup_pending", "failed", "quarantined", "ready_for_delivery"],
+      "terminal": ["failed", "quarantined", "ready_for_delivery"],
+      "ready_transition_owner": "versioned completion oracle plus finalization service"
+    },
+    "run": {
+      "initial": "planned",
+      "states": ["planned", "active", "cleanup_pending", "failed", "delivery_failed", "ready_for_delivery", "delivered"],
+      "terminal": ["failed", "delivery_failed", "delivered"],
+      "delivered_transition_owner": "verified delivery service"
+    }
+  },
+  "capability_registry": [
+    {
+      "name": "autonomous_dispatch",
+      "m1_state": "fixture_only",
+      "error_code": "RICKGENT_AUTONOMOUS_FIXTURE_ONLY",
+      "reason": "M1 permits mutation-capture fixtures only; it cannot terminalize a ticket.",
+      "proof_version": "native-policy-lifecycle-v1",
+      "minimum_profile": "m2_local_structured_worker"
+    },
+    {
+      "name": "parallel_dispatch",
+      "m1_state": "unavailable",
+      "error_code": "RICKGENT_PARALLEL_DISPATCH_UNAVAILABLE",
+      "reason": "Sequential ownership is required until concurrency proof passes.",
+      "proof_version": "concurrency-corpus-v1",
+      "minimum_profile": "post_m4_explicit_activation"
+    },
+    {
+      "name": "resume_retry",
+      "m1_state": "unavailable",
+      "error_code": "RICKGENT_RESUME_UNAVAILABLE",
+      "reason": "Transactional lifecycle and oracle parity are not yet proven.",
+      "proof_version": "recovery-parity-v1",
+      "minimum_profile": "m5_local_lifecycle"
+    },
+    {
+      "name": "reconciliation",
+      "m1_state": "unavailable",
+      "error_code": "RICKGENT_RECONCILIATION_UNAVAILABLE",
+      "reason": "Reconciliation cannot precede authoritative persisted recovery.",
+      "proof_version": "recovery-parity-v1",
+      "minimum_profile": "m5_local_lifecycle"
+    },
+    {
+      "name": "cross_vendor_review",
+      "m1_state": "unavailable",
+      "error_code": "RICKGENT_CROSS_VENDOR_UNAVAILABLE",
+      "reason": "Requested identity is not independently observed identity.",
+      "proof_version": "model-identity-corpus-v1",
+      "minimum_profile": "m6_protected_identity"
+    },
+    {
+      "name": "automatic_delivery",
+      "m1_state": "unavailable",
+      "error_code": "RICKGENT_DELIVERY_UNAVAILABLE",
+      "reason": "Push and PR observations are not implemented and verified.",
+      "proof_version": "delivery-corpus-v1",
+      "minimum_profile": "m6_protected_delivery"
+    },
+    {
+      "name": "raw_shell",
+      "m1_state": "unavailable",
+      "error_code": "RICKGENT_RAW_SHELL_UNAVAILABLE",
+      "reason": "Execution and verification accept structured argv only.",
+      "proof_version": "none",
+      "minimum_profile": "none"
+    }
+  ],
+  "public_m1_mutation_matrix": [
+    { "surface": "build", "mode": "public", "mutation": "denied", "result": "RICKGENT_AUTONOMOUS_FIXTURE_ONLY" },
+    { "surface": "pipeline", "mode": "public", "mutation": "denied", "result": "RICKGENT_AUTONOMOUS_FIXTURE_ONLY" },
+    { "surface": "fixture_dispatch", "mode": "explicit_test_dependency_injection", "mutation": "dedicated_run_worktree_capture_only", "result": "nonterminal_receipt" },
+    { "surface": "resume_retry", "mode": "public", "mutation": "denied", "result": "RICKGENT_RESUME_UNAVAILABLE" },
+    { "surface": "reconcile", "mode": "public", "mutation": "denied", "result": "RICKGENT_RECONCILIATION_UNAVAILABLE" },
+    { "surface": "parallel_dispatch", "mode": "public", "mutation": "denied", "result": "RICKGENT_PARALLEL_DISPATCH_UNAVAILABLE" },
+    { "surface": "automatic_delivery", "mode": "public", "mutation": "denied", "result": "RICKGENT_DELIVERY_UNAVAILABLE" },
+    { "surface": "status_doctor_help", "mode": "public_read_only", "mutation": "none", "result": "success" }
+  ],
+  "worker_dispatch": {
+    "m1_mode": "fixture_only",
+    "spawn_target": "attempt-specific materialization of agents/rickgent/agents/worker",
+    "manager_bundle_is_spawn_target": false,
+    "worker_git_mutation_allowed": false,
+    "worker_terminalization_allowed": false,
+    "fixture_receipt": "implementation_captured_nonterminal",
+    "production_activation": "requires native policy enforcement in M2"
+  },
+  "process_supervisor": {
+    "argv_only": true,
+    "new_process_group": true,
+    "environment": "allowlist plus trusted final values",
+    "stdout_stderr": "bounded files with byte count, SHA-256, and bounded tail",
+    "timeout": "TERM grace, KILL escalation, confirmed process-group death",
+    "shared_by": ["worker", "reviewer", "remediation", "verification", "integration"],
+    "missing_or_failed_supervision": "RICKGENT_SUPERVISOR_INFRASTRUCTURE_ERROR"
+  },
+  "sandbox_profiles": {
+    "darwin": {
+      "backend": "sandbox-exec",
+      "executable": "/usr/bin/sandbox-exec",
+      "required": true,
+      "network": "deny",
+      "target_inputs": "read_only",
+      "writable_roots": "TicketContract verification writable_outputs resolved beneath attempt output roots",
+      "git_common_dir": "deny",
+      "credentials": "absent",
+      "limits": ["timeout", "stdout_bytes", "stderr_bytes", "memory", "process_count"],
+      "unavailable_result": "RICKGENT_SANDBOX_INFRASTRUCTURE_ERROR"
+    },
+    "linux": {
+      "backend": "bwrap",
+      "executable": "bwrap",
+      "required": true,
+      "network": "deny",
+      "target_inputs": "read_only",
+      "writable_roots": "TicketContract verification writable_outputs resolved beneath attempt output roots",
+      "git_common_dir": "deny",
+      "credentials": "absent",
+      "limits": ["timeout", "stdout_bytes", "stderr_bytes", "memory", "process_count"],
+      "unavailable_result": "RICKGENT_SANDBOX_INFRASTRUCTURE_ERROR"
+    }
+  },
+  "commit_authority": {
+    "owner": "orchestrator",
+    "worker_commits_allowed": false,
+    "earliest_implementation_ticket": "t20",
+    "preconditions": [
+      "worker process group is dead",
+      "attempt lease and resources are owner-valid",
+      "baseline HEAD and Git common directory match allocation receipt",
+      "review and required verification receipts are green",
+      "observed delta is non-empty and matches normalized scope/change kinds/modes",
+      "no foreign commit, symlink escape, submodule change, unexpected path, or moved ref"
+    ],
+    "staging": "isolated index and exact normalized owned paths; git add -A is forbidden",
+    "commit_shape": "exactly one parent equal to the attempt baseline",
+    "receipt_fields": ["baseline_oid", "parent_oid", "tree_before", "tree_after", "commit_oid", "ticket_contract_digest", "context_digest", "verification_receipt_digests", "paths", "change_kinds", "modes"],
+    "m1_behavior": "capture mutation evidence only; never claim verified, ready_for_delivery, delivered, or Done"
+  },
+  "terminal_semantics": {
+    "ready_for_delivery": "local oracle accepted the promoted commit and cleanup/ownership release evidence",
+    "delivered": "all tickets are ready and observed remote branch and PR head exactly equal the delivery OID",
+    "done_alias": "delivered",
+    "forbidden_writers": ["worker", "phase runner", "reconcile", "status", "CLI handler"],
+    "required_gate_blocking_values": ["missing", "null", "skipped", "unavailable", "infrastructure_error", "stale", "conflicting"]
+  },
+  "exit_error_map": [
+    { "class": "success", "exit_code": 0, "stable_code": "RICKGENT_OK" },
+    { "class": "input_contract", "exit_code": 2, "stable_code": "RICKGENT_INPUT_CONTRACT_ERROR" },
+    { "class": "capability_unavailable", "exit_code": 3, "stable_code": "RICKGENT_CAPABILITY_UNAVAILABLE" },
+    { "class": "infrastructure", "exit_code": 4, "stable_code": "RICKGENT_INFRASTRUCTURE_ERROR" },
+    { "class": "execution", "exit_code": 5, "stable_code": "RICKGENT_EXECUTION_FAILED" },
+    { "class": "verification", "exit_code": 6, "stable_code": "RICKGENT_VERIFICATION_FAILED" },
+    { "class": "cleanup", "exit_code": 7, "stable_code": "RICKGENT_CLEANUP_FAILED" },
+    { "class": "delivery", "exit_code": 8, "stable_code": "RICKGENT_DELIVERY_FAILED" },
+    { "class": "internal", "exit_code": 70, "stable_code": "RICKGENT_INTERNAL_ERROR" }
+  ],
+  "toolchain": {
+    "node": ">=24.0.0 <25.0.0",
+    "python": ">=3.12.0 <3.15.0",
+    "package_manager": "pnpm@10.22.0",
+    "lockfile": "orchestrator/pnpm-lock.yaml",
+    "lockfile_version": "9.0",
+    "supported_platforms": ["darwin", "linux"],
+    "windows": {
+      "support": "fail_fast",
+      "error_code": "RICKGENT_PLATFORM_UNSUPPORTED",
+      "exit_class": "infrastructure"
+    },
+    "missing_tool_result": "RICKGENT_TOOLCHAIN_INFRASTRUCTURE_ERROR"
+  },
+  "doctor_json_contract": {
+    "schema_version": "1.0.0",
+    "release_channel": "reliability_preview",
+    "required_fields": ["schema_version", "release_channel", "capabilities", "terminal_semantics", "toolchain"],
+    "terminal_semantics": {
+      "ready_for_delivery": "local_oracle_complete",
+      "delivered": "remote_delivery_verified"
+    }
+  }
+}

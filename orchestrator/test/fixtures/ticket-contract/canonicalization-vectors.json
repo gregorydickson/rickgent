@@ -1,0 +1,56 @@
+{
+  "schema_version": "1.0.0",
+  "algorithm": "rickgent-canonical-json-v1",
+  "vectors": [
+    {
+      "name": "object-property-order",
+      "input": {
+        "z": [3, 2, 1],
+        "a": {
+          "enabled": true,
+          "label": "ticket"
+        }
+      },
+      "permuted_input": {
+        "a": {
+          "label": "ticket",
+          "enabled": true
+        },
+        "z": [3, 2, 1]
+      },
+      "expected_digest": "sha256:0ce52c5c5e459ced0168a3a82108e5503a3c9782399cc6a88bef0e713b6d2af4"
+    },
+    {
+      "name": "nested-contract-field-order",
+      "input": {
+        "id": "t02",
+        "budgets": {
+          "wall_clock_ms": 900000,
+          "max_attempts": 2
+        },
+        "scope": [
+          {
+            "path": "docs/contract.json",
+            "directory": false,
+            "change_kind": "create"
+          }
+        ]
+      },
+      "permuted_input": {
+        "scope": [
+          {
+            "change_kind": "create",
+            "directory": false,
+            "path": "docs/contract.json"
+          }
+        ],
+        "budgets": {
+          "max_attempts": 2,
+          "wall_clock_ms": 900000
+        },
+        "id": "t02"
+      },
+      "expected_digest": "sha256:16425800275daab4df342e5c3079a8f737a9bac6f85e79cf5da246eba4274307"
+    }
+  ]
+}

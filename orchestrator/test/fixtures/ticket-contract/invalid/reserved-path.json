@@ -1,0 +1,7 @@
+{
+  "name": "Git administrative paths are reserved",
+  "expected_error": "TICKET_SCOPE_PATH_RESERVED",
+  "mutations": [
+    { "op": "set", "path": ["scope", 0, "path"], "value": ".git/config" }
+  ]
+}
