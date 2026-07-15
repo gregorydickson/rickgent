@@ -152,6 +152,12 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "refine") {
+    const { runRefineCommand } = await import("./lifecycle/refine.js");
+    await runRefineCommand(args.slice(1));
+    return;
+  }
+
   // Stub for not-yet-implemented commands
   const implemented = [
     "verdict",
@@ -165,6 +171,7 @@ async function main(): Promise<void> {
     "cronenberg",
     "citadel",
     "prd",
+    "refine",
     "--version",
     "--build-commit",
     "--help",
