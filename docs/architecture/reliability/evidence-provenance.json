@@ -1,0 +1,138 @@
+{
+  "schema_version": "1.0.0",
+  "contract_id": "rickgent-remediation-evidence-provenance-v1",
+  "historical_review": {
+    "role": "historical_evidence",
+    "reviewed_commit_oid": "6c9eee8689f9d6e8a5cb63f1a9335f0e98b18834",
+    "artifact": {
+      "path": "docs/project-completion-reliability-review-2026-07-15.md",
+      "sha256": "1dc9c0646dfe59467969cdced606978946dcbe58a0f4d553d4e1a665f972fdb9"
+    },
+    "not_authority_for": [
+      "current_implementation_head",
+      "omnigent_compatibility",
+      "future_ticket_handoffs"
+    ]
+  },
+  "authority_adoption": {
+    "commit_oid": "0661f4dbedd3576717dc0b545bc641e8349b4230",
+    "tree_oid": "880432473a7ca412d4d9901aa4a144ac01cef475",
+    "parent_oids": [
+      "6c9eee8689f9d6e8a5cb63f1a9335f0e98b18834"
+    ],
+    "artifacts_at_commit": [
+      {
+        "path": "docs/project-completion-reliability-review-2026-07-15.md",
+        "sha256": "1dc9c0646dfe59467969cdced606978946dcbe58a0f4d553d4e1a665f972fdb9"
+      },
+      {
+        "path": "docs/remediation/trust-spine-prd.md",
+        "sha256": "3c8265a1d32ed8f64fdf161daf9bcc3ca82ef11bb8fd6ef7514c7d165a240656"
+      },
+      {
+        "path": "docs/remediation/trust-spine-manifest.json",
+        "sha256": "09e8e7b1240e0a2e97c5d5e60a34454cc357173d032d674b1c249fdc6991e474"
+      }
+    ],
+    "refinement_session_id": "2026-07-15-d095ff49"
+  },
+  "external_authority": {
+    "system": "omnigent",
+    "authority_kind": "behavioral_probe",
+    "contract_mode": "current-compatible",
+    "producing_ticket": "t00",
+    "handoff_commit_oid": "9c0d47f3a5f9b2bb863bfd84e5edb887d71f7ea0",
+    "exact_external_git_pin": false,
+    "external_git_oid": null,
+    "historical_review_commit_is_authority": false,
+    "artifacts": [
+      {
+        "path": "artifacts/reliability/omnigent-compatibility-contract.json",
+        "sha256": "d1db539f7c602db8750a7187a3f74fee5ae46386d4f4a05df9c94fba13604b64"
+      },
+      {
+        "path": "artifacts/reliability/omnigent-contract-probe-result.json",
+        "sha256": "f0ad22489e273ff649dac71ffa42c18db74e178c9c017a9cb00af4407d248165"
+      },
+      {
+        "path": "docs/architecture/reliability/omnigent-contract.md",
+        "sha256": "dfc1e7098aeade4ddf8afd352b362d00034661cbc7641f4bc151615d4952ee75"
+      },
+      {
+        "path": "orchestrator/scripts/verify-omnigent-contract.mjs",
+        "sha256": "3ee200cfc62fdae58193f83a55000c935e58fb1dbb9de5e522299caa5b588b42"
+      },
+      {
+        "path": "orchestrator/scripts/omnigent-contract-probe.py",
+        "sha256": "3ae76a077c634179257d55e7e7a79ebaf794ae66463c6ae1eb00542874fbfe8f"
+      }
+    ],
+    "rule": "Compatibility is established only by the repository-owned current-compatible contract and a passing live behavioral probe; no Rickgent Git commit identifies or pins the external Omnigent implementation."
+  },
+  "implementation_handoff": {
+    "ticket_id": "t01",
+    "execution_mode": "sequential",
+    "branch": "remediation/trust-spine-phase-1",
+    "input_commit": {
+      "oid": "9c0d47f3a5f9b2bb863bfd84e5edb887d71f7ea0",
+      "tree_oid": "df89cec6ef38e379a40967da342aef8fbc0f5502",
+      "parent_oids": [
+        "0661f4dbedd3576717dc0b545bc641e8349b4230"
+      ]
+    },
+    "input_manifest": {
+      "path": "docs/remediation/trust-spine-manifest.json",
+      "sha256": "8017bde42ebf15d4280f48077621906082de3a01b9cd27dac1a79a4e8185126c"
+    },
+    "baseline_snapshot": {
+      "argv": [
+        "git",
+        "status",
+        "--porcelain=v2",
+        "-z",
+        "--untracked-files=all"
+      ],
+      "encoding": "raw_nul_delimited_bytes",
+      "byte_length": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "clean": true,
+      "preexisting_changes": []
+    },
+    "reviewed_change_set": [
+      "docs/architecture/reliability/evidence-provenance.json",
+      "docs/architecture/reliability/evidence-provenance.md",
+      "docs/remediation/trust-spine-manifest.json",
+      "orchestrator/scripts/validate-evidence-provenance.mjs"
+    ],
+    "expected_commit": {
+      "subject": "docs: record remediation evidence provenance",
+      "trailers": {
+        "Rickgent-Ticket": "t01",
+        "Rickgent-Input-Oid": "9c0d47f3a5f9b2bb863bfd84e5edb887d71f7ea0"
+      }
+    }
+  },
+  "sequential_handoff_contract": {
+    "require_single_parent": true,
+    "require_predecessor_output_as_input": true,
+    "require_clean_entry_and_exit": true,
+    "status_snapshot_format": "git status --porcelain=v2 -z --untracked-files=all",
+    "preserve_preexisting_user_changes_byte_for_byte": true,
+    "abort_on_unreviewed_or_changed_dirty_state": true,
+    "stage_only_reviewed_changed_paths": true,
+    "output_artifacts_semantics": "minimum_required_outputs_not_changed_path_allowlist",
+    "changed_path_policy": "Every ticket must obtain explicit reviewed approval for its complete changed-path set before staging; paths not listed as output_artifacts are permitted only when included in that reviewed set.",
+    "forbid_bulk_staging": true,
+    "require_independently_rerunnable_verification": true,
+    "required_commit_trailers": [
+      "Rickgent-Ticket",
+      "Rickgent-Input-Oid"
+    ]
+  },
+  "conflation_guards": {
+    "historical_review_is_not_implementation_input": true,
+    "authority_adoption_is_not_current_implementation_head": true,
+    "external_compatibility_is_not_a_rickgent_git_oid": true,
+    "ticket_input_advances_only_by_verified_sequential_handoff": true
+  }
+}

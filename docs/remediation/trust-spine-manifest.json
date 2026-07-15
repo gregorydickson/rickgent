@@ -54,22 +54,32 @@
     {
       "id": "t01",
       "title": "Adopt evidence provenance and the clean-baseline contract",
-      "description": "Milestone 0 provenance ticket. Intentionally add the currently untracked reliability review as a tracked authority artifact, record its historical reviewed commit without pinning implementation HEAD, and define clean-handoff rules for sequential Codex execution. The implementation base is captured from `git rev-parse HEAD` at ticket execution and may advance normally. No production behavior changes.",
+      "description": "Milestone 0 provenance ticket. Verify that authority-adoption commit `0661f4dbedd3576717dc0b545bc641e8349b4230` already tracked the reliability review, bind its historical reviewed commit separately from the t00 handoff and evolving external compatibility authority, and define clean-handoff rules for sequential Codex execution. The t01 implementation input is `9c0d47f3a5f9b2bb863bfd84e5edb887d71f7ea0`; dependent tickets advance normally from verified committed handoffs. No production behavior changes.",
       "acceptance_criteria": [
-        "`docs/project-completion-reliability-review-2026-07-15.md` is tracked and available in clean worktrees.",
-        "`docs/architecture/reliability/evidence-provenance.md` distinguishes the review's historical SHA from the implementation base and from external compatibility authority.",
-        "The provenance contract records how pre-existing user changes are detected and preserved, and forbids implementation tickets from silently absorbing unrelated dirty files.",
-        "The handoff contract requires every sequential ticket to leave committed, independently verifiable outputs for its dependent ticket."
+        "The tracked reliability review is verified byte-for-byte against authority-adoption commit `0661f4dbedd3576717dc0b545bc641e8349b4230`; t01 does not re-add or rewrite it.",
+        "The Markdown and machine-readable provenance contracts distinguish historical review `6c9eee8689f9d6e8a5cb63f1a9335f0e98b18834`, authority adoption `0661f4dbedd3576717dc0b545bc641e8349b4230`, implementation input `9c0d47f3a5f9b2bb863bfd84e5edb887d71f7ea0`, and the t00 behavioral external authority.",
+        "The provenance contract records the raw porcelain-v2-z clean snapshot and how pre-existing user changes are detected and preserved, and forbids implementation tickets from silently absorbing unrelated dirty files.",
+        "Every sequential ticket requires a single-parent committed handoff, independently rerunnable verification, and explicit reviewed approval for its complete changed-path set.",
+        "`output_artifacts` are minimum required outputs rather than a changed-path allowlist; supporting paths still require reviewed per-ticket approval."
       ],
       "verification": [
+        "node orchestrator/scripts/validate-evidence-provenance.mjs --contract docs/architecture/reliability/evidence-provenance.json",
         "git ls-files --error-unmatch docs/project-completion-reliability-review-2026-07-15.md",
-        "test -f docs/architecture/reliability/evidence-provenance.md",
-        "rg -n \"historical reviewed commit|implementation base|unrelated user changes|sequential\" docs/architecture/reliability/evidence-provenance.md",
+        "node -e \"JSON.parse(require('fs').readFileSync('docs/architecture/reliability/evidence-provenance.json','utf8'))\"",
         "git diff --check"
       ],
       "output_artifacts": [
         "docs/project-completion-reliability-review-2026-07-15.md",
-        "docs/architecture/reliability/evidence-provenance.md"
+        "docs/architecture/reliability/evidence-provenance.md",
+        "docs/architecture/reliability/evidence-provenance.json",
+        "orchestrator/scripts/validate-evidence-provenance.mjs"
+      ],
+      "artifact_scope": "minimum_required_outputs_not_changed_path_allowlist",
+      "reviewed_change_set": [
+        "docs/architecture/reliability/evidence-provenance.json",
+        "docs/architecture/reliability/evidence-provenance.md",
+        "docs/remediation/trust-spine-manifest.json",
+        "orchestrator/scripts/validate-evidence-provenance.mjs"
       ],
       "priority": "P0",
       "status": "Todo",
