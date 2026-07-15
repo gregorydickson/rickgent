@@ -20,6 +20,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   statSync,
   writeFileSync,
 } from "fs";
@@ -206,7 +207,6 @@ function findSourceFiles(workingDir: string, ownedPaths: string[]): string[] {
 }
 
 function walkDir(dir: string, files: string[], extensions: string[]): void {
-  const { readdirSync } = require("fs");
   let entries: string[];
   try {
     entries = readdirSync(dir);
@@ -240,7 +240,8 @@ function extractExports(absPath: string, relPath: string): ExportEntry[] {
   }
 
   const lines = content.split("\n");
-  const patterns: RegExp[] = [
+  // Named single-symbol export patterns (one capture group = the symbol name).
+  const namedPatterns: RegExp[] = [
     /^\s*export\s+(?:async\s+)?function\s+(\w+)/,
     /^\s*export\s+const\s+(\w+)/,
     /^\s*export\s+let\s+(\w+)/,
@@ -249,28 +250,34 @@ function extractExports(absPath: string, relPath: string): ExportEntry[] {
     /^\s*export\s+type\s+(\w+)/,
     /^\s*export\s+enum\s+(\w+)/,
     /^\s*export\s+default\s+function\s+(\w+)/,
-    /^\s*export\s+\{([^}]+)\}/,
   ];
+  // Brace export pattern: export { foo, bar as baz, qux }
+  const bracePattern = /^\s*export\s+\{([^}]+)\}/;
 
   const seen = new Set<string>();
   for (let i = 0; i < lines.length; i++) {
-    for (const pattern of patterns) {
+    // Check brace exports first (export { foo, bar }) — split into individual symbols.
+    const braceMatch = lines[i]!.match(bracePattern);
+    if (braceMatch) {
+      const inner = braceMatch[1] ?? "";
+      const names = inner
+        .split(",")
+        .map((s) => s.trim().split(/\s+as\s+/)[0]!.trim())
+        .filter((s) => s.length > 0);
+      for (const name of names) {
+        exports.push({ file: relPath, symbol: name, line: i + 1 });
+      }
+      continue; // Don't also match named patterns on the same line.
+    }
+    for (const pattern of namedPatterns) {
       const match = lines[i]!.match(pattern);
       if (!match) continue;
-      if (match[1]) {
-        // Named export (skip duplicates from overlapping patterns)
-        const symbol = match[1];
-        const key = `${relPath}:${symbol}:${i + 1}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        exports.push({ file: relPath, symbol, line: i + 1 });
-      } else if (match[2]) {
-        // Brace export: { foo, bar, baz }
-        const names = match[2].split(",").map((s) => s.trim().split(/\s+as\s+/)[0]!.trim()).filter((s) => s.length > 0);
-        for (const name of names) {
-          exports.push({ file: relPath, symbol: name, line: i + 1 });
-        }
-      }
+      const symbol = match[1];
+      if (!symbol) continue;
+      const key = `${relPath}:${symbol}:${i + 1}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      exports.push({ file: relPath, symbol, line: i + 1 });
     }
   }
 
@@ -295,7 +302,7 @@ function grepImporters(workingDir: string, symbol: string, sourceFile: string): 
     // Use git grep for tracked files only.
     const out = execFileSync(
       "git",
-      ["-C", workingDir, "grep", "--all", "-l", "--", symbol],
+      ["-C", workingDir, "grep", "-l", "--", symbol],
       { encoding: "utf-8", timeout: 15000, stdio: ["ignore", "pipe", "ignore"] },
     );
     for (const line of out.split("\n")) {
@@ -328,10 +335,7 @@ function renderContractMapMarkdown(contractMap: ContractMapEntry[]): string {
   }
 
   for (const [file, entries] of byFile) {
-    const importerList = entries
-      .map((e) => e.importers.length > 0 ? e.importers.join(", ") : "(no importers)")
-      .join(", ");
-    lines.push(`### ${file} → [${entries.map((e) => e.importers).flat()}]`);
+    lines.push(`### ${file}`);
     for (const e of entries) {
       const importers = e.importers.length > 0 ? e.importers.join(", ") : "(no importers)";
       lines.push(`- \`${e.exportSite.symbol}\` (line ${e.exportSite.line}): used by ${importers}`);

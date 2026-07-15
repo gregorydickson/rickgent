@@ -403,6 +403,38 @@ describe("rickgent szechuan CLI (M3)", () => {
   it("an improving iteration commits only owned paths", () => {
     initRepo(ctx.repo);
     const beforeHead = git(ctx.repo, ["rev-parse", "HEAD"]);
+
+    // Use a dynamic stub where the judge counts console.log lines in the
+    // source file. The worker removes one console.log per iteration, so the
+    // metric actually improves (1 → 0) and the loop commits a real change.
+    // This avoids the vacuous-pass problem where improved.length === 0
+    // causes all assertions to be skipped.
+    const dynamicStub = `#!/usr/bin/env node
+const fs = require("fs");
+const { execFileSync } = require("child_process");
+const argv = process.argv.slice(2);
+if (process.env.SZ_SPAWN_LOG) fs.appendFileSync(process.env.SZ_SPAWN_LOG, JSON.stringify(argv) + "\\n");
+const pIdx = argv.indexOf("-p");
+const prompt = pIdx >= 0 ? String(argv[pIdx + 1] || "") : "";
+if (/read-only Szechuan Sauce violation judge/.test(prompt)) {
+  try {
+    const content = fs.readFileSync("src/app.ts", "utf-8");
+    const count = (content.match(/console\\.log/g) || []).length;
+    process.stdout.write(count + "\\n");
+  } catch (_) {
+    process.stdout.write("0\\n");
+  }
+  process.exit(0);
+}
+if (process.env.SZ_WORK_CMD) {
+  try { execFileSync("sh", ["-c", process.env.SZ_WORK_CMD], { cwd: process.cwd() }); } catch (_) {}
+}
+process.stdout.write("worker done\\n");
+process.exit(0);
+`;
+    writeFileSync(join(ctx.binDir, "omnigent"), dynamicStub);
+    chmodSync(join(ctx.binDir, "omnigent"), 0o755);
+
     const r = run(
       ctx,
       [
@@ -416,24 +448,31 @@ describe("rickgent szechuan CLI (M3)", () => {
         "3",
       ],
       {
-        SZ_JUDGE_COUNT: "3",
-        // Worker reduces the violation count by fixing the console.log
+        // Worker removes the console.log line → judge count goes 1 → 0
         SZ_WORK_CMD: "sed -i '' '/console.log/d' src/app.ts",
       },
     );
-    // With judge count 3 and the worker fixing issues, it may converge or stall
     expect(existsSync(join(ctx.rickgentDir, "szechuan.json"))).toBe(true);
     const state = readState(ctx);
 
-    // Check if any iteration was "improved" (committed)
-    const improved = state.convergence.history.filter((h: any) => h.classification === "improved");
-    if (improved.length > 0) {
-      // The commit should exist in git log
-      const afterHead = git(ctx.repo, ["rev-parse", "HEAD"]);
-      expect(afterHead).not.toBe(beforeHead);
-      // Check the latest commit touches only owned files
-      const stat = git(ctx.repo, ["show", "--stat", "--name-only", "--pretty=format:", afterHead]);
-      expect(stat).toContain("src/");
+    // There MUST be at least one improved iteration (non-vacuous assertion).
+    const improved = state.convergence.history.filter(
+      (h: any) => h.classification === "improved",
+    );
+    expect(improved.length).toBeGreaterThan(0);
+
+    // The commit should exist in git log (HEAD advanced)
+    const afterHead = git(ctx.repo, ["rev-parse", "HEAD"]);
+    expect(afterHead).not.toBe(beforeHead);
+
+    // Check the latest commit touches only owned files (src/)
+    const stat = git(ctx.repo, ["show", "--stat", "--name-only", "--pretty=format:", afterHead]);
+    expect(stat).toContain("src/");
+
+    // No git add -A: verify no out-of-scope files were committed
+    const changedFiles = stat.split("\n").filter((l) => l.trim().length > 0);
+    for (const f of changedFiles) {
+      expect(f).toMatch(/^src\//);
     }
   });
 
