@@ -18,7 +18,7 @@
 
 import { spawnSync } from "child_process";
 import { existsSync, mkdirSync, statSync, writeFileSync } from "fs";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 import { evaluatePrd } from "../core/prd.js";
 import { parsePrdFile } from "./prd-parse.js";
 
@@ -250,9 +250,8 @@ export async function runPrdCommand(rest: string[]): Promise<void> {
 
   if (nonInteractive) {
     // ── Non-interactive: emit template, no agent, no stdin ─────────────
-    const outDir = outputPath === rickgentDir ? rickgentDir : outputPath.replace(/\/[^/]*$/, "");
     // Ensure the parent directory exists.
-    const parent = outputPath.replace(/\/[^/]*$/, "");
+    const parent = dirname(outputPath);
     if (parent && !existsSync(parent)) {
       mkdirSync(parent, { recursive: true });
     }

@@ -12,7 +12,7 @@
 // (the single PRD oracle — invariant 4). Workers spawn via `omnigent run`
 // with array argv (invariant 9).
 
-import { spawn, spawnSync, execFileSync } from "child_process";
+import { spawn, execFileSync } from "child_process";
 import {
   existsSync,
   mkdirSync,
@@ -39,7 +39,10 @@ Options:
   --run                    Auto-launch rickgent build after refine completes
   --cycles <N>             Number of refinement cycles (default: 3)
   --max-turns <N>          Per-analyst turn budget
-  --non-interactive        Run without reading stdin
+  --non-interactive        Accepted-but-ignored. refine never reads stdin
+                           (all analyst workers use piped stdio), so this flag
+                           is a no-op kept for CLI consistency with other
+                           commands.
   --repo <dir>             Target git repo (default: RICKGENT_TARGET_REPO or cwd)
   --agent <dir>            omnigent agent bundle directory (required)
 
@@ -496,6 +499,8 @@ function generateHardeningTickets(implTickets: Ticket[]): Ticket[] {
 
   const allFiles = implTickets.flatMap((t) => t.filesToModify);
   const lastOrder = implTickets.length * 10 + 20;
+  const scopeFiles = allFiles.slice(0, 3);
+  const fileList = scopeFiles.join(" ");
 
   const codeQuality: Ticket = {
     hash: deterministicHash("harden-code-quality"),
@@ -506,15 +511,15 @@ function generateHardeningTickets(implTickets: Ticket[]): Ticket[] {
     filesToModify: allFiles.slice(0, 4),
     acceptanceCriteria: [
       {
-        description: "Zero P0 violations in modified files",
-        verifyCommand: "echo 0",
-        scope: allFiles.slice(0, 3),
-        type: "test",
+        description: "Zero P0 violations (console.log, debugger, explicit any) in modified files",
+        verifyCommand: `grep -rn 'console\\.log\\|debugger\\|: any\\b' ${fileList} | wc -l`,
+        scope: scopeFiles,
+        type: "lint",
       },
       {
         description: "No dead imports in modified files",
-        verifyCommand: "grep -r 'import' src/ | wc -l",
-        scope: allFiles.slice(0, 3),
+        verifyCommand: `grep -r 'import' ${fileList} | wc -l`,
+        scope: scopeFiles,
         type: "lint",
       },
     ],
@@ -531,15 +536,15 @@ function generateHardeningTickets(implTickets: Ticket[]): Ticket[] {
     filesToModify: allFiles.slice(0, 4),
     acceptanceCriteria: [
       {
-        description: "Zero CRITICAL findings in data flows",
-        verifyCommand: "echo 0",
-        scope: allFiles.slice(0, 3),
-        type: "test",
+        description: "Zero CRITICAL findings (ts-ignore, ts-expect-error, as any) in data flows",
+        verifyCommand: `grep -rn '@ts-ignore\\|@ts-expect-error\\|as any' ${fileList} | wc -l`,
+        scope: scopeFiles,
+        type: "lint",
       },
       {
-        description: "All cross-ticket interfaces type-match",
-        verifyCommand: "echo 0",
-        scope: allFiles.slice(0, 3),
+        description: "All cross-ticket interfaces type-match (typecheck passes)",
+        verifyCommand: `tsc --noEmit`,
+        scope: scopeFiles,
         type: "test",
       },
     ],
@@ -794,6 +799,11 @@ export async function runRefineCommand(rest: string[]): Promise<void> {
   }
 
   const runFlag = rest.includes("--run");
+  // --non-interactive is accepted-but-ignored: refine never reads stdin
+  // (all analyst workers use piped stdio), so the flag is a no-op kept for
+  // CLI consistency with other commands.
+  const nonInteractive = rest.includes("--non-interactive");
+  void nonInteractive; // explicitly consumed to document the no-op
   const cyclesRaw = flagValue(rest, "--cycles") ?? "3";
   const cycles = parseInt(cyclesRaw, 10);
   if (Number.isNaN(cycles) || cycles < 1) {
@@ -940,11 +950,12 @@ export async function runRefineCommand(rest: string[]): Promise<void> {
     simplificationReview: refinedParsed.prd.simplificationReview,
   });
   if (!combinedVerdict.valid) {
-    console.error(`rickgent refine: WARNING — refined PRD + ticket ACs failed evaluatePrd re-validation:`);
+    console.error(`rickgent refine: refined PRD + ticket ACs failed evaluatePrd re-validation:`);
     for (const e of combinedVerdict.errors) {
       console.error(`  - ${e}`);
     }
-    // Don't exit 1 here — the refinement is done, but we warn about validation issues
+    // Fail-closed (invariant 1): re-validation failure exits non-zero.
+    process.exit(1);
   } else {
     console.log(`rickgent refine: refined PRD + ticket ACs pass evaluatePrd re-validation`);
   }
@@ -962,10 +973,13 @@ export async function runRefineCommand(rest: string[]): Promise<void> {
   // ── --run: auto-launch build ─────────────────────────────────────────
   if (runFlag) {
     if (process.env.REFINE_SKIP_BUILD === "1") {
+      // Single test hook: skip the actual build launch but print the command
+      // that would have been run, so tests can assert on it without spawning
+      // a real build subprocess. Not set in production.
+      console.log(
+        `rickgent refine: --run auto-launching rickgent build ${refinedPrdPath} --agent ${agentDir} --repo ${workingDir}`,
+      );
       console.log("rickgent refine: --run skipped (REFINE_SKIP_BUILD=1)");
-    } else if (process.env.REFINE_CAPTURE_BUILD === "1") {
-      // For testing: just print that build would be launched
-      console.log(`rickgent refine: --run auto-launching rickgent build ${refinedPrdPath} --agent ${agentDir} --repo ${workingDir}`);
     } else {
       const buildExit = launchBuild(refinedPrdPath, agentDir, workingDir);
       if (buildExit !== 0) {

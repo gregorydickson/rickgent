@@ -290,4 +290,36 @@ describe("rickgent prd — VAL-PRD-001..009", () => {
     expect(r.stdout).toContain("--agent");
     expect(r.stdout).toContain("--output");
   });
+
+  // ── misc-m2-fixes: dead outDir variable removed ──────────────────────
+  it("prd-interview.ts has no dead outDir variable", () => {
+    const src = readFileSync(
+      join(import.meta.dirname, "../../src/lifecycle/prd-interview.ts"),
+      "utf-8",
+    );
+    // The dead outDir variable has been removed
+    expect(src).not.toMatch(/const outDir/);
+  });
+
+  // ── misc-m2-fixes: path.dirname() used instead of regex ──────────────
+  it("prd-interview.ts uses path.dirname() instead of regex-based dirname", () => {
+    const src = readFileSync(
+      join(import.meta.dirname, "../../src/lifecycle/prd-interview.ts"),
+      "utf-8",
+    );
+    // dirname is imported from path
+    expect(src).toMatch(/import.*dirname.*from.*["']path["']/);
+    // No regex-based dirname pattern
+    expect(src).not.toMatch(/\.replace\(\/\\\/\[\^\/\]\*/);
+  });
+
+  it("non-interactive template write works with nested --output path (dirname integration)", () => {
+    // Verify path.dirname() works correctly for nested output paths
+    const nested = join(ctx.root, "deep", "nested", "dir", "prd.md");
+    const r = run(ctx, ["--non-interactive", "--output", nested, "--repo", ctx.repo]);
+    expect(r.status).toBe(0);
+    expect(existsSync(nested)).toBe(true);
+    const content = readFileSync(nested, "utf-8");
+    expect(content.length).toBeGreaterThan(0);
+  });
 });

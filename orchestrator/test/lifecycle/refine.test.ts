@@ -89,7 +89,7 @@ if (role === "requirements") {
   process.stdout.write("## Risk-Scope Analysis\\n\\n");
   process.stdout.write("### Risk Areas\\n");
   process.stdout.write("- Breaking change risk: extending RequestShape may affect existing consumers (P1)\\n");
-  process.stdout.push("- Scope boundary: new feature should not touch src/legacy/ (P2)\\n");
+  process.stdout.write("- Scope boundary: new feature should not touch src/legacy/ (P2)\\n");
   process.stdout.write("- Complexity: new validation logic adds cyclomatic complexity (P3)\\n");
 }
 process.exit(0);
@@ -456,7 +456,7 @@ describe("rickgent refine — VAL-REFINE-001..019", () => {
     // to capture the build invocation.
     ctx.spawnLog = join(ctx.root, "spawns_run.log");
     const r2 = run(ctx, [prd, "--cycles", "1", "--agent", ctx.agentDir, "--repo", ctx.repo, "--non-interactive", "--run"], {
-      REFINE_CAPTURE_BUILD: "1",
+      REFINE_SKIP_BUILD: "1",
     });
     // The --run flag should trigger a build launch message
     expect(r2.stdout + r2.stderr).toMatch(/build/i);
@@ -618,5 +618,111 @@ describe("rickgent refine — VAL-REFINE-001..019", () => {
     );
     expect(src).not.toMatch(/[^A-Za-z]exec\(/);
     expect(src).not.toMatch(/add -A/);
+  });
+
+  // ── misc-m2-fixes: consolidated test hook (no REFINE_CAPTURE_BUILD) ───
+  it("refine.ts has a single test hook (REFINE_SKIP_BUILD), no REFINE_CAPTURE_BUILD", () => {
+    const src = readFileSync(
+      join(import.meta.dirname, "../../src/lifecycle/refine.ts"),
+      "utf-8",
+    );
+    // No two escape hatches for one guard — REFINE_CAPTURE_BUILD must be gone
+    expect(src).not.toContain("REFINE_CAPTURE_BUILD");
+    // REFINE_SKIP_BUILD is the single consolidated hook
+    expect(src).toContain("REFINE_SKIP_BUILD");
+  });
+
+  // ── misc-m2-fixes: re-validation is fail-closed ──────────────────────
+  it("re-validation failure exits non-zero (fail-closed, no WARNING)", () => {
+    const src = readFileSync(
+      join(import.meta.dirname, "../../src/lifecycle/refine.ts"),
+      "utf-8",
+    );
+    // The old code used "WARNING" and did not exit; the fix exits non-zero
+    expect(src).not.toMatch(/WARNING/);
+    // The re-validation block must contain process.exit(1) on failure
+    expect(src).toMatch(/combinedVerdict\.valid/);
+    expect(src).toMatch(/process\.exit\(1\)/);
+  });
+
+  it("re-validation success message is present (no WARNING)", () => {
+    const prd = join(ctx.repo, "prd.md");
+    writeFileSync(prd, VALID_PRD_MULTI);
+    const r = run(ctx, [prd, "--cycles", "1", "--agent", ctx.agentDir, "--repo", ctx.repo, "--non-interactive"]);
+    expect(r.status).toBe(0);
+    // Should print the re-validation success message, not a WARNING
+    expect(r.stdout).toContain("re-validation");
+    expect(r.stdout + r.stderr).not.toContain("WARNING");
+  });
+
+  // ── misc-m2-fixes: hardening ticket verify commands are meaningful ────
+  it("hardening ticket verify commands do not use placeholder 'echo 0'", () => {
+    const prd = join(ctx.repo, "prd.md");
+    writeFileSync(prd, VALID_PRD_MULTI); // 4 ACs → 4 impl tickets → hardening tickets
+    const r = run(ctx, [prd, "--cycles", "1", "--agent", ctx.agentDir, "--repo", ctx.repo, "--non-interactive"]);
+    expect(r.status).toBe(0);
+
+    const ticketDirs = listTicketDirs(ctx);
+    for (const dir of ticketDirs) {
+      if (dir === "rick_ticket_parent") continue;
+      const { body } = readTicket(ctx, dir);
+      // No placeholder 'echo 0' in any verify command
+      expect(body).not.toMatch(/echo 0/);
+    }
+  });
+
+  it("hardening ticket verify commands contain meaningful grep/tsc checks", () => {
+    const prd = join(ctx.repo, "prd.md");
+    writeFileSync(prd, VALID_PRD_MULTI);
+    const r = run(ctx, [prd, "--cycles", "1", "--agent", ctx.agentDir, "--repo", ctx.repo, "--non-interactive"]);
+    expect(r.status).toBe(0);
+
+    const ticketDirs = listTicketDirs(ctx);
+    let hasCodeQuality = false;
+    let hasDataFlow = false;
+    for (const dir of ticketDirs) {
+      if (dir === "rick_ticket_parent") continue;
+      const { body } = readTicket(ctx, dir);
+      if (/code quality/i.test(body)) {
+        hasCodeQuality = true;
+        // Code quality ticket should have grep-based checks, not echo 0
+        expect(body).toMatch(/grep/);
+      }
+      if (/data flow/i.test(body)) {
+        hasDataFlow = true;
+        // Data flow ticket should have grep or tsc checks
+        expect(body).toMatch(/grep|tsc/);
+      }
+    }
+    expect(hasCodeQuality).toBe(true);
+    expect(hasDataFlow).toBe(true);
+  });
+
+  // ── misc-m2-fixes: unused spawnSync import removed ───────────────────
+  it("refine.ts does not import spawnSync", () => {
+    const src = readFileSync(
+      join(import.meta.dirname, "../../src/lifecycle/refine.ts"),
+      "utf-8",
+    );
+    expect(src).not.toMatch(/import.*spawnSync/);
+  });
+
+  // ── misc-m2-fixes: --non-interactive documented as accepted-but-ignored
+  it("--non-interactive is documented as accepted-but-ignored in --help", () => {
+    const r = run(ctx, ["--help"]);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("--non-interactive");
+    // Usage text should document it as accepted-but-ignored
+    expect(r.stdout).toMatch(/accepted-but-ignored|no-op/i);
+  });
+
+  it("--non-interactive is explicitly consumed as a no-op in source", () => {
+    const src = readFileSync(
+      join(import.meta.dirname, "../../src/lifecycle/refine.ts"),
+      "utf-8",
+    );
+    // The flag is parsed and explicitly voided to document the no-op
+    expect(src).toMatch(/nonInteractive/);
+    expect(src).toMatch(/void nonInteractive/);
   });
 });
