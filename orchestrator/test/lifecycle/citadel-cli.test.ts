@@ -333,17 +333,22 @@ composes: [sub-prd.md]
 
   // VAL-CITADEL-019: skeptic lens runs as report-only (no blocking findings)
   it("skeptic-lens findings never block, even under --strict", () => {
-    // A line that triggers the skeptic lens (dead guard) but no other analyzer.
-    writeFileSync(join(repo, "src", "feature.ts"), "export const feature = 42;\nif (false) { console.log('dead'); }\n");
+    // Isolate skeptic-only findings: `if (false) {}` triggers the skeptic
+    // dead-guard detector but no other analyzer produces any High/Critical
+    // finding. This robustly verifies skeptic-lens is report-only.
+    writeFileSync(join(repo, "src", "feature.ts"), "export const feature = 42;\nif (false) {}\n");
     git(repo, ["add", "--", "src/feature.ts"]);
     git(repo, ["commit", "-q", "-m", "skeptic trigger"]);
     const { report, run } = runCitadelReport(repo, ["--prd", "prd.md", "--strict"]);
     expect(report.skeptic_findings.length).toBeGreaterThan(0);
-    // No blocking findings (skeptic is report-only; other analyzers produce Low/Medium at most here).
-    const blocking = report.findings.filter((f: any) => f.severity === "Critical" || f.severity === "High");
-    if (blocking.length === 0) {
-      expect(run.exit).toBe(0);
-    }
+    // No blocking findings — skeptic is report-only; other analyzers produce
+    // no High/Critical on this minimal change.
+    const blocking = report.findings.filter(
+      (f: any) => f.severity === "Critical" || f.severity === "High",
+    );
+    expect(blocking).toHaveLength(0);
+    // Exit must be 0 even under --strict when only skeptic findings exist.
+    expect(run.exit).toBe(0);
   });
 
   // VAL-CITADEL-020: every analyzer runs and produces findings or no-findings
@@ -487,5 +492,177 @@ composes: [sub-prd.md]
   it("runConformanceGate is still importable from lifecycle/citadel.js", async () => {
     const mod = await import("../../dist/lifecycle/citadel.js");
     expect(typeof mod.runConformanceGate).toBe("function");
+  });
+
+  // --- M1 scrutiny + user-testing fixes ---
+
+  // Fix #1: trap-door-coverage is fail-soft via register()
+  it("trap-door-coverage is fail-soft (skipped on analyzer error, not crash)", () => {
+    writeFileSync(join(repo, "CLAUDE.md"), "## Trap Doors\n- `src/feature.ts` — INVARIANT: never null ENFORCE: `src/feature.test.ts`\n");
+    writeFileSync(join(repo, "src", "feature.ts"), "export const feature = 42;\n");
+    git(repo, ["add", "--", "src/feature.ts", "CLAUDE.md"]);
+    git(repo, ["commit", "-q", "-m", "add feature with trap door"]);
+    const { report, run } = runCitadelReport(repo, ["--prd", "prd.md"], {
+      RICKGENT_CITADEL_FORCE_THROW: "trap-door-coverage",
+    });
+    expect(report.analyzers["trap-door-coverage"].skipped).toBe("error");
+    expect(report.analyzers["trap-door-coverage"].reason).toContain("trap-door-coverage");
+    // Other analyzers still ran.
+    expect(report.analyzers["banned-constructs-casts"].findings).toBeDefined();
+    expect(run.exit).toBe(0);
+  });
+
+  // Fix #1: skeptic-lens is fail-soft via register()
+  it("skeptic-lens is fail-soft (skipped on analyzer error, not crash)", () => {
+    writeFileSync(join(repo, "src", "feature.ts"), "export const feature = 42;\n");
+    git(repo, ["add", "--", "src/feature.ts"]);
+    git(repo, ["commit", "-q", "-m", "add feature"]);
+    const { report, run } = runCitadelReport(repo, ["--prd", "prd.md"], {
+      RICKGENT_CITADEL_FORCE_THROW: "skeptic-lens",
+    });
+    expect(report.analyzers["skeptic-lens"].skipped).toBe("error");
+    expect(report.analyzers["skeptic-lens"].reason).toContain("skeptic-lens");
+    expect(report.skeptic_findings).toHaveLength(0);
+    expect(run.exit).toBe(0);
+  });
+
+  // Fix #2: dedup test with same (severity, file, line, rule) key merges
+  it("deduplicates same-key findings from different analyzers into one entry with both sourceAnalyzers", () => {
+    // Construct a scenario where two analyzers produce findings with the same
+    // (severity, file, line, rule) key. We test the dedupeFindings function
+    // directly with synthetic inputs to robustly verify merge behavior.
+    // This is a unit test of the pure dedup function — the production
+    // entrypoint is exercised by the other integration tests.
+    const { dedupeFindings } = require("../../dist/lifecycle/citadel/reporter.js");
+    const tagged = [
+      {
+        finding: {
+          id: "test:overlap-1",
+          rule: "shared-rule",
+          severity: "High",
+          file: "src/a.ts",
+          line: 10,
+          message: "from analyzer-a",
+        },
+        analyzer: "analyzer-a",
+      },
+      {
+        finding: {
+          id: "test:overlap-2",
+          rule: "shared-rule",
+          severity: "High",
+          file: "src/a.ts",
+          line: 10,
+          message: "from analyzer-b",
+        },
+        analyzer: "analyzer-b",
+      },
+    ];
+    const result = dedupeFindings(tagged);
+    // Same key → exactly one merged entry
+    expect(result).toHaveLength(1);
+    // Both source analyzers are tagged
+    expect(result[0].sourceAnalyzers).toContain("analyzer-a");
+    expect(result[0].sourceAnalyzers).toContain("analyzer-b");
+    expect(result[0].sourceAnalyzers).toHaveLength(2);
+  });
+
+  // Fix #4: endpoint-conformance scopes to diff files only
+  it("endpoint-conformance does not scan source files outside the diff", () => {
+    // Create a controller in the initial commit (NOT in the diff).
+    writeFileSync(
+      join(repo, "src", "existing.controller.ts"),
+      "import { Controller, Post } from '@nestjs/common';\n@Controller()\nexport class ExistingController {\n  @Post('/existing')\n  create() {}\n}\n",
+    );
+    git(repo, ["add", "--", "src/existing.controller.ts"]);
+    git(repo, ["commit", "-q", "-m", "add existing controller"]);
+    // Now make a change that does NOT touch the controller.
+    writeFileSync(join(repo, "src", "feature.ts"), "export const feature = 42;\n");
+    git(repo, ["add", "--", "src/feature.ts"]);
+    git(repo, ["commit", "-q", "-m", "add feature"]);
+    // PRD declares POST /existing which matches the pre-existing controller.
+    const endpointPrd = `# PRD\n## Description\ntest\n### AC-1: existing endpoint\n- **verifyCommand:** \`node -e "1"\`\n- **scope:** \`src/existing.controller.ts\`\n- **type:** test\nPOST /existing\n`;
+    writeFileSync(join(repo, "prd.md"), endpointPrd);
+    git(repo, ["add", "--", "prd.md"]);
+    git(repo, ["commit", "-q", "-m", "update prd"]);
+    const { report } = runCitadelReport(repo, ["--prd", "prd.md", "--diff", "HEAD~1..HEAD"]);
+    const findings = report.analyzers["endpoint-contract-conformance"].findings;
+    // The pre-existing controller route is NOT in the diff, so the declared
+    // endpoint POST /existing should be flagged as "missing implementation"
+    // (because we only scan diff files now), and there should be NO
+    // "undeclared route" finding for /existing (because we don't scan it).
+    const missingImpl = findings.find(
+      (f: any) => f.rule === "endpoint-conformance:missing-implementation",
+    );
+    expect(missingImpl).toBeTruthy();
+    expect(missingImpl.message).toContain("/existing");
+    const undeclared = findings.find(
+      (f: any) => f.rule === "endpoint-conformance:undeclared-route" && f.message.includes("/existing"),
+    );
+    expect(undeclared).toBeFalsy();
+  });
+
+  // Fix #5: positional arg fallback is documented in usage text
+  it("citadel --help documents the positional argument shorthand", () => {
+    const r = runCitadel(repo, ["--help"]);
+    expect(r.exit).toBe(0);
+    expect(r.stdout).toContain("positional");
+  });
+
+  // Fix #6: AC bullet key with space ('Verify Command') parses correctly
+  it("parses AC bullet key 'Verify Command' (with space) as verifyCommand", () => {
+    // PRD uses 'Verify Command' (with space) instead of 'verifyCommand'.
+    // The parser normalizes keys by removing spaces, so this should parse
+    // the verify command correctly and NOT emit ac-shape:missing-verify.
+    const spacedKeyPrd = `# PRD\n## Description\ntest\n### AC-1: feature works\n- **Verify Command:** \`node -e "1"\`\n- **scope:** \`src/feature.ts\`\n- **type:** test\n`;
+    writeFileSync(join(repo, "prd.md"), spacedKeyPrd);
+    writeFileSync(join(repo, "src", "feature.ts"), "export const feature = 42;\n");
+    git(repo, ["add", "--", "prd.md", "src/feature.ts"]);
+    git(repo, ["commit", "-q", "-m", "spaced key prd"]);
+    const { report } = runCitadelReport(repo, ["--prd", "prd.md"]);
+    const acShapeFindings = report.analyzers["ac-shape-audit"].findings;
+    const missingVerify = acShapeFindings.find(
+      (f: any) => f.rule === "ac-shape:missing-verify",
+    );
+    expect(missingVerify).toBeFalsy();
+  });
+
+  // Fix #7: AC coverage normalizes './' prefix in path matching
+  it("AC coverage marks AC as covered when scope uses './' prefix matching diff path", () => {
+    // PRD scope uses './src/a.ts' (with ./ prefix) while diff path is 'src/a.ts'.
+    // Normalization should strip './' so the AC is marked 'covered', not 'partial'.
+    const dotSlashPrd = `# PRD\n## Description\ntest\n### AC-1: feature a\n- **verifyCommand:** \`node -e "require('./src/a.ts')"\`\n- **scope:** \`./src/a.ts\`\n- **type:** test\n`;
+    writeFileSync(join(repo, "prd.md"), dotSlashPrd);
+    writeFileSync(join(repo, "src", "a.ts"), "export const a = 1;\n");
+    git(repo, ["add", "--", "prd.md", "src/a.ts"]);
+    git(repo, ["commit", "-q", "-m", "add a with dot-slash scope"]);
+    const { report } = runCitadelReport(repo, ["--prd", "prd.md"]);
+    const rows = report.analyzers["ac-coverage-scorecard"].rows;
+    const ac1 = rows.find((r: any) => r.id === "AC-1");
+    expect(ac1.status).toBe("covered");
+  });
+
+  // Fix #8: NestJS no-arg decorator @Post() is detected as a route
+  it("detects @Post() no-arg decorator as a route", () => {
+    const endpointPrd = `# PRD\n## Description\ntest\n### AC-1: root endpoint\n- **verifyCommand:** \`node -e "1"\`\n- **scope:** \`src/root.controller.ts\`\n- **type:** test\nPOST /\n`;
+    writeFileSync(join(repo, "prd.md"), endpointPrd);
+    writeFileSync(
+      join(repo, "src", "root.controller.ts"),
+      "import { Controller, Post } from '@nestjs/common';\n@Controller()\nexport class RootController {\n  @Post()\n  create() {}\n}\n",
+    );
+    git(repo, ["add", "--", "prd.md", "src/root.controller.ts"]);
+    git(repo, ["commit", "-q", "-m", "add no-arg controller"]);
+    const { report } = runCitadelReport(repo, ["--prd", "prd.md"]);
+    const findings = report.analyzers["endpoint-contract-conformance"].findings;
+    // @Post() with no arg resolves to path "/" which matches POST / declared
+    // in the PRD. So there should be NO undeclared-route or missing-impl finding.
+    const undeclared = findings.find(
+      (f: any) => f.rule === "endpoint-conformance:undeclared-route",
+    );
+    expect(undeclared).toBeFalsy();
+    const missingImpl = findings.find(
+      (f: any) => f.rule === "endpoint-conformance:missing-implementation",
+    );
+    expect(missingImpl).toBeFalsy();
   });
 });

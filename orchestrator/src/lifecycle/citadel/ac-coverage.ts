@@ -10,14 +10,20 @@ import type { RawFinding } from "./reporter.js";
 
 const PATH_IN_CMD_RE = /[`']?([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)[`']?/g;
 
+/** Normalize a referenced path: convert to POSIX and strip a leading `./` so
+ *  that `./src/a.ts` matches the diff path `src/a.ts`. */
+function normalizeRefPath(p: string): string {
+  return toPosixPath(p).replace(/^\.\//, "");
+}
+
 function referencedFiles(ac: AcceptanceCriterion): string[] {
   const out = new Set<string>();
-  for (const s of ac.scope) out.add(toPosixPath(s));
+  for (const s of ac.scope) out.add(normalizeRefPath(s));
   const cmd = ac.verifyCommand.replace(/^`+|`+$/g, "");
   for (const m of cmd.matchAll(PATH_IN_CMD_RE)) {
     const p = (m[1] ?? "").trim();
     if (p.includes("/") || p.endsWith(".ts") || p.endsWith(".js") || p.endsWith(".tsx") || p.endsWith(".jsx") || p.endsWith(".sh")) {
-      out.add(toPosixPath(p));
+      out.add(normalizeRefPath(p));
     }
   }
   return [...out];
@@ -35,7 +41,7 @@ export function buildAcCoverageScorecard(
   acceptanceCriteria: AcceptanceCriterion[],
   diff: DiffSummary,
 ): { findings: RawFinding[]; rows: AcCoverageRow[] } {
-  const changedSet = new Set(diff.changedFiles.map((f) => toPosixPath(f.path)));
+  const changedSet = new Set(diff.changedFiles.map((f) => normalizeRefPath(f.path)));
   const rows: AcCoverageRow[] = [];
   const findings: RawFinding[] = [];
 

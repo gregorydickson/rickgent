@@ -10,7 +10,7 @@ import { walkDiff } from "./diff-walker.js";
 import type { DiffSummary } from "./diff-walker.js";
 import { detectProjectShapes } from "./project-shape.js";
 import { checkEndpointConformance } from "./endpoint-conformance.js";
-import { auditTrapDoorCoverage, renderTestStubs } from "./trap-door.js";
+import { auditTrapDoorCoverage, renderTestStubs, type TrapDoor } from "./trap-door.js";
 import { auditStateTransitions } from "./state-transition.js";
 import { buildAcCoverageScorecard } from "./ac-coverage.js";
 import { runSkepticLens } from "./skeptic.js";
@@ -144,15 +144,13 @@ export function runCitadelAudit(options: AuditOptions): AuditResult {
     return { findings: r.findings, rows: r.rows };
   });
 
-  // 5. Trap-door coverage
-  const trapDoorResult = auditTrapDoorCoverage(diff);
-  sections["trap-door-coverage"] = {
-    findings: trapDoorResult.findings,
-    no_findings: trapDoorResult.findings.length === 0,
-    trapDoors: trapDoorResult.trapDoors,
-    unguarded: trapDoorResult.unguarded,
-  };
-  for (const f of trapDoorResult.findings) tagged.push({ finding: f, analyzer: "trap-door-coverage" });
+  // 5. Trap-door coverage (fail-soft via register)
+  const trapDoorSection = register("trap-door-coverage", () => {
+    const r = auditTrapDoorCoverage(diff);
+    return { findings: r.findings, trapDoors: r.trapDoors, unguarded: r.unguarded };
+  });
+  const unguardedTrapDoors: TrapDoor[] =
+    (trapDoorSection.unguarded as TrapDoor[] | undefined) ?? [];
 
   // 6. State-transition audit
   register("state-transition-audit", () => {
@@ -203,9 +201,10 @@ export function runCitadelAudit(options: AuditOptions): AuditResult {
   // 18. Pattern conformance
   register("pattern-conformance", () => auditPatternConformance(diff));
 
-  // 19. Skeptic lens (report-only — never tagged into blocking findings)
-  const skeptic = runSkepticLens(diff);
-  sections["skeptic-lens"] = { findings: skeptic.findings, no_findings: skeptic.findings.length === 0 };
+  // 19. Skeptic lens (report-only — never tagged into blocking findings, fail-soft via register)
+  register("skeptic-lens", () => runSkepticLens(diff), false);
+  const skepticFindings: RawFinding[] =
+    (sections["skeptic-lens"]?.findings as RawFinding[] | undefined) ?? [];
 
   const findings: Finding[] = dedupeFindings(tagged);
   const exitCode = computeExitCode(findings, strict);
@@ -221,13 +220,13 @@ export function runCitadelAudit(options: AuditOptions): AuditResult {
     exit_code: exitCode,
     analyzers: sections,
     findings,
-    skeptic_findings: skeptic.findings,
+    skeptic_findings: skepticFindings,
     decisions: [],
     unreadable_files: unreadableFiles,
     summary: summarize(findings),
   };
 
-  return { report, exitCode, unguardedTrapDoors: trapDoorResult.unguarded };
+  return { report, exitCode, unguardedTrapDoors };
 }
 
 export { renderTestStubs };

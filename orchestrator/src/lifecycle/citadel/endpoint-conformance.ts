@@ -3,16 +3,17 @@
 // and Express-style route registrations). Emits a finding for each mismatch,
 // naming both the declared and actual route.
 
-import { readdirSync, readFileSync } from "fs";
+import { readFileSync } from "fs";
 import { join, relative } from "path";
 import type { DeclaredEndpoint } from "./prd-audit-parser.js";
 import type { DiffSummary } from "./diff-walker.js";
 import { slugify, toPosixPath } from "./reporter.js";
 import type { RawFinding } from "./reporter.js";
 
-const SKIPPED_DIRS = new Set([".git", "node_modules", "dist", "build", "coverage"]);
 const SOURCE_FILE_RE = /\.[cm]?[jt]sx?$/i;
-const HTTP_DECORATOR_RE = /@(Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*['"`]([^'"`]*)['"`]/gi;
+// Matches HTTP decorators with an optional quoted path argument. Supports
+// @Post('user'), @Post("user"), @Post(`/user`), and no-arg @Post().
+const HTTP_DECORATOR_RE = /@(Get|Post|Put|Patch|Delete|Head|Options)\s*\(\s*(?:['"`]([^'"`]*)['"`])?/gi;
 const CONTROLLER_PREFIX_RE = /@Controller\s*\(\s*['"`]([^'"`]*)['"`]/i;
 const EXPRESS_RE = /\b(?:app|router)\s*\.(get|post|put|patch|delete|head|options)\s*\(\s*['"`]([^'"`]*)['"`]/gi;
 const METHOD_NORMALIZE: Record<string, string> = {
@@ -26,37 +27,22 @@ interface ActualRoute {
   line: number;
 }
 
-function collectSourceFiles(repoRoot: string): string[] {
-  const out: string[] = [];
-  const walk = (dir: string, depth: number): void => {
-    if (depth > 12) return;
-    let entries: import("fs").Dirent[];
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      if (e.isDirectory()) {
-        if (!SKIPPED_DIRS.has(e.name)) walk(join(dir, e.name), depth + 1);
-      } else if (e.isFile() && SOURCE_FILE_RE.test(e.name)) {
-        out.push(join(dir, e.name));
-      }
-    }
-  };
-  walk(repoRoot, 0);
-  return out;
-}
-
 function normalizePath(p: string): string {
   let s = p.trim();
   if (!s.startsWith("/")) s = "/" + s;
   return s.replace(/\/+/g, "/");
 }
 
-function parseRoutes(repoRoot: string): ActualRoute[] {
+function parseRoutes(diff: DiffSummary): ActualRoute[] {
   const routes: ActualRoute[] = [];
-  for (const file of collectSourceFiles(repoRoot)) {
+  // Scope route scanning to files in the diff only — the audit is about the
+  // changeset, not the entire repo. Scanning all source files produces false
+  // positives from pre-existing routes that aren't part of the diff.
+  const changedSourceFiles = diff.changedFiles.filter(
+    (f) => f.status !== "D" && SOURCE_FILE_RE.test(f.path),
+  );
+  for (const changed of changedSourceFiles) {
+    const file = join(diff.repoRoot, changed.path);
     let content: string;
     try {
       content = readFileSync(file, "utf-8");
@@ -72,12 +58,12 @@ function parseRoutes(repoRoot: string): ActualRoute[] {
       for (const m of line.matchAll(HTTP_DECORATOR_RE)) {
         const method = METHOD_NORMALIZE[(m[1] ?? "").toLowerCase()] ?? (m[1] ?? "").toUpperCase();
         const path = normalizePath((controllerPrefix || "") + "/" + (m[2] ?? ""));
-        routes.push({ method, path: normalizePath(path), file: toPosixPath(relative(repoRoot, file)), line: i + 1 });
+        routes.push({ method, path: normalizePath(path), file: toPosixPath(relative(diff.repoRoot, file)), line: i + 1 });
       }
       for (const m of line.matchAll(EXPRESS_RE)) {
         const method = METHOD_NORMALIZE[(m[1] ?? "").toLowerCase()] ?? (m[1] ?? "").toUpperCase();
         const path = normalizePath(m[2] ?? "");
-        routes.push({ method, path, file: toPosixPath(relative(repoRoot, file)), line: i + 1 });
+        routes.push({ method, path, file: toPosixPath(relative(diff.repoRoot, file)), line: i + 1 });
       }
     }
   }
@@ -115,7 +101,7 @@ export function checkEndpointConformance(
   declared: DeclaredEndpoint[],
   diff: DiffSummary,
 ): { findings: RawFinding[]; rows: unknown[] } {
-  const routes = parseRoutes(diff.repoRoot);
+  const routes = parseRoutes(diff);
   const declaredKeys = new Set(declared.map((e) => `${e.method} ${normalizePath(e.path)}`));
   const actualKeys = new Set(routes.map((r) => `${r.method} ${r.path}`));
   const findings: RawFinding[] = [];

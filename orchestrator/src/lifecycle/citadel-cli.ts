@@ -9,9 +9,11 @@ const CITADEL_USAGE = `rickgent citadel — full 19-analyzer conformance audit
 
 Usage:
   rickgent citadel --prd <path> [options]
+  rickgent citadel <path> [options]        (positional shorthand for --prd)
 
 Required:
   --prd <path>              PRD markdown file to audit against
+                            (also accepted as a positional argument)
 
 Options:
   --diff <base..head>       Git diff range to walk (default: HEAD~1..HEAD)

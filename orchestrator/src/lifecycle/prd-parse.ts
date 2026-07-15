@@ -55,13 +55,16 @@ function extractItems(value: string): string[] {
     .filter((s) => s.length > 0);
 }
 
-/** Read `- **key:** value` bullets from a section body into a map. */
+/** Read `- **key:** value` bullets from a section body into a map.
+ *  Keys are normalized to lowercase with all whitespace removed so that
+ *  `Verify Command`, `verifyCommand`, and `verifycommand` all map to
+ *  `verifycommand`. */
 function readBullets(lines: string[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (const line of lines) {
     const m = line.match(/^\s*[-*]\s*\*\*([^:*]+):\*\*\s*(.*)$/);
     if (m) {
-      out[m[1]!.trim().toLowerCase()] = m[2]!.trim();
+      out[m[1]!.trim().toLowerCase().replace(/\s+/g, "")] = m[2]!.trim();
     }
   }
   return out;
