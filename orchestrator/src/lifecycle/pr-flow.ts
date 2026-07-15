@@ -9,6 +9,10 @@
 // shape becomes a human gate rather than an ungated push.
 
 import { execFileSync } from "child_process";
+import {
+  PRODUCTION_CAPABILITY_GATE,
+  type CapabilityGate,
+} from "../capabilities/registry.js";
 
 export type PrFlowResult = "ALLOW" | "DENY" | "ABSTAIN";
 
@@ -34,7 +38,9 @@ export function evaluateAutonomousPrFlow(
   command: string,
   featureBranch: string,
   env: NodeJS.ProcessEnv = process.env,
+  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
 ): PrFlowVerdict {
+  capabilityGate.require("automatic_delivery");
   const input = JSON.stringify({
     event: { tool_name: "Bash", arguments: { command } },
     config: { feature_branch: featureBranch },
@@ -85,12 +91,14 @@ export function createPullRequest(
   featureBranch: string,
   prTitle: string,
   env: NodeJS.ProcessEnv = process.env,
+  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
 ): PrCreationResult {
+  capabilityGate.require("automatic_delivery");
   const pushCommand = `git push origin ${featureBranch}`;
   const prCommand = `gh pr create --fill --head ${featureBranch}`;
 
-  const pushVerdict = evaluateAutonomousPrFlow(pushCommand, featureBranch, env);
-  const prVerdict = evaluateAutonomousPrFlow(prCommand, featureBranch, env);
+  const pushVerdict = evaluateAutonomousPrFlow(pushCommand, featureBranch, env, capabilityGate);
+  const prVerdict = evaluateAutonomousPrFlow(prCommand, featureBranch, env, capabilityGate);
   const gated = pushVerdict.result === "ALLOW" && prVerdict.result === "ALLOW";
 
   if (!gated) {
@@ -106,7 +114,7 @@ export function createPullRequest(
   }
 
   try {
-    ensureBranch(repoDir, featureBranch, env);
+    ensureBranch(repoDir, featureBranch, env, capabilityGate);
   } catch (err) {
     return {
       branch: featureBranch,
@@ -140,7 +148,13 @@ export function createPullRequest(
 }
 
 /** Create (or switch to) the feature branch at the current HEAD. */
-export function ensureBranch(repoDir: string, branch: string, env: NodeJS.ProcessEnv = process.env): void {
+export function ensureBranch(
+  repoDir: string,
+  branch: string,
+  env: NodeJS.ProcessEnv = process.env,
+  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
+): void {
+  capabilityGate.require("automatic_delivery");
   const exists = (() => {
     try {
       execFileSync("git", ["-C", repoDir, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], {

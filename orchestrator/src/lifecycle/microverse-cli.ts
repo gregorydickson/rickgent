@@ -13,6 +13,10 @@ import { spawnSync } from "child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import {
+  PRODUCTION_CAPABILITY_GATE,
+  type CapabilityGate,
+} from "../capabilities/registry.js";
+import {
   MicroverseLoop,
   parseLastNumericLine,
   type MetricDirection,
@@ -218,11 +222,18 @@ function readPriorState(statePath: string): MicroverseState | null {
   }
 }
 
-export async function runMicroverseCommand(rest: string[]): Promise<void> {
+export async function runMicroverseCommand(
+  rest: string[],
+  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
+): Promise<void> {
   if (rest.includes("--help") || rest.includes("-h")) {
     console.log(MICROVERSE_USAGE);
     return;
   }
+
+  if (rest.includes("--resume")) capabilityGate.require("resume_retry");
+  if (rest.includes("--metric")) capabilityGate.require("raw_shell");
+  capabilityGate.require("autonomous_dispatch");
 
   const task = flagValue(rest, "--task");
   const metric = flagValue(rest, "--metric");
@@ -334,6 +345,7 @@ export async function runMicroverseCommand(rest: string[]): Promise<void> {
   const metricFn = hasGoal ? (): number | null => measureViaJudge(agentDir, workingDir, goal!, dataDir) : undefined;
 
   const loop = new MicroverseLoop({
+    capabilityGate,
     workingDir,
     ownedPaths,
     metricCommand: hasMetric ? metric! : undefined,

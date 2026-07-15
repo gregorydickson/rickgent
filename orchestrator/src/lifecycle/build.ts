@@ -49,6 +49,11 @@ import { routeDispatch, type ModelEntry } from "./routing.js";
 import { recordRun, recordPr } from "./metrics.js";
 import { runConformanceGate } from "./citadel.js";
 import { runDeslopGate } from "./szechuan.js";
+import {
+  PRODUCTION_CAPABILITY_GATE,
+  assertNoProductionBypasses,
+  type CapabilityGate,
+} from "../capabilities/registry.js";
 
 export interface BuildOptions {
   prdPath: string;
@@ -80,6 +85,22 @@ export interface BuildOptions {
   costBudgetUsd?: number | undefined;
   /** Soft cost threshold in USD (ASK when exceeded but under hard budget). */
   softThresholdUsd?: number | undefined;
+  /** Explicit raw-shell request. Production rejects it before any side effect. */
+  rawShell?: boolean;
+  /** True when a CLI/caller supplied any delivery-related configuration. */
+  deliveryConfigured?: boolean;
+}
+
+export interface BuildDependencies {
+  capabilityGate?: CapabilityGate;
+  assertEnvironment?: (env: NodeJS.ProcessEnv) => void;
+  verifyPolicyAttachment?: typeof verifyPolicyAttachment;
+  runConformanceGate?: typeof runConformanceGate;
+  runDeslopGate?: typeof runDeslopGate;
+  /** Explicit fixture-only omissions; production entrypoints never set these. */
+  skipPolicyAttachment?: boolean;
+  skipConformance?: boolean;
+  skipDeslop?: boolean;
 }
 
 export interface BuildResult {
@@ -218,8 +239,21 @@ function seedRegistry(registry: Registry, runId: string, tickets: TicketPlan[]):
   return effectiveRunId;
 }
 
-export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
+export async function runBuild(
+  opts: BuildOptions,
+  dependencies: BuildDependencies = {},
+): Promise<BuildResult> {
   const env = opts.env ?? process.env;
+  (dependencies.assertEnvironment ?? assertNoProductionBypasses)(env);
+  const capabilityGate = dependencies.capabilityGate ?? PRODUCTION_CAPABILITY_GATE;
+  if (opts.resume) capabilityGate.require("resume_retry");
+  if ((opts.maxConcurrent ?? 1) > 1) capabilityGate.require("parallel_dispatch");
+  if (opts.deliveryConfigured || opts.featureBranch !== undefined || opts.autonomousPrFlow !== undefined) {
+    capabilityGate.require("automatic_delivery");
+  }
+  if (opts.rawShell || env.RICKGENT_RAW_SHELL === "1") capabilityGate.require("raw_shell");
+  capabilityGate.require("autonomous_dispatch");
+
   const report: string[] = [];
   mkdirSync(opts.rickgentDir, { recursive: true });
 
@@ -270,10 +304,9 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
   // Before any dispatch, verify that the manager + worker bundles attach the
   // full required policy set. This is the same check `rickgent doctor` runs,
   // but wired into the build startup so a build cannot proceed with ungated
-  // policies. Skippable via RICKGENT_SKIP_POLICY_ATTACH=1 (test-only control).
-  const skipPolicyAttach = env.RICKGENT_SKIP_POLICY_ATTACH === "1";
-  if (!skipPolicyAttach) {
-    const attachResult = verifyPolicyAttachment(opts.agentDir, env);
+  // policies. Test fixtures may replace the checker only by dependency injection.
+  if (!dependencies.skipPolicyAttachment) {
+    const attachResult = (dependencies.verifyPolicyAttachment ?? verifyPolicyAttachment)(opts.agentDir, env);
     if (attachResult.ok) {
       report.push(
         `build: policy attachment — manager: PASS, worker: PASS ` +
@@ -321,7 +354,7 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
   // ── Dispatch infra ───────────────────────────────────────────────────────
   const ledger = new DispatchLedger(dispatchLedgerPath(opts.rickgentDir));
   const lock = new TicketLock(join(opts.rickgentDir, "locks"));
-  const dispatcher = new Dispatcher(ledger, lock, opts.rickgentDir);
+  const dispatcher = new Dispatcher(ledger, lock, opts.rickgentDir, capabilityGate);
   const registry = new Registry(join(opts.rickgentDir, "registry.json"));
   const salvageExec = new SalvageExecutor(opts.workingDir);
   const breaker: CircuitBreakerState = createBreakerState();
@@ -331,7 +364,7 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
   // ── Resume: recover completed tickets from ledger + git via reconcile ─────
   const recoveredDone = new Set<string>();
   if (opts.resume) {
-    const rec = reconcile(opts.workingDir, opts.rickgentDir);
+    const rec = reconcile(opts.workingDir, opts.rickgentDir, undefined, capabilityGate);
     for (const [id, t] of Object.entries(rec.registry.tickets)) {
       if (t.status === "Done") recoveredDone.add(id);
     }
@@ -347,7 +380,7 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
   // `maxConcurrent` in flight, a slot freeing the instant a dispatch settles.
   // There are NO human prompts between the plan and merge gates: a failure is
   // absorbed by the circuit breaker + salvage and the queue keeps draining.
-  const cap = opts.maxConcurrent ?? 2;
+  const cap = opts.maxConcurrent ?? 1;
 
   const toDispatch: TicketPlan[] = [];
   for (const ticket of parsed.tickets) {
@@ -362,7 +395,7 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
     toDispatch.push(ticket);
   }
 
-  const queue = new DispatchQueue(ledger, cap);
+  const queue = new DispatchQueue(ledger, cap, capabilityGate);
   const idByTicket = new Map<string, DispatchId>();
   const ticketByDispatchId = new Map<string, TicketPlan>();
   for (const ticket of toDispatch) {
@@ -415,7 +448,7 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
       implementerVendor,
       costBudgetUsd: costBudgetUsd ?? null,
       softThresholdUsd: softThresholdUsd ?? null,
-    });
+    }, capabilityGate);
 
     if (!routed.ok) {
       const v = routed.verdict;
@@ -561,10 +594,14 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
   // against the working repo. This is the post-implementation conformance
   // audit that validates the implemented code against the PRD's acceptance
   // criteria. A failing AC is absorbed (not a human intervention) but recorded
-  // as a gate finding. Skippable via RICKGENT_SKIP_CONFORMANCE=1 (test-only).
-  const skipConformance = env.RICKGENT_SKIP_CONFORMANCE === "1";
-  if (!skipConformance && base.ticketsDone > 0) {
-    const conformanceResult = runConformanceGate(parsed.prd.acceptanceCriteria, opts.workingDir, env);
+  // as a gate finding. Test fixtures may replace it only by dependency injection.
+  if (!dependencies.skipConformance && base.ticketsDone > 0) {
+    const conformanceResult = (dependencies.runConformanceGate ?? runConformanceGate)(
+      parsed.prd.acceptanceCriteria,
+      opts.workingDir,
+      env,
+      capabilityGate,
+    );
     const acResults = conformanceResult.results.map(
       (r) => `${r.acId}: ${r.pass ? "PASS" : "FAIL"}`,
     );
@@ -586,7 +623,7 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
         }
       }
     }
-  } else if (!skipConformance && base.ticketsDone === 0) {
+  } else if (!dependencies.skipConformance && base.ticketsDone === 0) {
     report.push("build: conformance gate — skipped (no tickets completed)");
   }
 
@@ -594,11 +631,10 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
   // After conformance, run a basic code quality check on the changed files.
   // This is the deslop gate that catches obvious slop patterns (TODO, FIXME,
   // console.log, debugger, etc.) in the implemented code. A finding is absorbed
-  // (not a human intervention) but recorded. Skippable via
-  // RICKGENT_SKIP_DESLOP=1 (test-only).
-  const skipDeslop = env.RICKGENT_SKIP_DESLOP === "1";
-  if (!skipDeslop && base.ticketsDone > 0) {
-    const deslopResult = runDeslopGate(opts.workingDir, parsed.tickets, env);
+  // (not a human intervention) but recorded. Test fixtures may replace the
+  // checker only by dependency injection.
+  if (!dependencies.skipDeslop && base.ticketsDone > 0) {
+    const deslopResult = (dependencies.runDeslopGate ?? runDeslopGate)(opts.workingDir, parsed.tickets, env);
     report.push(
       `build: deslop gate — checked ${deslopResult.filesChecked} file(s), ` +
         `${deslopResult.findings} finding(s)`,
@@ -613,7 +649,7 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
         });
       }
     }
-  } else if (!skipDeslop && base.ticketsDone === 0) {
+  } else if (!dependencies.skipDeslop && base.ticketsDone === 0) {
     report.push("build: deslop gate — skipped (no tickets completed)");
   }
 
@@ -650,7 +686,7 @@ export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
     return { ...base, ok: true, exitCode: 0, interventions: countInterventions(opts.rickgentDir) };
   }
 
-  const pr = createPullRequest(opts.workingDir, featureBranch, parsed.prd.title, env);
+  const pr = createPullRequest(opts.workingDir, featureBranch, parsed.prd.title, env, capabilityGate);
   base.prBranch = pr.branch;
   report.push(
     `build: merge gate — autonomous_pr_flow push=${pr.pushVerdict.result} ` +
@@ -696,10 +732,12 @@ export function runCleanup(
   workingDir: string,
   rickgentDir: string,
   env: NodeJS.ProcessEnv = process.env,
+  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
 ): CleanupResult {
   void env;
+  capabilityGate.require("reconciliation");
   const reap = reapOrphanedWorkerProcs(detectBackend());
-  const rec = reconcile(workingDir, rickgentDir);
+  const rec = reconcile(workingDir, rickgentDir, undefined, capabilityGate);
   const report = [
     `cleanup: orphan-reaper scanned=${reap.scanned} reaped=${reap.reaped} skipped=${reap.skipped}`,
     `cleanup: reconcile rebuilt=${rec.rebuilt} ticketsFound=${rec.ticketsFound}`,
@@ -712,9 +750,17 @@ export interface PipelineResult extends BuildResult {
 }
 
 /** `rickgent pipeline` — the full build followed by the cleanup chain. */
-export async function runPipeline(opts: BuildOptions): Promise<PipelineResult> {
-  const build = await runBuild(opts);
-  const cleanup = runCleanup(opts.workingDir, opts.rickgentDir, opts.env);
+export async function runPipeline(
+  opts: BuildOptions,
+  dependencies: BuildDependencies = {},
+): Promise<PipelineResult> {
+  const build = await runBuild(opts, dependencies);
+  const cleanup = runCleanup(
+    opts.workingDir,
+    opts.rickgentDir,
+    opts.env,
+    dependencies.capabilityGate ?? PRODUCTION_CAPABILITY_GATE,
+  );
   return { ...build, report: [...build.report, ...cleanup.report], cleanup };
 }
 
@@ -725,25 +771,24 @@ export async function runPipeline(opts: BuildOptions): Promise<PipelineResult> {
 // runs, but wired into build startup so a build cannot proceed with ungated
 // policies. Fails CLOSED (non-zero exit + intervention) on a missing policy.
 
-interface PolicyAttachResult {
+export interface PolicyAttachResult {
   ok: boolean;
   detail: string;
   managerCount: number;
   workerCount: number;
 }
 
-function verifyPolicyAttachment(agentDir: string, env: NodeJS.ProcessEnv): PolicyAttachResult {
+export function verifyPolicyAttachment(agentDir: string, env: NodeJS.ProcessEnv): PolicyAttachResult {
   // Resolve manager + worker bundle dirs from the agent dir.
   // agentDir is typically agents/rickgent (manager); worker is agents/rickgent/agents/worker.
   const managerDir = agentDir;
   const workerDir = join(agentDir, "agents", "worker");
 
-  // If neither bundle has a config.yaml, this is not a real bundle dir (e.g.,
-  // a test dummy). Skip the check — in production the agent dir always has one.
+  // Missing bundle configuration is not evidence of attachment.
   if (!existsSync(join(managerDir, "config.yaml")) && !existsSync(join(workerDir, "config.yaml"))) {
     return {
-      ok: true,
-      detail: "no bundle config.yaml found — policy attachment check skipped (not a real bundle)",
+      ok: false,
+      detail: "manager and worker config.yaml are missing",
       managerCount: 0,
       workerCount: 0,
     };

@@ -17,7 +17,7 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync
 import { tmpdir } from "os";
 import { join } from "path";
 
-const CLI_JS = join(import.meta.dirname, "../../dist/cli.js");
+const CLI_JS = join(import.meta.dirname, "../fixtures/fixture-cli.mjs");
 const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
 const PRD_MIN = join(import.meta.dirname, "../../../fixtures/prd-min.md");
 // Real agent bundle dir — the E2E test exercises the real policy attachment
@@ -253,7 +253,7 @@ describe("M6 E2E — full gated pipeline (VAL-E2E-001..004)", () => {
     const controlOut = runCli(
       ["build", PRD_MIN, "--repo", d.repo, "--agent", AGENT_DIR],
       d,
-      { RICKGENT_SKIP_CONFORMANCE: "1" },
+      { RICKGENT_FIXTURE_SKIP_CONFORMANCE: "1" },
     );
     // The build still succeeds (conformance is a quality gate, not a security gate).
     expect(controlOut.status).toBe(0);
@@ -279,7 +279,7 @@ describe("M6 E2E — full gated pipeline (VAL-E2E-001..004)", () => {
     const controlOut = runCli(
       ["build", PRD_MIN, "--repo", d.repo, "--agent", AGENT_DIR],
       d,
-      { RICKGENT_SKIP_DESLOP: "1" },
+      { RICKGENT_FIXTURE_SKIP_DESLOP: "1" },
     );
     expect(controlOut.status).toBe(0);
     // E2E assertion for deslop FAILS: deslop evidence is ABSENT.
@@ -294,7 +294,7 @@ describe("M6 E2E — full gated pipeline (VAL-E2E-001..004)", () => {
     const controlOut = runCli(
       ["build", PRD_MIN, "--repo", d.repo, "--agent", AGENT_DIR],
       d,
-      { RICKGENT_SKIP_POLICY_ATTACH: "1" },
+      { RICKGENT_FIXTURE_SKIP_POLICY_ATTACH: "1" },
     );
     expect(controlOut.status).toBe(0);
     // E2E assertion for policy attachment FAILS: evidence is ABSENT.

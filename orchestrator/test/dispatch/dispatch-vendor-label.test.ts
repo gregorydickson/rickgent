@@ -16,6 +16,7 @@ import {
   type DispatchEntry,
   type DispatchId,
 } from "../../src/dispatch/dispatch.js";
+import { FIXTURE_CAPABILITY_GATE } from "../helpers/capabilities.js";
 
 function tmpDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), `rickgent-vendor-${prefix}-`));
@@ -119,7 +120,7 @@ describe("Dispatcher vendor label in spawned entries (VAL-ROUTE-004)", () => {
     dir = tmpDir("disp");
     ledger = new DispatchLedger(join(dir, "ledger.jsonl"));
     lock = new TicketLock(join(dir, "locks"));
-    dispatcher = new Dispatcher(ledger, lock, dir);
+    dispatcher = new Dispatcher(ledger, lock, dir, FIXTURE_CAPABILITY_GATE);
   });
 
   afterEach(() => {

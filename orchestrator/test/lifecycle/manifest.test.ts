@@ -79,6 +79,7 @@ describe("VAL-COV-003 — mutation check: removing any incident-class guard fail
 
       // The mutation must cause the test to FAIL (non-zero exit)
       expect(result.testFailed, `${cls.id}: test passed with mutation applied — guard is not tested. ${result.error || ""}`).toBe(true);
+      expect(result.sourceUnchanged, `${cls.id}: mutation tooling changed production source`).toBe(true);
     });
   }
 });

@@ -14,7 +14,7 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync
 import { tmpdir } from "os";
 import { join } from "path";
 
-const CLI_JS = join(import.meta.dirname, "../../dist/cli.js");
+const CLI_JS = join(import.meta.dirname, "../fixtures/fixture-cli.mjs");
 const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
 const PRD_MIN = join(import.meta.dirname, "../../../fixtures/prd-min.md");
 

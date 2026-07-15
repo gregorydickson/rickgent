@@ -34,7 +34,7 @@ import {
 import { tmpdir } from "os";
 import { join } from "path";
 
-const CLI_JS = join(import.meta.dirname, "../../dist/cli.js");
+const CLI_JS = join(import.meta.dirname, "../fixtures/fixture-cli.mjs");
 const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -610,8 +610,8 @@ describe("M5 Integration — all commands work with fixture omnigent (VAL-INTEGR
     // No --no-autonomous-pr: the build completes with autonomous PR creation (exit 0).
     // --no-autonomous-pr would hit the merge gate and exit non-zero (documented).
     const r = runFixture(ctx, ["build", prdPath, "--repo", ctx.repo, "--agent", ctx.agentDir], {
-      RICKGENT_SKIP_CONFORMANCE: "1",
-      RICKGENT_SKIP_DESLOP: "1",
+      RICKGENT_FIXTURE_SKIP_CONFORMANCE: "1",
+      RICKGENT_FIXTURE_SKIP_DESLOP: "1",
     });
     expect(r.status).toBe(0);
     expect(r.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
@@ -749,8 +749,8 @@ describe("M5 Integration — full pipeline chain (VAL-INTEGR-010)", () => {
     const buildPrd = join(ctx.repo, "prd.md");
     writeFileSync(buildPrd, VALID_PRD);
     const buildRes = runFixture(ctx, ["build", buildPrd, "--repo", ctx.repo, "--agent", ctx.agentDir], {
-      RICKGENT_SKIP_CONFORMANCE: "1",
-      RICKGENT_SKIP_DESLOP: "1",
+      RICKGENT_FIXTURE_SKIP_CONFORMANCE: "1",
+      RICKGENT_FIXTURE_SKIP_DESLOP: "1",
     });
     expect(buildRes.status).toBe(0);
     expect(buildRes.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
@@ -888,8 +888,8 @@ describe("M5 Integration — cronenberg end-to-end (VAL-INTEGR-011)", () => {
       "--no-followups",
       "--no-refine",
     ], {
-      RICKGENT_SKIP_CONFORMANCE: "1",
-      RICKGENT_SKIP_DESLOP: "1",
+      RICKGENT_FIXTURE_SKIP_CONFORMANCE: "1",
+      RICKGENT_FIXTURE_SKIP_DESLOP: "1",
       RICKGENT_DIR: ctx.rickgentDir,
       INT_SPAWN_LOG: ctx.spawnLog,
     });

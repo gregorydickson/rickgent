@@ -15,6 +15,10 @@ import { existsSync, readFileSync } from "fs";
 import { dispatchLedgerPath } from "../dispatch/dispatch.js";
 import { evaluateCompletion, type CompletionInput } from "../core/completion.js";
 import type { PipelineStatus, TicketState } from "./registry.js";
+import {
+  PRODUCTION_CAPABILITY_GATE,
+  type CapabilityGate,
+} from "../capabilities/registry.js";
 
 export interface ReconcileResult {
   ok: boolean;
@@ -109,7 +113,9 @@ export function reconcile(
   workingDir: string,
   rickgentDir: string,
   ledgerPath: string = dispatchLedgerPath(rickgentDir),
+  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
 ): ReconcileResult {
+  capabilityGate.require("reconciliation");
   const errors: string[] = [];
   const tickets: Record<string, TicketState> = {};
 

@@ -5,6 +5,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
 import { runConformanceGate, type ConformanceResult } from "../../src/lifecycle/citadel.js";
+import { FIXTURE_CAPABILITY_GATE } from "../helpers/capabilities.js";
 import { runDeslopGate, type DeslopResult } from "../../src/lifecycle/szechuan.js";
 import type { AcceptanceCriterion } from "../../src/core/prd.js";
 import type { TicketPlan } from "../../src/lifecycle/prd-parse.js";
@@ -46,7 +47,12 @@ describe("runConformanceGate parity (VAL-M0-005)", () => {
       { description: "empty", type: "test", verifyCommand: "", scope: [] },
     ];
 
-    const result: ConformanceResult = runConformanceGate(acceptanceCriteria, process.cwd(), process.env);
+    const result: ConformanceResult = runConformanceGate(
+      acceptanceCriteria,
+      process.cwd(),
+      process.env,
+      FIXTURE_CAPABILITY_GATE,
+    );
 
     expect(result.total).toBe(4);
     expect(result.passed).toBe(3);

@@ -14,6 +14,10 @@
 // from there into every ledger entry (B8 per-dispatch vendor label).
 
 import { execFileSync } from "child_process";
+import {
+  PRODUCTION_CAPABILITY_GATE,
+  type CapabilityGate,
+} from "../capabilities/registry.js";
 
 /** A model entry in the live roster (mirrors the Python `select_model` dict). */
 export interface ModelEntry {
@@ -117,7 +121,9 @@ export function routeDispatch(
     costBudgetUsd?: number | null;
     softThresholdUsd?: number | null;
   },
+  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
 ): { ok: true; selection: RouterSelection } | { ok: false; verdict: RouterDenial } {
+  if (role === "code_review") capabilityGate.require("cross_vendor_review");
   const verdict = callSelectModel(
     roster,
     role,

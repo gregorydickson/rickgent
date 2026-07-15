@@ -24,6 +24,10 @@ import {
 import { join, resolve, dirname } from "path";
 import { createHash } from "crypto";
 import { fileURLToPath } from "url";
+import {
+  PRODUCTION_CAPABILITY_GATE,
+  type CapabilityGate,
+} from "../capabilities/registry.js";
 import { evaluatePrd } from "../core/prd.js";
 import { parsePrdFile, parsePrdMarkdown, type ParsedPrd, type TicketPlan } from "./prd-parse.js";
 
@@ -773,11 +777,16 @@ function launchBuild(prdRefinedPath: string, agentDir: string, workingDir: strin
 
 // ── Main command entry point ──────────────────────────────────────────────
 
-export async function runRefineCommand(rest: string[]): Promise<void> {
+export async function runRefineCommand(
+  rest: string[],
+  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
+): Promise<void> {
   if (rest.includes("--help") || rest.includes("-h")) {
     console.log(REFINE_USAGE);
     return;
   }
+
+  capabilityGate.require("autonomous_dispatch");
 
   // ── Parse flags ──────────────────────────────────────────────────────
   const valueFlags = new Set(["--cycles", "--max-turns", "--repo", "--agent"]);

@@ -19,7 +19,7 @@ import {
 import { tmpdir } from "os";
 import { join } from "path";
 
-const CLI_JS = join(import.meta.dirname, "../../dist/cli.js");
+const CLI_JS = join(import.meta.dirname, "../fixtures/fixture-cli.mjs");
 
 interface Ctx {
   root: string;

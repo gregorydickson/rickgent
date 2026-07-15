@@ -11,6 +11,7 @@ import {
   type DispatchEntry,
   type DispatchId,
 } from "../../src/dispatch/dispatch.js";
+import { FIXTURE_CAPABILITY_GATE } from "../helpers/capabilities.js";
 
 const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
 
@@ -223,7 +224,7 @@ describe("Dispatcher idempotency", () => {
     dir = tmpDir("idem");
     ledger = new DispatchLedger(join(dir, "ledger.jsonl"));
     lock = new TicketLock(join(dir, "locks"));
-    dispatcher = new Dispatcher(ledger, lock, dir);
+    dispatcher = new Dispatcher(ledger, lock, dir, FIXTURE_CAPABILITY_GATE);
   });
 
   afterEach(() => {
@@ -292,7 +293,7 @@ describe("Dispatcher backpressure", () => {
     dir = tmpDir("bp");
     ledger = new DispatchLedger(join(dir, "ledger.jsonl"));
     lock = new TicketLock(join(dir, "locks"));
-    dispatcher = new Dispatcher(ledger, lock, dir);
+    dispatcher = new Dispatcher(ledger, lock, dir, FIXTURE_CAPABILITY_GATE);
   });
 
   afterEach(() => {
@@ -480,7 +481,7 @@ describe("Dispatcher lock failure", () => {
     const otherLock = new TicketLock(join(dir, "locks"));
     otherLock.acquire("T-1");
 
-    const dispatcher = new Dispatcher(ledger, lock, dir);
+    const dispatcher = new Dispatcher(ledger, lock, dir, FIXTURE_CAPABILITY_GATE);
     const id = makeId("T-1");
     const idStr = dispatchIdString(id);
 
@@ -505,7 +506,7 @@ describe("Dispatcher lock failure", () => {
     const liveStamp = String(Date.now() - 60_000);
     writeFileSync(lockPath, liveStamp);
 
-    const dispatcher = new Dispatcher(ledger, lock, dir);
+    const dispatcher = new Dispatcher(ledger, lock, dir, FIXTURE_CAPABILITY_GATE);
     const id = makeId("T-1");
 
     const result = await dispatcher.dispatch(id, {

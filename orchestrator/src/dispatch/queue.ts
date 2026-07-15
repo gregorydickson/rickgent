@@ -18,6 +18,10 @@ import {
   type DispatchEntry,
   type DispatchId,
 } from "./dispatch.js";
+import {
+  PRODUCTION_CAPABILITY_GATE,
+  type CapabilityGate,
+} from "../capabilities/registry.js";
 
 /** Dispatches one ticket and resolves with its terminal/interim ledger entry. */
 export type DispatchFn = (id: DispatchId) => Promise<DispatchEntry>;
@@ -70,7 +74,10 @@ export class DispatchQueue {
   constructor(
     private ledger: DispatchLedger,
     private maxConcurrent: number,
-  ) {}
+    capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
+  ) {
+    if (this.cap > 1) capabilityGate.require("parallel_dispatch");
+  }
 
   /** Cap the queue enforces (always ≥ 1). */
   get cap(): number {

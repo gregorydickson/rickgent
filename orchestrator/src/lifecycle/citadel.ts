@@ -9,6 +9,10 @@
 
 import { execFileSync } from "child_process";
 import type { AcceptanceCriterion } from "../core/prd.js";
+import {
+  PRODUCTION_CAPABILITY_GATE,
+  type CapabilityGate,
+} from "../capabilities/registry.js";
 
 export interface ConformanceResult {
   total: number;
@@ -21,7 +25,9 @@ export function runConformanceGate(
   acceptanceCriteria: AcceptanceCriterion[],
   workingDir: string,
   env: NodeJS.ProcessEnv,
+  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
 ): ConformanceResult {
+  capabilityGate.require("raw_shell");
   const results: Array<{ acId: string; pass: boolean; detail: string }> = [];
   let passed = 0;
   let failed = 0;

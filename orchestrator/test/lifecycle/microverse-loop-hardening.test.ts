@@ -14,7 +14,17 @@ import { execFileSync } from "child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { MicroverseLoop } from "../../src/lifecycle/microverse.js";
+import {
+  MicroverseLoop as ProductionMicroverseLoop,
+  type MicroverseLoopOptions,
+} from "../../src/lifecycle/microverse.js";
+import { FIXTURE_CAPABILITY_GATE } from "../helpers/capabilities.js";
+
+class MicroverseLoop extends ProductionMicroverseLoop {
+  constructor(options: MicroverseLoopOptions) {
+    super({ ...options, capabilityGate: FIXTURE_CAPABILITY_GATE });
+  }
+}
 
 function git(repo: string, args: string[]): string {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf-8" }).trim();

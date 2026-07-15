@@ -26,6 +26,10 @@ import {
 } from "fs";
 import { join, resolve, relative } from "path";
 import {
+  PRODUCTION_CAPABILITY_GATE,
+  type CapabilityGate,
+} from "../capabilities/registry.js";
+import {
   MicroverseLoop,
   parseLastNumericLine,
   type MicroverseLoopResult,
@@ -570,7 +574,10 @@ function mapClassification(classification: string): string {
 
 // ── Main Command ─────────────────────────────────────────────────────────────
 
-export async function runSzechuanCommand(rest: string[]): Promise<void> {
+export async function runSzechuanCommand(
+  rest: string[],
+  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
+): Promise<void> {
   if (rest.includes("--help") || rest.includes("-h")) {
     console.log(SZECHUAN_USAGE);
     return;
@@ -578,6 +585,8 @@ export async function runSzechuanCommand(rest: string[]): Promise<void> {
 
   // ── Parse flags ────────────────────────────────────────────────────────────
   const dryRun = rest.includes("--dry-run");
+  if (rest.includes("--resume")) capabilityGate.require("resume_retry");
+  if (!dryRun) capabilityGate.require("autonomous_dispatch");
   const domain = flagValue(rest, "--domain");
   const focus = flagValue(rest, "--focus");
   const designSafe = rest.includes("--design-safe");
@@ -760,6 +769,7 @@ export async function runSzechuanCommand(rest: string[]): Promise<void> {
   };
 
   const loop = new MicroverseLoop({
+    capabilityGate,
     workingDir,
     ownedPaths,
     metricFn,

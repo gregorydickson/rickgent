@@ -12,21 +12,24 @@
 
 "use strict";
 
-const { readFileSync, writeFileSync, existsSync } = require("fs");
-const { join } = require("path");
+const {
+  readFileSync,
+  existsSync,
+  cpSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  realpathSync,
+} = require("fs");
+const { join, basename } = require("path");
+const { tmpdir } = require("os");
 const { spawnSync } = require("child_process");
 
 const REPO_ROOT = join(__dirname, "..", "..");
 const ORCH_DIR = join(REPO_ROOT, "orchestrator");
 const POLICIES_DIR = join(REPO_ROOT, "rickgent-policies");
 
-const NODE_PATH = "/Users/gregorydickson/.nvm/versions/node/v24.13.1/bin";
-const PATH_ENV = (extra) => ({
-  PATH: NODE_PATH + ":" + (process.env.PATH || ""),
-  ...Object.fromEntries(
-    Object.entries(process.env).filter(([k]) => k !== "PATH")
-  ),
-});
+const PATH_ENV = () => ({ ...process.env });
 
 // ── Incident class definitions ──────────────────────────────────────────────
 // Each incident class maps a guard in the source code to the test that verifies
@@ -533,8 +536,20 @@ function runMutationCheck(incidentClassId) {
     };
   }
 
-  // Write mutated source
-  writeFileSync(sourcePath, mutated);
+  const disposableRoot = mkdtempSync(join(tmpdir(), "rickgent-mutation-"));
+  const disposableOrchestrator = join(disposableRoot, "orchestrator");
+  const disposablePolicies = join(disposableRoot, "rickgent-policies");
+
+  const copyFilter = (source) => !["node_modules", "dist", ".git", ".pytest_cache", "__pycache__"].includes(basename(source));
+  cpSync(ORCH_DIR, disposableOrchestrator, { recursive: true, filter: copyFilter });
+  cpSync(POLICIES_DIR, disposablePolicies, { recursive: true, filter: copyFilter });
+  cpSync(join(REPO_ROOT, "conformance"), join(disposableRoot, "conformance"), { recursive: true, filter: copyFilter });
+  symlinkSync(realpathSync(join(ORCH_DIR, "node_modules")), join(disposableOrchestrator, "node_modules"), "dir");
+
+  const disposableSource = cls.sourceFile.includes("rickgent_policies")
+    ? join(disposablePolicies, cls.sourceFile)
+    : join(disposableOrchestrator, cls.sourceFile);
+  require("fs").writeFileSync(disposableSource, mutated);
 
   try {
     // Run the test
@@ -546,7 +561,7 @@ function runMutationCheck(incidentClassId) {
         "python3",
         ["-m", "pytest", cls.testFile, "-x", "--no-header", "-q"],
         {
-          cwd: POLICIES_DIR,
+          cwd: disposablePolicies,
           encoding: "utf-8",
           timeout: 60000,
           env: PATH_ENV(),
@@ -554,12 +569,12 @@ function runMutationCheck(incidentClassId) {
         }
       );
     } else {
-      const vitestBin = join(ORCH_DIR, "node_modules", ".bin", "vitest");
+      const vitestBin = join(disposableOrchestrator, "node_modules", ".bin", "vitest");
       result = spawnSync(
         vitestBin,
         ["run", cls.testFile, "--reporter=verbose"],
         {
-          cwd: ORCH_DIR,
+          cwd: disposableOrchestrator,
           encoding: "utf-8",
           timeout: 60000,
           env: PATH_ENV(),
@@ -568,15 +583,21 @@ function runMutationCheck(incidentClassId) {
       );
     }
 
-    // If exit code is non-zero, the test failed → mutation caught → PASS
-    const testFailed = result.status !== 0;
+    const infrastructureError = result.error || result.signal || result.status === null;
+    // A spawn error, signal, or timeout is infrastructure failure, not a kill.
+    const testFailed = !infrastructureError && result.status !== 0;
     return {
       id: incidentClassId,
       guardFound: true,
       testFailed,
-      error: testFailed ? null : "Test passed with mutation applied (guard not tested)",
+      error: infrastructureError
+        ? `Mutation test infrastructure failure: ${result.error?.message || result.signal || "no exit status"}`
+        : testFailed
+          ? null
+          : "Test passed with mutation applied (guard not tested)",
       stdout: result.stdout ? result.stdout.slice(-500) : undefined,
       status: result.status,
+      sourceUnchanged: readFileSync(sourcePath, "utf-8") === original,
     };
   } catch (e) {
     return {
@@ -584,10 +605,10 @@ function runMutationCheck(incidentClassId) {
       guardFound: true,
       testFailed: false,
       error: `Test execution failed: ${e.message}`,
+      sourceUnchanged: readFileSync(sourcePath, "utf-8") === original,
     };
   } finally {
-    // ALWAYS restore original source
-    writeFileSync(sourcePath, original);
+    rmSync(disposableRoot, { recursive: true, force: true });
   }
 }
 

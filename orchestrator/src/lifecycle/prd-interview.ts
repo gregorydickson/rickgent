@@ -19,6 +19,10 @@
 import { spawnSync } from "child_process";
 import { existsSync, mkdirSync, statSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
+import {
+  PRODUCTION_CAPABILITY_GATE,
+  type CapabilityGate,
+} from "../capabilities/registry.js";
 import { evaluatePrd } from "../core/prd.js";
 import { parsePrdFile } from "./prd-parse.js";
 
@@ -200,7 +204,10 @@ function buildInterviewPrompt(
   return lines.join("\n");
 }
 
-export async function runPrdCommand(rest: string[]): Promise<void> {
+export async function runPrdCommand(
+  rest: string[],
+  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
+): Promise<void> {
   if (rest.includes("--help") || rest.includes("-h")) {
     console.log(PRD_USAGE);
     return;
@@ -208,6 +215,9 @@ export async function runPrdCommand(rest: string[]): Promise<void> {
 
   const nonInteractive = rest.includes("--non-interactive");
   const fromFile = flagValue(rest, "--from");
+  if (!nonInteractive && fromFile === undefined) {
+    capabilityGate.require("autonomous_dispatch");
+  }
   const outputFlag = flagValue(rest, "--output");
   const repoFlag = flagValue(rest, "--repo");
   const agentFlag = flagValue(rest, "--agent");

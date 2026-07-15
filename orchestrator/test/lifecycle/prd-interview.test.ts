@@ -21,7 +21,7 @@ import { join } from "path";
 import { parsePrdMarkdown } from "../../src/lifecycle/prd-parse.js";
 import { evaluatePrd } from "../../src/core/prd.js";
 
-const CLI_JS = join(import.meta.dirname, "../../dist/cli.js");
+const CLI_JS = join(import.meta.dirname, "../fixtures/fixture-cli.mjs");
 
 interface Ctx {
   root: string;

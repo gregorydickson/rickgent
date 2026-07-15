@@ -18,6 +18,7 @@ import {
 } from "../../src/dispatch/dispatch.js";
 import { DispatchQueue } from "../../src/dispatch/queue.js";
 import { reconcile } from "../../src/lifecycle/reconcile.js";
+import { FIXTURE_CAPABILITY_GATE } from "../helpers/capabilities.js";
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
@@ -102,7 +103,7 @@ describe("B3 resume — reconcile reconstructs in-flight + planned (VAL-QUEUE-00
     const plannedId = dispatchIdString(id("T-PLANNED"));
     ledger.append(entry({ dispatchId: plannedId, state: "planned" }));
 
-    const result = reconcile(tempDir, rickgentDir);
+    const result = reconcile(tempDir, rickgentDir, undefined, FIXTURE_CAPABILITY_GATE);
 
     expect(result.registry.tickets["T-DONE"]?.status).toBe("Done");
     expect(result.registry.tickets["T-DONE"]?.completionCommitSha).toBe(doneSha);
@@ -121,7 +122,7 @@ describe("B3 resume — reconcile reconstructs in-flight + planned (VAL-QUEUE-00
   it("a planned entry later superseded by completed is reconstructed as Done (latest state wins)", () => {
     const baselineSha = commitFile(tempDir, "base.txt", "base", "baseline");
     const sha = commitFile(tempDir, "src/foo.ts", "export const y = 2;", "work");
-    const queue = new DispatchQueue(new DispatchLedger(dispatchLedgerPath(rickgentDir)), 2);
+    const queue = new DispatchQueue(new DispatchLedger(dispatchLedgerPath(rickgentDir)), 2, FIXTURE_CAPABILITY_GATE);
     // enqueue writes planned; then a completed supersedes it.
     queue.enqueue(id("T-SUP"));
     const ledger = new DispatchLedger(dispatchLedgerPath(rickgentDir));
@@ -137,7 +138,7 @@ describe("B3 resume — reconcile reconstructs in-flight + planned (VAL-QUEUE-00
         exitCode: 0,
       }),
     );
-    const result = reconcile(tempDir, rickgentDir);
+    const result = reconcile(tempDir, rickgentDir, undefined, FIXTURE_CAPABILITY_GATE);
     expect(result.registry.tickets["T-SUP"]?.status).toBe("Done");
   });
 });

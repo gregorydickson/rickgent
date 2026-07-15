@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { evaluateCompletion } from "../../src/core/completion.js";
 import { decideSalvage } from "../../src/core/salvage.js";
 import { evaluateConvergenceGate } from "../../src/core/convergence.js";
@@ -10,6 +10,7 @@ import { evaluatePrd } from "../../src/core/prd.js";
 import { createBreakerState, recordIterationResult, canExecute } from "../../src/core/breaker.js";
 
 const fixturesDir = join(import.meta.dirname, "../../../conformance/fixtures");
+const cliPath = join(import.meta.dirname, "../../dist/cli.js");
 const fixtureFiles = readdirSync(fixturesDir).filter(f => f.endsWith(".json"));
 
 function loadFixture(file: string) {
@@ -54,7 +55,7 @@ function runCoreApi(fixture: any): any {
 function runCliSubprocess(fixture: any): any {
   const input = typeof fixture.input === "string" ? fixture.input : JSON.stringify(fixture.input);
   try {
-    const result = execSync(`rickgent verdict ${fixture.check} --json`, {
+    const result = execFileSync(process.execPath, [cliPath, "verdict", fixture.check, "--json"], {
       input,
       encoding: "utf-8",
       timeout: 10000,

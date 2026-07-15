@@ -11,6 +11,10 @@ import { mkdirSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import {
+  PRODUCTION_CAPABILITY_GATE,
+  type CapabilityGate,
+} from "../capabilities/registry.js";
+import {
   buildCronenbergPlan,
   formatCronenbergPlan,
   type CronenbergFlags,
@@ -130,8 +134,8 @@ function cliJsPath(): string {
   return fileURLToPath(new URL("../cli.js", import.meta.url));
 }
 
-function runChild(cmd: PlannedCommand, workingDir: string): number {
-  const cli = cliJsPath();
+function runChild(cmd: PlannedCommand, workingDir: string, childCliPath?: string): number {
+  const cli = childCliPath ?? cliJsPath();
   try {
     execFileSync(process.execPath, [cli, ...cmd.argv], {
       cwd: workingDir,
@@ -144,13 +148,18 @@ function runChild(cmd: PlannedCommand, workingDir: string): number {
   }
 }
 
-export async function runCronenbergCommand(rest: string[]): Promise<void> {
+export async function runCronenbergCommand(
+  rest: string[],
+  childCliPath?: string,
+  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
+): Promise<void> {
   if (rest.includes("--help") || rest.includes("-h")) {
     console.log(CRONENBERG_USAGE);
     return;
   }
 
   const { task, workingDir, forward, flags } = parseArgs(rest);
+  if (!flags.dryRun) capabilityGate.require("autonomous_dispatch");
   const rickgentDir = process.env.RICKGENT_DIR ?? join(workingDir, ".rickgent");
   const diffLoc = measureDiffLoc(workingDir);
 
@@ -186,7 +195,7 @@ export async function runCronenbergCommand(rest: string[]): Promise<void> {
 
   for (const cmd of chain) {
     console.log(`\n▶ ${cmd.label}`);
-    const code = runChild(cmd, workingDir);
+    const code = runChild(cmd, workingDir, childCliPath);
     if (code !== 0) {
       console.error(`rickgent cronenberg: step failed (exit ${code}): ${cmd.label}`);
       process.exit(code);

@@ -20,6 +20,10 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { runBuild } from "../../src/lifecycle/build.js";
 import { callSelectModel, routeDispatch, type ModelEntry } from "../../src/lifecycle/routing.js";
+import { FIXTURE_BUILD_DEPENDENCIES, FIXTURE_CAPABILITY_GATE } from "../helpers/capabilities.js";
+
+const fixtureBuild = (options: Parameters<typeof runBuild>[0]) =>
+  runBuild(options, FIXTURE_BUILD_DEPENDENCIES);
 
 const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
 const PRD_MIN = join(import.meta.dirname, "../../../fixtures/prd-min.md");
@@ -107,7 +111,7 @@ describe("M4 fix: build path calls select_model before each dispatch", () => {
   // VAL-ROUTE-WIRING-001: the production build path populates the vendor label
   // from the router's selection. Ledger entries have vendor != null.
   it("populates vendor from the router's selection in every spawned ledger entry", async () => {
-    const result = await runBuild({
+    const result = await fixtureBuild({
       prdPath: PRD_MIN,
       workingDir: d.repo,
       rickgentDir: d.rickgentDir,
@@ -139,7 +143,7 @@ describe("M4 fix: build path calls select_model before each dispatch", () => {
     if (!routed.ok) return;
     const expectedVendor = routed.selection.vendor;
 
-    const result = await runBuild({
+    const result = await fixtureBuild({
       prdPath: PRD_MIN,
       workingDir: d.repo,
       rickgentDir: d.rickgentDir,
@@ -166,7 +170,7 @@ describe("M4 fix: pre-dispatch cost gate is enforced in the build path", () => {
 
   // VAL-ROUTE-WIRING-003: an all-unpriced roster → DENY → no dispatch spawns.
   it("DENYs dispatch on an all-unpriced roster (no spawned entries)", async () => {
-    const result = await runBuild({
+    const result = await fixtureBuild({
       prdPath: PRD_MIN,
       workingDir: d.repo,
       rickgentDir: d.rickgentDir,
@@ -192,7 +196,7 @@ describe("M4 fix: pre-dispatch cost gate is enforced in the build path", () => {
 
   // VAL-ROUTE-WIRING-004: an over-hard-budget roster → DENY → no dispatch.
   it("DENYs dispatch when every model exceeds the hard budget", async () => {
-    const result = await runBuild({
+    const result = await fixtureBuild({
       prdPath: PRD_MIN,
       workingDir: d.repo,
       rickgentDir: d.rickgentDir,
@@ -211,7 +215,7 @@ describe("M4 fix: pre-dispatch cost gate is enforced in the build path", () => {
 
   // VAL-ROUTE-WIRING-005: an empty roster → DENY → no dispatch (fail-closed).
   it("DENYs dispatch on an empty roster (no silent fallback)", async () => {
-    const result = await runBuild({
+    const result = await fixtureBuild({
       prdPath: PRD_MIN,
       workingDir: d.repo,
       rickgentDir: d.rickgentDir,
@@ -234,7 +238,7 @@ describe("M4 fix: cross-vendor review exclusion in the real dispatch path", () =
     const routed = routeDispatch(MULTI_VENDOR_ROSTER, "code_review", {
       implementerVendor: "anthropic",
       costBudgetUsd: 10.0,
-    });
+    }, FIXTURE_CAPABILITY_GATE);
     expect(routed.ok).toBe(true);
     if (!routed.ok) return;
     expect(routed.selection.vendor).not.toBe("anthropic");
@@ -244,7 +248,7 @@ describe("M4 fix: cross-vendor review exclusion in the real dispatch path", () =
     const routed = routeDispatch(MULTI_VENDOR_ROSTER, "code_review", {
       implementerVendor: "openai",
       costBudgetUsd: 10.0,
-    });
+    }, FIXTURE_CAPABILITY_GATE);
     expect(routed.ok).toBe(true);
     if (!routed.ok) return;
     expect(routed.selection.vendor).not.toBe("openai");
@@ -257,7 +261,7 @@ describe("M4 fix: cross-vendor review exclusion in the real dispatch path", () =
     const routed = routeDispatch(singleVendor, "code_review", {
       implementerVendor: "anthropic",
       costBudgetUsd: 10.0,
-    });
+    }, FIXTURE_CAPABILITY_GATE);
     expect(routed.ok).toBe(false);
     if (routed.ok) return;
     expect(routed.verdict.result).toBe("DENY");

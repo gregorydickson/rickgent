@@ -25,6 +25,10 @@ import {
   writeFileSync,
 } from "fs";
 import { join, resolve, relative } from "path";
+import {
+  PRODUCTION_CAPABILITY_GATE,
+  type CapabilityGate,
+} from "../capabilities/registry.js";
 import { isPathInScope } from "../core/scope.js";
 
 const ANATOMY_USAGE = `rickgent anatomy — deep subsystem review with 3-phase protocol
@@ -744,7 +748,10 @@ function advanceRotation(state: AnatomyState): void {
 
 // ── Main Command ─────────────────────────────────────────────────────────────
 
-export async function runAnatomyCommand(rest: string[]): Promise<void> {
+export async function runAnatomyCommand(
+  rest: string[],
+  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
+): Promise<void> {
   if (rest.includes("--help") || rest.includes("-h")) {
     console.log(ANATOMY_USAGE);
     return;
@@ -752,6 +759,8 @@ export async function runAnatomyCommand(rest: string[]): Promise<void> {
 
   // ── Parse flags ────────────────────────────────────────────────────────────
   const dryRun = rest.includes("--dry-run");
+  if (rest.includes("--resume")) capabilityGate.require("resume_retry");
+  if (!dryRun) capabilityGate.require("autonomous_dispatch");
   const resume = rest.includes("--resume");
   const maxIterations = parseIntFlag(flagValue(rest, "--max-iterations"), 100);
   const stallLimit = parseIntFlag(flagValue(rest, "--stall-limit"), 3);

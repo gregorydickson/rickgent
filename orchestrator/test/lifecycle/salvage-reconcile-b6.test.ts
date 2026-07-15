@@ -15,6 +15,7 @@ import {
   type DispatchEntry,
 } from "../../src/dispatch/dispatch.js";
 import { reconcile } from "../../src/lifecycle/reconcile.js";
+import { FIXTURE_CAPABILITY_GATE } from "../helpers/capabilities.js";
 import { SalvageExecutor } from "../../src/lifecycle/salvage.js";
 import type { SalvageInput } from "../../src/core/salvage.js";
 import { Registry, type PipelineStatus } from "../../src/lifecycle/registry.js";
@@ -89,7 +90,7 @@ describe("B6 — shared ledger schema round-trips append->reconcile", () => {
       }),
     );
 
-    const result = reconcile(tempDir, rickgentDir);
+    const result = reconcile(tempDir, rickgentDir, undefined, FIXTURE_CAPABILITY_GATE);
     expect(result.ticketsFound).toBeGreaterThan(0);
     const t = result.registry.tickets["T-RT"];
     expect(t).toBeDefined();
@@ -113,7 +114,7 @@ describe("B6 — shared ledger schema round-trips append->reconcile", () => {
         declared_paths: ["src"],
       }) + "\n",
     );
-    const result = reconcile(tempDir, rickgentDir);
+    const result = reconcile(tempDir, rickgentDir, undefined, FIXTURE_CAPABILITY_GATE);
     expect(result.registry.tickets["T-SNAKE"]).toBeUndefined();
   });
 
@@ -131,7 +132,7 @@ describe("B6 — shared ledger schema round-trips append->reconcile", () => {
       role: "impl",
     });
     ledger.append(baseEntry(dispatchId, { commitSha, baselineSha, declaredPaths: ["src"], treeChanged: true }));
-    expect(reconcile(tempDir, rickgentDir).registry.tickets["T-PATH"]).toBeDefined();
+    expect(reconcile(tempDir, rickgentDir, undefined, FIXTURE_CAPABILITY_GATE).registry.tickets["T-PATH"]).toBeDefined();
 
     // A non-default path is still consumed when reconcile is pointed at it.
     const customPath = join(rickgentDir, "custom-ledger.jsonl");
@@ -144,7 +145,7 @@ describe("B6 — shared ledger schema round-trips append->reconcile", () => {
       role: "impl",
     });
     customLedger.append(baseEntry(customId, { commitSha, baselineSha, declaredPaths: ["src"], treeChanged: true }));
-    const custom = reconcile(tempDir, rickgentDir, customPath);
+    const custom = reconcile(tempDir, rickgentDir, customPath, FIXTURE_CAPABILITY_GATE);
     expect(custom.registry.tickets["T-CUSTOM"]).toBeDefined();
   });
 
@@ -161,7 +162,7 @@ describe("B6 — shared ledger schema round-trips append->reconcile", () => {
       baseEntry(badId, { commitSha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", baselineSha, declaredPaths: ["src"], treeChanged: true }),
     );
 
-    const result = reconcile(tempDir, rickgentDir);
+    const result = reconcile(tempDir, rickgentDir, undefined, FIXTURE_CAPABILITY_GATE);
     expect(result.registry.tickets["T-GOOD"]?.status).toBe("Done");
     expect(result.registry.tickets["T-BAD"]?.status).not.toBe("Done");
   });

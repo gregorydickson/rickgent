@@ -1,236 +1,307 @@
 #!/usr/bin/env node
-import { join } from "path";
 import { readFileSync } from "fs";
+import { join, resolve } from "path";
+import { pathToFileURL } from "url";
 import { BUILD_COMMIT } from "./build-commit.js";
+import {
+  InputContractError,
+  PRODUCTION_CAPABILITY_GATE,
+  RickgentBoundaryError,
+  assertNoProductionBypasses,
+  formatCapabilityReport,
+  type CapabilityGate,
+} from "./capabilities/registry.js";
 import { runVerdict } from "./core/verdict-cli.js";
+import type { BuildDependencies, BuildOptions } from "./lifecycle/build.js";
 
 const USAGE = `rickgent — autonomous multi-model engineering platform
 
 Usage:
-  rickgent                     Launch the default agent (interactive)
   rickgent prd                 PRD interview
-  rickgent prd --from <file>   Adopt existing PRD
   rickgent refine <prd.md>     3-analyst refinement + decomposition
-  rickgent refine <prd.md> --run  Refine + auto-launch
-  rickgent build               Implement all tickets (8-phase loop)
-  rickgent build --resume      Resume from existing session
-  rickgent build --max-iterations N  Stop after N iterations
+  rickgent build <prd.md>      Contained build entrypoint
+  rickgent pipeline <prd.md>   Contained lifecycle entrypoint
   rickgent citadel             Conformance audit
   rickgent szechuan            Deslopping
   rickgent anatomy             Subsystem review
-  rickgent microverse --metric CMD  Convergence loop
-  rickgent pipeline "<goal>"   Full lifecycle
-  rickgent cronenberg "<goal>" Meta-router
-  rickgent status              Session phase, ticket status
-  rickgent status --deep       Deep health check
-  rickgent metrics             Cost, commits, LOC
-  rickgent reconcile           Rebuild registry from git + DB
-  rickgent doctor              Behavioral smoke test
-  rickgent verdict <check> --json  Run a verdict check (JSON I/O)
-  rickgent --version           Print version + build commit
-  rickgent --build-commit      Print build commit only
-  rickgent --help              Show this help
-
-Commands:
-  prd, refine, build, citadel, szechuan, anatomy, microverse,
-  pipeline, cronenberg, status, metrics, reconcile, doctor, verdict
+  rickgent microverse          Convergence loop
+  rickgent cronenberg          Meta-router
+  rickgent status [--deep]     Session state
+  rickgent metrics [--json]    Cost, commits, LOC
+  rickgent reconcile           Rebuild registry (currently unavailable)
+  rickgent doctor [--json]     Health and capability contract
+  rickgent verdict <check> --json
+  rickgent --version
+  rickgent --build-commit
+  rickgent --help
 `;
 
-const BUILD_USAGE = `rickgent build — implement all tickets through the gated build loop
+const BUILD_USAGE = `rickgent build — contained build boundary
 
 Usage:
   rickgent build <prd> [options]
   rickgent build --resume [options]
 
-Required (unless --resume):
-  <prd>                     PRD markdown file to decompose into tickets
-
 Options:
-  --repo <dir>              Target git repo (default: RICKGENT_TARGET_REPO or cwd)
+  --repo <dir>              Target git repo
   --agent <dir>             omnigent agent bundle directory
-  --feature <branch>        Feature branch to build on
-  --max-concurrent <N>      Max concurrent dispatches (default: 2)
-  --roster <file>           JSON model roster for routing
+  --feature <branch>        Delivery branch (capability unavailable in M1)
+  --max-concurrent <N>      Dispatch cap (default: 1; values >1 unavailable)
+  --roster <file>           JSON model roster
   --cost-budget <usd>       Hard cost budget per dispatch
-  --soft-threshold <usd>    Soft cost threshold (triggers ASK)
-  --resume                  Resume from an existing session (ledger + git state)
-  --no-autonomous-pr        Disable autonomous PR flow
-  --max-iterations <N>      Stop after N iterations
-
-Each ticket runs the 9-gate pipeline, including the conformance gate (citadel)
-and the deslop gate (szechuan), before merge.
+  --soft-threshold <usd>    Soft cost threshold
+  --resume                  Resume (capability unavailable in M1)
+  --no-autonomous-pr        Delivery configuration (unavailable in M1)
+  --raw-shell               Raw-shell configuration (unavailable in M1)
+  --max-iterations <N>      Advertised legacy flag; rejected until implemented
+  --help, -h                Show this help
 `;
 
-const PIPELINE_USAGE = `rickgent pipeline — full lifecycle (build + convergence + reconcile cleanup)
+const PIPELINE_USAGE = `rickgent pipeline — contained lifecycle boundary
 
 Usage:
-  rickgent pipeline <prd> [options]
+  rickgent pipeline <prd> [build options]
 
-Accepts the same flags as \`rickgent build\` (--repo, --agent, --feature,
---max-concurrent, --roster, --cost-budget, --soft-threshold, --resume,
---no-autonomous-pr, --max-iterations).
-
-Runs the gated build loop (including the conformance/citadel and deslop/szechuan
-gates), then convergence and reconcile cleanup.
+The same strict build option contract applies. Autonomous dispatch, resume,
+reconciliation, parallel dispatch, raw shell, and delivery remain contained.
 `;
 
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-  const command = args[0] ?? "";
+const SIMPLE_COMMAND_USAGE: Readonly<Record<string, string>> = {
+  doctor: "Usage: rickgent doctor [--json]",
+  status: "Usage: rickgent status [--deep]",
+  metrics: "Usage: rickgent metrics [--json]",
+  reconcile: "Usage: rickgent reconcile",
+  verdict: "Usage: rickgent verdict <check> --json",
+};
 
-  if (command === "--version" || command === "-v") {
-    console.log(`rickgent 0.1.0-alpha (build ${BUILD_COMMIT.slice(0, 12)})`);
-    return;
+type OptionKind = "boolean" | "value";
+type OptionSpec = Readonly<Record<string, OptionKind>>;
+
+const HELP_OPTIONS: OptionSpec = { "--help": "boolean", "-h": "boolean" };
+const BUILD_OPTIONS: OptionSpec = {
+  ...HELP_OPTIONS,
+  "--repo": "value",
+  "--agent": "value",
+  "--feature": "value",
+  "--max-concurrent": "value",
+  "--roster": "value",
+  "--cost-budget": "value",
+  "--soft-threshold": "value",
+  "--resume": "boolean",
+  "--no-autonomous-pr": "boolean",
+  "--raw-shell": "boolean",
+  "--max-iterations": "value",
+};
+
+const COMMAND_OPTIONS: Readonly<Record<string, { options: OptionSpec; maxPositionals: number }>> = {
+  doctor: { options: { ...HELP_OPTIONS, "--json": "boolean" }, maxPositionals: 0 },
+  status: { options: { ...HELP_OPTIONS, "--deep": "boolean" }, maxPositionals: 0 },
+  metrics: { options: { ...HELP_OPTIONS, "--json": "boolean" }, maxPositionals: 0 },
+  reconcile: { options: HELP_OPTIONS, maxPositionals: 0 },
+  verdict: { options: { ...HELP_OPTIONS, "--json": "boolean" }, maxPositionals: 1 },
+  citadel: {
+    options: { ...HELP_OPTIONS, "--prd": "value", "--diff": "value", "--strict": "boolean", "--report": "value", "--print-stubs": "boolean", "--repo": "value" },
+    maxPositionals: 1,
+  },
+  prd: {
+    options: { ...HELP_OPTIONS, "--non-interactive": "boolean", "--from": "value", "--repo": "value", "--agent": "value", "--output": "value" },
+    maxPositionals: 0,
+  },
+  refine: {
+    options: { ...HELP_OPTIONS, "--run": "boolean", "--cycles": "value", "--max-turns": "value", "--non-interactive": "boolean", "--repo": "value", "--agent": "value" },
+    maxPositionals: 1,
+  },
+  anatomy: {
+    options: { ...HELP_OPTIONS, "--dry-run": "boolean", "--max-iterations": "value", "--stall-limit": "value", "--repo": "value", "--agent": "value", "--resume": "boolean" },
+    maxPositionals: 0,
+  },
+  szechuan: {
+    options: { ...HELP_OPTIONS, "--dry-run": "boolean", "--domain": "value", "--focus": "value", "--design-safe": "boolean", "--max-iterations": "value", "--stall-limit": "value", "--repo": "value", "--agent": "value", "--resume": "boolean" },
+    maxPositionals: 0,
+  },
+  microverse: {
+    options: { ...HELP_OPTIONS, "--metric": "value", "--goal": "value", "--task": "value", "--direction": "value", "--max-iterations": "value", "--stall-limit": "value", "--epsilon": "value", "--window": "value", "--target": "value", "--repo": "value", "--agent": "value", "--owned-paths": "value", "--iteration-deadline-ms": "value", "--non-interactive": "boolean", "--resume": "boolean" },
+    maxPositionals: 0,
+  },
+  cronenberg: {
+    options: { ...HELP_OPTIONS, "--dry-run": "boolean", "--no-followups": "boolean", "--no-refine": "boolean", "--refine": "boolean", "--non-interactive": "boolean", "--task": "value", "--repo": "value", "--metric": "value", "--goal": "value", "--agent": "value", "--target": "value", "--max-iterations": "value", "--stall-limit": "value", "--epsilon": "value", "--window": "value", "--direction": "value", "--owned-paths": "value", "--iteration-deadline-ms": "value", "--domain": "value", "--focus": "value", "--design-safe": "boolean", "--max-concurrent": "value" },
+    maxPositionals: Number.POSITIVE_INFINITY,
+  },
+};
+
+const NUMERIC_OPTION_RULES: Readonly<Record<string, { integer: boolean; minimum?: number }>> = {
+  "--cycles": { integer: true, minimum: 1 },
+  "--max-turns": { integer: true, minimum: 1 },
+  "--max-concurrent": { integer: true, minimum: 1 },
+  "--max-iterations": { integer: true, minimum: 1 },
+  "--stall-limit": { integer: true, minimum: 1 },
+  "--window": { integer: true, minimum: 1 },
+  "--iteration-deadline-ms": { integer: true, minimum: 1 },
+  "--cost-budget": { integer: false, minimum: 0 },
+  "--soft-threshold": { integer: false, minimum: 0 },
+  "--epsilon": { integer: false, minimum: 0 },
+  "--target": { integer: false },
+};
+
+export interface CliDependencies {
+  capabilityGate?: CapabilityGate;
+  buildDependencies?: BuildDependencies;
+  assertEnvironment?: (env: NodeJS.ProcessEnv) => void;
+  /** Explicit fixture-only child entrypoint for delegated Cronenberg commands. */
+  cronenbergChildCliPath?: string;
+}
+
+function strictTokens(args: string[], spec: OptionSpec, maxPositionals: number): void {
+  const seen = new Set<string>();
+  let positionals = 0;
+  for (let index = 0; index < args.length; index++) {
+    const token = args[index]!;
+    const kind = spec[token];
+    if (kind !== undefined) {
+      if (seen.has(token)) throw new InputContractError(`duplicate flag: ${token}`);
+      seen.add(token);
+      if (kind === "value") {
+        const value = args[index + 1];
+        const permitsSignedValue = token === "--target" && value !== undefined && /^-\d/.test(value);
+        if (value === undefined || (value.startsWith("-") && !permitsSignedValue)) {
+          throw new InputContractError(`missing value for ${token}`);
+        }
+        validateNumericOption(token, value);
+        index++;
+      }
+      continue;
+    }
+    if (token.startsWith("-")) throw new InputContractError(`unknown flag: ${token}`);
+    positionals++;
+    if (positionals > maxPositionals) {
+      throw new InputContractError(`unexpected positional argument: ${token}`);
+    }
   }
-
-  if (command === "--build-commit") {
-    console.log(BUILD_COMMIT);
-    return;
-  }
-
-  if (command === "--help" || command === "-h" || command === "") {
-    console.log(USAGE);
-    return;
-  }
-
-  if (command === "verdict") {
-    await runVerdict(args.slice(1));
-    return;
-  }
-
-  if (command === "doctor") {
-    await runDoctor();
-    return;
-  }
-
-  if (command === "status") {
-    await runStatus(args.slice(1));
-    return;
-  }
-
-  if (command === "reconcile") {
-    await runReconcile();
-    return;
-  }
-
-  if (command === "build") {
-    await runBuildCommand(args.slice(1));
-    return;
-  }
-
-  if (command === "metrics") {
-    await runMetricsCommand(args.slice(1));
-    return;
-  }
-
-  if (command === "pipeline") {
-    await runPipelineCommand(args.slice(1));
-    return;
-  }
-
-  if (command === "microverse") {
-    const { runMicroverseCommand } = await import("./lifecycle/microverse-cli.js");
-    await runMicroverseCommand(args.slice(1));
-    return;
-  }
-
-  if (command === "cronenberg") {
-    const { runCronenbergCommand } = await import("./lifecycle/cronenberg-run.js");
-    await runCronenbergCommand(args.slice(1));
-    return;
-  }
-
-  if (command === "citadel") {
-    const { runCitadelCommand } = await import("./lifecycle/citadel-cli.js");
-    await runCitadelCommand(args.slice(1));
-    return;
-  }
-
-  if (command === "prd") {
-    const { runPrdCommand } = await import("./lifecycle/prd-interview.js");
-    await runPrdCommand(args.slice(1));
-    return;
-  }
-
-  if (command === "refine") {
-    const { runRefineCommand } = await import("./lifecycle/refine.js");
-    await runRefineCommand(args.slice(1));
-    return;
-  }
-
-  if (command === "szechuan") {
-    const { runSzechuanCommand } = await import("./lifecycle/szechuan-cli.js");
-    await runSzechuanCommand(args.slice(1));
-    return;
-  }
-
-  if (command === "anatomy") {
-    const { runAnatomyCommand } = await import("./lifecycle/anatomy.js");
-    await runAnatomyCommand(args.slice(1));
-    return;
-  }
-
-  // Stub for not-yet-implemented commands
-  const implemented = [
-    "verdict",
-    "doctor",
-    "status",
-    "reconcile",
-    "build",
-    "pipeline",
-    "metrics",
-    "microverse",
-    "cronenberg",
-    "citadel",
-    "prd",
-    "refine",
-    "szechuan",
-    "anatomy",
-    "--version",
-    "--build-commit",
-    "--help",
-  ];
-  if (!implemented.includes(command)) {
-    console.error(`rickgent: command "${command}" not yet implemented in v0.1.0-alpha scaffold`);
-    console.error(USAGE);
-    process.exit(1);
+  if ((seen.has("--help") || seen.has("-h")) && args.length !== 1) {
+    throw new InputContractError("--help cannot be combined with other arguments");
   }
 }
 
-async function runDoctor(): Promise<void> {
-  const { runDoctorCheck } = await import("./lifecycle/doctor.js");
-  const result = await runDoctorCheck();
-  if (!result.ok) {
-    console.error(result.report);
-    process.exit(1);
+function validateNumericOption(flag: string, raw: string): void {
+  const rule = NUMERIC_OPTION_RULES[flag];
+  if (rule === undefined) return;
+  const pattern = rule.integer ? /^(?:0|[1-9]\d*)$/ : /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/;
+  if (!pattern.test(raw)) {
+    throw new InputContractError(`invalid numeric value for ${flag}: ${raw}`);
   }
-  console.log(result.report);
+  const value = Number(raw);
+  if (!Number.isFinite(value) || (rule.minimum !== undefined && value < rule.minimum)) {
+    throw new InputContractError(`invalid numeric value for ${flag}: ${raw}`);
+  }
+}
+
+function flagValue(args: string[], name: string): string | undefined {
+  const index = args.indexOf(name);
+  return index < 0 ? undefined : args[index + 1];
+}
+
+function strictPositiveNumber(raw: string | undefined, flag: string, integer: boolean): number | undefined {
+  if (raw === undefined) return undefined;
+  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(raw)) {
+    throw new InputContractError(`invalid numeric value for ${flag}: ${raw}`);
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0 || (integer && !Number.isInteger(value))) {
+    throw new InputContractError(`invalid numeric value for ${flag}: ${raw}`);
+  }
+  return value;
+}
+
+function readRoster(path: string): import("./lifecycle/routing.js").ModelEntry[] {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf-8");
+  } catch {
+    throw new InputContractError(`cannot read roster file: ${path}`);
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error("not an array");
+    return parsed as import("./lifecycle/routing.js").ModelEntry[];
+  } catch {
+    throw new InputContractError(`invalid model roster JSON: ${path}`);
+  }
 }
 
 function getRickgentDir(): string {
   return process.env.RICKGENT_DIR ?? join(process.cwd(), ".rickgent");
 }
 
-async function runStatus(rest: string[]): Promise<void> {
-  const deep = rest.includes("--deep");
-
-  if (deep) {
-    // status --deep runs the doctor check first, then prints pipeline status
-    const { runDoctorCheck } = await import("./lifecycle/doctor.js");
-    const doctorResult = await runDoctorCheck();
-    console.log(doctorResult.report);
-    if (!doctorResult.ok) {
-      console.error("rickgent status --deep: doctor check failed");
-      process.exit(1);
-    }
+function resolveBuildOptions(rest: string[]): BuildOptions {
+  strictTokens(rest, BUILD_OPTIONS, 1);
+  if (rest.includes("--max-iterations")) {
+    throw new InputContractError("--max-iterations is advertised but not implemented for build/pipeline");
   }
 
-  const { Registry } = await import("./lifecycle/registry.js");
-  const registryPath = join(getRickgentDir(), "registry.json");
-  const registry = new Registry(registryPath);
-  const status = registry.getPipelineStatus();
+  const resume = rest.includes("--resume");
+  const positionals = rest.filter((token, index) => {
+    if (token.startsWith("-")) return false;
+    const previous = rest[index - 1];
+    return previous === undefined || BUILD_OPTIONS[previous] !== "value";
+  });
+  const prdPath = positionals[0];
+  if (!prdPath && !resume) throw new InputContractError("missing <prd> argument");
 
-  const lines: string[] = [
+  const maxConcurrent = strictPositiveNumber(flagValue(rest, "--max-concurrent"), "--max-concurrent", true);
+  if (maxConcurrent !== undefined && maxConcurrent < 1) {
+    throw new InputContractError("--max-concurrent must be at least 1");
+  }
+  const costBudgetUsd = strictPositiveNumber(flagValue(rest, "--cost-budget"), "--cost-budget", false);
+  const softThresholdUsd = strictPositiveNumber(flagValue(rest, "--soft-threshold"), "--soft-threshold", false);
+  const rosterPath = flagValue(rest, "--roster");
+  const workingDir = flagValue(rest, "--repo") ?? process.env.RICKGENT_TARGET_REPO ?? process.cwd();
+  const rickgentDir = getRickgentDir();
+
+  const options: BuildOptions = {
+    prdPath: prdPath ?? "",
+    workingDir,
+    rickgentDir,
+    agentDir: flagValue(rest, "--agent") ?? process.env.RICKGENT_AGENT_DIR ?? join(new URL("../../", import.meta.url).pathname, "agents", "rickgent"),
+    dataDir: process.env.OMNIGENT_DATA_DIR ?? join(rickgentDir, "omnigent-data"),
+    resume,
+    rawShell: rest.includes("--raw-shell"),
+    deliveryConfigured: rest.includes("--feature") || rest.includes("--no-autonomous-pr"),
+  };
+  if (rest.includes("--no-autonomous-pr")) options.autonomousPrFlow = false;
+  const featureBranch = flagValue(rest, "--feature");
+  if (featureBranch !== undefined) options.featureBranch = featureBranch;
+  if (maxConcurrent !== undefined) options.maxConcurrent = maxConcurrent;
+  if (rosterPath !== undefined) options.roster = readRoster(rosterPath);
+  if (costBudgetUsd !== undefined) options.costBudgetUsd = costBudgetUsd;
+  if (softThresholdUsd !== undefined) options.softThresholdUsd = softThresholdUsd;
+  return options;
+}
+
+function requireBuildCapabilities(rest: string[], gate: CapabilityGate): void {
+  if (rest.includes("--resume")) gate.require("resume_retry");
+  const cap = flagValue(rest, "--max-concurrent");
+  if (cap !== undefined && Number(cap) > 1) gate.require("parallel_dispatch");
+  if (rest.includes("--feature") || rest.includes("--no-autonomous-pr")) gate.require("automatic_delivery");
+  if (rest.includes("--raw-shell")) gate.require("raw_shell");
+  gate.require("autonomous_dispatch");
+}
+
+async function runDoctor(rest: string[]): Promise<void> {
+  const { runDoctorCommand } = await import("./commands/doctor.js");
+  const result = await runDoctorCommand(rest.includes("--json"));
+  if (!result.ok) process.exit(1);
+}
+
+async function runStatus(rest: string[]): Promise<void> {
+  if (rest.includes("--deep")) {
+    const { runDoctorCheck } = await import("./lifecycle/doctor.js");
+    const doctor = await runDoctorCheck();
+    console.log(doctor.report);
+    if (!doctor.ok) throw new Error("status --deep doctor check failed");
+  }
+  const { Registry } = await import("./lifecycle/registry.js");
+  const status = new Registry(join(getRickgentDir(), "registry.json")).getPipelineStatus();
+  const lines = [
     "rickgent status — pipeline state",
     "=".repeat(50),
     `runId: ${status.runId || "(none)"}`,
@@ -238,177 +309,144 @@ async function runStatus(rest: string[]): Promise<void> {
     `updatedAt: ${status.updatedAt || "(none)"}`,
     `tickets: ${Object.keys(status.tickets).length}`,
   ];
-  for (const [id, t] of Object.entries(status.tickets)) {
-    lines.push(`  ${id}: [${t.status}] phase=${t.phase} attempt=${t.attempt} commit=${t.completionCommitSha ?? "(none)"}`);
+  for (const [id, ticket] of Object.entries(status.tickets)) {
+    lines.push(`  ${id}: [${ticket.status}] phase=${ticket.phase} attempt=${ticket.attempt} commit=${ticket.completionCommitSha ?? "(none)"}`);
   }
-  lines.push("=".repeat(50));
-  console.log(lines.join("\n"));
+  console.log([...lines, "=".repeat(50)].join("\n"));
 }
 
-async function runReconcile(): Promise<void> {
+async function runReconcile(gate: CapabilityGate): Promise<void> {
   const { reconcile } = await import("./lifecycle/reconcile.js");
-  const workingDir = process.cwd();
-  const rickgentDir = getRickgentDir();
-  const result = reconcile(workingDir, rickgentDir);
-
-  const lines: string[] = [
-    "rickgent reconcile — rebuild registry from git + dispatch ledger",
-    "=".repeat(50),
-    `ok: ${result.ok}`,
-    `rebuilt: ${result.rebuilt}`,
-    `ticketsFound: ${result.ticketsFound}`,
-  ];
-  if (result.errors.length > 0) {
-    lines.push("errors:");
-    for (const e of result.errors) {
-      lines.push(`  - ${e}`);
-    }
-  }
-  lines.push("=".repeat(50));
-  console.log(lines.join("\n"));
-
-  if (!result.ok) {
-    process.exit(1);
-  }
+  const result = reconcile(process.cwd(), getRickgentDir(), undefined, gate);
+  console.log(`rickgent reconcile — rebuilt=${result.rebuilt} ticketsFound=${result.ticketsFound}`);
+  if (!result.ok) process.exit(1);
 }
 
-function flagValue(args: string[], name: string): string | undefined {
-  const idx = args.indexOf(name);
-  if (idx >= 0 && idx + 1 < args.length) return args[idx + 1];
-  return undefined;
-}
-
-function resolveBuildOptions(rest: string[]): {
-  prdPath: string;
-  workingDir: string;
-  rickgentDir: string;
-  agentDir: string;
-  dataDir: string;
-  resume: boolean;
-  autonomousPrFlow: boolean;
-  featureBranch: string | undefined;
-  maxConcurrent: number | undefined;
-  roster: import("./lifecycle/routing.js").ModelEntry[] | undefined;
-  costBudgetUsd: number | undefined;
-  softThresholdUsd: number | undefined;
-} | null {
-  const valueFlags = new Set(["--repo", "--agent", "--feature", "--max-concurrent", "--roster", "--cost-budget", "--soft-threshold"]);
-  const positionals: string[] = [];
-  for (let i = 0; i < rest.length; i++) {
-    const a = rest[i]!;
-    if (valueFlags.has(a)) {
-      i++; // skip its value
-      continue;
-    }
-    if (a.startsWith("--")) continue;
-    positionals.push(a);
-  }
-  const prdPath = positionals[0];
-  if (!prdPath) {
-    console.error("rickgent build: missing <prd> argument");
-    return null;
-  }
-  const workingDir = flagValue(rest, "--repo") ?? process.env.RICKGENT_TARGET_REPO ?? process.cwd();
-  const rickgentDir = getRickgentDir();
-  const agentDir =
-    flagValue(rest, "--agent") ??
-    process.env.RICKGENT_AGENT_DIR ??
-    join(new URL("../../", import.meta.url).pathname, "agents", "rickgent");
-  const dataDir = process.env.OMNIGENT_DATA_DIR ?? join(rickgentDir, "omnigent-data");
-  const resume = rest.includes("--resume");
-  const autonomousPrFlow = !rest.includes("--no-autonomous-pr") && process.env.RICKGENT_AUTONOMOUS_PR_FLOW !== "0";
-  const featureBranch = flagValue(rest, "--feature") ?? process.env.RICKGENT_FEATURE_BRANCH;
-  const maxConcurrentRaw = flagValue(rest, "--max-concurrent") ?? process.env.RICKGENT_MAX_CONCURRENT;
-  const maxConcurrentParsed = maxConcurrentRaw !== undefined ? parseInt(maxConcurrentRaw, 10) : NaN;
-  const maxConcurrent = Number.isNaN(maxConcurrentParsed) ? undefined : maxConcurrentParsed;
-
-  // Model roster (B8): resolve from --roster <file> (JSON) or RICKGENT_MODEL_ROSTER env var.
-  let roster: import("./lifecycle/routing.js").ModelEntry[] | undefined;
-  const rosterFile = flagValue(rest, "--roster");
-  const rosterRaw = rosterFile ? readRosterFile(rosterFile) : process.env.RICKGENT_MODEL_ROSTER;
-  if (rosterRaw) {
-    try {
-      const parsed = JSON.parse(rosterRaw);
-      if (Array.isArray(parsed)) roster = parsed;
-    } catch {
-      console.error("rickgent build: invalid model roster JSON");
-    }
-  }
-
-  const costBudgetRaw = flagValue(rest, "--cost-budget") ?? process.env.RICKGENT_COST_BUDGET_USD;
-  const costBudgetUsd = costBudgetRaw !== undefined ? Number(costBudgetRaw) : undefined;
-  const softThresholdRaw = flagValue(rest, "--soft-threshold") ?? process.env.RICKGENT_SOFT_THRESHOLD_USD;
-  const softThresholdUsd = softThresholdRaw !== undefined ? Number(softThresholdRaw) : undefined;
-
-  return { prdPath, workingDir, rickgentDir, agentDir, dataDir, resume, autonomousPrFlow, featureBranch, maxConcurrent, roster, costBudgetUsd: Number.isNaN(costBudgetUsd as number) ? undefined : costBudgetUsd, softThresholdUsd: Number.isNaN(softThresholdUsd as number) ? undefined : softThresholdUsd };
-}
-
-function readRosterFile(path: string): string {
-  try {
-    return readFileSync(path, "utf-8");
-  } catch {
-    console.error(`rickgent build: cannot read roster file: ${path}`);
-    return "";
-  }
-}
-
-async function runBuildCommand(rest: string[]): Promise<void> {
-  if (rest.includes("--help") || rest.includes("-h")) {
-    console.log(BUILD_USAGE);
+async function runBuildCommand(rest: string[], pipeline: boolean, dependencies: CliDependencies): Promise<void> {
+  if (rest.length === 1 && (rest[0] === "--help" || rest[0] === "-h")) {
+    console.log(pipeline ? PIPELINE_USAGE : BUILD_USAGE);
     return;
   }
   const opts = resolveBuildOptions(rest);
-  if (!opts) {
-    process.exit(1);
+  const gate = dependencies.capabilityGate ?? PRODUCTION_CAPABILITY_GATE;
+  console.log(formatCapabilityReport());
+  requireBuildCapabilities(rest, gate);
+  const buildDependencies: BuildDependencies = {
+    ...dependencies.buildDependencies,
+    capabilityGate: gate,
+  };
+  if (dependencies.assertEnvironment !== undefined) {
+    buildDependencies.assertEnvironment = dependencies.assertEnvironment;
   }
-  const { runBuild } = await import("./lifecycle/build.js");
-  const result = await runBuild(opts);
+  const lifecycle = await import("./lifecycle/build.js");
+  const result = pipeline
+    ? await lifecycle.runPipeline(opts, buildDependencies)
+    : await lifecycle.runBuild(opts, buildDependencies);
   console.log(result.report.join("\n"));
+  const summary =
+    `${pipeline ? "pipeline" : "build"}: planned=${result.ticketsPlanned} ` +
+    `dispatched=${result.ticketsDispatched} done=${result.ticketsDone} ` +
+    `failed=${result.ticketsFailed} recovered=${result.ticketsRecovered} ` +
+    `interventions=${result.interventions} prCreated=${result.prCreated}`;
   console.log(
-    `build: planned=${result.ticketsPlanned} dispatched=${result.ticketsDispatched} ` +
-      `done=${result.ticketsDone} failed=${result.ticketsFailed} recovered=${result.ticketsRecovered} ` +
-      `interventions=${result.interventions} prCreated=${result.prCreated}`,
+    pipeline
+      ? `${summary} cleanupReconciled=${(result as import("./lifecycle/build.js").PipelineResult).cleanup.ticketsReconciled}`
+      : summary,
   );
-  if (result.exitCode !== 0) {
-    process.exit(result.exitCode);
-  }
+  if (result.exitCode !== 0) process.exit(result.exitCode);
 }
 
-async function runPipelineCommand(rest: string[]): Promise<void> {
-  if (rest.includes("--help") || rest.includes("-h")) {
-    console.log(PIPELINE_USAGE);
+async function runMetrics(rest: string[]): Promise<void> {
+  const { runMetrics: collect } = await import("./lifecycle/metrics.js");
+  const result = collect(getRickgentDir(), process.env);
+  console.log(rest.includes("--json") ? result.json : result.report);
+}
+
+export async function main(
+  args: string[] = process.argv.slice(2),
+  dependencies: CliDependencies = {},
+): Promise<void> {
+  (dependencies.assertEnvironment ?? assertNoProductionBypasses)(process.env);
+  const command = args[0] ?? "";
+  const rest = args.slice(1);
+  const gate = dependencies.capabilityGate ?? PRODUCTION_CAPABILITY_GATE;
+
+  if (["--version", "-v", "--build-commit", "--help", "-h", ""].includes(command)) {
+    if (rest.length > 0) throw new InputContractError(`unexpected argument after ${command || "default help"}: ${rest[0]}`);
+    if (command === "--version" || command === "-v") console.log(`rickgent 0.1.0-alpha (build ${BUILD_COMMIT.slice(0, 12)})`);
+    else if (command === "--build-commit") console.log(BUILD_COMMIT);
+    else console.log(USAGE);
     return;
   }
-  const opts = resolveBuildOptions(rest);
-  if (!opts) {
-    process.exit(1);
+
+  if (command === "build" || command === "pipeline") {
+    await runBuildCommand(rest, command === "pipeline", dependencies);
+    return;
   }
-  const { runPipeline } = await import("./lifecycle/build.js");
-  const result = await runPipeline(opts);
-  console.log(result.report.join("\n"));
-  console.log(
-    `pipeline: planned=${result.ticketsPlanned} dispatched=${result.ticketsDispatched} ` +
-      `done=${result.ticketsDone} failed=${result.ticketsFailed} recovered=${result.ticketsRecovered} ` +
-      `interventions=${result.interventions} prCreated=${result.prCreated} ` +
-      `cleanupReconciled=${result.cleanup.ticketsReconciled}`,
-  );
-  if (result.exitCode !== 0) {
-    process.exit(result.exitCode);
+
+  const contract = COMMAND_OPTIONS[command];
+  if (!contract) throw new InputContractError(`unknown command: ${command}`);
+  strictTokens(rest, contract.options, contract.maxPositionals);
+  const helpOnly = rest.length === 1 && (rest[0] === "--help" || rest[0] === "-h");
+
+  if (helpOnly && SIMPLE_COMMAND_USAGE[command] !== undefined) {
+    console.log(SIMPLE_COMMAND_USAGE[command]);
+    return;
+  }
+
+  if (!helpOnly && rest.includes("--resume")) gate.require("resume_retry");
+  if (!helpOnly && command === "microverse" && rest.includes("--metric")) gate.require("raw_shell");
+
+  if (command === "verdict") return runVerdict(rest);
+  if (command === "doctor") return runDoctor(rest);
+  if (command === "status") return runStatus(rest);
+  if (command === "reconcile") return runReconcile(gate);
+  if (command === "metrics") return runMetrics(rest);
+
+  if (command === "microverse") {
+    if (!helpOnly) gate.require("autonomous_dispatch");
+    const { runMicroverseCommand } = await import("./lifecycle/microverse-cli.js");
+    return runMicroverseCommand(rest, gate);
+  }
+  if (command === "cronenberg") {
+    if (!helpOnly && !rest.includes("--dry-run")) gate.require("autonomous_dispatch");
+    const { runCronenbergCommand } = await import("./lifecycle/cronenberg-run.js");
+    return runCronenbergCommand(rest, dependencies.cronenbergChildCliPath, gate);
+  }
+  if (command === "citadel") {
+    const { runCitadelCommand } = await import("./lifecycle/citadel-cli.js");
+    return runCitadelCommand(rest);
+  }
+  if (command === "prd") {
+    if (!helpOnly && !rest.includes("--non-interactive") && !rest.includes("--from")) gate.require("autonomous_dispatch");
+    const { runPrdCommand } = await import("./lifecycle/prd-interview.js");
+    return runPrdCommand(rest, gate);
+  }
+  if (command === "refine") {
+    if (!helpOnly) gate.require("autonomous_dispatch");
+    const { runRefineCommand } = await import("./lifecycle/refine.js");
+    return runRefineCommand(rest, gate);
+  }
+  if (command === "szechuan") {
+    if (!helpOnly && !rest.includes("--dry-run")) gate.require("autonomous_dispatch");
+    const { runSzechuanCommand } = await import("./lifecycle/szechuan-cli.js");
+    return runSzechuanCommand(rest, gate);
+  }
+  if (command === "anatomy") {
+    if (!helpOnly && !rest.includes("--dry-run")) gate.require("autonomous_dispatch");
+    const { runAnatomyCommand } = await import("./lifecycle/anatomy.js");
+    return runAnatomyCommand(rest, gate);
   }
 }
 
-async function runMetricsCommand(rest: string[]): Promise<void> {
-  const asJson = rest.includes("--json");
-  const { runMetrics } = await import("./lifecycle/metrics.js");
-  const out = runMetrics(getRickgentDir(), process.env);
-  if (asJson) {
-    console.log(out.json);
-  } else {
-    console.log(out.report);
+export function handleFatal(error: unknown): never {
+  if (error instanceof RickgentBoundaryError) {
+    console.error(`${error.stableCode}: ${error.message}`);
+    process.exit(error.exitCode);
   }
+  console.error(`RICKGENT_INTERNAL_ERROR: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(70);
 }
 
-main().catch((err) => {
-  console.error(`rickgent: fatal: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
-});
+const isEntrypoint = process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
+if (isEntrypoint) main().catch(handleFatal);

@@ -11,7 +11,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync
 import { tmpdir } from "os";
 import { join } from "path";
 
-const CLI_JS = join(import.meta.dirname, "../../dist/cli.js");
+const CLI_JS = join(import.meta.dirname, "../fixtures/fixture-cli.mjs");
 
 function git(repo: string, args: string[]): string {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf-8" }).trim();

@@ -12,6 +12,10 @@ import {
   isolatedDataDir,
   type CompletionEvidenceContext,
 } from "./evidence.js";
+import {
+  PRODUCTION_CAPABILITY_GATE,
+  type CapabilityGate,
+} from "../capabilities/registry.js";
 
 export type DispatchState =
   | "planned" | "spawned" | "db_session_observed" | "completed"
@@ -195,6 +199,7 @@ export class Dispatcher {
     private ledger: DispatchLedger,
     private lock: TicketLock,
     private rickgentDir: string,
+    private capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
   ) {}
 
   get activeCount(): number {
@@ -202,6 +207,8 @@ export class Dispatcher {
   }
 
   async dispatch(id: DispatchId, opts: DispatchOptions): Promise<DispatchEntry> {
+    if (opts.maxConcurrent > 1) this.capabilityGate.require("parallel_dispatch");
+    this.capabilityGate.require("autonomous_dispatch");
     const idStr = dispatchIdString(id);
 
     // Idempotency check — return recorded terminal state without re-spawning

@@ -19,6 +19,7 @@ import {
   type DispatchEntry,
   type DispatchId,
 } from "../../src/dispatch/dispatch.js";
+import { FIXTURE_CAPABILITY_GATE } from "../helpers/capabilities.js";
 import { insertConversation } from "../fixtures/omnigent-fixture/chat-db.mjs";
 
 const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
@@ -92,7 +93,7 @@ async function runDispatch(cfg: FixtureConfig, dir: string): Promise<RunResult> 
   const ledgerPath = join(dir, "ledger.jsonl");
   const ledger = new DispatchLedger(ledgerPath);
   const lock = new TicketLock(join(dir, "locks"));
-  const dispatcher = new Dispatcher(ledger, lock, dir);
+  const dispatcher = new Dispatcher(ledger, lock, dir, FIXTURE_CAPABILITY_GATE);
 
   const fixtureEnv: Record<string, string> = {
     PATH: `${FIXTURE_BIN}:${process.env.PATH ?? ""}`,

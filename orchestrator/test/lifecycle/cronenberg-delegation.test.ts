@@ -19,7 +19,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { buildCronenbergPlan, type CronenbergFlags } from "../../src/lifecycle/cronenberg.js";
 
-const CLI_JS = join(import.meta.dirname, "../../dist/cli.js");
+const CLI_JS = join(import.meta.dirname, "../fixtures/fixture-cli.mjs");
 
 const DEFAULT_FLAGS: CronenbergFlags = { dryRun: false, noFollowups: false, noRefine: false, refine: false };
 
@@ -179,7 +179,7 @@ function run(ctx: Ctx, args: string[]): { status: number | null; stdout: string;
       ...process.env,
       PATH: `${ctx.binDir}:${process.env.PATH ?? ""}`,
       RICKGENT_DIR: ctx.rickgentDir,
-      RICKGENT_SKIP_POLICY_ATTACH: "1",
+      RICKGENT_FIXTURE_SKIP_POLICY_ATTACH: "1",
     },
   });
   return { status: res.status, stdout: res.stdout ?? "", stderr: res.stderr ?? "" };
