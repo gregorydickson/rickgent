@@ -121,7 +121,7 @@ describe("M4 fix: build path calls select_model before each dispatch", () => {
       costBudgetUsd: 10.0,
       env: fixtureEnv(d),
     });
-    expect(result.exitCode).toBe(0);
+    expect(result.outcome.status).toBe("succeeded");
     const entries = ledgerEntries(d.rickgentDir);
     const spawned = entries.filter((e) => e.state === "spawned" || e.state === "completed");
     expect(spawned.length).toBeGreaterThan(0);
@@ -153,7 +153,7 @@ describe("M4 fix: build path calls select_model before each dispatch", () => {
       costBudgetUsd: 10.0,
       env: fixtureEnv(d),
     });
-    expect(result.exitCode).toBe(0);
+    expect(result.outcome.status).toBe("succeeded");
     const entries = ledgerEntries(d.rickgentDir);
     const spawned = entries.filter((e) => e.state === "spawned");
     expect(spawned.length).toBeGreaterThan(0);

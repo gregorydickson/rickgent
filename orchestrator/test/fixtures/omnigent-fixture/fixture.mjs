@@ -24,6 +24,8 @@
 //                              from OMNIGENT_DATA_DIR, during this run
 //   FIXTURE_FOREIGN_CONV_ID    foreign conversation id (default: unique)
 //   FIXTURE_FOREIGN_ITEMS      foreign conversation_items count (default 3)
+//   FIXTURE_UNVERIFIABLE_PATHS comma-separated prompt paths that exit zero
+//                              without producing completion evidence
 
 import { execFileSync } from "child_process";
 import { writeFileSync, mkdirSync, rmdirSync } from "fs";
@@ -102,6 +104,10 @@ function promptMode() {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  const unverifiablePaths = env("FIXTURE_UNVERIFIABLE_PATHS")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 
   if (!relPath || !repo) {
     // Nothing to write — behave as a no-delta failure.
@@ -113,6 +119,12 @@ function promptMode() {
     // exit non-zero. No DB session, no commit → dispatch fails.
     withRepoLock(repo, () => commitFile(repo, relPath, `partial work for ${relPath}\n`));
     process.exit(1);
+  }
+
+  if (unverifiablePaths.includes(relPath)) {
+    // Explicit false-success fixture: transport exits zero, but there is no DB
+    // session, transcript, commit, or in-scope delta for the oracle to verify.
+    process.exit(0);
   }
 
   // Succeeding ticket: DB session + non-empty transcript + committed in-scope delta.

@@ -1,14 +1,14 @@
 // M6 E2E — full gated pipeline twice consecutively (VAL-E2E-001..004).
 //
-// This is the Mission 1 AC-14 end-to-end validation: `rickgent build` runs the
-// fixture PRD end-to-end with ALL gates live, completes PRD→PR with ZERO
-// required human interventions, and the full gated pipeline runs clean
+// This is the Mission 1 end-to-end validation: `rickgent build` runs the
+// fixture PRD with every active local gate live, completes with zero required
+// human interventions, and the full gated local profile runs clean
 // end-to-end at least twice consecutively. This flow is DISTINCT from the M3
 // single-build assertions (full gated pipeline, twice, not one build).
 //
 // Drives the REAL `rickgent` CLI (dist/cli.js) against the deterministic
-// fixture omnigent + a fixture `gh`, and observes REAL effects: the dispatch
-// ledger, git branches/commits, the intervention ledger, and the build report
+// fixture omnigent and observes REAL effects: the dispatch ledger, git commits,
+// the intervention ledger, and the build report
 // output enumerating each enforced gate.
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -106,6 +106,7 @@ function runCli(args: string[], d: Dirs, extraEnv: Record<string, string> = {}):
     FAKE_GH_LOG: d.ghLog,
     RICKGENT_MODEL_ROSTER: TEST_ROSTER_JSON,
     RICKGENT_COST_BUDGET_USD: "10.0",
+    RICKGENT_ORPHAN_REAP: "off",
     ...extraEnv,
   };
   const res = spawnSync(process.execPath, [CLI_JS, ...args], {
@@ -145,7 +146,7 @@ const GATE_MARKERS = {
   crossVendor: /router|routing|roster|vendor/i,
   conformance: /conformance/i,
   deslop: /deslop/i,
-  mergeGate: /autonomous_pr_flow|merge gate/i,
+  localProfile: /local profile complete/i,
 };
 
 describe("M6 E2E — full gated pipeline (VAL-E2E-001..004)", () => {
@@ -175,22 +176,19 @@ describe("M6 E2E — full gated pipeline (VAL-E2E-001..004)", () => {
     expect(out.stdout).toMatch(GATE_MARKERS.conformance);
     // Deslop gate.
     expect(out.stdout).toMatch(GATE_MARKERS.deslop);
-    // Merge gate (autonomous_pr_flow).
-    expect(out.stdout).toMatch(GATE_MARKERS.mergeGate);
+    expect(out.stdout).toMatch(GATE_MARKERS.localProfile);
 
     // The build decomposed >=1 ticket and dispatched via the real Dispatcher.
     const s = summary(out.stdout);
     expect(Number(s.planned)).toBeGreaterThanOrEqual(1);
     expect(Number(s.dispatched)).toBeGreaterThanOrEqual(1);
 
-    // PR was created (merge gate passed).
-    expect(s.prCreated).toBe("true");
-    expect(existsSync(d.ghLog)).toBe(true);
-    expect(readFileSync(d.ghLog, "utf-8")).toContain("pr create");
+    expect(s.outcome).toBe("succeeded");
+    expect(existsSync(d.ghLog)).toBe(false);
   });
 
   // VAL-E2E-002: zero required human interventions
-  it("completes PRD→PR with zero required human interventions", () => {
+  it("completes the local profile with zero required human interventions", () => {
     const out = runCli(["build", PRD_MIN, "--repo", d.repo, "--agent", AGENT_DIR], d);
     expect(out.status).toBe(0);
     const s = summary(out.stdout);
@@ -208,7 +206,7 @@ describe("M6 E2E — full gated pipeline (VAL-E2E-001..004)", () => {
     expect(out1.status).toBe(0);
     const s1 = summary(out1.stdout);
     expect(Number(s1.interventions)).toBe(0);
-    expect(s1.prCreated).toBe("true");
+    expect(s1.outcome).toBe("succeeded");
     // All gates observable in run 1.
     expect(out1.stdout).toMatch(GATE_MARKERS.conformance);
     expect(out1.stdout).toMatch(GATE_MARKERS.deslop);
@@ -230,77 +228,65 @@ describe("M6 E2E — full gated pipeline (VAL-E2E-001..004)", () => {
     expect(out2.status).toBe(0);
     const s2 = summary(out2.stdout);
     expect(Number(s2.interventions)).toBe(0);
-    expect(s2.prCreated).toBe("true");
+    expect(s2.outcome).toBe("succeeded");
     // All gates observable in run 2 (not inherited from run 1).
     expect(out2.stdout).toMatch(GATE_MARKERS.conformance);
     expect(out2.stdout).toMatch(GATE_MARKERS.deslop);
     expect(out2.stdout).toMatch(GATE_MARKERS.policyAttachment);
 
-    // Both runs produced a gated PR independently.
-    expect(existsSync(d.ghLog)).toBe(true);
-    expect(existsSync(ghLog2)).toBe(true);
-    expect(readFileSync(ghLog2, "utf-8")).toContain("pr create");
+    // Delivery remains absent independently in both runs.
+    expect(existsSync(d.ghLog)).toBe(false);
+    expect(existsSync(ghLog2)).toBe(false);
 
     // Summary: 2/2 clean.
-    const run1Clean = out1.status === 0 && Number(s1.interventions) === 0 && s1.prCreated === "true";
-    const run2Clean = out2.status === 0 && Number(s2.interventions) === 0 && s2.prCreated === "true";
+    const run1Clean = out1.status === 0 && Number(s1.interventions) === 0 && s1.outcome === "succeeded";
+    const run2Clean = out2.status === 0 && Number(s2.interventions) === 0 && s2.outcome === "succeeded";
     expect(run1Clean && run2Clean).toBe(true);
   });
 
   // VAL-E2E-004: E2E flow is distinct from M3 single-build assertions
-  it("is distinct from M3 single-build: disabling conformance turns E2E RED while M3 stays GREEN", () => {
+  it("fails closed when the required conformance gate is disabled", () => {
     // Control run: skip the conformance gate via test-only env var.
     const controlOut = runCli(
       ["build", PRD_MIN, "--repo", d.repo, "--agent", AGENT_DIR],
       d,
       { RICKGENT_FIXTURE_SKIP_CONFORMANCE: "1" },
     );
-    // The build still succeeds (conformance is a quality gate, not a security gate).
-    expect(controlOut.status).toBe(0);
+    expect(controlOut.status).toBe(6);
+    expect(controlOut.stdout).toContain("conformance gate — skipped");
+    expect(controlOut.stdout).toContain("required_gate_failed");
 
-    // But the E2E assertion for conformance FAILS: the conformance gate
-    // evidence is ABSENT from the output.
-    expect(controlOut.stdout).not.toMatch(GATE_MARKERS.conformance);
-
-    // Meanwhile, the M3 single-build assertions (which do NOT check for
-    // conformance) still pass: the build decomposes tickets, dispatches via
-    // the real path, and creates a PR. The M3 test would be green here.
     const s = summary(controlOut.stdout);
     expect(Number(s.planned)).toBeGreaterThanOrEqual(1);
     expect(Number(s.dispatched)).toBeGreaterThanOrEqual(1);
-    expect(s.prCreated).toBe("true");
+    expect(s.outcome).toBe("failed");
 
-    // This demonstrates distinctness: the E2E test catches a missing
-    // conformance gate that the M3 single-build test does not.
+    // Missing required gate evidence is a verification failure.
   });
 
-  // Additional distinctness: disabling deslop turns E2E RED while M3 stays GREEN
-  it("is distinct from M3: disabling deslop turns E2E RED while M3 stays GREEN", () => {
+  it("fails closed when the required deslop gate is disabled", () => {
     const controlOut = runCli(
       ["build", PRD_MIN, "--repo", d.repo, "--agent", AGENT_DIR],
       d,
       { RICKGENT_FIXTURE_SKIP_DESLOP: "1" },
     );
-    expect(controlOut.status).toBe(0);
-    // E2E assertion for deslop FAILS: deslop evidence is ABSENT.
-    expect(controlOut.stdout).not.toMatch(GATE_MARKERS.deslop);
-    // M3 single-build assertions still pass.
+    expect(controlOut.status).toBe(6);
+    expect(controlOut.stdout).toContain("deslop gate — skipped");
+    expect(controlOut.stdout).toContain("required_gate_failed");
     const s = summary(controlOut.stdout);
-    expect(s.prCreated).toBe("true");
+    expect(s.outcome).toBe("failed");
   });
 
-  // Additional distinctness: disabling policy-attachment turns E2E RED while M3 stays GREEN
-  it("is distinct from M3: disabling policy-attachment check turns E2E RED while M3 stays GREEN", () => {
+  it("fails closed when the required policy-attachment check is disabled", () => {
     const controlOut = runCli(
       ["build", PRD_MIN, "--repo", d.repo, "--agent", AGENT_DIR],
       d,
       { RICKGENT_FIXTURE_SKIP_POLICY_ATTACH: "1" },
     );
-    expect(controlOut.status).toBe(0);
-    // E2E assertion for policy attachment FAILS: evidence is ABSENT.
-    expect(controlOut.stdout).not.toMatch(GATE_MARKERS.policyAttachment);
-    // M3 single-build assertions still pass.
+    expect(controlOut.status).toBe(6);
+    expect(controlOut.stdout).toContain("policy attachment — skipped");
+    expect(controlOut.stdout).toContain("required_gate_failed");
     const s = summary(controlOut.stdout);
-    expect(s.prCreated).toBe("true");
+    expect(s.outcome).toBe("failed");
   });
 });

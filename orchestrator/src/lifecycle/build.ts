@@ -1,15 +1,14 @@
-// Build loop (B1) — the autonomous PRD → PR lifecycle.
+// Build loop (B1) — the contained PRD → local-profile lifecycle.
 //
 // `runBuild` decomposes a PRD into ≥1 ticket and dispatches each through the
 // REAL production `Dispatcher` path. Every Done is the terminal `completed`
 // state of a dispatch, which is only reachable through the single completion
 // oracle (`evaluateCompletion`, caller `dispatch.completion`) — the build never
-// declares Done by any other path. Between the plan gate and the merge gate the
-// loop is strictly non-interactive: a ticket failure is ABSORBED by the circuit
-// breaker + salvage executor and the run continues; it never prompts a human or
-// prints a "run this yourself" instruction. A genuine human-gate hit (an invalid
-// PRD, an empty decomposition, or a merge gate that autonomous_pr_flow will not
-// grant) records an intervention in the durable ledger and exits non-zero.
+// declares Done by any other path. After the plan gate, the loop is strictly
+// non-interactive: a ticket failure is ABSORBED by the circuit breaker + salvage
+// executor and the run continues; it never prompts a human or prints a "run this
+// yourself" instruction. Required local gates and every planned ticket are
+// aggregated before a typed outcome is returned.
 //
 // `runPipeline` runs the full build then the cleanup chain (orphan-reaper +
 // reconcile). `runBuild({resume:true})` recovers the completed tickets from the
@@ -30,7 +29,7 @@ import {
 import { DispatchQueue } from "../dispatch/queue.js";
 import { Registry, type TicketState } from "./registry.js";
 import { SalvageExecutor } from "./salvage.js";
-import { reconcile } from "./reconcile.js";
+import { reconcile, type ReconcileResult } from "./reconcile.js";
 import {
   createBreakerState,
   recordIterationResult,
@@ -39,21 +38,27 @@ import {
 } from "../core/breaker.js";
 import { evaluatePrd } from "../core/prd.js";
 import { parsePrdFile, type TicketPlan } from "./prd-parse.js";
-import { createPullRequest } from "./pr-flow.js";
 import {
   reapOrphanedWorkerProcs,
   detectBackend,
   type ReapResult,
 } from "./orphan-reaper.js";
 import { routeDispatch, type ModelEntry } from "./routing.js";
-import { recordRun, recordPr } from "./metrics.js";
+import { recordRun } from "./metrics.js";
 import { runConformanceGate } from "./citadel.js";
 import { runDeslopGate } from "./szechuan.js";
 import {
+  CapabilityUnavailableError,
   PRODUCTION_CAPABILITY_GATE,
   assertNoProductionBypasses,
   type CapabilityGate,
 } from "../capabilities/registry.js";
+import {
+  aggregateRunOutcome,
+  runIssue,
+  type RunIssue,
+  type RunOutcome,
+} from "./run-outcome.js";
 
 export interface BuildOptions {
   prdPath: string;
@@ -104,8 +109,7 @@ export interface BuildDependencies {
 }
 
 export interface BuildResult {
-  ok: boolean;
-  exitCode: number;
+  outcome: RunOutcome;
   gateHit: string | null;
   ticketsPlanned: number;
   ticketsDispatched: number;
@@ -113,9 +117,32 @@ export interface BuildResult {
   ticketsFailed: number;
   ticketsRecovered: number;
   interventions: number;
-  prBranch: string | null;
-  prCreated: boolean;
   report: string[];
+}
+
+type BuildObservation = Omit<BuildResult, "outcome">;
+
+function finishBuild(base: BuildObservation, issues: readonly RunIssue[]): BuildResult {
+  const outcome = aggregateRunOutcome(issues);
+  const reasons = outcome.issues.map((issue) => issue.reason).join(",") || "none";
+  base.report.push(
+    `build: outcome=${outcome.status} primary=${outcome.primary} ` +
+      `code=${outcome.stableCode} issues=${reasons}`,
+  );
+  return { ...base, outcome };
+}
+
+function verifiedCompletion(entry: DispatchEntry): boolean {
+  return entry.state === "completed" &&
+    entry.exitCode === 0 &&
+    typeof entry.conversationId === "string" &&
+    entry.conversationId.length > 0 &&
+    typeof entry.commitSha === "string" &&
+    entry.commitSha.length > 0 &&
+    typeof entry.baselineSha === "string" &&
+    entry.baselineSha.length > 0 &&
+    entry.treeChanged === true &&
+    Array.isArray(entry.declaredPaths);
 }
 
 export function interventionLedgerPath(rickgentDir: string): string {
@@ -257,9 +284,7 @@ export async function runBuild(
   const report: string[] = [];
   mkdirSync(opts.rickgentDir, { recursive: true });
 
-  const base: BuildResult = {
-    ok: false,
-    exitCode: 0,
+  const base: BuildObservation = {
     gateHit: null,
     ticketsPlanned: 0,
     ticketsDispatched: 0,
@@ -267,10 +292,9 @@ export async function runBuild(
     ticketsFailed: 0,
     ticketsRecovered: 0,
     interventions: 0,
-    prBranch: null,
-    prCreated: false,
     report,
   };
+  const issues: RunIssue[] = [];
 
   // ── Parse + PRD gate ───────────────────────────────────────────────────
   const parsed = parsePrdFile(opts.prdPath);
@@ -290,14 +314,34 @@ export async function runBuild(
   if (!prdVerdict.valid) {
     recordIntervention(opts.rickgentDir, "prd-gate", `PRD invalid: ${prdVerdict.errors.join("; ")}`, requestedRunId);
     report.push(`build: PRD GATE hit — ${prdVerdict.errors.join("; ")} (recorded intervention, exiting non-zero)`);
-    return { ...base, exitCode: 1, gateHit: "prd-gate", interventions: countInterventions(opts.rickgentDir) };
+    issues.push(runIssue({
+      reason: "input_contract_error",
+      class: "input_contract",
+      detail: `PRD invalid: ${prdVerdict.errors.join("; ")}`,
+      gate: "prd-gate",
+    }));
+    return finishBuild({
+      ...base,
+      gateHit: "prd-gate",
+      interventions: countInterventions(opts.rickgentDir),
+    }, issues);
   }
 
   // ── Plan gate ──────────────────────────────────────────────────────────
   if (parsed.tickets.length === 0) {
     recordIntervention(opts.rickgentDir, "plan-gate", "decomposition produced zero tickets", requestedRunId);
     report.push("build: PLAN GATE hit — decomposition produced zero tickets (recorded intervention, exiting non-zero)");
-    return { ...base, exitCode: 1, gateHit: "plan-gate", interventions: countInterventions(opts.rickgentDir) };
+    issues.push(runIssue({
+      reason: "zero_ticket",
+      class: "execution",
+      detail: "decomposition produced zero tickets",
+      gate: "plan-gate",
+    }));
+    return finishBuild({
+      ...base,
+      gateHit: "plan-gate",
+      interventions: countInterventions(opts.rickgentDir),
+    }, issues);
   }
 
   // ── Policy attachment verification (B4 gate) ─────────────────────────────
@@ -305,7 +349,15 @@ export async function runBuild(
   // full required policy set. This is the same check `rickgent doctor` runs,
   // but wired into the build startup so a build cannot proceed with ungated
   // policies. Test fixtures may replace the checker only by dependency injection.
-  if (!dependencies.skipPolicyAttachment) {
+  if (dependencies.skipPolicyAttachment) {
+    report.push("build: policy attachment — skipped by explicit fixture dependency (blocking)");
+    issues.push(runIssue({
+      reason: "required_gate_failed",
+      class: "verification",
+      detail: "required policy attachment gate was skipped",
+      gate: "policy-attachment",
+    }));
+  } else {
     const attachResult = (dependencies.verifyPolicyAttachment ?? verifyPolicyAttachment)(opts.agentDir, env);
     if (attachResult.ok) {
       report.push(
@@ -324,12 +376,17 @@ export async function runBuild(
         `build: POLICY ATTACHMENT GATE hit — ${attachResult.detail} ` +
           "(recorded intervention, exiting non-zero)",
       );
-      return {
+      issues.push(runIssue({
+        reason: "required_gate_failed",
+        class: "verification",
+        detail: attachResult.detail,
+        gate: "policy-attachment",
+      }));
+      return finishBuild({
         ...base,
-        exitCode: 1,
         gateHit: "policy-attachment-gate",
         interventions: countInterventions(opts.rickgentDir),
-      };
+      }, issues);
     }
   }
 
@@ -378,8 +435,8 @@ export async function runBuild(
   // concurrency cap (B3). Recovered-Done tickets are never re-dispatched; the
   // rest are enqueued (durably recorded `planned`) and drained FIFO, at most
   // `maxConcurrent` in flight, a slot freeing the instant a dispatch settles.
-  // There are NO human prompts between the plan and merge gates: a failure is
-  // absorbed by the circuit breaker + salvage and the queue keeps draining.
+  // There are NO human prompts after the plan gate: a failure is absorbed by
+  // the circuit breaker + salvage and the queue keeps draining.
   const cap = opts.maxConcurrent ?? 1;
 
   const toDispatch: TicketPlan[] = [];
@@ -405,15 +462,10 @@ export async function runBuild(
     queue.enqueue(id);
   }
 
-  // Tickets deferred because the circuit breaker was OPEN at their spawn time —
-  // they were absorbed (disposition recorded), not dispatched.
-  const deferred = new Set<string>();
-
   const dispatchFn = async (id: DispatchId): Promise<DispatchEntry> => {
     const ticket = ticketByDispatchId.get(dispatchIdString(id))!;
 
     if (!canExecute(breaker)) {
-      deferred.add(ticket.id);
       recordSalvageDisposition(opts.rickgentDir, {
         ticketId: ticket.id,
         disposition: "breaker-open",
@@ -429,6 +481,7 @@ export async function runBuild(
         exitCode: null,
         stdout: null,
         stderr: "breaker-open: deferred, not dispatched",
+        terminalReason: "breaker_deferred",
       };
     }
 
@@ -465,6 +518,9 @@ export async function runBuild(
         exitCode: null,
         stdout: null,
         stderr: reason,
+        terminalReason: ["ROUTING_SUBPROCESS_ERROR", "ROUTING_MALFORMED"].includes(v.code)
+          ? "infrastructure_error"
+          : "routing_denied",
         vendor: null,
       };
       ledger.append(failedEntry);
@@ -567,14 +623,74 @@ export async function runBuild(
 
   const drain = await queue.drain(dispatchFn);
 
+  // Account for every planned ticket exactly once. No deferred or missing
+  // result is allowed to disappear from the run denominator.
   for (const ticket of toDispatch) {
-    if (deferred.has(ticket.id)) continue; // breaker-open: absorbed, not dispatched
     const entry = drain.results.get(dispatchIdString(idByTicket.get(ticket.id)!));
-    if (!entry) continue;
+    if (!entry) {
+      base.ticketsFailed++;
+      issues.push(runIssue({
+        reason: "infrastructure_error",
+        class: "infrastructure",
+        detail: "dispatch queue produced no terminal observation",
+        ticketId: ticket.id,
+      }));
+      continue;
+    }
+
     base.ticketsDispatched++;
-    if (entry.state === "completed") base.ticketsDone++;
-    else base.ticketsFailed++;
+    if (verifiedCompletion(entry)) {
+      base.ticketsDone++;
+      continue;
+    }
+
+    base.ticketsFailed++;
+    if (entry.state === "completed" || entry.terminalReason === "evidence_unverifiable" || entry.exitCode === 0) {
+      issues.push(runIssue({
+        reason: "evidence_unverifiable",
+        class: "verification",
+        detail: "dispatch did not carry complete oracle evidence",
+        ticketId: ticket.id,
+      }));
+    } else if (entry.terminalReason === "infrastructure_error") {
+      issues.push(runIssue({
+        reason: "infrastructure_error",
+        class: "infrastructure",
+        detail: entry.stderr ?? "dispatch infrastructure failed",
+        ticketId: ticket.id,
+      }));
+    } else {
+      issues.push(runIssue({
+        reason: "ticket_failed",
+        class: "execution",
+        detail: entry.stderr ?? `dispatch terminal state ${entry.state}`,
+        ticketId: ticket.id,
+      }));
+    }
   }
+
+  const accounted = base.ticketsDone + base.ticketsFailed + base.ticketsRecovered;
+  if (accounted !== base.ticketsPlanned) {
+    issues.push(runIssue({
+      reason: "infrastructure_error",
+      class: "infrastructure",
+      detail: `ticket accounting mismatch: planned=${base.ticketsPlanned} accounted=${accounted}`,
+    }));
+  }
+  if (base.ticketsDone + base.ticketsRecovered === 0) {
+    issues.push(runIssue({
+      reason: "zero_completion",
+      class: "execution",
+      detail: "no planned ticket reached verified completion",
+    }));
+  } else if (base.ticketsFailed > 0) {
+    issues.push(runIssue({
+      reason: "partial_failure",
+      class: "execution",
+      detail: `${base.ticketsFailed} of ${base.ticketsPlanned} planned tickets failed`,
+    }));
+  }
+  const verifiedTickets = base.ticketsDone + base.ticketsRecovered;
 
   // ── Salvage/breaker infrastructure status ────────────────────────────────
   // Report the salvage/breaker infrastructure state after the dispatch loop.
@@ -595,35 +711,58 @@ export async function runBuild(
   // audit that validates the implemented code against the PRD's acceptance
   // criteria. A failing AC is absorbed (not a human intervention) but recorded
   // as a gate finding. Test fixtures may replace it only by dependency injection.
-  if (!dependencies.skipConformance && base.ticketsDone > 0) {
-    const conformanceResult = (dependencies.runConformanceGate ?? runConformanceGate)(
-      parsed.prd.acceptanceCriteria,
-      opts.workingDir,
-      env,
-      capabilityGate,
-    );
-    const acResults = conformanceResult.results.map(
-      (r) => `${r.acId}: ${r.pass ? "PASS" : "FAIL"}`,
-    );
-    report.push(
-      `build: conformance gate — ${conformanceResult.passed}/${conformanceResult.total} ACs passed ` +
-        `(${acResults.join(", ")})`,
-    );
-    if (conformanceResult.failed > 0) {
-      // A conformance failure is absorbed by salvage, not a human gate.
-      for (const r of conformanceResult.results) {
-        if (!r.pass) {
-          recordSalvageDisposition(opts.rickgentDir, {
-            gate: "conformance",
-            acId: r.acId,
-            disposition: "conformance-failed",
-            executed: false,
-            detail: r.detail,
-          });
+  if (verifiedTickets > 0 && dependencies.skipConformance) {
+    report.push("build: conformance gate — skipped by explicit fixture dependency (blocking)");
+    issues.push(runIssue({
+      reason: "required_gate_failed",
+      class: "verification",
+      detail: "required conformance gate was skipped",
+      gate: "conformance",
+    }));
+  } else if (verifiedTickets > 0) {
+    try {
+      const conformanceResult = (dependencies.runConformanceGate ?? runConformanceGate)(
+        parsed.prd.acceptanceCriteria,
+        opts.workingDir,
+        env,
+        capabilityGate,
+      );
+      const acResults = conformanceResult.results.map(
+        (r) => `${r.acId}: ${r.pass ? "PASS" : "FAIL"}`,
+      );
+      report.push(
+        `build: conformance gate — ${conformanceResult.passed}/${conformanceResult.total} ACs passed ` +
+          `(${acResults.join(", ")})`,
+      );
+      if (conformanceResult.failed > 0) {
+        issues.push(runIssue({
+          reason: "required_gate_failed",
+          class: "verification",
+          detail: `${conformanceResult.failed} conformance checks failed`,
+          gate: "conformance",
+        }));
+        for (const r of conformanceResult.results) {
+          if (!r.pass) {
+            recordSalvageDisposition(opts.rickgentDir, {
+              gate: "conformance",
+              acId: r.acId,
+              disposition: "conformance-failed",
+              executed: false,
+              detail: r.detail,
+            });
+          }
         }
       }
+    } catch (error) {
+      report.push(`build: conformance gate — infrastructure error: ${error instanceof Error ? error.message : String(error)}`);
+      issues.push(runIssue({
+        reason: "infrastructure_error",
+        class: "infrastructure",
+        detail: `conformance gate threw: ${error instanceof Error ? error.message : String(error)}`,
+        gate: "conformance",
+      }));
     }
-  } else if (!dependencies.skipConformance && base.ticketsDone === 0) {
+  } else if (!dependencies.skipConformance) {
     report.push("build: conformance gate — skipped (no tickets completed)");
   }
 
@@ -633,97 +772,63 @@ export async function runBuild(
   // console.log, debugger, etc.) in the implemented code. A finding is absorbed
   // (not a human intervention) but recorded. Test fixtures may replace the
   // checker only by dependency injection.
-  if (!dependencies.skipDeslop && base.ticketsDone > 0) {
-    const deslopResult = (dependencies.runDeslopGate ?? runDeslopGate)(opts.workingDir, parsed.tickets, env);
-    report.push(
-      `build: deslop gate — checked ${deslopResult.filesChecked} file(s), ` +
-        `${deslopResult.findings} finding(s)`,
-    );
-    if (deslopResult.findings > 0) {
-      for (const f of deslopResult.details) {
-        recordSalvageDisposition(opts.rickgentDir, {
+  if (verifiedTickets > 0 && dependencies.skipDeslop) {
+    report.push("build: deslop gate — skipped by explicit fixture dependency (blocking)");
+    issues.push(runIssue({
+      reason: "required_gate_failed",
+      class: "verification",
+      detail: "required deslop gate was skipped",
+      gate: "deslop",
+    }));
+  } else if (verifiedTickets > 0) {
+    try {
+      const deslopResult = (dependencies.runDeslopGate ?? runDeslopGate)(opts.workingDir, parsed.tickets, env);
+      report.push(
+        `build: deslop gate — checked ${deslopResult.filesChecked} file(s), ` +
+          `${deslopResult.findings} finding(s)`,
+      );
+      if (deslopResult.findings > 0) {
+        issues.push(runIssue({
+          reason: "required_gate_failed",
+          class: "verification",
+          detail: `${deslopResult.findings} deslop findings remain`,
           gate: "deslop",
-          disposition: "deslop-finding",
-          executed: false,
-          detail: f,
-        });
+        }));
+        for (const f of deslopResult.details) {
+          recordSalvageDisposition(opts.rickgentDir, {
+            gate: "deslop",
+            disposition: "deslop-finding",
+            executed: false,
+            detail: f,
+          });
+        }
       }
+    } catch (error) {
+      report.push(`build: deslop gate — infrastructure error: ${error instanceof Error ? error.message : String(error)}`);
+      issues.push(runIssue({
+        reason: "infrastructure_error",
+        class: "infrastructure",
+        detail: `deslop gate threw: ${error instanceof Error ? error.message : String(error)}`,
+        gate: "deslop",
+      }));
     }
-  } else if (!dependencies.skipDeslop && base.ticketsDone === 0) {
+  } else if (!dependencies.skipDeslop) {
     report.push("build: deslop gate — skipped (no tickets completed)");
   }
 
-  // ── Merge gate ───────────────────────────────────────────────────────────
-  const featureBranch =
-    opts.featureBranch ?? env.RICKGENT_FEATURE_BRANCH ?? `rickgent/${runId}`;
-  const autonomousPr = opts.autonomousPrFlow !== false && env.RICKGENT_AUTONOMOUS_PR_FLOW !== "0";
-
-  if (!autonomousPr) {
-    recordIntervention(
-      opts.rickgentDir,
-      "merge-gate",
-      "autonomous PR flow disabled; a human must open the PR",
-      requestedRunId,
-    );
-    report.push(
-      "build: MERGE GATE hit — autonomous PR flow disabled; a human must open the PR " +
-        "(recorded intervention, exiting non-zero)",
-    );
-    return {
-      ...base,
-      exitCode: 1,
-      gateHit: "merge-gate",
-      prBranch: featureBranch,
-      interventions: countInterventions(opts.rickgentDir),
-    };
-  }
-
-  if (base.ticketsDone === 0) {
-    report.push(
-      "build: no tickets completed; skipping PR creation " +
-        "(ticket failures were absorbed by salvage/breaker — not a human gate)",
-    );
-    return { ...base, ok: true, exitCode: 0, interventions: countInterventions(opts.rickgentDir) };
-  }
-
-  const pr = createPullRequest(opts.workingDir, featureBranch, parsed.prd.title, env, capabilityGate);
-  base.prBranch = pr.branch;
-  report.push(
-    `build: merge gate — autonomous_pr_flow push=${pr.pushVerdict.result} ` +
-      `gh-pr-create=${pr.prVerdict.result}`,
-  );
-  if (pr.prCreated) {
-    base.prCreated = true;
-    // Record the shipped PR in the durable PR ledger so B9 `rickgent metrics`
-    // can compute the rolling matured-PR quality. shippedAt is now; the PR is
-    // immature until it crosses the 14-day maturity window.
-    recordPr(opts.rickgentDir, {
-      prId: pr.branch,
-      runId: requestedRunId,
-      branch: pr.branch,
-      title: parsed.prd.title,
-      repo: opts.workingDir,
-      shippedAt: new Date().toISOString(),
-      scopePaths: parsed.tickets.flatMap((t) => t.declaredPaths),
-    });
-    report.push(`build: PR branch '${pr.branch}' created; gh pr create issued (${pr.ghOutput || "ok"})`);
-    return { ...base, ok: true, exitCode: 0, interventions: countInterventions(opts.rickgentDir) };
-  }
-
-  // The autonomous PR path could not complete → human gate.
-  recordIntervention(opts.rickgentDir, "merge-gate", pr.error ?? "PR creation blocked", requestedRunId);
-  report.push(`build: MERGE GATE hit — ${pr.error ?? "PR creation blocked"} (recorded intervention, exiting non-zero)`);
-  return {
+  report.push("build: local profile complete; automatic delivery is structurally absent");
+  return finishBuild({
     ...base,
-    exitCode: 1,
-    gateHit: "merge-gate",
     interventions: countInterventions(opts.rickgentDir),
-  };
+  }, issues);
 }
 
 export interface CleanupResult {
+  status: "succeeded" | "failed";
+  issues: readonly RunIssue[];
   report: string[];
   reap: ReapResult;
+  reconcile: ReconcileResult | null;
   ticketsReconciled: number;
 }
 
@@ -734,15 +839,88 @@ export function runCleanup(
   env: NodeJS.ProcessEnv = process.env,
   capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
 ): CleanupResult {
-  void env;
-  capabilityGate.require("reconciliation");
-  const reap = reapOrphanedWorkerProcs(detectBackend());
-  const rec = reconcile(workingDir, rickgentDir, undefined, capabilityGate);
-  const report = [
-    `cleanup: orphan-reaper scanned=${reap.scanned} reaped=${reap.reaped} skipped=${reap.skipped}`,
-    `cleanup: reconcile rebuilt=${rec.rebuilt} ticketsFound=${rec.ticketsFound}`,
-  ];
-  return { report, reap, ticketsReconciled: rec.ticketsFound };
+  const issues: RunIssue[] = [];
+  const report: string[] = [];
+  let reap: ReapResult;
+  let rec: ReconcileResult | null = null;
+
+  try {
+    capabilityGate.require("reconciliation");
+  } catch (error) {
+    if (error instanceof CapabilityUnavailableError) {
+      issues.push(runIssue({
+        reason: "capability_unavailable",
+        class: "capability_unavailable",
+        detail: error.message,
+        capabilityCode: error.capability.error_code,
+      }));
+    } else {
+      issues.push(runIssue({
+        reason: "cleanup_failed",
+        class: "cleanup",
+        detail: `cleanup preflight threw: ${error instanceof Error ? error.message : String(error)}`,
+      }));
+    }
+    reap = { scanned: 0, reaped: 0, skipped: 0, errors: ["cleanup preflight failed"] };
+    report.push(`cleanup: preflight failed — ${issues[0]!.detail}`);
+    return { status: "failed", issues, report, reap, reconcile: null, ticketsReconciled: 0 };
+  }
+
+  try {
+    reap = reapOrphanedWorkerProcs(detectBackend(process.platform, env), { env });
+  } catch (error) {
+    reap = {
+      scanned: 0,
+      reaped: 0,
+      skipped: 0,
+      errors: [`reaper threw: ${error instanceof Error ? error.message : String(error)}`],
+    };
+  }
+  report.push(
+    `cleanup: orphan-reaper scanned=${reap.scanned} reaped=${reap.reaped} ` +
+      `skipped=${reap.skipped} errors=${reap.errors.length}`,
+  );
+  if (reap.errors.length > 0) {
+    issues.push(runIssue({
+      reason: "cleanup_failed",
+      class: "cleanup",
+      detail: `orphan reaper errors: ${reap.errors.join("; ")}`,
+      gate: "orphan-reaper",
+    }));
+  }
+
+  try {
+    rec = reconcile(workingDir, rickgentDir, undefined, capabilityGate);
+    report.push(
+      `cleanup: reconcile rebuilt=${rec.rebuilt} ticketsFound=${rec.ticketsFound} ` +
+        `errors=${rec.errors.length}`,
+    );
+    if (!rec.ok || rec.errors.length > 0) {
+      issues.push(runIssue({
+        reason: "cleanup_failed",
+        class: "cleanup",
+        detail: `reconcile failed: ${rec.errors.join("; ") || "result was not ok"}`,
+        gate: "reconcile",
+      }));
+    }
+  } catch (error) {
+    report.push(`cleanup: reconcile threw — ${error instanceof Error ? error.message : String(error)}`);
+    issues.push(runIssue({
+      reason: "cleanup_failed",
+      class: "cleanup",
+      detail: `reconcile threw: ${error instanceof Error ? error.message : String(error)}`,
+      gate: "reconcile",
+    }));
+  }
+
+  return {
+    status: issues.length === 0 ? "succeeded" : "failed",
+    issues: Object.freeze([...issues]),
+    report,
+    reap,
+    reconcile: rec,
+    ticketsReconciled: rec?.ticketsFound ?? 0,
+  };
 }
 
 export interface PipelineResult extends BuildResult {
@@ -754,14 +932,24 @@ export async function runPipeline(
   opts: BuildOptions,
   dependencies: BuildDependencies = {},
 ): Promise<PipelineResult> {
+  const capabilityGate = dependencies.capabilityGate ?? PRODUCTION_CAPABILITY_GATE;
+  // Preflight cleanup before build mutation; unavailable required cleanup can
+  // never be discovered only after work has started.
+  capabilityGate.require("reconciliation");
   const build = await runBuild(opts, dependencies);
   const cleanup = runCleanup(
     opts.workingDir,
     opts.rickgentDir,
     opts.env,
-    dependencies.capabilityGate ?? PRODUCTION_CAPABILITY_GATE,
+    capabilityGate,
   );
-  return { ...build, report: [...build.report, ...cleanup.report], cleanup };
+  const outcome = aggregateRunOutcome([...build.outcome.issues, ...cleanup.issues]);
+  const report = [...build.report, ...cleanup.report];
+  report.push(
+    `pipeline: outcome=${outcome.status} primary=${outcome.primary} ` +
+      `code=${outcome.stableCode} issues=${outcome.issues.map((issue) => issue.reason).join(",") || "none"}`,
+  );
+  return { ...build, outcome, report, cleanup };
 }
 
 // ── Policy attachment verification (B4 gate) ────────────────────────────────

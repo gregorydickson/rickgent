@@ -609,10 +609,7 @@ describe("M5 Integration — all commands work with fixture omnigent (VAL-INTEGR
     writeFileSync(prdPath, VALID_PRD);
     // No --no-autonomous-pr: the build completes with autonomous PR creation (exit 0).
     // --no-autonomous-pr would hit the merge gate and exit non-zero (documented).
-    const r = runFixture(ctx, ["build", prdPath, "--repo", ctx.repo, "--agent", ctx.agentDir], {
-      RICKGENT_FIXTURE_SKIP_CONFORMANCE: "1",
-      RICKGENT_FIXTURE_SKIP_DESLOP: "1",
-    });
+    const r = runFixture(ctx, ["build", prdPath, "--repo", ctx.repo, "--agent", ctx.agentDir]);
     expect(r.status).toBe(0);
     expect(r.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
     // Build should produce a registry and dispatch ledger
@@ -748,10 +745,7 @@ describe("M5 Integration — full pipeline chain (VAL-INTEGR-010)", () => {
     // which has the right format. Use the shared fixture omnigent for dispatch.
     const buildPrd = join(ctx.repo, "prd.md");
     writeFileSync(buildPrd, VALID_PRD);
-    const buildRes = runFixture(ctx, ["build", buildPrd, "--repo", ctx.repo, "--agent", ctx.agentDir], {
-      RICKGENT_FIXTURE_SKIP_CONFORMANCE: "1",
-      RICKGENT_FIXTURE_SKIP_DESLOP: "1",
-    });
+    const buildRes = runFixture(ctx, ["build", buildPrd, "--repo", ctx.repo, "--agent", ctx.agentDir]);
     expect(buildRes.status).toBe(0);
     expect(buildRes.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
     expect(existsSync(join(ctx.rickgentDir, "registry.json"))).toBe(true);
@@ -888,8 +882,6 @@ describe("M5 Integration — cronenberg end-to-end (VAL-INTEGR-011)", () => {
       "--no-followups",
       "--no-refine",
     ], {
-      RICKGENT_FIXTURE_SKIP_CONFORMANCE: "1",
-      RICKGENT_FIXTURE_SKIP_DESLOP: "1",
       RICKGENT_DIR: ctx.rickgentDir,
       INT_SPAWN_LOG: ctx.spawnLog,
     });

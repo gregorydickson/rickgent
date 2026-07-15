@@ -219,7 +219,7 @@ describe("B9 metrics — `rickgent metrics` CLI (real entrypoint)", () => {
   });
 });
 
-describe("B9 metrics — human gate hit during build increments the intervention ledger", () => {
+describe("B9 metrics — contained build profile", () => {
   let d: { root: string; repo: string; dataDir: string; rickgentDir: string; agentDir: string };
 
   beforeEach(() => {
@@ -238,7 +238,7 @@ describe("B9 metrics — human gate hit during build increments the intervention
   });
 
   // VAL-METRIC-002
-  it("a --no-autonomous-pr build records an intervention and metrics reads it", () => {
+  it("delivery configuration is rejected before run or intervention metrics are allocated", () => {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       PATH: `${FIXTURE_BIN}:${process.env.PATH ?? ""}`,
@@ -256,26 +256,18 @@ describe("B9 metrics — human gate hit during build increments the intervention
       input: "",
       timeout: 90000,
     });
-    expect(build.status).not.toBe(0);
-    // The durable intervention ledger was incremented by the build.
+    expect(build.status).toBe(3);
     const intPath = join(d.rickgentDir, "interventions.jsonl");
-    expect(existsSync(intPath)).toBe(true);
-    const intLines = readFileSync(intPath, "utf-8").trim().split("\n").filter(Boolean);
-    expect(intLines.length).toBe(1);
-    expect(JSON.parse(intLines[0]!).gate).toBe("merge-gate");
-    // The run ledger was also written so interventions/run is well-defined.
-    expect(existsSync(join(d.rickgentDir, "runs.jsonl"))).toBe(true);
-    // metrics reads the real ledger and reports the intervention.
+    expect(existsSync(intPath)).toBe(false);
+    expect(existsSync(join(d.rickgentDir, "runs.jsonl"))).toBe(false);
     const out = runMetricsJson(d.rickgentDir);
     expect(out.status).toBe(0);
-    expect(out.json["interventions"]).toBe(1);
-    expect(Number(out.json["runs"])).toBeGreaterThanOrEqual(1);
-    expect(out.json["interventionsPerRun"]).toBeGreaterThanOrEqual(1);
+    expect(out.json["interventions"]).toBe(0);
+    expect(out.json["runs"]).toBe(0);
+    expect(out.json["interventionsPerRun"]).toBe(0);
   });
 
-  // VAL-METRIC-002 (positive): an autonomous build that ships a PR records a PR
-  // ledger entry, which metrics reads as a shipped (immature) PR.
-  it("an autonomous build that ships a PR records a PR ledger entry metrics can read", () => {
+  it("a successful local build records a run but cannot manufacture delivery metrics", () => {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       PATH: `${FIXTURE_BIN}:${process.env.PATH ?? ""}`,
@@ -295,20 +287,14 @@ describe("B9 metrics — human gate hit during build increments the intervention
       timeout: 90000,
     });
     expect(build.status).toBe(0);
-    // A PR ledger entry was recorded for the shipped PR.
     const prPath = join(d.rickgentDir, "prs.jsonl");
-    expect(existsSync(prPath)).toBe(true);
-    const prLines = readFileSync(prPath, "utf-8").trim().split("\n").filter(Boolean);
-    expect(prLines.length).toBe(1);
-    const pr = JSON.parse(prLines[0]!);
-    expect(typeof pr.shippedAt).toBe("string");
-    expect(Array.isArray(pr.scopePaths)).toBe(true);
-    // metrics reads it as a shipped, immature PR (just shipped → excluded from
-    // the matured-PR quality denominator).
+    expect(existsSync(prPath)).toBe(false);
+    expect(existsSync(join(d.root, "gh.log"))).toBe(false);
     const out = runMetricsJson(d.rickgentDir);
     expect(out.status).toBe(0);
-    expect(Number(out.json["shippedPrs"])).toBe(1);
-    expect(Number(out.json["immaturePrs"])).toBe(1);
+    expect(Number(out.json["runs"])).toBe(1);
+    expect(Number(out.json["shippedPrs"])).toBe(0);
+    expect(Number(out.json["immaturePrs"])).toBe(0);
     expect(out.json["qualityDenominator"]).toBe(0);
     expect(out.json["interventions"]).toBe(0);
   });

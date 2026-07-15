@@ -13,6 +13,22 @@ import {
 } from "./capabilities/registry.js";
 import { runVerdict } from "./core/verdict-cli.js";
 import type { BuildDependencies, BuildOptions } from "./lifecycle/build.js";
+import type { RunOutcome, RunOutcomeClass } from "./lifecycle/run-outcome.js";
+
+const RUN_EXIT_CODES: Readonly<Record<RunOutcomeClass, 0 | 2 | 3 | 4 | 5 | 6 | 7>> = Object.freeze({
+  success: 0,
+  input_contract: 2,
+  capability_unavailable: 3,
+  infrastructure: 4,
+  execution: 5,
+  verification: 6,
+  cleanup: 7,
+});
+
+/** Numeric exit selection belongs only to the CLI boundary. */
+export function exitCodeForRunOutcome(outcome: RunOutcome): 0 | 2 | 3 | 4 | 5 | 6 | 7 {
+  return RUN_EXIT_CODES[outcome.primary];
+}
 
 const USAGE = `rickgent — autonomous multi-model engineering platform
 
@@ -347,13 +363,15 @@ async function runBuildCommand(rest: string[], pipeline: boolean, dependencies: 
     `${pipeline ? "pipeline" : "build"}: planned=${result.ticketsPlanned} ` +
     `dispatched=${result.ticketsDispatched} done=${result.ticketsDone} ` +
     `failed=${result.ticketsFailed} recovered=${result.ticketsRecovered} ` +
-    `interventions=${result.interventions} prCreated=${result.prCreated}`;
+    `interventions=${result.interventions} outcome=${result.outcome.status} ` +
+    `primary=${result.outcome.primary}`;
   console.log(
     pipeline
       ? `${summary} cleanupReconciled=${(result as import("./lifecycle/build.js").PipelineResult).cleanup.ticketsReconciled}`
       : summary,
   );
-  if (result.exitCode !== 0) process.exit(result.exitCode);
+  const exitCode = exitCodeForRunOutcome(result.outcome);
+  if (exitCode !== 0) process.exit(exitCode);
 }
 
 async function runMetrics(rest: string[]): Promise<void> {

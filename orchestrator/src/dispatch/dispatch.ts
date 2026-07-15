@@ -22,6 +22,13 @@ export type DispatchState =
   | "timed_out" | "killed" | "salvage_started" | "salvaged"
   | "failed" | "retried" | "ignored_late";
 
+export type DispatchTerminalReason =
+  | "worker_failed"
+  | "evidence_unverifiable"
+  | "infrastructure_error"
+  | "routing_denied"
+  | "breaker_deferred";
+
 export interface DispatchId {
   runId: string;
   ticketId: string;
@@ -39,6 +46,8 @@ export interface DispatchEntry {
   exitCode: number | null;
   stdout: string | null;
   stderr: string | null;
+  /** Machine-readable terminal classification; lifecycle aggregation never parses stderr. */
+  terminalReason?: DispatchTerminalReason;
   /** Conversation id of the DB session created by this dispatch (B2 evidence). */
   conversationId?: string | null;
   /**
@@ -245,6 +254,7 @@ export class Dispatcher {
         exitCode: null,
         stdout: null,
         stderr: "could not acquire ticket lock",
+        terminalReason: "infrastructure_error",
         vendor: opts.vendor ?? null,
       };
       this.ledger.append(failed);
@@ -359,6 +369,7 @@ export class Dispatcher {
           startedAt, completedAt: new Date().toISOString(),
           exitCode: null, stdout,
           stderr: stderr + `\n[dispatch] spawn error: ${err.message}`,
+          terminalReason: "infrastructure_error",
           vendor: opts.vendor ?? null,
         });
       });
@@ -369,6 +380,7 @@ export class Dispatcher {
           dispatchId: idStr, state: "timed_out", pid: child.pid ?? null,
           startedAt, completedAt: new Date().toISOString(),
           exitCode: null, stdout, stderr,
+          terminalReason: "worker_failed",
           vendor: opts.vendor ?? null,
         });
       }, opts.timeout);
@@ -382,6 +394,7 @@ export class Dispatcher {
           finish({
             dispatchId: idStr, state: "failed", pid,
             startedAt, completedAt, exitCode: code, stdout, stderr,
+            terminalReason: "worker_failed",
             vendor: opts.vendor ?? null,
           });
           return;
@@ -393,6 +406,7 @@ export class Dispatcher {
             dispatchId: idStr, state: "failed", pid,
             startedAt, completedAt, exitCode: code, stdout,
             stderr: stderr + "\n[dispatch] exit 0 but no evidence context (targetRepo/dataDir) — cannot verify completion",
+            terminalReason: "evidence_unverifiable",
             vendor: opts.vendor ?? null,
           });
           return;
@@ -433,6 +447,7 @@ export class Dispatcher {
             `dbSession=${evidence.dbObserved} transcript=${evidence.transcriptCount} ` +
             `inScopeDelta=${evidence.inScopePaths.length} oracle=${evidence.oracleVerdict}`,
           conversationId: evidence.conversationId,
+          terminalReason: "evidence_unverifiable",
           vendor: opts.vendor ?? null,
         });
       });

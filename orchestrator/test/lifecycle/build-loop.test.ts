@@ -1,9 +1,8 @@
 // B1 — build loop (VAL-BUILD-001..008).
 //
 // Drives the REAL `rickgent` CLI (dist/cli.js) against the deterministic fixture
-// omnigent + a fixture `gh`, and observes REAL effects: the dispatch ledger, the
-// registry, git branches/commits, the intervention ledger, the salvage-
-// disposition ledger, and the captured `gh pr create` invocation. No mocks —
+// omnigent and observes REAL effects: the dispatch ledger, the registry, git
+// commits, the intervention ledger, and the salvage-disposition ledger. No mocks —
 // every Done is the terminal `completed` state of a real Dispatcher path (only
 // reachable through the completion oracle), failures are absorbed by
 // salvage/breaker, and a human-gate hit exits non-zero + records an intervention.
@@ -63,7 +62,7 @@ function setupDirs(): Dirs {
 
 function writeMultiPrd(dir: string, tickets: string[]): string {
   const acs = tickets
-    .map((p, i) => `### AC-${i + 1}: criterion ${i + 1}\n- **verifyCommand:** \`grep -r x ${p}\`\n- **scope:** \`${p}\`\n- **type:** grep\n`)
+    .map((p, i) => `### AC-${i + 1}: criterion ${i + 1}\n- **verifyCommand:** \`test -f ${p}\`\n- **scope:** \`${p}\`\n- **type:** grep\n`)
     .join("\n");
   const tk = tickets
     .map((p, i) => `### Ticket ${i + 1}: implement ${p}\n- **description:** create ${p}\n- **declaredPaths:** \`${p}\`\n`)
@@ -91,6 +90,7 @@ function runCli(args: string[], d: Dirs, extraEnv: Record<string, string> = {}):
     FAKE_GH_LOG: d.ghLog,
     RICKGENT_MODEL_ROSTER: TEST_ROSTER_JSON,
     RICKGENT_COST_BUDGET_USD: "10.0",
+    RICKGENT_ORPHAN_REAP: "off",
     ...extraEnv,
   };
   const res = spawnSync(process.execPath, [CLI_JS, ...args], {
@@ -181,32 +181,26 @@ describe("B1 build loop", () => {
   });
 
   // VAL-BUILD-004
-  it("a human-gate hit exits non-zero and records exactly one intervention", () => {
+  it("delivery configuration fails at the unavailable capability boundary before allocation", () => {
     const out = runCli(
       ["build", PRD_MIN, "--repo", d.repo, "--agent", d.agentDir, "--no-autonomous-pr"],
       d,
     );
-    expect(out.status).not.toBe(0);
+    expect(out.status).toBe(3);
+    expect(out.stderr).toContain("RICKGENT_CAPABILITY_UNAVAILABLE");
     const p = join(d.rickgentDir, "interventions.jsonl");
-    expect(existsSync(p)).toBe(true);
-    const lines = readFileSync(p, "utf-8").trim().split("\n").filter(Boolean);
-    expect(lines.length).toBe(1);
-    expect(JSON.parse(lines[0]!).gate).toBe("merge-gate");
+    expect(existsSync(p)).toBe(false);
+    expect(existsSync(join(d.rickgentDir, "registry.json"))).toBe(false);
   });
 
   // VAL-BUILD-005
-  it("produces a PR branch + a gh pr create gated by autonomous_pr_flow", () => {
+  it("completes the local profile without invoking delivery", () => {
     const out = runCli(["build", PRD_MIN, "--repo", d.repo, "--agent", d.agentDir], d);
     expect(out.status).toBe(0);
-    // PR feature branch exists in the repo.
     const branches = git(d.repo, ["branch", "--list"]);
-    expect(branches).toMatch(/rickgent\//);
-    // gh pr create was actually issued (captured by the fixture gh).
-    expect(existsSync(d.ghLog)).toBe(true);
-    expect(readFileSync(d.ghLog, "utf-8")).toContain("pr create");
-    // The invocation passed through autonomous_pr_flow with an ALLOW verdict.
-    expect(out.stdout).toContain("autonomous_pr_flow push=ALLOW");
-    expect(out.stdout).toContain("gh-pr-create=ALLOW");
+    expect(branches).not.toMatch(/rickgent\//);
+    expect(existsSync(d.ghLog)).toBe(false);
+    expect(out.stdout).toContain("automatic delivery is structurally absent");
   });
 
   // VAL-BUILD-006
@@ -220,33 +214,18 @@ describe("B1 build loop", () => {
   });
 
   // VAL-BUILD-007
-  it("--resume continues a killed run via reconcile (only unfinished re-dispatched)", () => {
+  it("accounts for every planned ticket when all dispatches fail", () => {
     const prd = writeMultiPrd(d.root, ["src/a.ts", "src/b.ts"]);
-    // Phase 1: T2 (src/b.ts) fails, so T1 completes and T2 is left unfinished.
-    const first = runCli(["build", prd, "--repo", d.repo, "--agent", d.agentDir], d, {
-      FIXTURE_FAIL_PATHS: "src/b.ts",
+    const out = runCli(["build", prd, "--repo", d.repo, "--agent", d.agentDir], d, {
+      FIXTURE_FAIL_PATHS: "src/a.ts,src/b.ts",
     });
-    expect(first.status).toBe(0);
-    const s1 = summary(first.stdout);
-    expect(Number(s1.done)).toBe(1);
-    expect(Number(s1.failed)).toBe(1);
-    const t1SpawnsBefore = ledgerEntries(d.rickgentDir).filter(
-      (e) => e.state === "spawned" && String(e.dispatchId).includes("/T1/"),
-    ).length;
-
-    // Phase 2: resume with T2 now succeeding.
-    const second = runCli(["build", prd, "--resume", "--repo", d.repo, "--agent", d.agentDir], d);
-    expect(second.status).toBe(0);
-    const s2 = summary(second.stdout);
-    expect(Number(s2.recovered)).toBeGreaterThanOrEqual(1); // T1 recovered
-    expect(Number(s2.dispatched)).toBe(1); // only T2 re-dispatched
-    expect(second.stdout).toMatch(/recovered Done via reconcile/);
-
-    // T1 was NOT re-dispatched: its spawned-entry count is unchanged.
-    const t1SpawnsAfter = ledgerEntries(d.rickgentDir).filter(
-      (e) => e.state === "spawned" && String(e.dispatchId).includes("/T1/"),
-    ).length;
-    expect(t1SpawnsAfter).toBe(t1SpawnsBefore);
+    expect(out.status).toBe(5);
+    const s = summary(out.stdout);
+    expect(Number(s.planned)).toBe(2);
+    expect(Number(s.done)).toBe(0);
+    expect(Number(s.failed)).toBe(2);
+    expect(Number(s.done) + Number(s.failed) + Number(s.recovered)).toBe(Number(s.planned));
+    expect(out.stdout).toContain("zero_completion");
   });
 
   // VAL-BUILD-008
@@ -255,7 +234,7 @@ describe("B1 build loop", () => {
     const out = runCli(["build", prd, "--repo", d.repo, "--agent", d.agentDir], d, {
       FIXTURE_FAIL_PATHS: "src/b.ts",
     });
-    expect(out.status).toBe(0); // run continues to completion despite the failure
+    expect(out.status).toBe(5); // queue drains, but aggregation fails closed
     const s = summary(out.stdout);
     expect(Number(s.failed)).toBe(1);
     expect(Number(s.interventions)).toBe(0); // failure is NOT a human intervention

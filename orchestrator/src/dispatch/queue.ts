@@ -65,6 +65,7 @@ function failClosedEntry(dispatchId: string, reason: string): DispatchEntry {
     exitCode: null,
     stdout: null,
     stderr: reason,
+    terminalReason: "infrastructure_error",
   };
 }
 

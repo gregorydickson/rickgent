@@ -4,8 +4,21 @@ import { existsSync } from "fs";
 import { join } from "path";
 import { main, handleFatal } from "../../dist/cli.js";
 import { verifyPolicyAttachment } from "../../dist/lifecycle/build.js";
+import {
+  CapabilityUnavailableError,
+  getCapability,
+} from "../../dist/capabilities/registry.js";
 
-const capabilityGate = Object.freeze({ require() {} });
+// Historical lifecycle fixtures may exercise local-only machinery, but the M1
+// fixture profile never enables delivery. This makes the delivery call graph
+// unavailable even when every local gate dependency is injected.
+const capabilityGate = Object.freeze({
+  require(name) {
+    if (name === "automatic_delivery") {
+      throw new CapabilityUnavailableError(getCapability(name));
+    }
+  },
+});
 const buildDependencies = {
   capabilityGate,
   verifyPolicyAttachment: (agentDir, env) =>

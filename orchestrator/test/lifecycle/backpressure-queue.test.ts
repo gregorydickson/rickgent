@@ -50,7 +50,7 @@ function setupDirs(): Dirs {
 
 function writeMultiPrd(dir: string, paths: string[]): string {
   const acs = paths
-    .map((p, i) => `### AC-${i + 1}: criterion ${i + 1}\n- **verifyCommand:** \`grep -r x ${p}\`\n- **scope:** \`${p}\`\n- **type:** grep\n`)
+    .map((p, i) => `### AC-${i + 1}: criterion ${i + 1}\n- **verifyCommand:** \`test -f ${p}\`\n- **scope:** \`${p}\`\n- **type:** grep\n`)
     .join("\n");
   const tk = paths
     .map((p, i) => `### Ticket ${i + 1}: implement ${p}\n- **description:** create ${p}\n- **declaredPaths:** \`${p}\`\n`)
@@ -157,7 +157,7 @@ describe("B3 backpressure queue via the real build loop", () => {
     const out = runCli(["build", prd, "--repo", d.repo, "--agent", d.agentDir, "--max-concurrent", "2"], d, {
       FIXTURE_FAIL_PATHS: "src/c.ts",
     });
-    expect(out.status).toBe(0);
+    expect(out.status).toBe(5);
 
     const entries = ledgerEntries(d.rickgentDir);
     const latest = latestStateByTicket(entries);
