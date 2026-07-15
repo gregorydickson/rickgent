@@ -158,6 +158,12 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === "szechuan") {
+    const { runSzechuanCommand } = await import("./lifecycle/szechuan-cli.js");
+    await runSzechuanCommand(args.slice(1));
+    return;
+  }
+
   // Stub for not-yet-implemented commands
   const implemented = [
     "verdict",
@@ -172,6 +178,7 @@ async function main(): Promise<void> {
     "citadel",
     "prd",
     "refine",
+    "szechuan",
     "--version",
     "--build-commit",
     "--help",
