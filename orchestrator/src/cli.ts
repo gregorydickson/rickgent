@@ -4,11 +4,18 @@ import { join, resolve } from "path";
 import { pathToFileURL } from "url";
 import { BUILD_COMMIT } from "./build-commit.js";
 import {
+  CAPABILITY_UNAVAILABLE_ERROR_CODE,
   InputContractError,
+  LEGACY_HELP_DISCLAIMER,
   PRODUCTION_CAPABILITY_GATE,
+  RELEASE_CHANNEL,
+  RELEASE_LABEL,
   RickgentBoundaryError,
   assertNoProductionBypasses,
   formatCapabilityReport,
+  formatPublicSurfaceMatrixText,
+  formatReliabilityPreviewBanner,
+  formatTerminalSummary,
   type CapabilityGate,
 } from "./capabilities/registry.js";
 import { runVerdict } from "./core/verdict-cli.js";
@@ -30,29 +37,37 @@ export function exitCodeForRunOutcome(outcome: RunOutcome): 0 | 2 | 3 | 4 | 5 | 
   return RUN_EXIT_CODES[outcome.primary];
 }
 
-const USAGE = `rickgent — autonomous multi-model engineering platform
+const USAGE = `${formatReliabilityPreviewBanner()}
+
+Public observations: help, status, and doctor are read-only. Legacy toolbelt
+command names shown below do not enable autonomous mutation, recovery,
+reconciliation, parallel dispatch, cross-vendor proof, delivery, or raw shell.
 
 Usage:
-  rickgent prd                 PRD interview
-  rickgent refine <prd.md>     3-analyst refinement + decomposition
-  rickgent build <prd.md>      Contained build entrypoint
-  rickgent pipeline <prd.md>   Contained lifecycle entrypoint
-  rickgent citadel             Conformance audit
-  rickgent szechuan            Deslopping
-  rickgent anatomy             Subsystem review
-  rickgent microverse          Convergence loop
-  rickgent cronenberg          Meta-router
-  rickgent status [--deep]     Session state
-  rickgent metrics [--json]    Cost, commits, LOC
-  rickgent reconcile           Rebuild registry (currently unavailable)
-  rickgent doctor [--json]     Health and capability contract
+  rickgent prd                 Legacy PRD toolbelt surface
+  rickgent refine <prd.md>     Legacy refinement toolbelt surface
+  rickgent build <prd.md>      Public mutation unavailable (exit 3)
+  rickgent pipeline <prd.md>   Public mutation unavailable (exit 3)
+  rickgent citadel             Audit surface; help is read-only
+  rickgent szechuan            Legacy toolbelt; mutation unavailable
+  rickgent anatomy             Legacy toolbelt; mutation unavailable
+  rickgent microverse          Legacy toolbelt; mutation/raw shell unavailable
+  rickgent cronenberg          Legacy toolbelt; mutation unavailable
+  rickgent status [--deep]     Read-only registry/health observation
+  rickgent metrics [--json]    Read-only historical metrics
+  rickgent reconcile           Unavailable (exit 3)
+  rickgent doctor [--json]     Read-only health and capability contract
   rickgent verdict <check> --json
   rickgent --version
   rickgent --build-commit
   rickgent --help
+
+${formatPublicSurfaceMatrixText()}
 `;
 
-const BUILD_USAGE = `rickgent build — contained build boundary
+const BUILD_USAGE = `${formatReliabilityPreviewBanner()}
+
+rickgent build — public mutation is unavailable
 
 Usage:
   rickgent build <prd> [options]
@@ -60,26 +75,39 @@ Usage:
 
 Options:
   --repo <dir>              Target git repo
-  --agent <dir>             omnigent agent bundle directory
-  --feature <branch>        Delivery branch (capability unavailable in M1)
-  --max-concurrent <N>      Dispatch cap (default: 1; values >1 unavailable)
+  --agent <dir>             Rickgent agent root containing agents/worker
+  --feature <branch>        Delivery config: capability exit 3
+  --max-concurrent <N>      Only 1 accepted; other values are input exit 2
   --roster <file>           JSON model roster
   --cost-budget <usd>       Hard cost budget per dispatch
   --soft-threshold <usd>    Soft cost threshold
-  --resume                  Resume (capability unavailable in M1)
-  --no-autonomous-pr        Delivery configuration (unavailable in M1)
-  --raw-shell               Raw-shell configuration (unavailable in M1)
-  --max-iterations <N>      Advertised legacy flag; rejected until implemented
+  --resume                  Resume capability unavailable: exit 3
+  --no-autonomous-pr        Delivery config unavailable: exit 3
+  --raw-shell               Raw shell unavailable: exit 3
+  --max-iterations <N>      Parsed legacy flag rejected: input exit 2
   --help, -h                Show this help
+
+Public build reaches ${CAPABILITY_UNAVAILABLE_ERROR_CODE} with the compiled
+autonomous-dispatch detail after strict input and selected flag gates. Parsing
+configuration never enables a capability. The fixture dependency seam is not
+a CLI mode or environment switch.
+
+${formatPublicSurfaceMatrixText()}
 `;
 
-const PIPELINE_USAGE = `rickgent pipeline — contained lifecycle boundary
+const PIPELINE_USAGE = `${formatReliabilityPreviewBanner()}
+
+rickgent pipeline — public lifecycle mutation is unavailable
 
 Usage:
   rickgent pipeline <prd> [build options]
 
-The same strict build option contract applies. Autonomous dispatch, resume,
-reconciliation, parallel dispatch, raw shell, and delivery remain contained.
+The strict build option contract and gate order apply. No public pipeline run
+can mutate, resume, reconcile, dispatch in parallel, prove cross-vendor review,
+run raw shell, deliver, become ready_for_delivery, become delivered, or write
+Done in ${RELEASE_CHANNEL}.
+
+${formatPublicSurfaceMatrixText()}
 `;
 
 const SIMPLE_COMMAND_USAGE: Readonly<Record<string, string>> = {
@@ -316,7 +344,10 @@ async function runStatus(rest: string[]): Promise<void> {
   const { Registry } = await import("./lifecycle/registry.js");
   const status = new Registry(join(getRickgentDir(), "registry.json")).getPipelineStatus();
   const lines = [
-    "rickgent status — pipeline state",
+    `${RELEASE_LABEL} (${RELEASE_CHANNEL})`,
+    "rickgent status — read-only pipeline-state observation",
+    formatTerminalSummary(),
+    "Status cannot terminalize a run; a stored legacy Done label is not ready_for_delivery or delivery evidence.",
     "=".repeat(50),
     `runId: ${status.runId || "(none)"}`,
     `startedAt: ${status.startedAt || "(none)"}`,
@@ -406,8 +437,12 @@ export async function main(
   const helpOnly = rest.length === 1 && (rest[0] === "--help" || rest[0] === "-h");
 
   if (helpOnly && SIMPLE_COMMAND_USAGE[command] !== undefined) {
-    console.log(SIMPLE_COMMAND_USAGE[command]);
+    console.log(`${formatReliabilityPreviewBanner()}\n\n${SIMPLE_COMMAND_USAGE[command]}`);
     return;
+  }
+
+  if (helpOnly) {
+    console.log(`${formatReliabilityPreviewBanner()}\n\n${LEGACY_HELP_DISCLAIMER}\n`);
   }
 
   if (!helpOnly && rest.includes("--resume")) gate.require("resume_retry");

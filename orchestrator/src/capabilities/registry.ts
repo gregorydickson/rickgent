@@ -14,6 +14,20 @@ export const CAPABILITY_NAMES = [
 
 export type CapabilityName = (typeof CAPABILITY_NAMES)[number];
 
+export const CLAIMS_SCHEMA_VERSION = "1.0.0" as const;
+export const RELEASE_CHANNEL = "reliability_preview" as const;
+export const RELEASE_LABEL = "Rickgent reliability preview" as const;
+export const LEGACY_HELP_DISCLAIMER =
+  "Legacy syntax follows for inspection only. Descriptions below do not make a blocked capability publicly available; the compiled preview boundary and exit contract above control." as const;
+export const CLAIM_MATRIX_BEGIN = "<!-- RICKGENT_CLAIMS_MATRIX_BEGIN -->" as const;
+export const CLAIM_MATRIX_END = "<!-- RICKGENT_CLAIMS_MATRIX_END -->" as const;
+
+export const TERMINAL_SEMANTICS = Object.freeze({
+  ready_for_delivery: "local_oracle_complete",
+  delivered: "remote_delivery_verified",
+  Done: "alias_only_for_delivered",
+} as const);
+
 export interface CapabilityEntry {
   readonly name: CapabilityName;
   readonly state: CapabilityState;
@@ -89,6 +103,7 @@ const ENTRY_BY_NAME = new Map<CapabilityName, CapabilityEntry>(
 export const INPUT_CONTRACT_ERROR_CODE = "RICKGENT_INPUT_CONTRACT_ERROR";
 export const CAPABILITY_UNAVAILABLE_ERROR_CODE = "RICKGENT_CAPABILITY_UNAVAILABLE";
 export const INTERNAL_ERROR_CODE = "RICKGENT_INTERNAL_ERROR";
+export const OK_CODE = "RICKGENT_OK";
 
 export class RickgentBoundaryError extends Error {
   constructor(
@@ -142,6 +157,271 @@ export function getCapability(name: CapabilityName): CapabilityEntry {
   return entry;
 }
 
+export type PublicSurfaceMode =
+  | "public_read_only"
+  | "public_blocked"
+  | "public_input_rejected"
+  | "fixture_dependency_only";
+
+export type MutationAuthority = "none" | "capture_only";
+
+export interface PublicSurfaceEntry {
+  readonly surface: string;
+  readonly mode: PublicSurfaceMode;
+  readonly mutation_authority: MutationAuthority;
+  readonly capability: CapabilityName | null;
+  readonly capability_state: CapabilityState | "not_applicable";
+  readonly result: string;
+  readonly exit_code: 0 | 2 | 3 | null;
+  readonly stable_code: string | null;
+  readonly capability_detail: string | null;
+  readonly boundary: string;
+}
+
+function capabilitySurface(
+  entry: Omit<PublicSurfaceEntry, "capability_state" | "capability_detail"> & {
+    readonly capability: CapabilityName;
+  },
+): PublicSurfaceEntry {
+  const capability = getCapability(entry.capability);
+  return Object.freeze({
+    ...entry,
+    capability_state: capability.state,
+    capability_detail: capability.error_code,
+  });
+}
+
+function nonCapabilitySurface(
+  entry: Omit<PublicSurfaceEntry, "capability" | "capability_state" | "capability_detail">,
+): PublicSurfaceEntry {
+  return Object.freeze({
+    ...entry,
+    capability: null,
+    capability_state: "not_applicable",
+    capability_detail: null,
+  });
+}
+
+const PUBLIC_SURFACES: readonly PublicSurfaceEntry[] = Object.freeze([
+  capabilitySurface({
+    surface: "rickgent build <prd>",
+    mode: "public_blocked",
+    mutation_authority: "none",
+    capability: "autonomous_dispatch",
+    result: "blocked before allocation or spawn",
+    exit_code: 3,
+    stable_code: CAPABILITY_UNAVAILABLE_ERROR_CODE,
+    boundary: "Public autonomous mutation is not available.",
+  }),
+  capabilitySurface({
+    surface: "rickgent pipeline <prd>",
+    mode: "public_blocked",
+    mutation_authority: "none",
+    capability: "autonomous_dispatch",
+    result: "blocked before allocation or spawn",
+    exit_code: 3,
+    stable_code: CAPABILITY_UNAVAILABLE_ERROR_CODE,
+    boundary: "Public lifecycle mutation is not available.",
+  }),
+  capabilitySurface({
+    surface: "explicit test dependency injection",
+    mode: "fixture_dependency_only",
+    mutation_authority: "capture_only",
+    capability: "autonomous_dispatch",
+    result: "implementation_captured_nonterminal",
+    exit_code: null,
+    stable_code: null,
+    boundary: "Exactly one worker in a dedicated run worktree; no trusted commit or gate advancement.",
+  }),
+  capabilitySurface({
+    surface: "build|pipeline --resume",
+    mode: "public_blocked",
+    mutation_authority: "none",
+    capability: "resume_retry",
+    result: "blocked before autonomous dispatch",
+    exit_code: 3,
+    stable_code: CAPABILITY_UNAVAILABLE_ERROR_CODE,
+    boundary: "Resume is unavailable; no public retry command exists.",
+  }),
+  nonCapabilitySurface({
+    surface: "rickgent retry",
+    mode: "public_input_rejected",
+    mutation_authority: "none",
+    result: "unknown command",
+    exit_code: 2,
+    stable_code: INPUT_CONTRACT_ERROR_CODE,
+    boundary: "Retry has no public CLI command; the resume/retry capability remains unavailable.",
+  }),
+  capabilitySurface({
+    surface: "rickgent reconcile",
+    mode: "public_blocked",
+    mutation_authority: "none",
+    capability: "reconciliation",
+    result: "blocked before reconciliation",
+    exit_code: 3,
+    stable_code: CAPABILITY_UNAVAILABLE_ERROR_CODE,
+    boundary: "No registry or lifecycle state is rebuilt.",
+  }),
+  capabilitySurface({
+    surface: "build|pipeline --feature|--no-autonomous-pr",
+    mode: "public_blocked",
+    mutation_authority: "none",
+    capability: "automatic_delivery",
+    result: "delivery configuration rejected",
+    exit_code: 3,
+    stable_code: CAPABILITY_UNAVAILABLE_ERROR_CODE,
+    boundary: "No branch push, PR creation, or delivery observation occurs.",
+  }),
+  capabilitySurface({
+    surface: "build|pipeline --raw-shell",
+    mode: "public_blocked",
+    mutation_authority: "none",
+    capability: "raw_shell",
+    result: "raw-shell configuration rejected",
+    exit_code: 3,
+    stable_code: CAPABILITY_UNAVAILABLE_ERROR_CODE,
+    boundary: "Execution and verification accept structured argv only.",
+  }),
+  capabilitySurface({
+    surface: "build|pipeline [--max-concurrent 1]",
+    mode: "public_blocked",
+    mutation_authority: "none",
+    capability: "autonomous_dispatch",
+    result: "sequential value accepted, then dispatch blocked",
+    exit_code: 3,
+    stable_code: CAPABILITY_UNAVAILABLE_ERROR_CODE,
+    boundary: "Omitted concurrency and exactly 1 do not enable public mutation.",
+  }),
+  nonCapabilitySurface({
+    surface: "build|pipeline --max-concurrent <not-1>",
+    mode: "public_input_rejected",
+    mutation_authority: "none",
+    result: "input contract rejected",
+    exit_code: 2,
+    stable_code: INPUT_CONTRACT_ERROR_CODE,
+    boundary: "Greater, zero, fractional, malformed, and non-finite values fail before capability selection.",
+  }),
+  nonCapabilitySurface({
+    surface: "build|pipeline --max-iterations <N>",
+    mode: "public_input_rejected",
+    mutation_authority: "none",
+    result: "parsed legacy flag rejected as unimplemented",
+    exit_code: 2,
+    stable_code: INPUT_CONTRACT_ERROR_CODE,
+    boundary: "A parsed flag is not an enabled capability.",
+  }),
+  capabilitySurface({
+    surface: "cross-vendor review (no public command)",
+    mode: "public_blocked",
+    mutation_authority: "none",
+    capability: "cross_vendor_review",
+    result: "independent vendor proof unavailable",
+    exit_code: null,
+    stable_code: null,
+    boundary: "Requested vendor labels are not independently observed identity.",
+  }),
+  nonCapabilitySurface({
+    surface: "rickgent status [--deep]",
+    mode: "public_read_only",
+    mutation_authority: "none",
+    result: "registry observation only",
+    exit_code: 0,
+    stable_code: OK_CODE,
+    boundary: "Cannot terminalize a run or turn a legacy Done label into delivery evidence.",
+  }),
+  nonCapabilitySurface({
+    surface: "rickgent doctor [--json]",
+    mode: "public_read_only",
+    mutation_authority: "none",
+    result: "health and attachment audit",
+    exit_code: 0,
+    stable_code: OK_CODE,
+    boundary: "Exit is nonzero when a real health check fails.",
+  }),
+  nonCapabilitySurface({
+    surface: "rickgent <command> --help",
+    mode: "public_read_only",
+    mutation_authority: "none",
+    result: "claim observation only",
+    exit_code: 0,
+    stable_code: OK_CODE,
+    boundary: "Help text does not activate a mutating capability.",
+  }),
+]);
+
+export function publicSurfaceRegistry(): readonly PublicSurfaceEntry[] {
+  return Object.freeze(PUBLIC_SURFACES.map((entry) => Object.freeze({ ...entry })));
+}
+
+export function formatTerminalSummary(): string {
+  return (
+    `ready_for_delivery=${TERMINAL_SEMANTICS.ready_for_delivery} means local oracle acceptance plus ` +
+    "cleanup/ownership release; " +
+    `delivered=${TERMINAL_SEMANTICS.delivered} requires verified remote branch and PR-head observations; ` +
+    "Done is a delivered-only alias."
+  );
+}
+
+export function formatReliabilityPreviewBanner(): string {
+  const autonomous = getCapability("autonomous_dispatch");
+  const unavailable = capabilityRegistry()
+    .filter((entry) => entry.state === "unavailable")
+    .map((entry) => `${entry.name} (${entry.error_code})`)
+    .join(", ");
+  return [
+    `${RELEASE_LABEL} (${RELEASE_CHANNEL})`,
+    `${CAPABILITY_UNAVAILABLE_ERROR_CODE} (exit 3): public autonomous dispatch is ${autonomous.state} ` +
+      `(${autonomous.error_code}); explicit test dependency injection is sequential, dedicated-worktree, ` +
+      "capture-only, and nonterminal.",
+    `Unavailable capabilities: ${unavailable}.`,
+    formatTerminalSummary(),
+  ].join("\n");
+}
+
+function markdownCell(value: string): string {
+  return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+}
+
+export function formatPublicSurfaceMatrixMarkdown(): string {
+  const header = [
+    "| Surface | Mode | Mutation authority | Capability/state | Result | Exit | Stable code | Capability detail | Boundary |",
+    "|---|---|---|---|---|---:|---|---|---|",
+  ];
+  const rows = publicSurfaceRegistry().map((entry) => {
+    const capability = entry.capability === null
+      ? "—"
+      : `${entry.capability}/${entry.capability_state}`;
+    return `| ${[
+      entry.surface,
+      entry.mode,
+      entry.mutation_authority,
+      capability,
+      entry.result,
+      entry.exit_code === null ? "—" : String(entry.exit_code),
+      entry.stable_code ?? "—",
+      entry.capability_detail ?? "—",
+      entry.boundary,
+    ].map(markdownCell).join(" | ")} |`;
+  });
+  return [...header, ...rows].join("\n");
+}
+
+export function formatPublicSurfaceMatrixBlock(): string {
+  return `${CLAIM_MATRIX_BEGIN}\n${formatPublicSurfaceMatrixMarkdown()}\n${CLAIM_MATRIX_END}`;
+}
+
+export function formatPublicSurfaceMatrixText(): string {
+  return [
+    "Public command/capability matrix:",
+    ...publicSurfaceRegistry().map((entry) =>
+      `  ${entry.surface}: mode=${entry.mode} mutation=${entry.mutation_authority} ` +
+      `capability=${entry.capability ?? "none"}/${entry.capability_state} result=${entry.result} ` +
+      `exit=${entry.exit_code ?? "n/a"} code=${entry.stable_code ?? "n/a"} ` +
+      `detail=${entry.capability_detail ?? "n/a"} boundary=${entry.boundary}`,
+    ),
+  ].join("\n");
+}
+
 export const PRODUCTION_CAPABILITY_GATE: CapabilityGate = Object.freeze({
   require(name: CapabilityName): void {
     const entry = getCapability(name);
@@ -166,8 +446,10 @@ export function assertNoProductionBypasses(env: NodeJS.ProcessEnv): void {
   }
 }
 
-export function formatCapabilityReport(title = "rickgent startup capabilities"): string {
+export function formatCapabilityReport(title = "Compiled capability registry"): string {
   return [
+    `${RELEASE_LABEL} (${RELEASE_CHANNEL})`,
+    formatTerminalSummary(),
     title,
     ...capabilityRegistry().map(
       (entry) =>

@@ -1,45 +1,21 @@
-# Rickgent reliability preview
+# Rickgent reliability-preview contract
 
-Rickgent currently publishes the `reliability_preview` lifecycle boundary.
-Public build and delivery remain unavailable; the preview exposes read-only
-claim and health inspection plus the explicitly listed legacy toolbelt
-surfaces, not an autonomous mutation or delivery service.
+Release channel: `reliability_preview`  
+Schema version: `1.0.0`
 
-The compiled authority is
-[`orchestrator/src/capabilities/registry.ts`](orchestrator/src/capabilities/registry.ts).
-The precise public contract is
-[`docs/reliability-preview.md`](docs/reliability-preview.md). If prose differs
-from the compiled registry, the registry and observed CLI exits control.
+This document publishes the current external boundary. The compiled registry
+in `orchestrator/src/capabilities/registry.ts` is the runtime authority. This
+document and the README are checked publications of that authority. Historical
+ADRs and phase reports, remediation designs, fixtures, tests, model/vendor
+labels, and environment configuration do not activate a capability.
 
-## Current boundary
+## Public command and capability matrix
 
-Public `build` and `pipeline` stop before allocation or spawn with exit `3`,
-outer code `RICKGENT_CAPABILITY_UNAVAILABLE`, and detail
-`RICKGENT_AUTONOMOUS_FIXTURE_ONLY`. Resume/retry, reconciliation, parallel
-dispatch, independently observed cross-vendor review, automatic delivery, and
-raw shell are unavailable.
-
-The only admitted mutation seam is explicit test dependency injection. It is
-fixture-only, exactly sequential, uses a dedicated run worktree, and is
-capture-only. Its strongest receipt is
-`implementation_captured_nonterminal`; it creates no trusted commit evidence,
-advances no verification gate, and cannot terminalize a ticket.
-
-`ready_for_delivery=local_oracle_complete` means local oracle acceptance plus
-cleanup and ownership release. It is not delivered. Delivered requires verified
-remote branch and PR-head observations equal to the delivery OID:
-`delivered=remote_delivery_verified`. `Done` is a delivered-only alias. The
-fixture seam reaches none of these states.
-
-`status`, `doctor`, and help are read-only. `status` may display a stored legacy
-label spelled `Done`; that label is not remote delivery evidence and the command
-cannot make it so. Doctor's policy check audits configured attachment only; it
-does not prove native production enforcement.
-
-## Command and capability matrix
-
-This checked block is generated from the compiled registry. Hand edits or
-runtime drift fail the claims-contract test.
+An unavailable capability emits outer stable code
+`RICKGENT_CAPABILITY_UNAVAILABLE` and its selected capability detail in that
+order. Input-contract failures emit `RICKGENT_INPUT_CONTRACT_ERROR` without an
+unselected capability detail. The process exits shown below are the observed
+public CLI contract; an em dash means there is no public process invocation.
 
 <!-- RICKGENT_CLAIMS_MATRIX_BEGIN -->
 | Surface | Mode | Mutation authority | Capability/state | Result | Exit | Stable code | Capability detail | Boundary |
@@ -61,20 +37,43 @@ runtime drift fail the claims-contract test.
 | rickgent <command> --help | public_read_only | none | — | claim observation only | 0 | RICKGENT_OK | — | Help text does not activate a mutating capability. |
 <!-- RICKGENT_CLAIMS_MATRIX_END -->
 
-## Inspect and verify
+## Public versus fixture behavior
 
-After installing the repository's locked local dependencies, use the sequential
-inspection and verification path:
+Public `build` and `pipeline` cannot allocate a run worktree or spawn a worker.
+There is no public flag, command, environment switch, or configuration file
+that enables mutation in this release.
 
-```sh
-cd orchestrator
-npm exec --offline -- tsc
-node dist/cli.js --help
-node dist/cli.js doctor
-npm test
-```
+Tests may explicitly inject dependencies that waive the public dispatch gate.
+That seam is fixture-only and exactly sequential: exactly one worker runs in a
+dedicated run worktree and mutation capture can emit only
+`implementation_captured_nonterminal`. Capture creates no trusted commit
+evidence, advances no verification or convergence gate, and grants no delivery
+authority. It is nonterminal.
 
-The root `install.sh` remains the local installation entrypoint for the
-repository package. Historical ADRs, phase reports, remediation plans,
-fixtures, passing tests, and vendor labels describe evidence or intended
-architecture; none of them activates a compiled capability.
+## Terminal semantics
+
+- `ready_for_delivery=local_oracle_complete` means the shared local oracle has
+  accepted the ticket after required promotion and cleanup/ownership release.
+  It is not a delivered state.
+- `delivered=remote_delivery_verified` means independently observed remote
+  branch and PR-head OIDs both equal the delivery OID.
+- `Done` is an alias only for delivered. A legacy registry string spelled
+  `Done` is not evidence of those remote observations.
+
+The reliability-preview fixture seam cannot reach `ready_for_delivery`,
+delivered, or `Done`, and cannot write any of those terminal states.
+
+## Read-only and unavailable surfaces
+
+Help, `status`, and `doctor` are read-only observations. `status` does not
+reinterpret or terminalize stored state. Doctor performs real health checks
+and returns nonzero when one fails; its policy result proves configured
+attachment only, not native production enforcement.
+
+Public autonomous mutation, resume/retry, reconciliation, parallel dispatch,
+independently observed cross-vendor review, automatic delivery, and raw shell
+remain unavailable. In particular, `--max-concurrent 2` is rejected first as
+an input-contract error; it does not emit the separately registered
+`RICKGENT_PARALLEL_DISPATCH_UNAVAILABLE` detail. A capability transition
+requires a compiled registry change and its proof corpus, not documentation or
+a passing fixture.

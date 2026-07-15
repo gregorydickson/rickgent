@@ -11,9 +11,9 @@ const repoRoot = new URL("../../../", import.meta.url).pathname;
 const realManager = join(repoRoot, "agents", "rickgent");
 const realWorker = join(realManager, "agents", "worker");
 
-function runDoctor(env: NodeJS.ProcessEnv): { code: number; out: string } {
+function runDoctor(env: NodeJS.ProcessEnv, asJson = false): { code: number; out: string } {
   try {
-    const out = execFileSync(process.execPath, [cliPath, "doctor"], {
+    const out = execFileSync(process.execPath, [cliPath, "doctor", ...(asJson ? ["--json"] : [])], {
       encoding: "utf-8",
       env,
       stdio: ["pipe", "pipe", "pipe"],
@@ -28,7 +28,10 @@ function runDoctor(env: NodeJS.ProcessEnv): { code: number; out: string } {
 describe("doctor policy-attachment audit (VAL-ATTACH-016/017)", () => {
   it("VAL-ATTACH-017: exits 0 and reports attachment PASS with the full required set", () => {
     const { code, out } = runDoctor({ ...process.env });
-    expect([0, 1]).toContain(code);
+    expect(code).toBe(0);
+    expect(out).toContain("Rickgent reliability preview");
+    expect(out).toContain("configured attachment audit only");
+    expect(out).toContain("not proof of native production enforcement");
     expect(out).toContain("policy_attachment");
     expect(out).toMatch(/\[PASS\] policy_attachment/);
   });
@@ -87,6 +90,19 @@ describe("doctor policy-attachment audit (VAL-ATTACH-016/017)", () => {
       expect(code).not.toBe(0);
       expect(out).toMatch(/\[FAIL\] policy_attachment/);
       expect(out).toContain("autonomous_pr_flow");
+
+      const jsonResult = runDoctor({
+        ...process.env,
+        RICKGENT_MANAGER_DIR: mgrCopy,
+        RICKGENT_WORKER_DIR: wkrCopy,
+      }, true);
+      expect(jsonResult.code).not.toBe(0);
+      const json = JSON.parse(jsonResult.out) as {
+        health: { ok: boolean };
+        attachment_semantics: string;
+      };
+      expect(json.health.ok).toBe(false);
+      expect(json.attachment_semantics).toBe("configured_attachment_audit_only");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

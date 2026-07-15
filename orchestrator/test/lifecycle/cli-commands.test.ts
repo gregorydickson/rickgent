@@ -38,13 +38,15 @@ describe("CLI commands", () => {
     const out = run(["build", "--help"]);
     expect(out).toContain("rickgent build");
     expect(out).toContain("--resume");
-    expect(out.toLowerCase()).toContain("contained");
+    expect(out).toContain("Rickgent reliability preview");
+    expect(out).toContain("RICKGENT_CAPABILITY_UNAVAILABLE");
   });
 
   it("pipeline --help exits 0 and prints pipeline help", () => {
     const out = run(["pipeline", "--help"]);
     expect(out).toContain("rickgent pipeline");
-    expect(out.toLowerCase()).toContain("contained");
+    expect(out).toContain("Rickgent reliability preview");
+    expect(out).toContain("public lifecycle mutation is unavailable");
   });
 
   it("verdict completion --json works", () => {
@@ -57,8 +59,8 @@ describe("CLI commands", () => {
 
   it("doctor reports behavioral health and capabilities", () => {
     const result = spawnSync(process.execPath, [cliPath, "doctor"], { encoding: "utf-8" });
-    expect([0, 1]).toContain(result.status);
-    expect(result.stdout).toContain("capabilities");
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Compiled capability registry");
   });
 
   it("status prints pipeline status", () => {
@@ -66,10 +68,10 @@ describe("CLI commands", () => {
     expect(result).toContain("pipeline");
   });
 
-  it("status --deep runs doctor and fails closed when health is red", () => {
+  it("status --deep runs the read-only health audit", () => {
     const result = spawnSync(process.execPath, [cliPath, "status", "--deep"], { encoding: "utf-8" });
-    expect(result.stdout).toContain("doctor");
-    expect([0, 70]).toContain(result.status);
+    expect(result.stdout).toContain("read-only health and configured-attachment audit");
+    expect(result.status).toBe(0);
   });
 
   it("status exits 0 with an empty table on an empty-object registry", () => {

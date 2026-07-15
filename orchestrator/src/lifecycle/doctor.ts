@@ -2,8 +2,10 @@
 // AC-1: rickgent doctor proves the stack, not just the imports.
 
 import { BUILD_COMMIT } from "../build-commit.js";
-import { execSync } from "child_process";
+import { RELEASE_CHANNEL, RELEASE_LABEL } from "../capabilities/registry.js";
+import { execFileSync } from "child_process";
 import { existsSync } from "fs";
+import { fileURLToPath } from "url";
 
 export interface DoctorResult {
   ok: boolean;
@@ -12,6 +14,8 @@ export interface DoctorResult {
 
 export async function runDoctorCheck(): Promise<DoctorResult> {
   const checks: { name: string; pass: boolean; detail: string }[] = [];
+  const cliEntrypoint = fileURLToPath(new URL("../../dist/cli.js", import.meta.url));
+  const pythonEnv = { ...process.env, RICKGENT_BIN: cliEntrypoint };
 
   // 1. build_commit is available
   const commitValue: string = BUILD_COMMIT;
@@ -25,10 +29,11 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
   let omnigentOk = false;
   let omnigentDetail = "";
   try {
-    const version = execSync("python3 -c \"import importlib.metadata; print(importlib.metadata.version('omnigent'))\"", {
+    const version = execFileSync("python3", ["-c", "import importlib.metadata; print(importlib.metadata.version('omnigent'))"], {
       encoding: "utf-8",
       timeout: 10000,
       stdio: ["pipe", "pipe", "pipe"],
+      env: pythonEnv,
     }).trim();
     omnigentOk = true;
     omnigentDetail = `omnigent ${version}`;
@@ -41,10 +46,11 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
   let policiesOk = false;
   let policiesDetail = "";
   try {
-    const result = execSync("python3 -c \"import rickgent_policies; print('ok')\"", {
+    const result = execFileSync("python3", ["-c", "import rickgent_policies; print('ok')"], {
       encoding: "utf-8",
       timeout: 10000,
       stdio: ["pipe", "pipe", "pipe"],
+      env: pythonEnv,
     }).trim();
     policiesOk = result === "ok";
     policiesDetail = "rickgent_policies importable";
@@ -57,9 +63,10 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
   let registryOk = false;
   let registryDetail = "";
   try {
-    const result = execSync(
-      "python3 -c \"from omnigent.policies.registry import load_registry; load_registry(extra_modules=['rickgent_policies']); from omnigent.policies.registry import is_registered_handler; print('ok')\"",
-      { encoding: "utf-8", timeout: 10000, stdio: ["pipe", "pipe", "pipe"] },
+    const result = execFileSync(
+      "python3",
+      ["-c", "from omnigent.policies.registry import load_registry; load_registry(extra_modules=['rickgent_policies']); from omnigent.policies.registry import is_registered_handler; print('ok')"],
+      { encoding: "utf-8", timeout: 10000, stdio: ["pipe", "pipe", "pipe"], env: pythonEnv },
     ).trim();
     registryOk = result === "ok";
     registryDetail = "policy registry loaded with rickgent_policies";
@@ -83,9 +90,16 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
   let verdictOk = false;
   let verdictDetail = "";
   try {
-    const verdictResult = execSync(
-      `echo '{"claimedSha":null,"baselineSha":"abc123","shaExists":false,"treeChanged":false,"gateGreen":null}' | node ${process.argv[1]?.replace("doctor", "cli.js") ?? "dist/cli.js"} verdict completion --json`,
-      { encoding: "utf-8", timeout: 10000, stdio: ["pipe", "pipe", "pipe"] },
+    const verdictResult = execFileSync(
+      process.execPath,
+      [cliEntrypoint, "verdict", "completion", "--json"],
+      {
+        encoding: "utf-8",
+        timeout: 10000,
+        input: '{"claimedSha":null,"baselineSha":"abc123","shaExists":false,"treeChanged":false,"gateGreen":null}',
+        stdio: ["pipe", "pipe", "pipe"],
+        env: process.env,
+      },
     ).trim();
     const parsed = JSON.parse(verdictResult);
     verdictOk = parsed.verdict === "UNVERIFIED";
@@ -99,10 +113,11 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
   let shimOk = false;
   let shimDetail = "";
   try {
-    const pyCommit = execSync("python3 -c \"import rickgent_policies; print(rickgent_policies.BUILD_COMMIT)\"", {
+    const pyCommit = execFileSync("python3", ["-c", "import rickgent_policies; print(rickgent_policies.BUILD_COMMIT)"], {
       encoding: "utf-8",
       timeout: 10000,
       stdio: ["pipe", "pipe", "pipe"],
+      env: pythonEnv,
     }).trim();
     shimOk = pyCommit === BUILD_COMMIT;
     shimDetail = shimOk
@@ -115,7 +130,7 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
 
   // 8. policy ATTACHMENT audit (B4/C4). Registration is not attachment: the
   // effective set is read from `spec.guardrails.policies` via the omnigent
-  // parser. Fails CLOSED (this check fails → non-zero doctor exit) when either
+  // parser. The health audit returns non-zero when either
   // bundle's effective attached set is a strict subset of REQUIRED_POLICIES.
   const managerDir = process.env.RICKGENT_MANAGER_DIR ?? new URL("agents/rickgent", repoRoot).pathname;
   const workerDir =
@@ -139,18 +154,18 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
       "        missing[label] = gap",
       "print(json.dumps(missing))",
     ].join("\n");
-    const raw = execSync("python3 -", {
+    const raw = execFileSync("python3", ["-"], {
       encoding: "utf-8",
       timeout: 15000,
       input: py,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, RG_MGR: managerDir, RG_WKR: workerDir },
+      env: { ...pythonEnv, RG_MGR: managerDir, RG_WKR: workerDir },
     }).trim();
     const missing = JSON.parse(raw) as Record<string, string[]>;
     const labels = Object.keys(missing);
     attachOk = labels.length === 0;
     attachDetail = attachOk
-      ? "manager + worker bundles attach the full required policy set"
+      ? "configured manager + worker bundles attach the full required policy set (attachment audit only)"
       : labels.map((l) => `${l} missing [${(missing[l] ?? []).join(", ")}]`).join("; ");
   } catch (e) {
     attachDetail = `policy attachment audit failed: ${e instanceof Error ? e.message : String(e)}`;
@@ -159,7 +174,7 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
 
   const allPass = checks.every((c) => c.pass);
   const report = [
-    "rickgent doctor — behavioral smoke test",
+    `${RELEASE_LABEL} (${RELEASE_CHANNEL}) — read-only health and configured-attachment audit`,
     "=".repeat(50),
     ...checks.map((c) => `  [${c.pass ? "PASS" : "FAIL"}] ${c.name}: ${c.detail}`),
     "=".repeat(50),
