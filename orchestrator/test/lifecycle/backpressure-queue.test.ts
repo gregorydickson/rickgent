@@ -50,10 +50,23 @@ function setupDirs(): Dirs {
 
 function writeMultiPrd(dir: string, paths: string[]): string {
   const acs = paths
-    .map((p, i) => `### AC-${i + 1}: criterion ${i + 1}\n- **verifyCommand:** \`test -f ${p}\`\n- **scope:** \`${p}\`\n- **type:** grep\n`)
+    .map((p, i) => {
+      const verification = JSON.stringify([{
+        id: `VERIFY-FILE-${i + 1}`,
+        executable: "test",
+        args: ["-f", p],
+        cwd_class: "repository_root",
+        env_allowlist: ["PATH"],
+        timeout_ms: 30000,
+        network: "deny",
+        writable_outputs: [],
+        expected_exit_codes: [0],
+      }]);
+      return `### AC-${i + 1}: criterion ${i + 1}\n- **interfaceIds:** \`[]\`\n- **verifications:** \`${verification}\`\n- **scope:** \`${p}\`\n- **type:** grep\n`;
+    })
     .join("\n");
   const tk = paths
-    .map((p, i) => `### Ticket ${i + 1}: implement ${p}\n- **description:** create ${p}\n- **declaredPaths:** \`${p}\`\n`)
+    .map((p, i) => `### Ticket ${String(i + 1).padStart(2, "0")}: implement ${p}\n- **description:** create ${p}\n- **dependsOn:** \`[]\`\n- **scope:** \`${JSON.stringify([{ path: p, change_kind: "create", directory: false }])}\`\n- **interfaces:** \`[]\`\n- **acceptanceCriteria:** \`${JSON.stringify([`AC-${i + 1}`])}\`\n- **budgets:** \`{"max_attempts":2,"max_review_cycles":1,"wall_clock_ms":900000,"remediation_limit":1}\`\n`)
     .join("\n");
   const md = `# Multi PRD\n\n## Title: Backpressure Fixture\n\n## Description\nfive ticket backpressure fixture\n\n## Acceptance Criteria\n\n${acs}\n## Simplification Review\n- Reviewed: yes\n- Notes: minimal, one function per file\n\n## Tickets\n\n${tk}`;
   const p = join(dir, "prd.md");
@@ -123,7 +136,7 @@ describe("B3 backpressure queue via the real build loop", () => {
     expect(out.status).toBe(0);
 
     const entries = ledgerEntries(d.rickgentDir);
-    const tickets = ["T1", "T2", "T3", "T4", "T5"];
+    const tickets = ["t01", "t02", "t03", "t04", "t05"];
 
     // Every ticket was queued (planned recorded) AND spawned.
     for (const t of tickets) {
@@ -139,7 +152,7 @@ describe("B3 backpressure queue via the real build loop", () => {
       expect(latest[t]).toBe("completed");
     }
 
-    // FIFO: the first spawn of each ticket follows enqueue order T1..T5.
+    // FIFO: the first spawn of each ticket follows normalized ticket order.
     const firstSpawnOrder: string[] = [];
     for (const e of entries) {
       if (e.state !== "spawned") continue;
@@ -153,7 +166,7 @@ describe("B3 backpressure queue via the real build loop", () => {
   // draining — the other four still complete, none left permanently planned.
   it("a failing dispatch frees its slot and the queue keeps draining", () => {
     const prd = writeMultiPrd(d.root, FIVE);
-    // T3 (src/c.ts) fails; its slot must free so T4/T5 still drain.
+    // t03 (src/c.ts) fails; its slot must free so t04/t05 still drain.
     const out = runCli(["build", prd, "--repo", d.repo, "--agent", d.agentDir, "--max-concurrent", "2"], d, {
       FIXTURE_FAIL_PATHS: "src/c.ts",
     });
@@ -162,13 +175,13 @@ describe("B3 backpressure queue via the real build loop", () => {
     const entries = ledgerEntries(d.rickgentDir);
     const latest = latestStateByTicket(entries);
     // The failing ticket reached a terminal non-completed state.
-    expect(latest["T3"]).not.toBe("completed");
-    expect(latest["T3"]).not.toBe("planned");
+    expect(latest["t03"]).not.toBe("completed");
+    expect(latest["t03"]).not.toBe("planned");
     // The other four drained to completion despite the failure.
-    for (const t of ["T1", "T2", "T4", "T5"]) {
+    for (const t of ["t01", "t02", "t04", "t05"]) {
       expect(latest[t]).toBe("completed");
     }
     // Ledger shows the failing slot freed and later tickets spawned after it.
-    expect(entries.some((e) => ticketOf(String(e.dispatchId)) === "T5" && e.state === "spawned")).toBe(true);
+    expect(entries.some((e) => ticketOf(String(e.dispatchId)) === "t05" && e.state === "spawned")).toBe(true);
   });
 });

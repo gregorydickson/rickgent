@@ -9,8 +9,9 @@
 //
 // Unit tests below exercise the pure planner (buildCronenbergPlan) for precise
 // argv assertions. CLI tests drive the real built dist/cli.js and observe a
-// real effect (the delegated pipeline records a run only if it could READ the
-// PRD path it was handed — proving the path was valid, not raw task text).
+// real effect. A complete strict PRD records a run; a task-only placeholder is
+// read but rejected before allocation because Cronenberg cannot safely invent
+// ticket identity, scope, verification policy, or budgets from free text.
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawnSync, execFileSync } from "child_process";
@@ -25,11 +26,32 @@ const DEFAULT_FLAGS: CronenbergFlags = { dryRun: false, noFollowups: false, noRe
 
 const VALID_PRD = `# PRD: Example
 
-## Introduction
+## Title: Example
+
+## Description
 Do a thing.
 
 ## Acceptance Criteria
-- The system returns 200 on GET /health.
+
+### AC-1: README remains present
+- **interfaceIds:** \`[]\`
+- **verifications:** \`[{"id":"VERIFY-README-01","executable":"test","args":["-f","README.md"],"cwd_class":"repository_root","env_allowlist":["PATH"],"timeout_ms":30000,"network":"deny","writable_outputs":[],"expected_exit_codes":[0]}]\`
+- **scope:** \`README.md\`
+- **type:** test
+
+## Simplification Review
+- Reviewed: yes
+- Notes: one existing file
+
+## Tickets
+
+### Ticket 01: update README
+- **description:** Update the README for the requested task
+- **dependsOn:** \`[]\`
+- **scope:** \`[{"path":"README.md","change_kind":"modify","directory":false}]\`
+- **interfaces:** \`[]\`
+- **acceptanceCriteria:** \`["AC-1"]\`
+- **budgets:** \`{"max_attempts":2,"max_review_cycles":1,"wall_clock_ms":900000,"remediation_limit":1}\`
 `;
 
 describe("cronenberg non-dry-run delegation — pure planner argv", () => {
@@ -131,9 +153,9 @@ describe("cronenberg non-dry-run delegation — pure planner argv", () => {
   });
 });
 
-// ── CLI end-to-end: the delegated pipeline records a run only if it could
-//    READ the PRD path it was handed. With the bug (raw task text), the child
-//    crashes on a nonexistent file and never records a run.
+// ── CLI end-to-end: a complete delegated PRD records a run. A task-only
+//    placeholder is materialized at the planned path but fails strict admission
+//    before run allocation instead of receiving inferred executable identity.
 
 interface Ctx {
   root: string;
@@ -202,11 +224,13 @@ describe("cronenberg non-dry-run delegation — CLI pipeline path", () => {
     expect(existsSync(join(ctx.rickgentDir, "runs.jsonl"))).toBe(true);
   });
 
-  it("pipeline delegation with no prd materializes a task PRD and reads it", () => {
+  it("pipeline delegation with no prd materializes a task PRD but does not infer a contract", () => {
     const r = run(ctx, ["--task", "refine and build the export module", "--repo", ctx.repo]);
     expect(r.stdout).toContain("metaphor: pipeline");
-    // Router wrote the temp PRD, and the pipeline read it.
+    // Router writes the task input, but strict build admission rejects it before
+    // allocating a run because free text cannot supply the mandatory contract.
     expect(existsSync(join(ctx.rickgentDir, "cronenberg-task.md"))).toBe(true);
-    expect(existsSync(join(ctx.rickgentDir, "runs.jsonl"))).toBe(true);
+    expect(existsSync(join(ctx.rickgentDir, "runs.jsonl"))).toBe(false);
+    expect(r.stdout).toContain("before run allocation");
   });
 });

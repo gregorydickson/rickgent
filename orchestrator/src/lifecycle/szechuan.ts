@@ -9,7 +9,7 @@
 
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
-import type { TicketPlan } from "./prd-parse.js";
+import { ticketOwnedPaths, type TicketContract } from "../contracts/ticket-contract.js";
 
 export interface DeslopResult {
   filesChecked: number;
@@ -28,7 +28,7 @@ const DESLOP_PATTERNS: RegExp[] = [
 
 export function runDeslopGate(
   workingDir: string,
-  tickets: TicketPlan[],
+  tickets: readonly TicketContract[],
   env: NodeJS.ProcessEnv,
 ): DeslopResult {
   void env;
@@ -38,7 +38,7 @@ export function runDeslopGate(
   // Collect the set of declared paths from all tickets (the in-scope files).
   const paths = new Set<string>();
   for (const ticket of tickets) {
-    for (const p of ticket.declaredPaths) {
+    for (const p of ticketOwnedPaths(ticket)) {
       paths.add(p);
     }
   }

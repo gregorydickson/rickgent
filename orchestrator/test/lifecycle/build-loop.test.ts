@@ -62,10 +62,23 @@ function setupDirs(): Dirs {
 
 function writeMultiPrd(dir: string, tickets: string[]): string {
   const acs = tickets
-    .map((p, i) => `### AC-${i + 1}: criterion ${i + 1}\n- **verifyCommand:** \`test -f ${p}\`\n- **scope:** \`${p}\`\n- **type:** grep\n`)
+    .map((p, i) => {
+      const verification = JSON.stringify([{
+        id: `VERIFY-FILE-${i + 1}`,
+        executable: "test",
+        args: ["-f", p],
+        cwd_class: "repository_root",
+        env_allowlist: ["PATH"],
+        timeout_ms: 30000,
+        network: "deny",
+        writable_outputs: [],
+        expected_exit_codes: [0],
+      }]);
+      return `### AC-${i + 1}: criterion ${i + 1}\n- **interfaceIds:** \`[]\`\n- **verifications:** \`${verification}\`\n- **scope:** \`${p}\`\n- **type:** grep\n`;
+    })
     .join("\n");
   const tk = tickets
-    .map((p, i) => `### Ticket ${i + 1}: implement ${p}\n- **description:** create ${p}\n- **declaredPaths:** \`${p}\`\n`)
+    .map((p, i) => `### Ticket ${String(i + 1).padStart(2, "0")}: implement ${p}\n- **description:** create ${p}\n- **dependsOn:** \`[]\`\n- **scope:** \`${JSON.stringify([{ path: p, change_kind: "create", directory: false }])}\`\n- **interfaces:** \`[]\`\n- **acceptanceCriteria:** \`${JSON.stringify([`AC-${i + 1}`])}\`\n- **budgets:** \`{"max_attempts":2,"max_review_cycles":1,"wall_clock_ms":900000,"remediation_limit":1}\`\n`)
     .join("\n");
   const md = `# Multi PRD\n\n## Title: Multi Ticket Fixture\n\n## Description\nmulti ticket build fixture\n\n## Acceptance Criteria\n\n${acs}\n## Simplification Review\n- Reviewed: yes\n- Notes: minimal, one function per file\n\n## Tickets\n\n${tk}`;
   const p = join(dir, "prd.md");
@@ -142,7 +155,7 @@ describe("B1 build loop", () => {
     const spawned = entries.filter((e) => e.state === "spawned");
     expect(spawned.length).toBeGreaterThanOrEqual(1);
     // Ledger entries are Dispatcher-written (carry the trace dispatchId shape).
-    expect(spawned.every((e) => typeof e.dispatchId === "string" && (e.dispatchId as string).includes("/T1/"))).toBe(true);
+    expect(spawned.every((e) => typeof e.dispatchId === "string" && (e.dispatchId as string).includes("/t01/"))).toBe(true);
   });
 
   // VAL-BUILD-002 — positive routing: Done is the completed dispatch state,
@@ -242,7 +255,7 @@ describe("B1 build loop", () => {
     const salvagePath = join(d.rickgentDir, "salvage-dispositions.jsonl");
     expect(existsSync(salvagePath)).toBe(true);
     const salvage = readFileSync(salvagePath, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
-    const t2 = salvage.find((x) => x.ticketId === "T2");
+    const t2 = salvage.find((x) => x.ticketId === "t02");
     expect(t2).toBeTruthy();
     expect(typeof t2.disposition).toBe("string");
     expect(t2.breaker).toBeTruthy();

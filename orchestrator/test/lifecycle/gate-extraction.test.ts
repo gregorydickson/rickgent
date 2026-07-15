@@ -8,7 +8,7 @@ import { runConformanceGate, type ConformanceResult } from "../../src/lifecycle/
 import { FIXTURE_CAPABILITY_GATE } from "../helpers/capabilities.js";
 import { runDeslopGate, type DeslopResult } from "../../src/lifecycle/szechuan.js";
 import type { AcceptanceCriterion } from "../../src/core/prd.js";
-import type { TicketPlan } from "../../src/lifecycle/prd-parse.js";
+import { sealTicketContracts } from "../../src/contracts/ticket-contract.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BUILD_TS = join(HERE, "..", "..", "src", "lifecycle", "build.ts");
@@ -21,9 +21,9 @@ const BUILD_TS = join(HERE, "..", "..", "src", "lifecycle", "build.ts");
 describe("Foundation extraction — build.ts imports the extracted gates (VAL-M0-001..003)", () => {
   const src = readFileSync(BUILD_TS, "utf-8");
 
-  it("build.ts imports runConformanceGate from ./citadel and does not redefine it", () => {
-    expect(src).toMatch(/import\s*\{\s*runConformanceGate\s*\}\s*from\s*["']\.\/citadel\.js["']/);
-    expect(src).not.toMatch(/function\s+runConformanceGate\s*\(/);
+  it("build.ts imports the structured contract gate from ./citadel and does not redefine it", () => {
+    expect(src).toMatch(/import\s*\{\s*runContractConformanceGate\s*\}\s*from\s*["']\.\/citadel\.js["']/);
+    expect(src).not.toMatch(/function\s+runContractConformanceGate\s*\(/);
   });
 
   it("build.ts imports runDeslopGate from ./szechuan and does not redefine it", () => {
@@ -82,15 +82,44 @@ describe("runDeslopGate parity (VAL-M0-005)", () => {
   });
 
   it("produces the pre-extraction violation set for a fixed file fixture", () => {
-    const tickets: TicketPlan[] = [
+    const tickets = sealTicketContracts([
       {
-        id: "t1",
+        schema_version: "1.0.0",
+        id: "t01",
         title: "t1",
-        description: "",
-        declaredPaths: ["src/slop.ts", "src/clean.ts", "src/missing.ts"],
-        acceptanceCriteria: [],
+        description: "scan fixture files",
+        depends_on: [],
+        scope: ["src/slop.ts", "src/clean.ts", "src/missing.ts"].map((path) => ({
+          path,
+          change_kind: "modify",
+          directory: false,
+        })),
+        interfaces: [],
+        acceptance_criteria: [{
+          id: "AC-SCAN-01",
+          description: "scan files",
+          interface_ids: [],
+          verification_ids: ["VERIFY-SCAN-01"],
+        }],
+        verifications: [{
+          id: "VERIFY-SCAN-01",
+          executable: "true",
+          args: [],
+          cwd_class: "repository_root",
+          env_allowlist: [],
+          timeout_ms: 1000,
+          network: "deny",
+          writable_outputs: [],
+          expected_exit_codes: [0],
+        }],
+        budgets: {
+          max_attempts: 1,
+          max_review_cycles: 0,
+          wall_clock_ms: 1000,
+          remediation_limit: 0,
+        },
       },
-    ];
+    ]);
 
     const result: DeslopResult = runDeslopGate(dir, tickets, process.env);
 

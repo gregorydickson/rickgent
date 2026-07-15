@@ -53,8 +53,7 @@ function initRepo(repo: string): void {
   git(repo, ["commit", "-q", "-m", "initial"]);
 }
 
-// A well-formed PRD that passes evaluatePrd and has tickets with declaredPaths
-// so the build loop can dispatch them via the fixture omnigent.
+// A well-formed strict PRD whose JSON bullets adapt to TicketContract.
 const VALID_PRD = `# PRD: Example
 
 ## Title: Example Feature
@@ -65,7 +64,8 @@ Do a thing.
 ## Acceptance Criteria
 
 ### AC-1: health endpoint
-- **verifyCommand:** \`test -f src/handler.ts\`
+- **interfaceIds:** \`[]\`
+- **verifications:** \`[{"id":"VERIFY-HANDLER-01","executable":"test","args":["-f","src/handler.ts"],"cwd_class":"repository_root","env_allowlist":["PATH"],"timeout_ms":30000,"network":"deny","writable_outputs":[],"expected_exit_codes":[0]}]\`
 - **scope:** \`src/handler.ts\`
 - **type:** grep
 
@@ -75,9 +75,13 @@ Do a thing.
 
 ## Tickets
 
-### Ticket 1: implement src/handler.ts
+### Ticket 01: implement src/handler.ts
 - **description:** create src/handler.ts
-- **declaredPaths:** \`src/handler.ts\`
+- **dependsOn:** \`[]\`
+- **scope:** \`[{"path":"src/handler.ts","change_kind":"create","directory":false}]\`
+- **interfaces:** \`[]\`
+- **acceptanceCriteria:** \`["AC-1"]\`
+- **budgets:** \`{"max_attempts":2,"max_review_cycles":1,"wall_clock_ms":900000,"remediation_limit":1}\`
 `;
 
 // A multi-ticket PRD for build with 3 tickets (triggers TICKET_COUNT >= 3).
@@ -91,17 +95,20 @@ Multi-ticket build fixture.
 ## Acceptance Criteria
 
 ### AC-1: handler
-- **verifyCommand:** \`test -f src/handler.ts\`
+- **interfaceIds:** \`[]\`
+- **verifications:** \`[{"id":"VERIFY-HANDLER-01","executable":"test","args":["-f","src/handler.ts"],"cwd_class":"repository_root","env_allowlist":["PATH"],"timeout_ms":30000,"network":"deny","writable_outputs":[],"expected_exit_codes":[0]}]\`
 - **scope:** \`src/handler.ts\`
 - **type:** grep
 
 ### AC-2: utils
-- **verifyCommand:** \`test -f src/utils.ts\`
+- **interfaceIds:** \`[]\`
+- **verifications:** \`[{"id":"VERIFY-UTILS-01","executable":"test","args":["-f","src/utils.ts"],"cwd_class":"repository_root","env_allowlist":["PATH"],"timeout_ms":30000,"network":"deny","writable_outputs":[],"expected_exit_codes":[0]}]\`
 - **scope:** \`src/utils.ts\`
 - **type:** grep
 
 ### AC-3: types
-- **verifyCommand:** \`test -f src/types.ts\`
+- **interfaceIds:** \`[]\`
+- **verifications:** \`[{"id":"VERIFY-TYPES-01","executable":"test","args":["-f","src/types.ts"],"cwd_class":"repository_root","env_allowlist":["PATH"],"timeout_ms":30000,"network":"deny","writable_outputs":[],"expected_exit_codes":[0]}]\`
 - **scope:** \`src/types.ts\`
 - **type:** grep
 
@@ -111,17 +118,29 @@ Multi-ticket build fixture.
 
 ## Tickets
 
-### Ticket 1: implement src/handler.ts
+### Ticket 01: implement src/handler.ts
 - **description:** create src/handler.ts
-- **declaredPaths:** \`src/handler.ts\`
+- **dependsOn:** \`[]\`
+- **scope:** \`[{"path":"src/handler.ts","change_kind":"create","directory":false}]\`
+- **interfaces:** \`[]\`
+- **acceptanceCriteria:** \`["AC-1"]\`
+- **budgets:** \`{"max_attempts":2,"max_review_cycles":1,"wall_clock_ms":900000,"remediation_limit":1}\`
 
-### Ticket 2: implement src/utils.ts
+### Ticket 02: implement src/utils.ts
 - **description:** create src/utils.ts
-- **declaredPaths:** \`src/utils.ts\`
+- **dependsOn:** \`[]\`
+- **scope:** \`[{"path":"src/utils.ts","change_kind":"create","directory":false}]\`
+- **interfaces:** \`[]\`
+- **acceptanceCriteria:** \`["AC-2"]\`
+- **budgets:** \`{"max_attempts":2,"max_review_cycles":1,"wall_clock_ms":900000,"remediation_limit":1}\`
 
-### Ticket 3: implement src/types.ts
+### Ticket 03: implement src/types.ts
 - **description:** create src/types.ts
-- **declaredPaths:** \`src/types.ts\`
+- **dependsOn:** \`[]\`
+- **scope:** \`[{"path":"src/types.ts","change_kind":"create","directory":false}]\`
+- **interfaces:** \`[]\`
+- **acceptanceCriteria:** \`["AC-3"]\`
+- **budgets:** \`{"max_attempts":2,"max_review_cycles":1,"wall_clock_ms":900000,"remediation_limit":1}\`
 `;
 
 // Minimal valid model roster for build dispatch.

@@ -29,7 +29,7 @@ import {
   type CapabilityGate,
 } from "../capabilities/registry.js";
 import { evaluatePrd } from "../core/prd.js";
-import { parsePrdFile, parsePrdMarkdown, type ParsedPrd, type TicketPlan } from "./prd-parse.js";
+import { parsePrdFile, parsePrdMarkdown, type ParsedPrd } from "./prd-parse.js";
 
 const REFINE_USAGE = `rickgent refine — 3-analyst parallel refinement + ticket decomposition
 
@@ -454,7 +454,9 @@ function generateImplementationTickets(parsedPrd: ParsedPrd): Ticket[] {
       acceptanceCriteria: [
         {
           description: ac.description,
-          verifyCommand: ac.verifyCommand,
+          verifyCommand: ac.verifyCommand ?? [ac.verification?.executable, ...(ac.verification?.args ?? [])]
+            .filter((part): part is string => typeof part === "string")
+            .join(" "),
           scope: ac.scope,
           type: ac.type,
         },

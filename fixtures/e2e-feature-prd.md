@@ -8,27 +8,32 @@ Add math utilities (add, multiply, factorial) and string utilities (reverse, cap
 ## Acceptance Criteria
 
 ### AC-1: Math utilities work correctly
-- **verifyCommand:** `pnpm test -- math.test.ts`
+- **interfaceIds:** `[]`
+- **verifications:** `[{"id":"VERIFY-MATH-01","executable":"pnpm","args":["test","--","math.test.ts"],"cwd_class":"repository_root","env_allowlist":["PATH"],"timeout_ms":120000,"network":"deny","writable_outputs":[],"expected_exit_codes":[0]}]`
 - **scope:** `src/math.ts`, `test/math.test.ts`
 - **type:** test
 
 ### AC-2: String utilities work correctly  
-- **verifyCommand:** `pnpm test -- string.test.ts`
+- **interfaceIds:** `[]`
+- **verifications:** `[{"id":"VERIFY-STRING-01","executable":"pnpm","args":["test","--","string.test.ts"],"cwd_class":"repository_root","env_allowlist":["PATH"],"timeout_ms":120000,"network":"deny","writable_outputs":[],"expected_exit_codes":[0]}]`
 - **scope:** `src/string.ts`, `test/string.test.ts`
 - **type:** test
 
 ### AC-3: All exports are typed
-- **verifyCommand:** `npx tsc --noEmit`
+- **interfaceIds:** `[]`
+- **verifications:** `[{"id":"VERIFY-TYPES-01","executable":"npx","args":["tsc","--noEmit"],"cwd_class":"repository_root","env_allowlist":["PATH"],"timeout_ms":120000,"network":"deny","writable_outputs":[],"expected_exit_codes":[0]}]`
 - **scope:** `src/`
 - **type:** lint
 
 ### AC-4: No lint errors
-- **verifyCommand:** `npx eslint src/ --max-warnings=0`
+- **interfaceIds:** `[]`
+- **verifications:** `[{"id":"VERIFY-LINT-01","executable":"npx","args":["eslint","src/","--max-warnings=0"],"cwd_class":"repository_root","env_allowlist":["PATH"],"timeout_ms":120000,"network":"deny","writable_outputs":[],"expected_exit_codes":[0]}]`
 - **scope:** `src/`
 - **type:** lint
 
 ### AC-5: API endpoint exists
-- **verifyCommand:** `grep -r "export.*apiHandler" src/`
+- **interfaceIds:** `[]`
+- **verifications:** `[{"id":"VERIFY-API-01","executable":"grep","args":["-r","export.*apiHandler","src/"],"cwd_class":"repository_root","env_allowlist":["PATH"],"timeout_ms":30000,"network":"deny","writable_outputs":[],"expected_exit_codes":[0]}]`
 - **scope:** `src/api.ts`
 - **type:** grep
 
@@ -38,37 +43,26 @@ Add math utilities (add, multiply, factorial) and string utilities (reverse, cap
 
 ## Tickets
 
-### Ticket 1: Implement math utilities
+### Ticket 01: Implement math utilities
 - **description:** Create src/math.ts with add(a,b), multiply(a,b), factorial(n) functions
-- **estimatedMinutes:** 15
-- **estimatedFiles:** 2
-- **acceptanceCriteria:** AC-1
-- **declaredPaths:** `src/math.ts`, `test/math.test.ts`
+- **dependsOn:** `[]`
+- **scope:** `[{"path":"src/math.ts","change_kind":"create","directory":false},{"path":"test/math.test.ts","change_kind":"create","directory":false}]`
+- **interfaces:** `[]`
+- **acceptanceCriteria:** `["AC-1","AC-3","AC-4"]`
+- **budgets:** `{"max_attempts":2,"max_review_cycles":1,"wall_clock_ms":900000,"remediation_limit":1}`
 
-### Ticket 2: Implement string utilities
+### Ticket 02: Implement string utilities
 - **description:** Create src/string.ts with reverse(s), capitalize(s), truncate(s, n) functions
-- **estimatedMinutes:** 15
-- **estimatedFiles:** 2
-- **acceptanceCriteria:** AC-2
-- **declaredPaths:** `src/string.ts`, `test/string.test.ts`
+- **dependsOn:** `[]`
+- **scope:** `[{"path":"src/string.ts","change_kind":"create","directory":false},{"path":"test/string.test.ts","change_kind":"create","directory":false}]`
+- **interfaces:** `[]`
+- **acceptanceCriteria:** `["AC-2"]`
+- **budgets:** `{"max_attempts":2,"max_review_cycles":1,"wall_clock_ms":900000,"remediation_limit":1}`
 
-### Ticket 3: Add API endpoint
+### Ticket 03: Add API endpoint
 - **description:** Create src/api.ts with an apiHandler that uses math and string utilities
-- **estimatedMinutes:** 20
-- **estimatedFiles:** 1
-- **acceptanceCriteria:** AC-5
-- **declaredPaths:** `src/api.ts`
-
-### Ticket 4: Add type annotations
-- **description:** Ensure all exports have explicit TypeScript types
-- **estimatedMinutes:** 10
-- **estimatedFiles:** 3
-- **acceptanceCriteria:** AC-3
-- **declaredPaths:** `src/math.ts`, `src/string.ts`, `src/api.ts`
-
-### Ticket 5: Fix lint issues
-- **description:** Run eslint and fix any issues in src/
-- **estimatedMinutes:** 10
-- **estimatedFiles:** 3
-- **acceptanceCriteria:** AC-4
-- **declaredPaths:** `src/math.ts`, `src/string.ts`, `src/api.ts`
+- **dependsOn:** `["t01","t02"]`
+- **scope:** `[{"path":"src/api.ts","change_kind":"create","directory":false}]`
+- **interfaces:** `[]`
+- **acceptanceCriteria:** `["AC-5"]`
+- **budgets:** `{"max_attempts":2,"max_review_cycles":1,"wall_clock_ms":900000,"remediation_limit":1}`

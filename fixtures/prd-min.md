@@ -10,7 +10,8 @@ declared path — enough to decompose ≥1 ticket and drive a real Dispatcher pa
 ## Acceptance Criteria
 
 ### AC-1: Feature module exists
-- **verifyCommand:** `grep -r "feature" src/`
+- **interfaceIds:** `[]`
+- **verifications:** `[{"id":"VERIFY-FEATURE-01","executable":"grep","args":["-r","feature","src/"],"cwd_class":"repository_root","env_allowlist":["PATH"],"timeout_ms":30000,"network":"deny","writable_outputs":[],"expected_exit_codes":[0]}]`
 - **scope:** `src/feature.ts`
 - **type:** grep
 
@@ -20,7 +21,10 @@ declared path — enough to decompose ≥1 ticket and drive a real Dispatcher pa
 
 ## Tickets
 
-### Ticket 1: Implement the feature module
+### Ticket 01: Implement the feature module
 - **description:** Create src/feature.ts exporting the feature function
-- **acceptanceCriteria:** AC-1
-- **declaredPaths:** `src/feature.ts`
+- **dependsOn:** `[]`
+- **scope:** `[{"path":"src/feature.ts","change_kind":"create","directory":false}]`
+- **interfaces:** `[]`
+- **acceptanceCriteria:** `["AC-1"]`
+- **budgets:** `{"max_attempts":2,"max_review_cycles":1,"wall_clock_ms":900000,"remediation_limit":1}`

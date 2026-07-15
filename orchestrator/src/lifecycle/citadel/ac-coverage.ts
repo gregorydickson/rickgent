@@ -19,7 +19,7 @@ function normalizeRefPath(p: string): string {
 function referencedFiles(ac: AcceptanceCriterion): string[] {
   const out = new Set<string>();
   for (const s of ac.scope) out.add(normalizeRefPath(s));
-  const cmd = ac.verifyCommand.replace(/^`+|`+$/g, "");
+  const cmd = (ac.verifyCommand ?? "").replace(/^`+|`+$/g, "");
   for (const m of cmd.matchAll(PATH_IN_CMD_RE)) {
     const p = (m[1] ?? "").trim();
     if (p.includes("/") || p.endsWith(".ts") || p.endsWith(".js") || p.endsWith(".tsx") || p.endsWith(".jsx") || p.endsWith(".sh")) {

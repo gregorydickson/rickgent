@@ -1,9 +1,17 @@
 // PRD validation — machine-checkable ACs and simplification review.
 
 export interface AcceptanceCriterion {
+  /** Explicit on strict executable PRDs; legacy read-only planning inputs may omit it. */
+  id?: string;
   description: string;
   type: "test" | "lint" | "grep";
-  verifyCommand: string;
+  /** Legacy planning/audit field. The strict build adapter rejects it. */
+  verifyCommand?: string;
+  /** Structured planning projection used by strict PRDs. */
+  verification?: {
+    executable: string;
+    args: string[];
+  };
   scope: string[];
 }
 
@@ -49,9 +57,16 @@ export function evaluatePrd(input: PrdInput): PrdVerdict {
     }
     const desc = typeof ac.description === "string" ? ac.description : "(unknown)";
     const verifyCommand = typeof ac.verifyCommand === "string" ? ac.verifyCommand : "";
+    const structuredVerification = ac.verification;
+    const hasStructuredVerification =
+      structuredVerification !== undefined &&
+      typeof structuredVerification.executable === "string" &&
+      structuredVerification.executable.trim().length > 0 &&
+      Array.isArray(structuredVerification.args) &&
+      structuredVerification.args.every((arg) => typeof arg === "string");
     const scope = Array.isArray(ac.scope) ? ac.scope : [];
 
-    if (verifyCommand.trim().length === 0) {
+    if (verifyCommand.trim().length === 0 && !hasStructuredVerification) {
       errors.push(`AC "${desc}" has empty verify command`);
     }
     // AC must have non-empty scope

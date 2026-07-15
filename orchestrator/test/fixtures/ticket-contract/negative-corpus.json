@@ -1,0 +1,59 @@
+{
+  "schema_version": "1.0.0",
+  "required_categories": [
+    "identity",
+    "references",
+    "dependencies",
+    "scope",
+    "repository_paths",
+    "change_kinds",
+    "verification",
+    "markdown_adapter"
+  ],
+  "minimum_distinct_error_codes": 32,
+  "cases": [
+    { "name": "unknown-field", "category": "identity", "expected_error": "TICKET_SCHEMA_UNKNOWN_FIELD", "proof": "invalid/unknown-field.json" },
+    { "name": "unsupported-version", "category": "identity", "expected_error": "TICKET_SCHEMA_VERSION_UNSUPPORTED", "proof": "../../reliability/ticket-contract.test.ts" },
+    { "name": "missing-digest", "category": "identity", "expected_error": "TICKET_SCHEMA_INVALID", "proof": "../../reliability/ticket-contract.test.ts" },
+    { "name": "malformed-digest", "category": "identity", "expected_error": "TICKET_DIGEST_INVALID", "proof": "../../reliability/ticket-contract.test.ts" },
+    { "name": "digest-mismatch", "category": "identity", "expected_error": "TICKET_DIGEST_MISMATCH", "proof": "invalid/digest-mismatch.json" },
+    { "name": "invalid-explicit-id", "category": "identity", "expected_error": "TICKET_ID_INVALID", "proof": "../../reliability/prd-ticket-adapter.test.ts" },
+    { "name": "duplicate-id", "category": "identity", "expected_error": "TICKET_ID_DUPLICATE", "proof": "../../reliability/ticket-contract.test.ts" },
+
+    { "name": "unknown-interface-reference", "category": "references", "expected_error": "TICKET_INTERFACE_REFERENCE_UNKNOWN", "proof": "invalid/unknown-interface.json" },
+    { "name": "unknown-verification-reference", "category": "references", "expected_error": "TICKET_VERIFICATION_REFERENCE_UNKNOWN", "proof": "../../reliability/ticket-contract.test.ts" },
+    { "name": "unknown-markdown-ac-reference", "category": "references", "expected_error": "TICKET_AC_REFERENCE_UNKNOWN", "proof": "../../reliability/prd-ticket-adapter.test.ts" },
+
+    { "name": "unknown-dependency", "category": "dependencies", "expected_error": "TICKET_DEPENDENCY_UNKNOWN", "proof": "../../reliability/ticket-contract.test.ts" },
+    { "name": "dependency-cycle", "category": "dependencies", "expected_error": "TICKET_DEPENDENCY_CYCLE", "proof": "invalid/dependency-cycle.json" },
+
+    { "name": "empty-scope", "category": "scope", "expected_error": "TICKET_NO_OP", "proof": "invalid/empty-scope.json" },
+    { "name": "duplicate-scope", "category": "scope", "expected_error": "TICKET_SCOPE_DUPLICATE", "proof": "../../reliability/ticket-contract.test.ts" },
+    { "name": "nested-scope", "category": "scope", "expected_error": "TICKET_SCOPE_OVERLAP", "proof": "../../reliability/ticket-contract.test.ts" },
+    { "name": "active-scope-overlap", "category": "scope", "expected_error": "TICKET_ACTIVE_SCOPE_OVERLAP", "proof": "../../reliability/ticket-contract.test.ts" },
+
+    { "name": "absolute-path", "category": "repository_paths", "expected_error": "TICKET_SCOPE_PATH_ABSOLUTE", "proof": "invalid/absolute-path.json" },
+    { "name": "traversal-path", "category": "repository_paths", "expected_error": "TICKET_SCOPE_PATH_TRAVERSAL", "proof": "invalid/traversal-path.json" },
+    { "name": "noncanonical-path", "category": "repository_paths", "expected_error": "TICKET_SCOPE_PATH_INVALID", "proof": "../../reliability/ticket-contract.test.ts" },
+    { "name": "reserved-path", "category": "repository_paths", "expected_error": "TICKET_SCOPE_PATH_RESERVED", "proof": "invalid/reserved-path.json" },
+    { "name": "escaping-symlink", "category": "repository_paths", "expected_error": "TICKET_SCOPE_PATH_ESCAPE", "proof": "../../reliability/ticket-contract.test.ts" },
+    { "name": "submodule-crossing", "category": "repository_paths", "expected_error": "TICKET_SCOPE_PATH_SUBMODULE", "proof": "../../reliability/ticket-contract.test.ts" },
+
+    { "name": "change-kind-mismatch", "category": "change_kinds", "expected_error": "TICKET_SCOPE_CHANGE_MISMATCH", "proof": "../../reliability/ticket-contract.test.ts" },
+    { "name": "unsupported-directory-delete", "category": "change_kinds", "expected_error": "TICKET_SCOPE_CHANGE_UNSUPPORTED", "proof": "../../reliability/ticket-contract.test.ts" },
+    { "name": "malformed-rename", "category": "change_kinds", "expected_error": "TICKET_SCOPE_RENAME_INVALID", "proof": "../../reliability/ticket-contract.test.ts" },
+
+    { "name": "legacy-verification-value", "category": "verification", "expected_error": "TICKET_VERIFICATION_INVALID", "proof": "../../reliability/ticket-contract.test.ts" },
+    { "name": "shell-verification", "category": "verification", "expected_error": "TICKET_VERIFICATION_SHELL_FORBIDDEN", "proof": "invalid/shell-verification.json" },
+    { "name": "malformed-cwd", "category": "verification", "expected_error": "TICKET_VERIFICATION_CWD_INVALID", "proof": "../../reliability/ticket-contract.test.ts" },
+    { "name": "malformed-environment", "category": "verification", "expected_error": "TICKET_VERIFICATION_ENV_INVALID", "proof": "../../reliability/ticket-contract.test.ts" },
+    { "name": "unbounded-timeout", "category": "verification", "expected_error": "TICKET_VERIFICATION_TIMEOUT_INVALID", "proof": "../../reliability/ticket-contract.test.ts" },
+    { "name": "network-enabled", "category": "verification", "expected_error": "TICKET_VERIFICATION_NETWORK_FORBIDDEN", "proof": "invalid/network-enabled.json" },
+    { "name": "malformed-output-policy", "category": "verification", "expected_error": "TICKET_VERIFICATION_OUTPUT_INVALID", "proof": "../../reliability/ticket-contract.test.ts" },
+    { "name": "malformed-exit-policy", "category": "verification", "expected_error": "TICKET_VERIFICATION_EXIT_INVALID", "proof": "../../reliability/ticket-contract.test.ts" },
+
+    { "name": "duplicate-markdown-key", "category": "markdown_adapter", "expected_error": "TICKET_MARKDOWN_DUPLICATE_KEY", "proof": "../../reliability/prd-ticket-adapter.test.ts" },
+    { "name": "legacy-verify-command", "category": "markdown_adapter", "expected_error": "TICKET_VERIFICATION_LEGACY_FORBIDDEN", "proof": "../../reliability/prd-ticket-adapter.test.ts" },
+    { "name": "legacy-declared-paths", "category": "markdown_adapter", "expected_error": "TICKET_SCOPE_LEGACY_FORBIDDEN", "proof": "../../reliability/prd-ticket-adapter.test.ts" }
+  ]
+}

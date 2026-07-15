@@ -37,7 +37,13 @@ import {
   type CircuitBreakerState,
 } from "../core/breaker.js";
 import { evaluatePrd } from "../core/prd.js";
-import { parsePrdFile, type TicketPlan } from "./prd-parse.js";
+import { parseExecutablePrdFile } from "./prd-parse.js";
+import {
+  TicketContractError,
+  canonicalJson,
+  ticketOwnedPaths,
+  type TicketContract,
+} from "../contracts/ticket-contract.js";
 import {
   reapOrphanedWorkerProcs,
   detectBackend,
@@ -45,7 +51,7 @@ import {
 } from "./orphan-reaper.js";
 import { routeDispatch, type ModelEntry } from "./routing.js";
 import { recordRun } from "./metrics.js";
-import { runConformanceGate } from "./citadel.js";
+import { runContractConformanceGate } from "./citadel.js";
 import { runDeslopGate } from "./szechuan.js";
 import {
   CapabilityUnavailableError,
@@ -100,7 +106,7 @@ export interface BuildDependencies {
   capabilityGate?: CapabilityGate;
   assertEnvironment?: (env: NodeJS.ProcessEnv) => void;
   verifyPolicyAttachment?: typeof verifyPolicyAttachment;
-  runConformanceGate?: typeof runConformanceGate;
+  runConformanceGate?: typeof runContractConformanceGate;
   runDeslopGate?: typeof runDeslopGate;
   /** Explicit fixture-only omissions; production entrypoints never set these. */
   skipPolicyAttachment?: boolean;
@@ -234,12 +240,15 @@ function computeTreeChanged(repo: string, baseline: string | null, env: NodeJS.P
   return dirty.length > 0 || (head !== null && head !== baseline);
 }
 
-function ticketPrompt(ticket: TicketPlan): string {
-  const paths = ticket.declaredPaths.join(", ");
-  return `Implement ${ticket.id}: ${ticket.description}\nDeclared paths: ${paths}`;
+export function ticketPrompt(ticket: TicketContract): string {
+  return [
+    "Implement the following normalized TicketContract exactly.",
+    "The digest and every executable field are authoritative:",
+    canonicalJson(ticket),
+  ].join("\n");
 }
 
-function seedRegistry(registry: Registry, runId: string, tickets: TicketPlan[]): string {
+function seedRegistry(registry: Registry, runId: string, tickets: readonly TicketContract[]): string {
   const state = registry.load();
   const effectiveRunId = state.runId || runId;
   const merged: Record<string, TicketState> = { ...state.tickets };
@@ -250,7 +259,7 @@ function seedRegistry(registry: Registry, runId: string, tickets: TicketPlan[]):
         title: t.title,
         status: "Todo",
         phase: "planned",
-        declaredPaths: t.declaredPaths,
+        declaredPaths: ticketOwnedPaths(t),
         attempt: 0,
         completionCommitSha: null,
         updatedAt: new Date().toISOString(),
@@ -282,7 +291,6 @@ export async function runBuild(
   capabilityGate.require("autonomous_dispatch");
 
   const report: string[] = [];
-  mkdirSync(opts.rickgentDir, { recursive: true });
 
   const base: BuildObservation = {
     gateHit: null,
@@ -296,24 +304,36 @@ export async function runBuild(
   };
   const issues: RunIssue[] = [];
 
-  // ── Parse + PRD gate ───────────────────────────────────────────────────
-  const parsed = parsePrdFile(opts.prdPath);
-  base.ticketsPlanned = parsed.tickets.length;
+  // ── Parse + strict contract gate (before any run/state allocation) ─────
+  let parsed: ReturnType<typeof parseExecutablePrdFile>;
+  try {
+    parsed = parseExecutablePrdFile(opts.prdPath, {
+      repositoryRoot: opts.workingDir,
+      stateRoots: [opts.rickgentDir],
+    });
+  } catch (error) {
+    const contractError = error instanceof TicketContractError ? error : null;
+    const detail = contractError?.message ?? `PRD contract could not be read: ${error instanceof Error ? error.message : String(error)}`;
+    report.push(`build: TICKET CONTRACT GATE hit — ${detail}`);
+    issues.push(runIssue({
+      reason: contractError?.kind === "infrastructure" ? "infrastructure_error" : "input_contract_error",
+      class: contractError?.kind === "infrastructure" ? "infrastructure" : "input_contract",
+      detail,
+      gate: "ticket-contract",
+    }));
+    return finishBuild({ ...base, gateHit: "ticket-contract-gate" }, issues);
+  }
+
+  const tickets = parsed.contracts;
+  base.ticketsPlanned = tickets.length;
   report.push(
-    `build: parsed PRD "${parsed.prd.title}" — ${parsed.tickets.length} ticket(s), ` +
+    `build: parsed PRD "${parsed.prd.title}" — ${tickets.length} normalized ticket contract(s), ` +
       `${parsed.prd.acceptanceCriteria.length} acceptance criteria`,
   );
 
-  // Record this run in the durable runs ledger so B9 `rickgent metrics` can
-  // compute interventions/run. The runId is resolved consistently with
-  // seedRegistry below (opts.runId, else a timestamped default).
-  const requestedRunId = opts.runId ?? `run-${Date.now()}`;
-  recordRun(opts.rickgentDir, requestedRunId, parsed.prd.title);
-
   const prdVerdict = evaluatePrd(parsed.prd);
   if (!prdVerdict.valid) {
-    recordIntervention(opts.rickgentDir, "prd-gate", `PRD invalid: ${prdVerdict.errors.join("; ")}`, requestedRunId);
-    report.push(`build: PRD GATE hit — ${prdVerdict.errors.join("; ")} (recorded intervention, exiting non-zero)`);
+    report.push(`build: PRD GATE hit — ${prdVerdict.errors.join("; ")} (before run allocation)`);
     issues.push(runIssue({
       reason: "input_contract_error",
       class: "input_contract",
@@ -323,14 +343,12 @@ export async function runBuild(
     return finishBuild({
       ...base,
       gateHit: "prd-gate",
-      interventions: countInterventions(opts.rickgentDir),
     }, issues);
   }
 
   // ── Plan gate ──────────────────────────────────────────────────────────
-  if (parsed.tickets.length === 0) {
-    recordIntervention(opts.rickgentDir, "plan-gate", "decomposition produced zero tickets", requestedRunId);
-    report.push("build: PLAN GATE hit — decomposition produced zero tickets (recorded intervention, exiting non-zero)");
+  if (tickets.length === 0) {
+    report.push("build: PLAN GATE hit — decomposition produced zero tickets (before run allocation)");
     issues.push(runIssue({
       reason: "zero_ticket",
       class: "execution",
@@ -340,9 +358,13 @@ export async function runBuild(
     return finishBuild({
       ...base,
       gateHit: "plan-gate",
-      interventions: countInterventions(opts.rickgentDir),
     }, issues);
   }
+
+  mkdirSync(opts.rickgentDir, { recursive: true });
+  // Durable allocation begins only after the complete contract set is admitted.
+  const requestedRunId = opts.runId ?? `run-${Date.now()}`;
+  recordRun(opts.rickgentDir, requestedRunId, parsed.prd.title);
 
   // ── Policy attachment verification (B4 gate) ─────────────────────────────
   // Before any dispatch, verify that the manager + worker bundles attach the
@@ -416,7 +438,7 @@ export async function runBuild(
   const salvageExec = new SalvageExecutor(opts.workingDir);
   const breaker: CircuitBreakerState = createBreakerState();
 
-  const runId = seedRegistry(registry, requestedRunId, parsed.tickets);
+  const runId = seedRegistry(registry, requestedRunId, tickets);
 
   // ── Resume: recover completed tickets from ledger + git via reconcile ─────
   const recoveredDone = new Set<string>();
@@ -439,8 +461,8 @@ export async function runBuild(
   // the circuit breaker + salvage and the queue keeps draining.
   const cap = opts.maxConcurrent ?? 1;
 
-  const toDispatch: TicketPlan[] = [];
-  for (const ticket of parsed.tickets) {
+  const toDispatch: TicketContract[] = [];
+  for (const ticket of tickets) {
     if (recoveredDone.has(ticket.id)) {
       base.ticketsRecovered++;
       if (registry.getTicketState(ticket.id)) {
@@ -454,7 +476,7 @@ export async function runBuild(
 
   const queue = new DispatchQueue(ledger, cap, capabilityGate);
   const idByTicket = new Map<string, DispatchId>();
-  const ticketByDispatchId = new Map<string, TicketPlan>();
+  const ticketByDispatchId = new Map<string, TicketContract>();
   for (const ticket of toDispatch) {
     const id: DispatchId = { runId, ticketId: ticket.id, phase: "implement", attempt: 1, role: "worker" };
     idByTicket.set(ticket.id, id);
@@ -538,7 +560,7 @@ export async function runBuild(
           treeChanged,
           orphanReset: false,
           ffReattachPossible: false,
-          ownedPaths: ticket.declaredPaths,
+          ownedPaths: ticketOwnedPaths(ticket),
         },
         { ticketId: ticket.id, registry },
       );
@@ -569,7 +591,7 @@ export async function runBuild(
       maxConcurrent: cap,
       targetRepo: opts.workingDir,
       dataDir: opts.dataDir,
-      declaredPaths: ticket.declaredPaths,
+      declaredPaths: ticketOwnedPaths(ticket),
       env,
       vendor: selectedVendor,
     });
@@ -602,7 +624,7 @@ export async function runBuild(
         treeChanged,
         orphanReset: false,
         ffReattachPossible: false,
-        ownedPaths: ticket.declaredPaths,
+        ownedPaths: ticketOwnedPaths(ticket),
       },
       { ticketId: ticket.id, registry },
     );
@@ -706,11 +728,9 @@ export async function runBuild(
   );
 
   // ── Conformance gate (citadel) ───────────────────────────────────────────
-  // After implementation, run each acceptance criterion's verifyCommand
-  // against the working repo. This is the post-implementation conformance
-  // audit that validates the implemented code against the PRD's acceptance
-  // criteria. A failing AC is absorbed (not a human intervention) but recorded
-  // as a gate finding. Test fixtures may replace it only by dependency injection.
+  // After implementation, run each contract's typed verification argv directly.
+  // A failing AC is absorbed (not a human intervention) but recorded as a gate
+  // finding. Test fixtures may replace it only by dependency injection.
   if (verifiedTickets > 0 && dependencies.skipConformance) {
     report.push("build: conformance gate — skipped by explicit fixture dependency (blocking)");
     issues.push(runIssue({
@@ -721,11 +741,10 @@ export async function runBuild(
     }));
   } else if (verifiedTickets > 0) {
     try {
-      const conformanceResult = (dependencies.runConformanceGate ?? runConformanceGate)(
-        parsed.prd.acceptanceCriteria,
+      const conformanceResult = (dependencies.runConformanceGate ?? runContractConformanceGate)(
+        tickets,
         opts.workingDir,
         env,
-        capabilityGate,
       );
       const acResults = conformanceResult.results.map(
         (r) => `${r.acId}: ${r.pass ? "PASS" : "FAIL"}`,
@@ -782,7 +801,7 @@ export async function runBuild(
     }));
   } else if (verifiedTickets > 0) {
     try {
-      const deslopResult = (dependencies.runDeslopGate ?? runDeslopGate)(opts.workingDir, parsed.tickets, env);
+      const deslopResult = (dependencies.runDeslopGate ?? runDeslopGate)(opts.workingDir, tickets, env);
       report.push(
         `build: deslop gate — checked ${deslopResult.filesChecked} file(s), ` +
           `${deslopResult.findings} finding(s)`,

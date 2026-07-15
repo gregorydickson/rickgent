@@ -66,10 +66,25 @@ function setupDirs(): Dirs {
 
 function writePrd(d: Dirs, paths: string[], verify = "true"): string {
   const tickets = paths.map((path, index) =>
-    `### Ticket ${index + 1}: implement ${path}\n` +
+    `### Ticket ${String(index + 1).padStart(2, "0")}: implement ${path}\n` +
     `- **description:** create ${path}\n` +
-    `- **declaredPaths:** \`${path}\`\n`,
+    `- **dependsOn:** \`[]\`\n` +
+    `- **scope:** \`${JSON.stringify([{ path, change_kind: "create", directory: false }])}\`\n` +
+    `- **interfaces:** \`[]\`\n` +
+    `- **acceptanceCriteria:** \`["AC-1"]\`\n` +
+    `- **budgets:** \`{"max_attempts":2,"max_review_cycles":1,"wall_clock_ms":900000,"remediation_limit":1}\`\n`,
   ).join("\n");
+  const verification = JSON.stringify([{
+    id: "VERIFY-LOCAL-01",
+    executable: verify,
+    args: [],
+    cwd_class: "repository_root",
+    env_allowlist: ["PATH"],
+    timeout_ms: 30000,
+    network: "deny",
+    writable_outputs: [],
+    expected_exit_codes: [0],
+  }]);
   const prd = `# Fail Closed Fixture
 
 ## Title: Fail Closed Fixture
@@ -80,7 +95,8 @@ Exercise complete run aggregation.
 ## Acceptance Criteria
 
 ### AC-1: local profile gate
-- **verifyCommand:** \`${verify}\`
+- **interfaceIds:** \`[]\`
+- **verifications:** \`${verification}\`
 - **scope:** \`README.md\`
 - **type:** test
 
