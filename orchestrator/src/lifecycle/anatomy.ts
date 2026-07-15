@@ -75,10 +75,10 @@ interface IterationRecord {
   subsystem: string;
   phases: PhaseLog[];
   findings: AnatomyFinding[];
-  fixApplied: boolean;
+  fix_applied: boolean;
   committed: boolean;
   reverted: boolean;
-  trapDoorsAdded: number;
+  trap_doors_added: number;
 }
 
 interface TrapDoor {
@@ -90,18 +90,20 @@ interface TrapDoor {
 
 interface AnatomyState {
   subsystems: string[];
-  currentIndex: number;
-  passCounts: Record<string, number>;
-  consecutiveClean: Record<string, number>;
-  stallCounts: Record<string, number>;
-  stallLimit: number;
-  findingsHistory: Record<string, IterationRecord[]>;
-  trapDoorsAdded: TrapDoor[];
-  trapDoorsCommitted: TrapDoor[];
+  current_index: number;
+  pass_counts: Record<string, number>;
+  consecutive_clean: Record<string, number>;
+  stall_counts: Record<string, number>;
+  stall_limit: number;
+  findings_history: Record<string, IterationRecord[]>;
+  trap_doors_added: TrapDoor[];
+  trap_doors_committed: TrapDoor[];
+  /** Per-file fix count for trap door cataloging (repeated fixes). */
+  fix_counts: Record<string, number>;
   converged: boolean;
   status: string;
   reason: string;
-  updatedAt: string;
+  updated_at: string;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -603,10 +605,43 @@ function readAnatomyState(statePath: string): AnatomyState | null {
     const raw = readFileSync(statePath, "utf-8");
     const parsed = JSON.parse(raw);
     if (parsed == null || typeof parsed !== "object") return null;
-    return parsed as AnatomyState;
+    // Migrate old camelCase field names to snake_case (convention #16).
+    const migrated = migrateOldStateFields(parsed);
+    return migrated as AnatomyState;
   } catch {
     return null;
   }
+}
+
+/**
+ * Migrate old camelCase state file fields to snake_case. Handles state files
+ * written before the misc-m4-fixes renaming. Only migrates if old fields are
+ * present; idempotent for already-snake_case state.
+ */
+function migrateOldStateFields(parsed: any): any {
+  const fieldMap: Record<string, string> = {
+    currentIndex: "current_index",
+    passCounts: "pass_counts",
+    consecutiveClean: "consecutive_clean",
+    stallCounts: "stall_counts",
+    stallLimit: "stall_limit",
+    findingsHistory: "findings_history",
+    trapDoorsAdded: "trap_doors_added",
+    trapDoorsCommitted: "trap_doors_committed",
+    updatedAt: "updated_at",
+  };
+  const result = { ...parsed };
+  for (const [oldName, newName] of Object.entries(fieldMap)) {
+    if (oldName in result && !(newName in result)) {
+      result[newName] = result[oldName];
+      delete result[oldName];
+    }
+  }
+  // Ensure fix_counts exists (added in misc-m4-fixes)
+  if (!("fix_counts" in result)) {
+    result.fix_counts = {};
+  }
+  return result;
 }
 
 function writeAnatomyState(statePath: string, state: AnatomyState): void {
@@ -614,30 +649,31 @@ function writeAnatomyState(statePath: string, state: AnatomyState): void {
 }
 
 function initState(subsystems: string[], stallLimit: number): AnatomyState {
-  const passCounts: Record<string, number> = {};
-  const consecutiveClean: Record<string, number> = {};
-  const stallCounts: Record<string, number> = {};
-  const findingsHistory: Record<string, IterationRecord[]> = {};
+  const pass_counts: Record<string, number> = {};
+  const consecutive_clean: Record<string, number> = {};
+  const stall_counts: Record<string, number> = {};
+  const findings_history: Record<string, IterationRecord[]> = {};
   for (const sub of subsystems) {
-    passCounts[sub] = 0;
-    consecutiveClean[sub] = 0;
-    stallCounts[sub] = 0;
-    findingsHistory[sub] = [];
+    pass_counts[sub] = 0;
+    consecutive_clean[sub] = 0;
+    stall_counts[sub] = 0;
+    findings_history[sub] = [];
   }
   return {
     subsystems,
-    currentIndex: 0,
-    passCounts,
-    consecutiveClean,
-    stallCounts,
-    stallLimit,
-    findingsHistory,
-    trapDoorsAdded: [],
-    trapDoorsCommitted: [],
+    current_index: 0,
+    pass_counts,
+    consecutive_clean,
+    stall_counts,
+    stall_limit: stallLimit,
+    findings_history,
+    trap_doors_added: [],
+    trap_doors_committed: [],
+    fix_counts: {},
     converged: false,
     status: "running",
     reason: "",
-    updatedAt: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
   };
 }
 
@@ -654,14 +690,14 @@ function checkConvergence(state: AnatomyState): ConvergenceResult {
   }
 
   const allClean = state.subsystems.every(
-    (sub) => (state.consecutiveClean[sub] ?? 0) >= 2,
+    (sub) => (state.consecutive_clean[sub] ?? 0) >= 2,
   );
   if (allClean) {
     return { converged: true, reason: "all subsystems consecutive_clean >= 2" };
   }
 
   const allStalled = state.subsystems.every(
-    (sub) => (state.stallCounts[sub] ?? 0) >= state.stallLimit,
+    (sub) => (state.stall_counts[sub] ?? 0) >= state.stall_limit,
   );
   if (allStalled) {
     return { converged: true, reason: "all subsystems stalled" };
@@ -678,13 +714,13 @@ function selectNextSubsystem(state: AnatomyState): number {
   const n = state.subsystems.length;
   if (n === 0) return -1;
 
-  // Try starting from currentIndex, wrapping around
+  // Try starting from current_index, wrapping around
   for (let offset = 0; offset < n; offset++) {
-    const idx = (state.currentIndex + offset) % n;
+    const idx = (state.current_index + offset) % n;
     const sub = state.subsystems[idx]!;
-    const clean = state.consecutiveClean[sub] ?? 0;
-    const stalled = state.stallCounts[sub] ?? 0;
-    if (clean < 2 && stalled < state.stallLimit) {
+    const clean = state.consecutive_clean[sub] ?? 0;
+    const stalled = state.stall_counts[sub] ?? 0;
+    if (clean < 2 && stalled < state.stall_limit) {
       return idx;
     }
   }
@@ -692,7 +728,7 @@ function selectNextSubsystem(state: AnatomyState): number {
 }
 
 /**
- * Advance currentIndex to the next non-converged, non-stalled subsystem.
+ * Advance current_index to the next non-converged, non-stalled subsystem.
  * If all are converged/stalled, don't advance.
  */
 function advanceRotation(state: AnatomyState): void {
@@ -700,9 +736,9 @@ function advanceRotation(state: AnatomyState): void {
   if (n === 0) return;
   const next = selectNextSubsystem(state);
   if (next >= 0) {
-    state.currentIndex = next;
+    state.current_index = next;
   } else {
-    // All done — don't change currentIndex
+    // All done — don't change current_index
   }
 }
 
@@ -774,7 +810,7 @@ export async function runAnatomyCommand(rest: string[]): Promise<void> {
   }
 
   // Update stallLimit in case it changed
-  state.stallLimit = stallLimit;
+  state.stall_limit = stallLimit;
 
   // ── Dry-run: review all subsystems, catalog, stop ───────────────────────────
   if (dryRun) {
@@ -804,39 +840,44 @@ export async function runAnatomyCommand(rest: string[]): Promise<void> {
       };
 
       const record: IterationRecord = {
-        iteration: (state.findingsHistory[subsystem] ?? []).length,
+        iteration: (state.findings_history[subsystem] ?? []).length,
         subsystem,
         phases: [phaseLog],
         findings,
-        fixApplied: false,
+        fix_applied: false,
         committed: false,
         reverted: false,
-        trapDoorsAdded: 0,
+        trap_doors_added: 0,
       };
 
-      if (!state.findingsHistory[subsystem]) {
-        state.findingsHistory[subsystem] = [];
+      if (!state.findings_history[subsystem]) {
+        state.findings_history[subsystem] = [];
       }
-      state.findingsHistory[subsystem]!.push(record);
-      state.passCounts[subsystem] = (state.passCounts[subsystem] ?? 0) + 1;
+      state.findings_history[subsystem]!.push(record);
+      state.pass_counts[subsystem] = (state.pass_counts[subsystem] ?? 0) + 1;
 
-      // Identify trap doors from findings (structural/pattern findings)
+      // Identify trap door candidates from findings (structural/pattern findings,
+      // CRITICAL severity, or files with repeated fixes per fix_counts)
       for (const f of findings) {
-        if (f.category === "pattern" || f.severity === "CRITICAL") {
+        const fixCount = f.file != null ? (state.fix_counts[f.file] ?? 0) : 0;
+        const isRepeatedFix = f.file != null && fixCount >= 2;
+        if (f.category === "pattern" || f.severity === "CRITICAL" || isRepeatedFix) {
           const trapDoor: TrapDoor = {
             subsystem,
             file: f.file ?? "(unknown)",
-            description: f.title || f.description,
+            description: isRepeatedFix
+              ? `${f.title || f.description} (repeated fix #${fixCount})`
+              : f.title || f.description,
             patternShape: f.category,
           };
-          state.trapDoorsAdded.push(trapDoor);
+          state.trap_doors_added.push(trapDoor);
         }
       }
     }
 
     state.status = "dry-run";
     state.reason = "dry-run complete";
-    state.updatedAt = new Date().toISOString();
+    state.updated_at = new Date().toISOString();
     writeAnatomyState(statePath, state);
 
     // Verify no commits or file modifications
@@ -846,7 +887,7 @@ export async function runAnatomyCommand(rest: string[]): Promise<void> {
       "=".repeat(50),
       `repo: ${workingDir}`,
       `subsystems: ${state.subsystems.length} (${state.subsystems.join(", ")})`,
-      `trap_doors_added: ${state.trapDoorsAdded.length}`,
+      `trap_doors_added: ${state.trap_doors_added.length}`,
       `state: ${statePath}`,
       "=".repeat(50),
     ];
@@ -856,10 +897,11 @@ export async function runAnatomyCommand(rest: string[]): Promise<void> {
 
   // ── Main loop: 3-phase protocol per iteration ───────────────────────────────
   const totalIterations = prior
-    ? Object.values(state.findingsHistory).reduce((sum, h) => sum + h.length, 0)
+    ? Object.values(state.findings_history).reduce((sum, h) => sum + h.length, 0)
     : 0;
 
   let iterationCount = 0;
+  let iterationsRun = 0; // actual iterations that executed (not just loop passes)
   let converged = false;
   let convergenceReason = "";
 
@@ -884,9 +926,10 @@ export async function runAnatomyCommand(rest: string[]): Promise<void> {
       break;
     }
 
-    state.currentIndex = subIdx;
+    state.current_index = subIdx;
     const subsystem = state.subsystems[subIdx]!;
     const ownedPaths = [subsystem];
+    iterationsRun++; // an iteration is actually executing
 
     // ── Phase 1: REVIEW (read-only) ─────────────────────────────────────────
     const reviewResult = spawnOmnigent(
@@ -919,31 +962,31 @@ export async function runAnatomyCommand(rest: string[]): Promise<void> {
 
     if (findings.length === 0) {
       // Zero findings → bump consecutive_clean, rotate
-      state.consecutiveClean[subsystem] = (state.consecutiveClean[subsystem] ?? 0) + 1;
-      state.stallCounts[subsystem] = 0; // reset stall on clean pass
+      state.consecutive_clean[subsystem] = (state.consecutive_clean[subsystem] ?? 0) + 1;
+      state.stall_counts[subsystem] = 0; // reset stall on clean pass
 
       const record: IterationRecord = {
         iteration: iterationCount,
         subsystem,
         phases,
         findings,
-        fixApplied: false,
+        fix_applied: false,
         committed: false,
         reverted: false,
-        trapDoorsAdded: 0,
+        trap_doors_added: 0,
       };
-      state.findingsHistory[subsystem]!.push(record);
-      state.passCounts[subsystem] = (state.passCounts[subsystem] ?? 0) + 1;
+      state.findings_history[subsystem]!.push(record);
+      state.pass_counts[subsystem] = (state.pass_counts[subsystem] ?? 0) + 1;
 
       // Advance to next subsystem
       advanceRotation(state);
-      state.updatedAt = new Date().toISOString();
+      state.updated_at = new Date().toISOString();
       writeAnatomyState(statePath, state);
       continue;
     }
 
     // Findings exist → reset consecutive_clean
-    state.consecutiveClean[subsystem] = 0;
+    state.consecutive_clean[subsystem] = 0;
 
     // Select the highest-severity finding (CRITICAL > HIGH)
     const sortedFindings = [...findings].sort((a, b) => {
@@ -966,6 +1009,44 @@ export async function runAnatomyCommand(rest: string[]): Promise<void> {
       process.exit(1);
     }
 
+    // Check FIX worker exit code — non-zero means the fix failed (convention #2:
+    // git-tree-truth > exit code > logs > model claims; a non-zero exit is evidence
+    // of failure even if stdout looks OK). Treat as a stall.
+    if (fixResult.exitCode !== null && fixResult.exitCode !== 0) {
+      // Revert any partial changes the worker may have made
+      gitUnstageAll(workingDir);
+      gitRestoreScoped(workingDir, ownedPaths);
+
+      state.stall_counts[subsystem] = (state.stall_counts[subsystem] ?? 0) + 1;
+
+      const fixPhase: PhaseLog = {
+        phase: "FIX",
+        timestamp: new Date().toISOString(),
+        findingId: topFinding.id,
+        result: "FAILED",
+        details: `FIX worker exited with code ${fixResult.exitCode}`,
+      };
+      phases.push(fixPhase);
+
+      const record: IterationRecord = {
+        iteration: iterationCount,
+        subsystem,
+        phases,
+        findings,
+        fix_applied: false,
+        committed: false,
+        reverted: true,
+        trap_doors_added: 0,
+      };
+      state.findings_history[subsystem]!.push(record);
+      state.pass_counts[subsystem] = (state.pass_counts[subsystem] ?? 0) + 1;
+
+      advanceRotation(state);
+      state.updated_at = new Date().toISOString();
+      writeAnatomyState(statePath, state);
+      continue;
+    }
+
     fixApplied = true;
 
     const fixPhase: PhaseLog = {
@@ -986,7 +1067,7 @@ export async function runAnatomyCommand(rest: string[]): Promise<void> {
       gitRestoreScoped(workingDir, ownedPaths);
 
       // Record the scope violation as a CRITICAL finding
-      state.stallCounts[subsystem] = (state.stallCounts[subsystem] ?? 0) + 1;
+      state.stall_counts[subsystem] = (state.stall_counts[subsystem] ?? 0) + 1;
 
       const verifyPhase: PhaseLog = {
         phase: "VERIFY",
@@ -1003,16 +1084,16 @@ export async function runAnatomyCommand(rest: string[]): Promise<void> {
         subsystem,
         phases,
         findings,
-        fixApplied: true,
+        fix_applied: true,
         committed: false,
         reverted: true,
-        trapDoorsAdded: 0,
+        trap_doors_added: 0,
       };
-      state.findingsHistory[subsystem]!.push(record);
-      state.passCounts[subsystem] = (state.passCounts[subsystem] ?? 0) + 1;
+      state.findings_history[subsystem]!.push(record);
+      state.pass_counts[subsystem] = (state.pass_counts[subsystem] ?? 0) + 1;
 
       advanceRotation(state);
-      state.updatedAt = new Date().toISOString();
+      state.updated_at = new Date().toISOString();
       writeAnatomyState(statePath, state);
       continue;
     }
@@ -1049,32 +1130,43 @@ export async function runAnatomyCommand(rest: string[]): Promise<void> {
       gitUnstageAll(workingDir);
       gitRestoreScoped(workingDir, ownedPaths);
       reverted = true;
-      state.stallCounts[subsystem] = (state.stallCounts[subsystem] ?? 0) + 1;
+      state.stall_counts[subsystem] = (state.stall_counts[subsystem] ?? 0) + 1;
     } else {
       // Verification passed: commit the fix
       const commitMsg = `anatomy-park: ${subsystem} — ${topFinding.severity} ${topFinding.title}`;
       const commitSha = gitCommit(workingDir, commitMsg);
       committed = commitSha !== null;
-      state.stallCounts[subsystem] = 0; // reset stall on successful fix
+      state.stall_counts[subsystem] = 0; // reset stall on successful fix
 
-      // Identify trap doors (structural/pattern findings, or files with repeated fixes)
+      // Identify trap doors:
+      // (a) structural/pattern findings or CRITICAL severity (existing trigger)
+      // (b) files with repeated fixes (fix_counts >= 2) — per-file fix count tracking
       for (const f of findings) {
-        if (f.category === "pattern" || f.severity === "CRITICAL") {
+        // Track per-file fix count for the top finding's file
+        if (f.file && f.id === topFinding.id) {
+          state.fix_counts[f.file] = (state.fix_counts[f.file] ?? 0) + 1;
+        }
+
+        const fixCount = f.file != null ? (state.fix_counts[f.file] ?? 0) : 0;
+        const isRepeatedFix = f.file != null && fixCount >= 2;
+        if (f.category === "pattern" || f.severity === "CRITICAL" || isRepeatedFix) {
           const trapDoor: TrapDoor = {
             subsystem,
             file: f.file ?? "(unknown)",
-            description: f.title || f.description,
+            description: isRepeatedFix
+              ? `${f.title || f.description} (repeated fix #${fixCount})`
+              : f.title || f.description,
             patternShape: f.category,
           };
-          state.trapDoorsAdded.push(trapDoor);
-          state.trapDoorsCommitted.push(trapDoor);
+          state.trap_doors_added.push(trapDoor);
+          state.trap_doors_committed.push(trapDoor);
           trapDoorsAdded++;
         }
       }
 
       // Write trap doors to CLAUDE.md
       if (trapDoorsAdded > 0) {
-        writeTrapDoorsToClaude(workingDir, subsystem, state.trapDoorsAdded.filter((t) => t.subsystem === subsystem));
+        writeTrapDoorsToClaude(workingDir, subsystem, state.trap_doors_added.filter((t) => t.subsystem === subsystem));
         // Stage and commit the CLAUDE.md
         const claudePath = `${subsystem}/CLAUDE.md`;
         try {
@@ -1101,17 +1193,17 @@ export async function runAnatomyCommand(rest: string[]): Promise<void> {
       subsystem,
       phases,
       findings,
-      fixApplied,
+      fix_applied: fixApplied,
       committed,
       reverted,
-      trapDoorsAdded,
+      trap_doors_added: trapDoorsAdded,
     };
-    state.findingsHistory[subsystem]!.push(record);
-    state.passCounts[subsystem] = (state.passCounts[subsystem] ?? 0) + 1;
+    state.findings_history[subsystem]!.push(record);
+    state.pass_counts[subsystem] = (state.pass_counts[subsystem] ?? 0) + 1;
 
     // Advance to next subsystem
     advanceRotation(state);
-    state.updatedAt = new Date().toISOString();
+    state.updated_at = new Date().toISOString();
     writeAnatomyState(statePath, state);
   }
 
@@ -1125,7 +1217,7 @@ export async function runAnatomyCommand(rest: string[]): Promise<void> {
   state.converged = converged;
   state.status = converged ? "converged" : "max-iterations";
   state.reason = convergenceReason;
-  state.updatedAt = new Date().toISOString();
+  state.updated_at = new Date().toISOString();
   writeAnatomyState(statePath, state);
 
   // ── Print report ────────────────────────────────────────────────────────────
@@ -1136,7 +1228,7 @@ export async function runAnatomyCommand(rest: string[]): Promise<void> {
     `subsystems: ${state.subsystems.length} (${state.subsystems.join(", ")})`,
     `stall_limit: ${stallLimit}`,
     `max_iterations: ${maxIterations}`,
-    `iterations_run: ${iterationCount - totalIterations + 1}`,
+    `iterations_run: ${iterationsRun}`,
     `converged: ${converged}`,
     `status: ${state.status}`,
     `reason: ${convergenceReason}`,
@@ -1145,16 +1237,16 @@ export async function runAnatomyCommand(rest: string[]): Promise<void> {
   ];
 
   for (const sub of state.subsystems) {
-    const clean = state.consecutiveClean[sub] ?? 0;
-    const stalled = state.stallCounts[sub] ?? 0;
-    const passes = state.passCounts[sub] ?? 0;
-    const findings = (state.findingsHistory[sub] ?? []).length;
+    const clean = state.consecutive_clean[sub] ?? 0;
+    const stalled = state.stall_counts[sub] ?? 0;
+    const passes = state.pass_counts[sub] ?? 0;
+    const findings = (state.findings_history[sub] ?? []).length;
     lines.push(`  ${sub}: passes=${passes} consecutive_clean=${clean} stall_counts=${stalled} iterations=${findings}`);
   }
 
   lines.push("");
-  lines.push(`trap_doors_added: ${state.trapDoorsAdded.length}`);
-  lines.push(`trap_doors_committed: ${state.trapDoorsCommitted.length}`);
+  lines.push(`trap_doors_added: ${state.trap_doors_added.length}`);
+  lines.push(`trap_doors_committed: ${state.trap_doors_committed.length}`);
   lines.push(`state: ${statePath}`);
   lines.push("=".repeat(50));
   console.log(lines.join("\n"));

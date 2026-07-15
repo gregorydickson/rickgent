@@ -120,7 +120,7 @@ if (/FIX.*minimal edit|anatomy.*FIX|fix.*highest.*severity/i.test(prompt)) {
     try { execFileSync("sh", ["-c", process.env.AP_FIX_CMD], { cwd: process.cwd() }); } catch (_) {}
   }
   process.stdout.write("fix applied\\n");
-  process.exit(0);
+  process.exit(Number(process.env.AP_FIX_EXIT_CODE || 0));
 }
 if (/VERIFY.*read-only|anatomy.*VERIFY|combinatorial.*branch/i.test(prompt)) {
   // VERIFY phase: output pass/fail
@@ -253,16 +253,16 @@ describe("rickgent anatomy CLI (M4)", () => {
     const state = readState(ctx);
     expect(Array.isArray(state.subsystems)).toBe(true);
     expect(state.subsystems.length).toBe(2);
-    expect(typeof state.currentIndex).toBe("number");
-    expect(state.currentIndex).toBeGreaterThanOrEqual(0);
-    expect(state.currentIndex).toBeLessThan(state.subsystems.length);
-    expect(typeof state.passCounts).toBe("object");
-    expect(typeof state.consecutiveClean).toBe("object");
-    expect(typeof state.stallCounts).toBe("object");
-    expect(typeof state.stallLimit).toBe("number");
-    expect(typeof state.findingsHistory).toBe("object");
-    expect(Array.isArray(state.trapDoorsAdded)).toBe(true);
-    expect(Array.isArray(state.trapDoorsCommitted)).toBe(true);
+    expect(typeof state.current_index).toBe("number");
+    expect(state.current_index).toBeGreaterThanOrEqual(0);
+    expect(state.current_index).toBeLessThan(state.subsystems.length);
+    expect(typeof state.pass_counts).toBe("object");
+    expect(typeof state.consecutive_clean).toBe("object");
+    expect(typeof state.stall_counts).toBe("object");
+    expect(typeof state.stall_limit).toBe("number");
+    expect(typeof state.findings_history).toBe("object");
+    expect(Array.isArray(state.trap_doors_added)).toBe(true);
+    expect(Array.isArray(state.trap_doors_committed)).toBe(true);
   });
 
   // VAL-ANATOMY-005: 3-phase protocol REVIEW -> FIX -> VERIFY per iteration
@@ -300,7 +300,7 @@ describe("rickgent anatomy CLI (M4)", () => {
       },
     );
     const state = readState(ctx);
-    const history = state.findingsHistory["svc"] ?? [];
+    const history = state.findings_history["svc"] ?? [];
     expect(history.length).toBeGreaterThan(0);
     const first = history[0];
     expect(first.phases).toBeDefined();
@@ -326,13 +326,13 @@ describe("rickgent anatomy CLI (M4)", () => {
       { AP_REVIEW_FINDINGS: "[]", AP_REVIEW_COUNT: "0" },
     );
     const state = readState(ctx);
-    const subsystem = state.subsystems[state.currentIndex === 0 ? 0 : 0];
+    const subsystem = state.subsystems[state.current_index === 0 ? 0 : 0];
     // After a clean pass, consecutive_clean for the reviewed subsystem should be >= 1
-    const clean = state.consecutiveClean;
+    const clean = state.consecutive_clean;
     const anyClean = Object.values(clean).some((v: any) => v >= 1);
     expect(anyClean).toBe(true);
     // No FIX or VERIFY phases in the history
-    const allHist = Object.values(state.findingsHistory).flat() as any[];
+    const allHist = Object.values(state.findings_history).flat() as any[];
     for (const entry of allHist) {
       if (entry.phases) {
         const phases = entry.phases.map((p: any) => p.phase);
@@ -375,12 +375,21 @@ describe("rickgent anatomy CLI (M4)", () => {
     }
     // Findings in state should have severity and confidence
     const state = readState(ctx);
-    const allHist = Object.values(state.findingsHistory).flat() as any[];
+    const allHist = Object.values(state.findings_history).flat() as any[];
     const findingEntry = allHist.find((e) => e.findings && e.findings.length > 0);
     if (findingEntry) {
       const f = findingEntry.findings[0];
       expect(f.severity).toMatch(/CRITICAL|HIGH/);
       expect(typeof f.confidence).toBe("number");
+    }
+    // VAL-ANATOMY-006 gap fix: assert REVIEW prompt declares read-only tools
+    const reviewPrompts = entries
+      .filter((e) => /REVIEW|read-only.*review/i.test(e[3] ?? ""))
+      .map((e) => String(e[3] ?? ""));
+    expect(reviewPrompts.length).toBeGreaterThan(0);
+    for (const prompt of reviewPrompts) {
+      expect(prompt).toMatch(/read-only/i);
+      expect(prompt).toMatch(/do not modify|don.t modify|no.*write/i);
     }
   });
 
@@ -420,8 +429,66 @@ describe("rickgent anatomy CLI (M4)", () => {
     );
     const state = readState(ctx);
     // The subsystem should have a stall count (scope violation → stall)
-    const svcStall = state.stallCounts["svc"] ?? 0;
+    const svcStall = state.stall_counts["svc"] ?? 0;
     expect(svcStall).toBeGreaterThanOrEqual(1);
+    // VAL-ANATOMY-007 gap fix: verify out-of-scope file was NOT committed
+    const logOutput = git(ctx.repo, ["log", "--oneline", "--name-only"]);
+    expect(logOutput).not.toContain("outside.txt");
+    // And outside.txt should not be staged (unstaged by scope preflight)
+    const stagedFiles = git(ctx.repo, ["diff", "--cached", "--name-only"]);
+    expect(stagedFiles).not.toContain("outside.txt");
+  });
+
+  // Fix 2: FIX worker non-zero exit code is treated as stall/failure
+  it("FIX worker non-zero exit code triggers stall and file restoration", () => {
+    initRepo(ctx.repo);
+    mkdirSync(join(ctx.repo, "svc"), { recursive: true });
+    for (let i = 0; i < 3; i++) {
+      writeFileSync(join(ctx.repo, "svc", `f${i}.ts`), `export const v${i} = ${i};\n`);
+    }
+    git(ctx.repo, ["add", "--", "svc"]);
+    git(ctx.repo, ["commit", "-q", "-m", "seed svc"]);
+
+    const findings = JSON.stringify([
+      {
+        id: "svc-001",
+        severity: "CRITICAL",
+        confidence: 90,
+        category: "data-flow",
+        file: "svc/f0.ts",
+        line: 1,
+        title: "fix fails",
+        description: "Worker exits non-zero",
+        proposedFix: "Try fix",
+      },
+    ]);
+    const beforeContent = readFileSync(join(ctx.repo, "svc", "f0.ts"), "utf-8");
+    const r = run(
+      ctx,
+      ["--repo", ctx.repo, "--agent", ctx.agentDir, "--max-iterations", "1", "--stall-limit", "1"],
+      {
+        AP_REVIEW_FINDINGS: findings,
+        AP_REVIEW_COUNT: "1",
+        AP_FIX_CMD: `echo 'partial' > svc/f0.ts`,
+        AP_FIX_EXIT_CODE: "1",
+      },
+    );
+    const state = readState(ctx);
+    // FIX worker exited non-zero → stall recorded
+    expect(state.stall_counts["svc"] ?? 0).toBeGreaterThanOrEqual(1);
+    // FIX phase should be recorded with FAILED result
+    const svcHist = state.findings_history["svc"] ?? [];
+    expect(svcHist.length).toBeGreaterThan(0);
+    const last = svcHist[svcHist.length - 1];
+    const fixPhase = last.phases?.find((p: any) => p.phase === "FIX");
+    expect(fixPhase).toBeDefined();
+    expect(fixPhase.result).toMatch(/FAILED/i);
+    // File should be restored (no modification persisted)
+    expect(last.reverted).toBe(true);
+    expect(last.committed).toBe(false);
+    // git diff HEAD should be empty for the file
+    const diff = git(ctx.repo, ["diff", "HEAD", "--", "svc/f0.ts"]);
+    expect(diff).toBe("");
   });
 
   // VAL-ANATOMY-008: VERIFY does combinatorial branch verification + reverts on regression
@@ -461,7 +528,7 @@ describe("rickgent anatomy CLI (M4)", () => {
     );
     const state = readState(ctx);
     // VERIFY phase should be recorded with FAIL
-    const svcHist = state.findingsHistory["svc"] ?? [];
+    const svcHist = state.findings_history["svc"] ?? [];
     if (svcHist.length > 0) {
       const last = svcHist[svcHist.length - 1];
       const verifyPhase = last.phases?.find((p: any) => p.phase === "VERIFY");
@@ -472,7 +539,10 @@ describe("rickgent anatomy CLI (M4)", () => {
       expect(last.reverted).toBe(true);
     }
     // Stall count should increase
-    expect(state.stallCounts["svc"] ?? 0).toBeGreaterThanOrEqual(1);
+    expect(state.stall_counts["svc"] ?? 0).toBeGreaterThanOrEqual(1);
+    // VAL-ANATOMY-008 gap fix: verify file was restored — git diff HEAD is empty
+    const diff = git(ctx.repo, ["diff", "HEAD", "--", "svc/f0.ts"]);
+    expect(diff).toBe("");
   });
 
   // VAL-ANATOMY-009: Trap doors written to subsystem CLAUDE.md files
@@ -519,7 +589,7 @@ describe("rickgent anatomy CLI (M4)", () => {
     expect(claude).toMatch(/ENFORCE/i);
     // trap_doors_added counter in state
     const state = readState(ctx);
-    expect(state.trapDoorsAdded.length).toBeGreaterThan(0);
+    expect(state.trap_doors_added.length).toBeGreaterThan(0);
   });
 
   // VAL-ANATOMY-010: Worker-managed convergence — all subsystems consecutive_clean >= 2
@@ -536,7 +606,7 @@ describe("rickgent anatomy CLI (M4)", () => {
     const state = readState(ctx);
     // All subsystems should have consecutive_clean >= 2
     for (const sub of state.subsystems) {
-      expect(state.consecutiveClean[sub] ?? 0).toBeGreaterThanOrEqual(2);
+      expect(state.consecutive_clean[sub] ?? 0).toBeGreaterThanOrEqual(2);
     }
     expect(state.converged).toBe(true);
     expect(r.status).toBe(0);
@@ -578,7 +648,7 @@ describe("rickgent anatomy CLI (M4)", () => {
     );
     const state = readState(ctx);
     // All subsystems (just svc) should be stalled
-    expect(state.stallCounts["svc"] ?? 0).toBeGreaterThanOrEqual(1);
+    expect(state.stall_counts["svc"] ?? 0).toBeGreaterThanOrEqual(1);
     // Convergence: all stalled → converged
     expect(state.converged).toBe(true);
   });
@@ -613,7 +683,7 @@ describe("rickgent anatomy CLI (M4)", () => {
     const state = readState(ctx);
     // All subsystems should be reviewed
     for (const sub of state.subsystems) {
-      const hist = state.findingsHistory[sub] ?? [];
+      const hist = state.findings_history[sub] ?? [];
       expect(hist.length).toBeGreaterThan(0);
       // Only REVIEW phase, no FIX/VERIFY
       for (const entry of hist) {
@@ -643,8 +713,8 @@ describe("rickgent anatomy CLI (M4)", () => {
     );
     expect(existsSync(join(ctx.rickgentDir, "anatomy-park.json"))).toBe(true);
     const state1 = readState(ctx);
-    const idx1 = state1.currentIndex;
-    const clean1 = { ...state1.consecutiveClean };
+    const idx1 = state1.current_index;
+    const clean1 = { ...state1.consecutive_clean };
 
     // Second run: resume with more iterations
     const r2 = run(
@@ -655,13 +725,13 @@ describe("rickgent anatomy CLI (M4)", () => {
     const state2 = readState(ctx);
     // History should be preserved and extended
     for (const sub of state2.subsystems) {
-      const hist1 = state1.findingsHistory[sub] ?? [];
-      const hist2 = state2.findingsHistory[sub] ?? [];
+      const hist1 = state1.findings_history[sub] ?? [];
+      const hist2 = state2.findings_history[sub] ?? [];
       expect(hist2.length).toBeGreaterThanOrEqual(hist1.length);
     }
     // consecutive_clean should not reset (should continue accumulating)
     const allConverged = state2.subsystems.every(
-      (sub: string) => (state2.consecutiveClean[sub] ?? 0) >= 2,
+      (sub: string) => (state2.consecutive_clean[sub] ?? 0) >= 2,
     );
     expect(allConverged).toBe(true);
     expect(state2.converged).toBe(true);
@@ -725,7 +795,7 @@ describe("rickgent anatomy CLI (M4)", () => {
     );
     const state = readState(ctx);
     // Count total iterations across all subsystems
-    const totalIters = Object.values(state.findingsHistory)
+    const totalIters = Object.values(state.findings_history)
       .flat().length;
     expect(totalIters).toBeLessThanOrEqual(2);
     // Should NOT be converged (exit non-zero)
@@ -767,7 +837,7 @@ describe("rickgent anatomy CLI (M4)", () => {
     );
     const state = readState(ctx);
     // svc should be stalled (stall_counts >= stall_limit)
-    expect(state.stallCounts["svc"] ?? 0).toBeGreaterThanOrEqual(1);
+    expect(state.stall_counts["svc"] ?? 0).toBeGreaterThanOrEqual(1);
     // With all subsystems stalled → converged
     expect(state.converged).toBe(true);
   });
