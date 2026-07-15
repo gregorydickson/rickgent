@@ -71,7 +71,7 @@ interface SzechuanIterationRecord {
   classification: string;
   /** Selected violation for this iteration (principle, severity, file, line). */
   violation: {
-    principle: string;
+    principle: string | null;
     severity: PriorityBucket;
     file: string | null;
     line: number | null;
@@ -416,6 +416,68 @@ function buildWorkerPrompt(
   return lines.join("\n");
 }
 
+// ── Violation Parsing ────────────────────────────────────────────────────────
+
+/**
+ * A single violation parsed from the LLM judge's stdout. The judge prompt
+ * instructs the model to emit lines in the format:
+ *   [P<N>, conf=<score>] file:line — description (principle: <Name>)
+ */
+interface ParsedViolation {
+  severity: PriorityBucket;
+  principle: string | null;
+  file: string | null;
+  line: number | null;
+  description: string | null;
+}
+
+const SEVERITY_SET: ReadonlySet<string> = new Set(["P0", "P1", "P2", "P3", "P4"]);
+
+/**
+ * Parse violation lines from the judge's raw stdout. Each line matching the
+ * format `[P<N>, conf=<score>] file:line — description (principle: <Name>)`
+ * yields a {@link ParsedViolation}. Lines that do not match (including the
+ * final numeric summary line) are silently skipped.
+ */
+function parseViolationsFromJudgeOutput(output: string): ParsedViolation[] {
+  if (typeof output !== "string" || output.length === 0) return [];
+  const violations: ParsedViolation[] = [];
+  // Match: [P<N>, conf=<score>] <file>(:<line>)? — <description> (principle: <Name>)
+  // The em-dash (—) in the prompt may be rendered as --, —, or a hyphen by the
+  // model, so accept any of those separators.
+  const pattern =
+    /\[P([0-4]),\s*conf=[\d.]+\]\s+(\S+?)(?::(\d+))?\s*[—\-\u2013]+\s*(.+?)(?:\s*\(principle:\s*(.+?)\))?\s*$/i;
+  for (const rawLine of output.split(/\r?\n/)) {
+    const match = rawLine.match(pattern);
+    if (!match) continue;
+    const sev = `P${match[1]}`;
+    if (!SEVERITY_SET.has(sev)) continue;
+    const severity = sev as PriorityBucket;
+    const file = match[2] ?? null;
+    const lineNum = match[3] ? parseInt(match[3], 10) : null;
+    const description = match[4]?.trim() ?? null;
+    const principle = match[5]?.trim() ?? null;
+    violations.push({ severity, principle, file, line: lineNum, description });
+  }
+  return violations;
+}
+
+/**
+ * Select the highest-priority violation from a list (P0 > P1 > P2 > P3 > P4).
+ * Returns null when the list is empty.
+ */
+function selectHighestPriorityViolation(violations: ParsedViolation[]): ParsedViolation | null {
+  if (violations.length === 0) return null;
+  const rank: Record<PriorityBucket, number> = { P0: 0, P1: 1, P2: 2, P3: 3, P4: 4 };
+  let best: ParsedViolation | null = null;
+  for (const v of violations) {
+    if (best === null || rank[v.severity] < rank[best.severity]) {
+      best = v;
+    }
+  }
+  return best;
+}
+
 function measureViolationCount(
   agentDir: string,
   workingDir: string,
@@ -423,7 +485,7 @@ function measureViolationCount(
   focus: string | null,
   designSafe: boolean,
   dataDir: string,
-): { count: number | null; rawOutput: string } {
+): { count: number | null; rawOutput: string; violations: ParsedViolation[] } {
   const prompt = buildJudgePrompt(catalog, focus, designSafe);
   const res = spawnSync("omnigent", ["run", agentDir, "-p", prompt], {
     cwd: workingDir,
@@ -431,10 +493,14 @@ function measureViolationCount(
     timeout: 120000,
     env: { ...process.env, OMNIGENT_DATA_DIR: dataDir },
   });
-  if (res.error) return { count: null, rawOutput: "" };
-  if (res.status !== 0 && res.status !== null) return { count: null, rawOutput: res.stdout ?? "" };
-  const count = parseLastNumericLine(res.stdout ?? "");
-  return { count, rawOutput: res.stdout ?? "" };
+  if (res.error) return { count: null, rawOutput: "", violations: [] };
+  if (res.status !== 0 && res.status !== null) {
+    return { count: null, rawOutput: res.stdout ?? "", violations: parseViolationsFromJudgeOutput(res.stdout ?? "") };
+  }
+  const rawOutput = res.stdout ?? "";
+  const count = parseLastNumericLine(rawOutput);
+  const violations = parseViolationsFromJudgeOutput(rawOutput);
+  return { count, rawOutput, violations };
 }
 
 // ── Gap Analysis Writer ──────────────────────────────────────────────────────
@@ -635,6 +701,11 @@ export async function runSzechuanCommand(rest: string[]): Promise<void> {
   // ── Measure baseline violation count ────────────────────────────────────────
   let baselineCount: number;
   let initialAcceptedScores: number[] | undefined;
+  // Violations seen by the judge BEFORE each iteration's worker runs. Index 0
+  // is the baseline; index N+1 is the post-fix measurement of iteration N.
+  // These are used to populate the per-iteration `violation` field with the
+  // highest-priority violation the worker should have targeted.
+  const preFixViolations: ParsedViolation[][] = [];
 
   if (prior) {
     if (typeof prior.baselineCount !== "number" || !Number.isFinite(prior.baselineCount)) {
@@ -649,6 +720,10 @@ export async function runSzechuanCommand(rest: string[]): Promise<void> {
           .map((h) => h.postFixCount as number)
       : [];
     initialAcceptedScores = [baselineCount, ...acceptedFromHistory];
+    // On resume, we do not re-measure the baseline, so preFixViolations[0]
+    // is empty (the baseline violations from the prior run are not available).
+    // Iteration violation fields will be populated from post-fix measurements.
+    preFixViolations.push([]);
   } else {
     const measured = measureViolationCount(agentDir, workingDir, catalog, focus ?? null, designSafe, dataDir);
     if (measured.count === null) {
@@ -656,6 +731,7 @@ export async function runSzechuanCommand(rest: string[]): Promise<void> {
       process.exit(1);
     }
     baselineCount = measured.count;
+    preFixViolations.push(measured.violations);
   }
 
   const priorFailed = prior && Array.isArray(prior.failedApproaches) ? prior.failedApproaches : [];
@@ -673,6 +749,9 @@ export async function runSzechuanCommand(rest: string[]): Promise<void> {
       designSafe,
       dataDir,
     );
+    // Capture the post-fix violations for this iteration. These become the
+    // pre-fix violations for the NEXT iteration.
+    preFixViolations.push(measured.violations);
     return measured.count;
   };
 
@@ -704,15 +783,31 @@ export async function runSzechuanCommand(rest: string[]): Promise<void> {
   const result = await loop.run();
 
   // ── Persist state ───────────────────────────────────────────────────────────
-  const newHistory: SzechuanIterationRecord[] = result.iterations.map((it, idx) => ({
-    iteration: priorHistory.length + idx,
-    score: it.score,
-    classification: mapClassification(it.classification),
-    violation: null, // The worker/judge produces the violation details; we record the score
-    fix: it.committedSha ? { description: null, commitHash: it.committedSha } : null,
-    testResult: it.classification === "improved" ? "pass" : it.classification === "regressed" ? "fail" : "skipped",
-    postFixCount: it.score,
-  }));
+  // For each iteration, the "selected violation" is the highest-priority
+  // violation from the judge output that was available BEFORE the worker ran
+  // (preFixViolations[idx]). If the judge produced no parseable violation
+  // lines, the violation field is null (fail-closed: no fabrication).
+  const newHistory: SzechuanIterationRecord[] = result.iterations.map((it, idx) => {
+    const preFix = preFixViolations[idx] ?? [];
+    const selected = selectHighestPriorityViolation(preFix);
+    return {
+      iteration: priorHistory.length + idx,
+      score: it.score,
+      classification: mapClassification(it.classification),
+      violation: selected
+        ? {
+            principle: selected.principle,
+            severity: selected.severity,
+            file: selected.file,
+            line: selected.line,
+            description: selected.description,
+          }
+        : null,
+      fix: it.committedSha ? { description: null, commitHash: it.committedSha } : null,
+      testResult: it.classification === "improved" ? "pass" : it.classification === "regressed" ? "fail" : "skipped",
+      postFixCount: it.score,
+    };
+  });
   const history = [...priorHistory, ...newHistory];
 
   const newFailed = result.iterations

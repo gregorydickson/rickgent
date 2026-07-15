@@ -66,6 +66,11 @@ function initRepo(repo: string): void {
 // A controllable stub `omnigent`. It records every invocation's argv to
 // $SZ_SPAWN_LOG. A judge invocation (read-only judge prompt) prints
 // $SZ_JUDGE_COUNT. A worker invocation runs $SZ_WORK_CMD (in the repo cwd).
+//
+// Judge output: when $SZ_JUDGE_VIOLATIONS is set, the stub emits those lines
+// (one per newline) BEFORE the numeric count so that parseViolationsFromJudgeOutput
+// can extract severity/principle/file/line/description and parseLastNumericLine
+// still picks up the trailing count.
 const STUB = `#!/usr/bin/env node
 const fs = require("fs");
 const { execFileSync } = require("child_process");
@@ -74,6 +79,10 @@ if (process.env.SZ_SPAWN_LOG) fs.appendFileSync(process.env.SZ_SPAWN_LOG, JSON.s
 const pIdx = argv.indexOf("-p");
 const prompt = pIdx >= 0 ? String(argv[pIdx + 1] || "") : "";
 if (/read-only Szechuan Sauce violation judge/.test(prompt)) {
+  const violations = process.env.SZ_JUDGE_VIOLATIONS || "";
+  if (violations.length > 0) {
+    process.stdout.write(violations + "\\n");
+  }
   process.stdout.write((process.env.SZ_JUDGE_COUNT || "0") + "\\n");
   process.exit(0);
 }
@@ -351,21 +360,43 @@ describe("rickgent szechuan CLI (M3)", () => {
   });
 
   // VAL-SZECHUAN-009: Per iteration finds the highest-priority violation P0-P4
-  it("per-iteration records include severity classification", () => {
+  it("per-iteration records include a non-null violation with severity in {P0,P1,P2,P3,P4}", () => {
     initRepo(ctx.repo);
+    // Judge outputs violation lines before the numeric count. The stub emits
+    // $SZ_JUDGE_VIOLATIONS lines then the count. With count 3 and max-iterations
+    // 2, the loop runs 2 iterations (non-converging).
+    const violations = [
+      "[P2, conf=0.9] src/app.ts:2 — console.log debug statement (principle: KISS)",
+      "[P1, conf=0.8] src/app.ts:4 — nested if statements (principle: Guard Clauses)",
+      "[P3, conf=0.7] src/app.ts:3 — missing early return (principle: Fail-Fast)",
+    ].join("\n");
     const r = run(
       ctx,
       ["--repo", ctx.repo, "--agent", ctx.agentDir, "--max-iterations", "2", "--stall-limit", "3"],
-      { SZ_JUDGE_COUNT: "3" },
+      { SZ_JUDGE_COUNT: "3", SZ_JUDGE_VIOLATIONS: violations },
     );
     // Non-convergence is expected with count 3 and max-iterations 2
     expect(existsSync(join(ctx.rickgentDir, "szechuan.json"))).toBe(true);
     const state = readState(ctx);
     expect(Array.isArray(state.convergence.history)).toBe(true);
-    // Each iteration should have a classification field
+    expect(state.convergence.history.length).toBeGreaterThan(0);
+    const validSeverities = new Set(["P0", "P1", "P2", "P3", "P4"]);
     for (const entry of state.convergence.history) {
       expect(entry.classification).toBeDefined();
+      // Strengthened: entry.violation must be non-null with a valid severity
+      expect(entry.violation).not.toBeNull();
+      expect(entry.violation).toBeDefined();
+      expect(typeof entry.violation.severity).toBe("string");
+      expect(validSeverities.has(entry.violation.severity)).toBe(true);
     }
+    // The first iteration's violation should be the highest-priority (P1)
+    // from the baseline judge output (P1 < P2 < P3 in severity rank).
+    const first = state.convergence.history[0];
+    expect(first.violation.severity).toBe("P1");
+    expect(first.violation.principle).toBe("Guard Clauses");
+    expect(first.violation.file).toBe("src/app.ts");
+    expect(first.violation.line).toBe(4);
+    expect(first.violation.description).toContain("nested if");
   });
 
   // VAL-SZECHUAN-010: Per iteration fixes atomically, tests, commits
