@@ -51,6 +51,11 @@ import {
   TICKET_TERMINAL_STATES,
   TICKET_TRANSITIONS,
 } from "../../src/state/schema.js";
+import {
+  INITIAL_STATE_MIGRATION_CHECKSUM,
+  INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM,
+  STATE_MIGRATIONS as EXECUTABLE_STATE_MIGRATIONS,
+} from "../../src/state/migrations.js";
 
 const orchestratorRoot = join(import.meta.dirname, "../..");
 const repoRoot = join(orchestratorRoot, "..");
@@ -96,6 +101,14 @@ describe("frozen state contract parity", () => {
     expect(contract.activation_boundary.implementation_status).toBe(STATE_CONTRACT_IMPLEMENTATION_STATUS);
     expect(contract.migrations.initial).toEqual(STATE_MIGRATIONS);
     expect(contract.migrations.initial[0]).toEqual(INITIAL_STATE_MIGRATION);
+    expect(INITIAL_STATE_MIGRATION.released_checksum).toBe(INITIAL_STATE_MIGRATION_CHECKSUM);
+    expect(INITIAL_STATE_MIGRATION.sqlite_schema_checksum).toBe(INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM);
+    expect(EXECUTABLE_STATE_MIGRATIONS[0]).toMatchObject({
+      version: INITIAL_STATE_MIGRATION.version,
+      number: INITIAL_STATE_MIGRATION.number,
+      name: INITIAL_STATE_MIGRATION.name,
+      checksum: INITIAL_STATE_MIGRATION.released_checksum,
+    });
     expect(contract.entity_model.catalog.map((table: { name: string }) => table.name)).toEqual(STATE_TABLES);
     expect(contract.entity_model.catalog.filter((table: { mutation: { mode: string } }) => table.mutation.mode !== "append_only").map((table: { name: string }) => table.name)).toEqual(CAS_STATE_TABLES);
     expect(contract.entity_model.catalog.filter((table: { mutation: { mode: string } }) => table.mutation.mode === "append_only").map((table: { name: string }) => table.name)).toEqual(APPEND_ONLY_STATE_TABLES);
@@ -180,6 +193,35 @@ describe("frozen state contract parity", () => {
     expect(contract.oracle.snapshot_references.direct_mutable_row_references_allowed).toBe(false);
   });
 
+  it("pins attempt-scoped rows to one relational lineage", () => {
+    const tables = new Map(contract.entity_model.catalog.map((table: any) => [table.name, table]));
+    const attempts: any = tables.get("attempts");
+    const evidence: any = tables.get("evidence");
+    const resources: any = tables.get("attempt_resources");
+    const processes: any = tables.get("process_receipts");
+
+    expect(attempts.foreign_keys).toContainEqual({
+      columns: ["ticket_instance_id", "run_id", "ticket_id", "contract_digest"],
+      references: "run_tickets(ticket_instance_id,run_id,ticket_id,contract_digest)",
+      on_delete: "RESTRICT",
+    });
+    expect(evidence.foreign_keys).toEqual(expect.arrayContaining([
+      { columns: ["phase_execution_id", "attempt_id"], references: "phase_executions(phase_execution_id,attempt_id)", on_delete: "RESTRICT" },
+      { columns: ["context_id", "attempt_id"], references: "execution_contexts(context_id,attempt_id)", on_delete: "RESTRICT" },
+      { columns: ["phase_execution_id", "context_id"], references: "phase_executions(phase_execution_id,context_id)", on_delete: "RESTRICT" },
+    ]));
+    expect(resources.foreign_keys).toContainEqual({
+      columns: ["allocation_lease_id", "attempt_id"],
+      references: "leases(lease_id,attempt_id)",
+      on_delete: "RESTRICT",
+    });
+    expect(processes.foreign_keys).toContainEqual({
+      columns: ["lease_id", "lease_generation"],
+      references: "leases(lease_id,generation)",
+      on_delete: "RESTRICT",
+    });
+  });
+
   it("uses null-safe scoped idempotency and records early delivery failure honestly", () => {
     const tables = new Map(contract.entity_model.catalog.map((table: any) => [table.name, table]));
     const decisions: any = tables.get("oracle_decisions");
@@ -230,12 +272,17 @@ describe("state contract validator sensitivity", () => {
   const cases: Array<[string, string, (draft: typeof contract) => void]> = [
     ["schema-version", "STATE_CONTRACT_VERSION_UNSUPPORTED", (draft) => { draft.schema_version = "2.0.0"; }],
     ["migration-contiguity", "STATE_CONTRACT_MIGRATION_INVALID", (draft) => { draft.migrations.initial[0].version = 2; }],
+    ["migration-release-checksum", "STATE_CONTRACT_MIGRATION_INVALID", (draft) => { draft.migrations.initial[0].released_checksum = `sha256:${"0".repeat(64)}`; }],
+    ["migration-schema-checksum", "STATE_CONTRACT_MIGRATION_INVALID", (draft) => { draft.migrations.initial[0].sqlite_schema_checksum = `sha256:${"0".repeat(64)}`; }],
+    ["migration-status", "STATE_CONTRACT_MIGRATION_INVALID", (draft) => { draft.migrations.initial[0].status = "reserved_contract_only"; }],
     ["scalar-format", "STATE_CONTRACT_SCALAR_INVALID", (draft) => { draft.scalar_formats.sha256_digest = "arbitrary text"; }],
     ["unknown-nested-field", "STATE_CONTRACT_ROOT_INVALID", (draft) => { draft.state_root.cwd_fallback = true; }],
     ["table-inventory", "STATE_CONTRACT_TABLE_INVALID", (draft) => { draft.entity_model.catalog.pop(); }],
     ["foreign-key-delete", "STATE_CONTRACT_TABLE_INVALID", (draft) => { draft.entity_model.catalog.find((table: any) => table.foreign_keys.length).foreign_keys[0].on_delete = "CASCADE"; }],
     ["unique-constraint", "STATE_CONTRACT_TABLE_INVALID", (draft) => { draft.entity_model.catalog.find((table: any) => table.name === "leases").unique_constraints = []; }],
     ["foreign-key-target-unique", "STATE_CONTRACT_TABLE_INVALID", (draft) => { draft.entity_model.catalog.find((table: any) => table.name === "run_ticket_dependencies").unique_constraints.pop(); }],
+    ["attempt-full-lineage", "STATE_CONTRACT_TABLE_INVALID", (draft) => { const table = draft.entity_model.catalog.find((entry: any) => entry.name === "attempts"); table.foreign_keys = table.foreign_keys.filter((entry: any) => entry.columns.length !== 4); }],
+    ["evidence-attempt-lineage", "STATE_CONTRACT_TABLE_INVALID", (draft) => { const table = draft.entity_model.catalog.find((entry: any) => entry.name === "evidence"); table.foreign_keys = table.foreign_keys.filter((entry: any) => entry.references !== "phase_executions(phase_execution_id,attempt_id)"); }],
     ["oracle-dependency-foreign-key", "STATE_CONTRACT_TABLE_INVALID", (draft) => { const table = draft.entity_model.catalog.find((entry: any) => entry.name === "oracle_input_references"); table.foreign_keys = table.foreign_keys.filter((entry: any) => entry.columns[0] !== "dependency_digest"); }],
     ["append-only-trigger", "STATE_CONTRACT_TABLE_INVALID", (draft) => { draft.entity_model.catalog.find((table: any) => table.name === "evidence").mutation.update_trigger = "mutable"; }],
     ["immutable-column", "STATE_CONTRACT_TABLE_INVALID", (draft) => { draft.entity_model.catalog.find((table: any) => table.name === "runs").mutation.immutable_columns.pop(); }],

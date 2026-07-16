@@ -74,11 +74,17 @@ migration critical section. A bounded SQLite busy/locked result is
 caller may retry only the complete named transaction.
 
 Migrations are positive, contiguous, three-digit versions. Migration
-`001_initial_durable_state` is reserved here; t13 owns its executable SQL and
-released checksum. `schema_migrations` records the immutable version, unique
-name, exact-definition SHA-256, and application time. Its rows and
+`001_initial_durable_state` is implemented by t13 and released with immutable
+SQL checksum
+`sha256:473f6581359fb59da29236aeb77acaba74aa46504fb0ac8c0089c59afca586a8`
+and resulting `sqlite_schema` checksum
+`sha256:11f061a28bffe7ed02a6d5b974cca09dcff189e18fb18834659a3aad175ecef9`.
+`schema_migrations` records the immutable version, unique name,
+exact-definition SHA-256, and application time. Its rows and
 `PRAGMA user_version` must agree. Released migrations never change; later
-versions append `002`, `003`, and so on.
+versions append `002`, `003`, and so on. This release does not activate the
+reserved allocation, oracle, promotion, cutover, recovery, resource, or
+delivery capabilities.
 
 Creation and each migration are atomic. Before use, open checks
 `quick_check`, `foreign_key_check`, migration contiguity/checksums, and the
@@ -129,13 +135,16 @@ immutable column, and mutation trigger. Canonical IDs are nonempty; versions
 and sequences are nonnegative; attempt numbers are positive; JSON and SHA-256
 digests are validated; Git OIDs match repository object format.
 
-Composite foreign keys carry lineage across the terminal authority boundary.
-An oracle decision's nonnull ticket and attempt must belong to its run; each
-oracle reference copies that exact scope; and a promotion intent binds its run,
-ticket, attempt, accepted oracle decision, attribution, and owner context to
-one hierarchy. `persist_oracle_decision` rejects any input whose canonical
-lineage differs. Run-, ticket-, and attempt-scoped oracle idempotency use three
-partial unique indexes so SQLite `NULL` semantics cannot admit duplicate keys.
+Composite foreign keys carry lineage from ticket allocation through attempts,
+execution contexts, phase executions, evidence, leases, resources, process
+receipts, gates, reviews, remediation, attribution, salvage, and cleanup. They
+also protect the terminal authority boundary: an oracle decision's nonnull
+ticket and attempt must belong to its run; each oracle reference copies that
+exact scope; and a promotion intent binds its run, ticket, attempt, accepted
+oracle decision, attribution, and owner context to one hierarchy.
+`persist_oracle_decision` rejects any input whose canonical lineage differs.
+Run-, ticket-, and attempt-scoped oracle idempotency use three partial unique
+indexes so SQLite `NULL` semantics cannot admit duplicate keys.
 
 Immutable evidence tables are append-only with `BEFORE UPDATE` and
 `BEFORE DELETE` abort triggers. The six mutable snapshots/intents—`runs`,

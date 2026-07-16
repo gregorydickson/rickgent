@@ -281,8 +281,9 @@ function validateMigrations(contract) {
     number: "001",
     name: "001_initial_durable_state",
     sql_owner_ticket: "t13",
-    released_checksum: "assigned by t13 from executable SQL",
-    status: "reserved_contract_only",
+    released_checksum: "sha256:473f6581359fb59da29236aeb77acaba74aa46504fb0ac8c0089c59afca586a8",
+    sqlite_schema_checksum: "sha256:11f061a28bffe7ed02a6d5b974cca09dcff189e18fb18834659a3aad175ecef9",
+    status: "implemented",
   }], "STATE_CONTRACT_MIGRATION_INVALID", "initial migrations");
   for (let index = 0; index < migrations.initial.length; index += 1) {
     if (migrations.initial[index].version !== index + 1) fail("STATE_CONTRACT_MIGRATION_INVALID", "migration versions are not contiguous");
@@ -390,6 +391,63 @@ function validateTables(contract) {
       }
     }
   }
+
+  const requiredLineageUniqueConstraints = [
+    ["run_tickets", "run_tickets_full_scope_uq", ["ticket_instance_id", "run_id", "ticket_id", "contract_digest"]],
+    ["attempts", "attempts_identity_contract_uq", ["attempt_id", "contract_digest"]],
+    ["phase_executions", "phase_executions_identity_attempt_uq", ["phase_execution_id", "attempt_id"]],
+    ["phase_executions", "phase_executions_identity_context_uq", ["phase_execution_id", "context_id"]],
+    ["leases", "leases_identity_attempt_uq", ["lease_id", "attempt_id"]],
+    ["leases", "leases_identity_generation_uq", ["lease_id", "generation"]],
+  ];
+  for (const [tableName, name, columns] of requiredLineageUniqueConstraints) {
+    const table = byName.get(tableName);
+    if (!table.unique_constraints.some((entry) => entry.name === name
+      && JSON.stringify(entry.columns) === JSON.stringify(columns) && entry.where === undefined)) {
+      fail("STATE_CONTRACT_TABLE_INVALID", `${tableName} lacks lineage key ${name}`);
+    }
+  }
+
+  const requiredLineageForeignKeys = [
+    ["attempts", ["ticket_instance_id", "run_id", "ticket_id", "contract_digest"], "run_tickets(ticket_instance_id,run_id,ticket_id,contract_digest)"],
+    ["execution_contexts", ["attempt_id", "contract_digest"], "attempts(attempt_id,contract_digest)"],
+    ["phase_executions", ["context_id", "attempt_id"], "execution_contexts(context_id,attempt_id)"],
+    ["evidence", ["phase_execution_id", "attempt_id"], "phase_executions(phase_execution_id,attempt_id)"],
+    ["evidence", ["context_id", "attempt_id"], "execution_contexts(context_id,attempt_id)"],
+    ["evidence", ["phase_execution_id", "context_id"], "phase_executions(phase_execution_id,context_id)"],
+    ["leases", ["owner_context_id", "attempt_id"], "execution_contexts(context_id,attempt_id)"],
+    ["leases", ["acquisition_evidence_id", "attempt_id"], "evidence(evidence_id,attempt_id)"],
+    ["leases", ["release_evidence_id", "attempt_id"], "evidence(evidence_id,attempt_id)"],
+    ["attempt_resources", ["allocation_lease_id", "attempt_id"], "leases(lease_id,attempt_id)"],
+    ["attempt_resources", ["allocation_evidence_id", "attempt_id"], "evidence(evidence_id,attempt_id)"],
+    ["attempt_resources", ["owner_context_id", "attempt_id"], "execution_contexts(context_id,attempt_id)"],
+    ["attempt_resources", ["release_evidence_id", "attempt_id"], "evidence(evidence_id,attempt_id)"],
+    ["attempt_resources", ["quarantine_evidence_id", "attempt_id"], "evidence(evidence_id,attempt_id)"],
+    ["process_receipts", ["phase_execution_id", "context_id"], "phase_executions(phase_execution_id,context_id)"],
+    ["process_receipts", ["lease_id", "lease_generation"], "leases(lease_id,generation)"],
+    ["gate_results", ["context_id", "attempt_id"], "execution_contexts(context_id,attempt_id)"],
+    ["gate_results", ["attempt_id", "contract_digest"], "attempts(attempt_id,contract_digest)"],
+    ["gate_results", ["evidence_id", "attempt_id"], "evidence(evidence_id,attempt_id)"],
+    ["review_records", ["reviewer_context_id", "attempt_id"], "execution_contexts(context_id,attempt_id)"],
+    ["review_records", ["verdict_evidence_id", "attempt_id"], "evidence(evidence_id,attempt_id)"],
+    ["review_records", ["findings_evidence_id", "attempt_id"], "evidence(evidence_id,attempt_id)"],
+    ["remediation_records", ["context_id", "attempt_id"], "execution_contexts(context_id,attempt_id)"],
+    ["remediation_records", ["findings_evidence_id", "attempt_id"], "evidence(evidence_id,attempt_id)"],
+    ["remediation_records", ["output_evidence_id", "attempt_id"], "evidence(evidence_id,attempt_id)"],
+    ["commit_attributions", ["attempt_id", "contract_digest"], "attempts(attempt_id,contract_digest)"],
+    ["commit_attributions", ["attribution_evidence_id", "attempt_id"], "evidence(evidence_id,attempt_id)"],
+    ["salvage_records", ["evidence_id", "attempt_id"], "evidence(evidence_id,attempt_id)"],
+    ["cleanup_records", ["context_id", "attempt_id"], "execution_contexts(context_id,attempt_id)"],
+    ["cleanup_records", ["evidence_id", "attempt_id"], "evidence(evidence_id,attempt_id)"],
+  ];
+  for (const [tableName, columns, reference] of requiredLineageForeignKeys) {
+    const table = byName.get(tableName);
+    if (!table.foreign_keys.some((entry) => JSON.stringify(entry.columns) === JSON.stringify(columns)
+      && entry.references === reference && entry.on_delete === "RESTRICT")) {
+      fail("STATE_CONTRACT_TABLE_INVALID", `${tableName} lacks lineage foreign key ${reference}`);
+    }
+  }
+
   const leases = byName.get("leases");
   if (!leases.unique_constraints.some((entry) => entry.name === "leases_one_live_uq" && entry.where === "state IN ('live','cleanup_pending')")) {
     fail("STATE_CONTRACT_TABLE_INVALID", "leases lack one-live-generation partial uniqueness");

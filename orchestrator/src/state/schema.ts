@@ -33,8 +33,9 @@ export const INITIAL_STATE_MIGRATION = deepFreeze({
   number: "001",
   name: "001_initial_durable_state",
   sql_owner_ticket: "t13",
-  released_checksum: "assigned by t13 from executable SQL",
-  status: STATE_CONTRACT_IMPLEMENTATION_STATUS,
+  released_checksum: "sha256:473f6581359fb59da29236aeb77acaba74aa46504fb0ac8c0089c59afca586a8",
+  sqlite_schema_checksum: "sha256:11f061a28bffe7ed02a6d5b974cca09dcff189e18fb18834659a3aad175ecef9",
+  status: "implemented",
 } as const);
 
 export const STATE_MIGRATIONS = deepFreeze([INITIAL_STATE_MIGRATION] as const);
