@@ -21,9 +21,14 @@ import {
   type ImplementationCapturedReceipt,
 } from "../git/mutation-capture.js";
 import {
-  materializeWorkerBundle,
+  closePolicyBundleLease,
+  materializePolicyBundle,
+  verifyPolicyBundleForSpawn,
   type MaterializedWorkerBundle,
 } from "./worker-materialization.js";
+import { canonicalDispatchId } from "../context/execution-context.js";
+import { ticketOwnedPaths, type TicketContract } from "../contracts/ticket-contract.js";
+import type { RouterSelection } from "../lifecycle/routing.js";
 
 export type DispatchState =
   | "planned" | "spawned" | "db_session_observed" | "implementation_captured" | "completed"
@@ -86,7 +91,7 @@ const TERMINAL_STATES: ReadonlySet<DispatchState> = new Set([
 ]);
 
 export function dispatchIdString(id: DispatchId): string {
-  return `${id.runId}/${id.ticketId}/${id.phase}/${id.attempt}/${id.role}`;
+  return canonicalDispatchId(id);
 }
 
 /**
@@ -191,10 +196,14 @@ export interface DispatchOptions {
   maxConcurrent: number;
   /** Verified M1 mutation owner. No free-form mutation cwd is admitted. */
   workspace?: ReadyRunWorkspace;
-  /** External root for attempt-specific structured worker materializations. */
+  /** @deprecated Production derives policy materialization beneath rickgentDir. */
   materializationRoot?: string;
-  /** Ticket's declared scope (repo-relative path prefixes) for the delta filter. */
+  /** @deprecated Production derives mutation scope from ticket. */
   declaredPaths?: string[];
+  /** Complete normalized authority for scope and ticket identity. */
+  ticket?: TicketContract;
+  /** Complete router-selected requested identity. */
+  selection?: RouterSelection;
   /**
    * Root OMNIGENT_DATA_DIR. Each dispatch isolates its chat.db under a
    * per-dispatchId subdir of this root so a session it creates is never
@@ -208,6 +217,7 @@ export interface DispatchOptions {
    * selected for this dispatch. Persisted into every ledger entry so the
    * shared ledger carries a non-empty vendor/harness label per dispatch.
    */
+  /** @deprecated Production derives the vendor from selection. */
   vendor?: string;
 }
 
@@ -236,9 +246,9 @@ export class Dispatcher {
     if (existing && this.ledger.isTerminal(idStr)) {
       return existing;
     }
-    if (!opts.workspace || !opts.materializationRoot) {
+    if (!opts.workspace) {
       throw new InputContractError(
-        "dispatch requires a verified run workspace and attempt-specific worker materialization root",
+        "dispatch requires a verified run workspace",
       );
     }
 
@@ -253,7 +263,7 @@ export class Dispatcher {
         exitCode: null,
         stdout: null,
         stderr: null,
-        vendor: opts.vendor ?? null,
+        vendor: opts.selection?.vendor ?? opts.vendor ?? null,
       };
       this.ledger.append(planned);
       return planned;
@@ -271,7 +281,7 @@ export class Dispatcher {
         stdout: null,
         stderr: "could not acquire ticket lock",
         terminalReason: "infrastructure_error",
-        vendor: opts.vendor ?? null,
+        vendor: opts.selection?.vendor ?? opts.vendor ?? null,
       };
       this.ledger.append(failed);
       return failed;
@@ -299,7 +309,7 @@ export class Dispatcher {
           // this ticket could not execute safely until per-attempt ownership
           // lands. Identity/caller failures remain infrastructure failures.
           terminalReason: readiness.code === "dirty" ? "worker_failed" : "infrastructure_error",
-          vendor: opts.vendor ?? null,
+          vendor: opts.selection?.vendor ?? opts.vendor ?? null,
         };
         this.ledger.append(failed);
         return failed;
@@ -307,7 +317,30 @@ export class Dispatcher {
 
       let materializedBundle: MaterializedWorkerBundle;
       try {
-        materializedBundle = materializeWorkerBundle(opts.agentDir, opts.materializationRoot, id);
+        if (!opts.ticket || !opts.selection) {
+          throw new InputContractError("dispatch requires a normalized TicketContract and complete router selection");
+        }
+        materializedBundle = materializePolicyBundle({
+          agentRoot: opts.agentDir,
+          stateRoot: this.rickgentDir,
+          dispatch: id,
+          ticket: opts.ticket,
+          workspace: opts.workspace,
+          selection: opts.selection,
+          leaseExpiresAtMs: Date.now() + Math.max(opts.timeout, 1_000) + 60_000,
+          ...((opts.env?.OMNIGENT_ROOT ?? process.env.OMNIGENT_ROOT)
+            ? { omnigentRoot: opts.env?.OMNIGENT_ROOT ?? process.env.OMNIGENT_ROOT! }
+            : {}),
+          ...((opts.env?.OMNIGENT_PYTHON ?? process.env.OMNIGENT_PYTHON)
+            ? { omnigentPython: opts.env?.OMNIGENT_PYTHON ?? process.env.OMNIGENT_PYTHON! }
+            : {}),
+        });
+        const finalReadiness = runWorkspaceReadyForSpawn(opts.workspace);
+        if (!finalReadiness.ready) {
+          closePolicyBundleLease(materializedBundle);
+          throw new Error(`run workspace changed during policy materialization: ${finalReadiness.detail}`);
+        }
+        verifyPolicyBundleForSpawn(materializedBundle);
       } catch (error) {
         const failed: DispatchEntry = {
           dispatchId: idStr, state: "failed", pid: null,
@@ -315,7 +348,7 @@ export class Dispatcher {
           exitCode: null, stdout: null,
           stderr: `worker materialization failed before spawn: ${error instanceof Error ? error.message : String(error)}`,
           terminalReason: "infrastructure_error",
-          vendor: opts.vendor ?? null,
+          vendor: opts.selection?.vendor ?? opts.vendor ?? null,
         };
         this.ledger.append(failed);
         return failed;
@@ -338,7 +371,7 @@ export class Dispatcher {
         exitCode: null,
         stdout: null,
         stderr: null,
-        vendor: opts.vendor ?? null,
+        vendor: opts.selection?.vendor ?? opts.vendor ?? null,
       });
 
       // Dispatch via omnigent run one-shot
@@ -363,6 +396,7 @@ export class Dispatcher {
       // single source of truth for timeout enforcement. Passing both creates a
       // race where Node's internal timeout and our timer can both fire and
       // produce conflicting ledger entries.
+      verifyPolicyBundleForSpawn(materializedBundle);
       const child = spawn("omnigent", ["run", materializedBundle.bundleDir, "-p", opts.prompt], {
         stdio: ["pipe", "pipe", "pipe"],
         cwd: opts.workspace!.worktreeDir,
@@ -373,6 +407,7 @@ export class Dispatcher {
         env: {
           ...process.env,
           ...(opts.env ?? {}),
+          ...materializedBundle.spawnEnvironment,
           PWD: opts.workspace!.worktreeDir,
           RICKGENT_TARGET_REPO: opts.workspace!.worktreeDir,
           ...(sessionDataDir ? { OMNIGENT_DATA_DIR: sessionDataDir } : {}),
@@ -398,13 +433,14 @@ export class Dispatcher {
       // Without this, Node.js throws an unhandled 'error' event which can
       // crash the worker thread under parallel test execution.
       child.on("error", (err: Error) => {
+        try { closePolicyBundleLease(materializedBundle); } catch { /* retained for forensic cleanup */ }
         finish({
           dispatchId: idStr, state: "failed", pid: child.pid ?? null,
           startedAt, completedAt: new Date().toISOString(),
           exitCode: null, stdout,
           stderr: stderr + `\n[dispatch] spawn error: ${err.message}`,
           terminalReason: "infrastructure_error",
-          vendor: opts.vendor ?? null,
+          vendor: opts.selection?.vendor ?? opts.vendor ?? null,
         });
       });
 
@@ -415,13 +451,31 @@ export class Dispatcher {
           startedAt, completedAt: new Date().toISOString(),
           exitCode: null, stdout, stderr,
           terminalReason: "worker_failed",
-          vendor: opts.vendor ?? null,
+          vendor: opts.selection?.vendor ?? opts.vendor ?? null,
         });
       }, opts.timeout);
 
       child.on("close", (code) => {
+        let leaseCloseError: string | null = null;
+        try {
+          closePolicyBundleLease(materializedBundle);
+        } catch (error) {
+          leaseCloseError = error instanceof Error ? error.message : String(error);
+        }
+        if (resolved) return;
         const completedAt = new Date().toISOString();
         const pid = child.pid ?? null;
+
+        if (leaseCloseError !== null) {
+          finish({
+            dispatchId: idStr, state: "failed", pid,
+            startedAt, completedAt, exitCode: code, stdout,
+            stderr: `${stderr}\n[dispatch] attempt lease could not be closed: ${leaseCloseError}`,
+            terminalReason: "infrastructure_error",
+            vendor: opts.selection?.vendor ?? opts.vendor ?? null,
+          });
+          return;
+        }
 
         // Exit code alone is NOT completion. A non-zero exit fails immediately.
         if (code !== 0) {
@@ -429,7 +483,7 @@ export class Dispatcher {
             dispatchId: idStr, state: "failed", pid,
             startedAt, completedAt, exitCode: code, stdout, stderr,
             terminalReason: "worker_failed",
-            vendor: opts.vendor ?? null,
+            vendor: opts.selection?.vendor ?? opts.vendor ?? null,
           });
           return;
         }
@@ -442,14 +496,14 @@ export class Dispatcher {
             dispatchId: idStr, state: "db_session_observed", pid,
             startedAt, completedAt: null, exitCode: code, stdout, stderr,
             conversationId: observation.conversationId,
-            vendor: opts.vendor ?? null,
+            vendor: opts.selection?.vendor ?? opts.vendor ?? null,
           });
         }
         const captured = captureNonterminalMutation(
           id,
           opts.workspace!,
           materializedBundle,
-          Array.isArray(opts.declaredPaths) ? opts.declaredPaths : [],
+          opts.ticket ? ticketOwnedPaths(opts.ticket) : [],
           observation,
         );
         if (captured.ok) {
@@ -459,8 +513,8 @@ export class Dispatcher {
             conversationId: observation.conversationId,
             baselineSha: opts.workspace!.baselineSha,
             treeChanged: true,
-            declaredPaths: Array.isArray(opts.declaredPaths) ? opts.declaredPaths : [],
-            vendor: opts.vendor ?? null,
+            declaredPaths: opts.ticket ? ticketOwnedPaths(opts.ticket) : [],
+            vendor: opts.selection?.vendor ?? opts.vendor ?? null,
             captureReceipt: captured.receipt,
           });
           return;
@@ -471,7 +525,7 @@ export class Dispatcher {
           stderr: `${stderr}\n[dispatch] ${captured.detail}`,
           conversationId: observation.conversationId,
           terminalReason: "evidence_unverifiable",
-          vendor: opts.vendor ?? null,
+          vendor: opts.selection?.vendor ?? opts.vendor ?? null,
         });
       });
     });

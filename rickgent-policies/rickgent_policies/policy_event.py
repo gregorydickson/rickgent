@@ -5,8 +5,8 @@ The adapter is intentionally policy-agnostic.  It validates the native
 context through an injected consumer, and returns one immutable discriminated
 result.  It never consults legacy top-level event or config aliases.
 
-The filesystem-backed authenticator is owned by the next trust-spine ticket.
-Until one is supplied, the public adapter fails closed.
+The filesystem-backed authenticator lives in :mod:`rickgent_policies.context`.
+The injected seam remains available for deterministic boundary tests.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from typing import Any, Literal, Protocol, TypeAlias, runtime_checkable
 POLICY_ABI_VERSION = "omnigent-function-policy/current-v1"
 CONTEXT_SCHEMA_VERSION = "rickgent-attempt-context/v1"
 IDENTITY_NORMALIZATION_VERSION = "rickgent-identity-normalization/v1"
+TICKET_CONTRACT_SCHEMA_VERSION = "1.0.0"
 
 REQUIRED_CONFIG_KEYS = frozenset(
     {
@@ -52,6 +53,29 @@ _REQUIRED_EVENT_FIELDS = frozenset(
     {"type", "target", "data", "context", "session_state", "llm_client"}
 )
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_TICKET_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+_HARNESS_ALIASES: Mapping[str, str] = MappingProxyType(
+    {
+        "agy": "antigravity",
+        "claude": "claude-sdk",
+        "github-copilot": "copilot",
+        "google-antigravity": "antigravity",
+        "kimi-code": "kimi",
+        "native-antigravity": "antigravity-native",
+        "native-goose": "goose-native",
+        "native-hermes": "hermes-native",
+        "native-kimi": "kimi-native",
+        "native-kiro": "kiro-native",
+        "native-opencode": "opencode-native",
+        "native-pi": "pi-native",
+        "native-qwen": "qwen-native",
+        "openai-agents-sdk": "openai-agents",
+        "opencode": "opencode-native",
+        "qwen-code": "qwen",
+        "acp:probe": "acp",
+    }
+)
 
 
 class DenialCode(str, Enum):
@@ -182,6 +206,16 @@ class RequestedModelIdentity:
 
 
 @dataclass(frozen=True)
+class TicketScopeEntry:
+    """Lossless immutable projection of one normalized TicketContract scope."""
+
+    path: str
+    change_kind: Literal["create", "modify", "delete", "rename"]
+    directory: bool
+    from_path: str | None = None
+
+
+@dataclass(frozen=True)
 class AuthenticatedAttemptContext:
     """Immutable projection returned by a trusted context authenticator."""
 
@@ -199,11 +233,15 @@ class AuthenticatedAttemptContext:
     attempt: int
     target_repo_realpath: str
     worktree_realpath: str
+    state_root_realpath: str
+    policy_root_realpath: str
+    bundle_root_realpath: str
     role: str
     lifecycle_phase: str
+    ticket_contract_schema_version: str
     ticket_contract_digest: str
     attempt_digest: str
-    declared_scope: tuple[str, ...]
+    declared_scope: tuple[TicketScopeEntry, ...]
     requested_identity: RequestedModelIdentity | None
     nonce: str
     lease_active: bool
@@ -246,7 +284,10 @@ class CanonicalPolicyEvent:
     lifecycle_phase: str
     target_repo_realpath: str
     worktree_realpath: str
-    declared_scope: tuple[str, ...]
+    state_root_realpath: str
+    policy_root_realpath: str
+    bundle_root_realpath: str
+    declared_scope: tuple[TicketScopeEntry, ...]
     requested_identity: RequestedModelIdentity
     disposition: Literal["canonical"] = field(default="canonical", init=False)
 
@@ -519,7 +560,13 @@ def _validate_trusted_projection(
             DenialKind.AUTHENTICATION_FAILED,
             "trusted attempt number is invalid",
         )
-    roots = (trusted.target_repo_realpath, trusted.worktree_realpath)
+    roots = (
+        trusted.target_repo_realpath,
+        trusted.worktree_realpath,
+        trusted.state_root_realpath,
+        trusted.policy_root_realpath,
+        trusted.bundle_root_realpath,
+    )
     if any(
         not isinstance(root, str)
         or not os.path.isabs(root)
@@ -530,16 +577,17 @@ def _validate_trusted_projection(
             DenialKind.AUTHENTICATION_FAILED,
             "trusted repository roots are not canonical absolute paths",
         )
-    if not all(
-        _is_sha256(value)
-        for value in (trusted.ticket_contract_digest, trusted.attempt_digest)
+    if (
+        trusted.ticket_contract_schema_version != TICKET_CONTRACT_SCHEMA_VERSION
+        or not _is_ticket_digest(trusted.ticket_contract_digest)
+        or not _is_sha256(trusted.attempt_digest)
     ):
         return make_policy_denial(
             DenialKind.AUTHENTICATION_FAILED,
             "trusted attempt digests are malformed",
         )
     if not isinstance(trusted.declared_scope, tuple) or any(
-        not isinstance(path, str) or not path.strip() for path in trusted.declared_scope
+        not _valid_scope_entry(entry) for entry in trusted.declared_scope
     ):
         return make_policy_denial(
             DenialKind.AUTHENTICATION_FAILED,
@@ -593,6 +641,16 @@ def _validate_trusted_projection(
         return make_policy_denial(
             DenialKind.IDENTITY_PROFILE_UNAVAILABLE,
             "requested identity observation profile is unavailable",
+        )
+    if (
+        identity.canonical_harness != normalize_harness_identity(identity.raw_harness)
+        or identity.canonical_provider != identity.raw_provider
+        or identity.canonical_vendor != identity.raw_vendor
+        or identity.canonical_model_id != identity.raw_model_id
+    ):
+        return make_policy_denial(
+            DenialKind.IDENTITY_CONFLICT,
+            "trusted requested model identity conflicts with the explicit t00 alias corpus",
         )
     return None
 
@@ -732,6 +790,9 @@ def _adapt_authenticated_event(
         lifecycle_phase=trusted.lifecycle_phase,
         target_repo_realpath=trusted.target_repo_realpath,
         worktree_realpath=trusted.worktree_realpath,
+        state_root_realpath=trusted.state_root_realpath,
+        policy_root_realpath=trusted.policy_root_realpath,
+        bundle_root_realpath=trusted.bundle_root_realpath,
         declared_scope=trusted.declared_scope,
         requested_identity=identity,
     )
@@ -785,6 +846,31 @@ def _is_sha256(value: object) -> bool:
     return isinstance(value, str) and _SHA256_RE.fullmatch(value) is not None
 
 
+def _is_ticket_digest(value: object) -> bool:
+    return isinstance(value, str) and _TICKET_DIGEST_RE.fullmatch(value) is not None
+
+
+def normalize_harness_identity(raw_harness: str) -> str:
+    """Apply only the versioned explicit aliases frozen by t00."""
+
+    return _HARNESS_ALIASES.get(raw_harness, raw_harness)
+
+
+def _valid_scope_entry(entry: object) -> bool:
+    if not isinstance(entry, TicketScopeEntry):
+        return False
+    if (
+        not isinstance(entry.path, str)
+        or not entry.path.strip()
+        or entry.change_kind not in {"create", "modify", "delete", "rename"}
+        or not isinstance(entry.directory, bool)
+    ):
+        return False
+    if entry.change_kind == "rename":
+        return isinstance(entry.from_path, str) and bool(entry.from_path.strip())
+    return entry.from_path is None
+
+
 __all__ = [
     "AuthenticatedAttemptContext",
     "CanonicalPolicyEvent",
@@ -800,6 +886,9 @@ __all__ = [
     "PolicyEventResult",
     "REQUIRED_CONFIG_KEYS",
     "RequestedModelIdentity",
+    "TICKET_CONTRACT_SCHEMA_VERSION",
+    "TicketScopeEntry",
     "adapt_native_policy_event",
     "make_policy_denial",
+    "normalize_harness_identity",
 ]

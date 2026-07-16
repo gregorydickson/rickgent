@@ -6,19 +6,26 @@
     "ticket_id": "t08",
     "attempt": 1,
     "context_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "ticket_contract_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "ticket_contract_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     "attempt_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     "role": "worker",
     "lifecycle_phase": "implement",
     "target_repo_realpath": "/repo",
     "worktree_realpath": "/repo/worktree",
+    "state_root_realpath": "/trusted/state",
+    "policy_root_realpath": "/trusted/state/policy-attempts/dispatch-001",
+    "bundle_root_realpath": "/trusted/state/policy-attempts/dispatch-001/bundle/agents/rickgent/agents/worker",
     "declared_scope": [
-      "rickgent-policies/"
+      {
+        "path": "rickgent-policies",
+        "change_kind": "modify",
+        "directory": true
+      }
     ],
     "requested_identity": {
       "normalization_version": "rickgent-identity-normalization/v1",
       "raw_harness": "codex",
-      "canonical_harness": "codex-native",
+      "canonical_harness": "codex",
       "raw_provider": "openai",
       "canonical_provider": "openai",
       "raw_vendor": "openai",

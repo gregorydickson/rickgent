@@ -544,7 +544,7 @@ async function executeBuild(
   );
 
   try {
-  mkdirSync(opts.rickgentDir, { recursive: true });
+  mkdirSync(opts.rickgentDir, { recursive: true, mode: 0o700 });
   // Durable state allocation begins only after normalized tickets and the
   // clean mutation owner have both been admitted.
   (dependencies.recordRun ?? recordRun)(opts.rickgentDir, requestedRunId, parsed.prd.title);
@@ -709,11 +709,10 @@ async function executeBuild(
       timeout: opts.timeout ?? 60000,
       maxConcurrent: cap,
       workspace: runWorkspace,
-      materializationRoot: join(opts.rickgentDir, "materialized-workers"),
       dataDir: opts.dataDir,
-      declaredPaths: ticketOwnedPaths(ticket),
+      ticket,
+      selection: routed.selection,
       env,
-      vendor: selectedVendor,
     });
 
     if (entry.state === "implementation_captured" && entry.captureReceipt) {

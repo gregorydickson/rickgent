@@ -26,12 +26,14 @@ from rickgent_policies.policy_event import (
     IDENTITY_NORMALIZATION_VERSION,
     NATIVE_PHASES,
     POLICY_ABI_VERSION,
+    TICKET_CONTRACT_SCHEMA_VERSION,
     AuthenticatedAttemptContext,
     CanonicalPolicyEvent,
     DenialKind,
     PolicyAbstention,
     PolicyDenial,
     RequestedModelIdentity,
+    TicketScopeEntry,
     adapt_native_policy_event,
     make_policy_denial,
 )
@@ -41,7 +43,7 @@ FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "native-policy-corpus"
 POLICY_ID = "canonical-native-adapter"
 CONTEXT_SHA = "a" * 64
 OWNER_SHA = "b" * 64
-TICKET_SHA = "c" * 64
+TICKET_SHA = "sha256:" + "c" * 64
 ATTEMPT_SHA = "d" * 64
 BUNDLE_SHA = "e" * 64
 CONFIG_SHA = "f" * 64
@@ -150,7 +152,7 @@ def _identity() -> RequestedModelIdentity:
     return RequestedModelIdentity(
         normalization_version=IDENTITY_NORMALIZATION_VERSION,
         raw_harness="codex",
-        canonical_harness="codex-native",
+        canonical_harness="codex",
         raw_provider="openai",
         canonical_provider="openai",
         raw_vendor="openai",
@@ -179,11 +181,21 @@ def _trusted_context() -> AuthenticatedAttemptContext:
         attempt=1,
         target_repo_realpath="/repo",
         worktree_realpath="/repo/worktree",
+        state_root_realpath="/trusted/state",
+        policy_root_realpath="/trusted/state/policy-attempts/dispatch-001",
+        bundle_root_realpath="/trusted/state/policy-attempts/dispatch-001/bundle/agents/rickgent/agents/worker",
         role="worker",
         lifecycle_phase="implement",
+        ticket_contract_schema_version=TICKET_CONTRACT_SCHEMA_VERSION,
         ticket_contract_digest=TICKET_SHA,
         attempt_digest=ATTEMPT_SHA,
-        declared_scope=("rickgent-policies/",),
+        declared_scope=(
+            TicketScopeEntry(
+                path="rickgent-policies",
+                change_kind="modify",
+                directory=True,
+            ),
+        ),
         requested_identity=_identity(),
         nonce="nonce-001",
         lease_active=True,
@@ -424,7 +436,13 @@ def _canonical_snapshot(outcome: CanonicalPolicyEvent) -> dict[str, Any]:
         "lifecycle_phase": outcome.lifecycle_phase,
         "target_repo_realpath": outcome.target_repo_realpath,
         "worktree_realpath": outcome.worktree_realpath,
-        "declared_scope": list(outcome.declared_scope),
+        "state_root_realpath": outcome.state_root_realpath,
+        "policy_root_realpath": outcome.policy_root_realpath,
+        "bundle_root_realpath": outcome.bundle_root_realpath,
+        "declared_scope": [
+            {key: value for key, value in asdict(entry).items() if value is not None}
+            for entry in outcome.declared_scope
+        ],
         "requested_identity": asdict(outcome.requested_identity),
     }
 

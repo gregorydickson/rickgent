@@ -24,6 +24,12 @@ export interface ImplementationCapturedReceipt {
   readonly baselineSha: string;
   readonly materializedWorkerBundle: string;
   readonly materializedConfigSha256: string;
+  readonly contextPath: string;
+  readonly contextSha256: string;
+  readonly requestedBundleSha256: string;
+  readonly requestedConfigSha256: string;
+  readonly invokedBundleSha256: string;
+  readonly invokedConfigSha256: string;
   readonly changedPaths: readonly CapturedPathObservation[];
   readonly conversationId: string | null;
   readonly transcriptCount: number;
@@ -142,6 +148,12 @@ export function captureNonterminalMutation(
       baselineSha: workspace.baselineSha,
       materializedWorkerBundle: bundle.bundleDir,
       materializedConfigSha256: bundle.configSha256,
+      contextPath: bundle.contextPath,
+      contextSha256: bundle.contextSha256,
+      requestedBundleSha256: bundle.requestedBundleSha256,
+      requestedConfigSha256: bundle.requestedConfigSha256,
+      invokedBundleSha256: bundle.invokedBundleSha256,
+      invokedConfigSha256: bundle.invokedConfigSha256,
       changedPaths,
       conversationId: conversation.conversationId,
       transcriptCount: conversation.transcriptCount,
