@@ -20,6 +20,7 @@ const {
   rmSync,
   symlinkSync,
   realpathSync,
+  writeFileSync,
 } = require("fs");
 const { join, basename } = require("path");
 const { tmpdir } = require("os");
@@ -57,8 +58,8 @@ const TS_INCIDENT_CLASSES = [
     sourceFile: "src/core/completion.ts",
     guardMarker: "if (!claimedSha || !shaExists) {",
     mutate: (s) => s.replace(
-      "if (!claimedSha || !shaExists) {",
-      "if (false && (!claimedSha || !shaExists)) {"
+      'return { verdict: "UNVERIFIED", reason: "no reachable commit" };',
+      'return { verdict: "COMMITTED", commitSha: "mutation", treeChanged: true };'
     ),
   },
   {
@@ -147,8 +148,8 @@ const TS_INCIDENT_CLASSES = [
     sourceFile: "src/core/breaker.ts",
     guardMarker: "if (state.errorCounts[sig] >= state.threshold) {",
     mutate: (s) => s.replace(
-      "if (state.errorCounts[sig] >= state.threshold) {",
-      "if (false && state.errorCounts[sig] >= state.threshold) {"
+      "state.open = true;\n      return { transition: \"opened\", canExecute: false, reason: `threshold reached for ${sig}` };",
+      "state.open = false;\n      return { transition: \"closed\", canExecute: true };"
     ),
   },
   {
@@ -158,8 +159,8 @@ const TS_INCIDENT_CLASSES = [
     sourceFile: "src/core/breaker.ts",
     guardMarker: 'reason: "successful iteration with tree change"',
     mutate: (s) => s.replace(
-      /state\.errorCounts\s*=\s*\{\};\s*\n\s*state\.open\s*=\s*false;\s*\n\s*state\.stallCount\s*=\s*0;\s*\n\s*return\s*\{\s*transition:\s*"reset",\s*canExecute:\s*true,\s*reason:\s*"successful iteration with tree change"/,
-      '/* MUTATION: reset disabled */ return { transition: "closed", canExecute: true, reason: "mutation"'
+      'return { transition: "reset", canExecute: true, reason: "successful iteration with tree change" };',
+      'state.open = true; /* mutation: reset disabled */\n      return { transition: "reset", canExecute: true, reason: "successful iteration with tree change" };'
     ),
   },
   {
@@ -227,7 +228,7 @@ const TS_INCIDENT_CLASSES = [
     guardMarker: "for (const declared of declaredPaths) {",
     mutate: (s) => s.replace(
       "for (const declared of declaredPaths) {",
-      "for (const declared of []) { /* mutation: skip scope check */"
+      "for (const declared of [canonicalTarget]) { /* mutation: trust the target as declared */"
     ),
   },
   // ── PRD (src/core/prd.ts) ──
@@ -249,8 +250,8 @@ const TS_INCIDENT_CLASSES = [
     sourceFile: "src/core/prd.ts",
     guardMarker: 'errors.push("PRD must have a simplification review (subtract before you add)");',
     mutate: (s) => s.replace(
-      "if (!input.simplificationReview || !input.simplificationReview.reviewed) {",
-      "if (false && (!input.simplificationReview || !input.simplificationReview.reviewed)) {"
+      'errors.push("PRD must have a simplification review (subtract before you add)");',
+      "/* mutation: missing simplification review accepted */"
     ),
   },
   // ── Microverse (src/lifecycle/microverse.ts) ──
@@ -295,19 +296,19 @@ const TS_INCIDENT_CLASSES = [
     sourceFile: "src/dispatch/dispatch.ts",
     guardMarker: "// Idempotency check — return recorded terminal state without re-spawning",
     mutate: (s) => s.replace(
-      "if (existing && this.ledger.isTerminal(idStr)) {",
-      "if (false && existing && this.ledger.isTerminal(idStr)) {"
+      "return existing;",
+      'return { ...existing, state: "planned" }; /* mutation: terminal replay corrupted */'
     ),
   },
   {
     id: "dispatch-backpressure",
     testFile: "test/dispatch/dispatch.test.ts",
-    testCase: "rejects maxConcurrent 0 before ledger or spawn side effects",
+    testCase: "records planned state without spawning when the legal sequential slot is occupied",
     sourceFile: "src/dispatch/dispatch.ts",
-    guardMarker: "if (opts.maxConcurrent !== 1) {",
+    guardMarker: "if (this.active >= opts.maxConcurrent) {",
     mutate: (s) => s.replace(
-      "if (opts.maxConcurrent !== 1) {",
-      "if (false && opts.maxConcurrent !== 1) {"
+      "if (this.active >= opts.maxConcurrent) {",
+      "if (false && this.active >= opts.maxConcurrent) {"
     ),
   },
   // ── Malformed input (multiple source files) ──
@@ -549,30 +550,28 @@ function runMutationCheck(incidentClassId) {
   const disposableSource = cls.sourceFile.includes("rickgent_policies")
     ? join(disposablePolicies, cls.sourceFile)
     : join(disposableOrchestrator, cls.sourceFile);
-  require("fs").writeFileSync(disposableSource, mutated);
 
   try {
-    // Run the test
     const isPython = cls.testFile.endsWith(".py");
-    let result;
-
-    if (isPython) {
-      result = spawnSync(
-        "python3",
-        ["-m", "pytest", cls.testFile, "-x", "--no-header", "-q"],
-        {
-          cwd: disposablePolicies,
-          encoding: "utf-8",
-          timeout: 60000,
-          env: PATH_ENV(),
-          stdio: ["ignore", "pipe", "pipe"],
-        }
-      );
-    } else {
+    const runTargetedTest = () => {
+      if (isPython) {
+        return spawnSync(
+          "python3",
+          ["-m", "pytest", cls.testFile, "-k", cls.testCase, "-x", "--no-header", "-q"],
+          {
+            cwd: disposablePolicies,
+            encoding: "utf-8",
+            timeout: 60000,
+            env: PATH_ENV(),
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        );
+      }
       const vitestBin = join(disposableOrchestrator, "node_modules", ".bin", "vitest");
-      result = spawnSync(
+      const literalTestName = cls.testCase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return spawnSync(
         vitestBin,
-        ["run", cls.testFile, "--reporter=verbose"],
+        ["run", cls.testFile, "-t", literalTestName, "--reporter=json", "--no-cache"],
         {
           cwd: disposableOrchestrator,
           encoding: "utf-8",
@@ -581,21 +580,81 @@ function runMutationCheck(incidentClassId) {
           stdio: ["ignore", "pipe", "pipe"],
         }
       );
+    };
+
+    const baseline = runTargetedTest();
+    const baselineInfrastructure = baseline.error || baseline.signal || baseline.status === null;
+    let baselineJson = null;
+    const hasTargetAssertion = (parsed, status) => parsed.testResults?.some((suite) =>
+      suite.assertionResults?.some((assertion) =>
+        assertion.status === status &&
+        (assertion.title === cls.testCase || assertion.fullName?.endsWith(cls.testCase))
+      )
+    ) === true;
+    if (!isPython && !baselineInfrastructure) {
+      try {
+        baselineJson = JSON.parse(baseline.stdout || "");
+      } catch {
+        return {
+          id: incidentClassId,
+          guardFound: true,
+          testFailed: false,
+          error: "Mutation baseline produced no machine-readable Vitest result",
+          status: baseline.status,
+          sourceUnchanged: readFileSync(sourcePath, "utf-8") === original,
+        };
+      }
+    }
+    const baselinePassed = !baselineInfrastructure && baseline.status === 0 && (
+      isPython ||
+      (baselineJson.numFailedTests === 0 && hasTargetAssertion(baselineJson, "passed"))
+    );
+    if (!baselinePassed) {
+      return {
+        id: incidentClassId,
+        guardFound: true,
+        testFailed: false,
+        error: `Mutation baseline did not pass: ${baseline.error?.message || baseline.signal || baseline.stderr || baseline.stdout || `status ${baseline.status}`}`,
+        status: baseline.status,
+        sourceUnchanged: readFileSync(sourcePath, "utf-8") === original,
+      };
     }
 
+    writeFileSync(disposableSource, mutated);
+    const result = runTargetedTest();
+
     const infrastructureError = result.error || result.signal || result.status === null;
-    // A spawn error, signal, or timeout is infrastructure failure, not a kill.
-    const testFailed = !infrastructureError && result.status !== 0;
+    let mutationResultError = null;
+    let testFailed = false;
+    if (!infrastructureError && isPython) {
+      // Pytest exit 1 is an assertion/test failure; collection and usage errors
+      // use different exits and must never count as a killed mutant.
+      testFailed = result.status === 1;
+      if (!testFailed && result.status !== 0) mutationResultError = `pytest infrastructure/collection exit ${result.status}`;
+    } else if (!infrastructureError) {
+      try {
+        const parsed = JSON.parse(result.stdout || "");
+        testFailed = result.status !== 0 && parsed.numFailedTests >= 1 && hasTargetAssertion(parsed, "failed");
+        if (result.status !== 0 && !testFailed) {
+          mutationResultError = "Vitest failed without a failed targeted assertion";
+        }
+      } catch {
+        mutationResultError = "Mutation run produced no machine-readable Vitest result";
+      }
+    }
     return {
       id: incidentClassId,
       guardFound: true,
       testFailed,
       error: infrastructureError
         ? `Mutation test infrastructure failure: ${result.error?.message || result.signal || "no exit status"}`
+        : mutationResultError
+          ? mutationResultError
         : testFailed
           ? null
           : "Test passed with mutation applied (guard not tested)",
       stdout: result.stdout ? result.stdout.slice(-500) : undefined,
+      stderr: result.stderr ? result.stderr.slice(-5000) : undefined,
       status: result.status,
       sourceUnchanged: readFileSync(sourcePath, "utf-8") === original,
     };

@@ -3,9 +3,12 @@ import { execFileSync } from "child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { runBuild } from "../../src/lifecycle/build.js";
-import type { BuildDependencies, BuildOptions } from "../../src/lifecycle/build.js";
-import { FIXTURE_BUILD_DEPENDENCIES } from "../helpers/capabilities.js";
+import type { BuildOptions } from "../../src/lifecycle/build.js";
+import {
+  FIXTURE_BUILD_DEPENDENCIES,
+  runFixtureBuild,
+  type FixtureBuildDependencies,
+} from "../helpers/capabilities.js";
 
 const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
 const PRD_MIN = join(import.meta.dirname, "../../../fixtures/prd-min.md");
@@ -81,7 +84,7 @@ describe("fixture mutation capture is explicitly nonterminal", () => {
   it("emits only implementation_captured_nonterminal and cannot reach verification, delivery, or Done", async () => {
     let conformanceCalls = 0;
     let deslopCalls = 0;
-    const dependencies: BuildDependencies = {
+    const dependencies: FixtureBuildDependencies = {
       ...FIXTURE_BUILD_DEPENDENCIES,
       runConformanceGate() {
         conformanceCalls++;
@@ -92,7 +95,7 @@ describe("fixture mutation capture is explicitly nonterminal", () => {
         throw new Error("unreachable");
       },
     };
-    const result = await runBuild(options(), dependencies);
+    const result = await runFixtureBuild(options(), dependencies);
     expect(result.ticketsCaptured).toBe(1);
     expect(result.ticketsDone).toBe(0);
     expect(result.ticketsRecovered).toBe(0);
@@ -130,7 +133,7 @@ describe("fixture mutation capture is explicitly nonterminal", () => {
     ["no delta", { FIXTURE_UNVERIFIABLE_PATHS: "src/feature.ts" }],
     ["worker nonzero", { FIXTURE_FAIL_PATHS: "src/feature.ts" }],
   ])("produces no capture receipt for %s", async (_label, fixtureEnv) => {
-    const result = await runBuild(options(fixtureEnv), FIXTURE_BUILD_DEPENDENCIES);
+    const result = await runFixtureBuild(options(fixtureEnv));
     expect(result.ticketsCaptured).toBe(0);
     expect(result.captureReceipts).toEqual([]);
     expect(result.ticketsDone).toBe(0);
@@ -148,12 +151,64 @@ describe("fixture mutation capture is explicitly nonterminal", () => {
       FIXTURE_GIT_COMMIT: mode,
     });
     const callerHead = git(repo, ["rev-parse", "HEAD"]);
-    const result = await runBuild(opts, FIXTURE_BUILD_DEPENDENCIES);
+    const result = await runFixtureBuild(opts);
     expect(result.ticketsCaptured).toBe(0);
     expect(result.captureReceipts).toEqual([]);
     expect(result.ticketsDone).toBe(0);
     expect(git(repo, ["rev-parse", "HEAD"])).toBe(callerHead);
     const ledgerText = readFileSync(join(state, "dispatch-ledger.jsonl"), "utf-8");
     expect(ledgerText).not.toContain('"state":"completed"');
+  });
+
+  it("cannot resume an adversarial ticket-subject baseline or promote lifecycle state", async () => {
+    writeFileSync(join(repo, "adversarial.txt"), "not completion evidence\n");
+    git(repo, ["add", "--", "adversarial.txt"]);
+    git(repo, ["commit", "-q", "-m", "ticket: t01"]);
+    const callerHead = git(repo, ["rev-parse", "HEAD"]);
+    const spawnRecord = join(root, "spawn.json");
+
+    await expect(runFixtureBuild({
+      ...options({ FIXTURE_SPAWN_RECORD: spawnRecord }),
+      resume: true,
+    })).rejects.toThrow("RICKGENT_RESUME_UNAVAILABLE");
+
+    expect(git(repo, ["log", "-1", "--format=%s"])).toBe("ticket: t01");
+    expect(git(repo, ["rev-parse", "HEAD"])).toBe(callerHead);
+    expect(existsSync(spawnRecord)).toBe(false);
+    expect(existsSync(join(state, "registry.json"))).toBe(false);
+    expect(existsSync(join(state, "dispatch-ledger.jsonl"))).toBe(false);
+    expect(existsSync(join(state, "runs.jsonl"))).toBe(false);
+    expect(existsSync(join(state, "materialized-workers"))).toBe(false);
+  });
+
+  it("blocks a skipped required policy gate before allocation, materialization, or spawn", async () => {
+    const spawnRecord = join(root, "spawn.json");
+    let allocationCalls = 0;
+    const result = await runFixtureBuild(
+      options({ FIXTURE_SPAWN_RECORD: spawnRecord }),
+      {
+        ...FIXTURE_BUILD_DEPENDENCIES,
+        skipPolicyAttachment: true,
+        provisionRunWorkspace() {
+          allocationCalls++;
+          throw new Error("workspace allocation must remain unreachable");
+        },
+      },
+    );
+
+    expect(result.gateHit).toBe("policy-attachment-gate");
+    expect(result.outcome.status).toBe("failed");
+    expect(result.outcome.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reason: "required_gate_failed", gate: "policy-attachment" }),
+    ]));
+    expect(result.ticketsDispatched).toBe(0);
+    expect(result.ticketsCaptured).toBe(0);
+    expect(result.ticketsDone).toBe(0);
+    expect(allocationCalls).toBe(0);
+    expect(existsSync(spawnRecord)).toBe(false);
+    expect(existsSync(join(state, "runs.jsonl"))).toBe(false);
+    expect(existsSync(join(state, "registry.json"))).toBe(false);
+    expect(existsSync(join(state, "dispatch-ledger.jsonl"))).toBe(false);
+    expect(existsSync(join(state, "materialized-workers"))).toBe(false);
   });
 });

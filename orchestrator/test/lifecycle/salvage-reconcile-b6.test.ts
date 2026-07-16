@@ -3,7 +3,7 @@
 // REAL code path and observes the REAL effect (git delta, on-disk archive,
 // registry status, recovered ticket) — never a mock's return value.
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -13,12 +13,16 @@ import {
   dispatchIdString,
   dispatchLedgerPath,
   type DispatchEntry,
-} from "../../src/dispatch/dispatch.js";
+} from "../../dist-fixture/dispatch/dispatch.js";
 import { reconcile } from "../../src/lifecycle/reconcile.js";
-import { FIXTURE_CAPABILITY_GATE } from "../helpers/capabilities.js";
 import { SalvageExecutor } from "../../src/lifecycle/salvage.js";
 import type { SalvageInput } from "../../src/core/salvage.js";
 import { Registry, type PipelineStatus } from "../../src/lifecycle/registry.js";
+
+// Unit-only access to legacy reconciliation mechanics; not fixture authority.
+vi.mock("../../src/capabilities/runtime-gate.js", () => ({
+  RUNTIME_CAPABILITY_GATE: Object.freeze({ require(): void {} }),
+}));
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
@@ -90,7 +94,7 @@ describe("B6 — shared ledger schema round-trips append->reconcile", () => {
       }),
     );
 
-    const result = reconcile(tempDir, rickgentDir, undefined, FIXTURE_CAPABILITY_GATE);
+    const result = reconcile(tempDir, rickgentDir);
     expect(result.ticketsFound).toBeGreaterThan(0);
     const t = result.registry.tickets["T-RT"];
     expect(t).toBeDefined();
@@ -114,7 +118,7 @@ describe("B6 — shared ledger schema round-trips append->reconcile", () => {
         declared_paths: ["src"],
       }) + "\n",
     );
-    const result = reconcile(tempDir, rickgentDir, undefined, FIXTURE_CAPABILITY_GATE);
+    const result = reconcile(tempDir, rickgentDir);
     expect(result.registry.tickets["T-SNAKE"]).toBeUndefined();
   });
 
@@ -132,7 +136,7 @@ describe("B6 — shared ledger schema round-trips append->reconcile", () => {
       role: "impl",
     });
     ledger.append(baseEntry(dispatchId, { commitSha, baselineSha, declaredPaths: ["src"], treeChanged: true }));
-    expect(reconcile(tempDir, rickgentDir, undefined, FIXTURE_CAPABILITY_GATE).registry.tickets["T-PATH"]).toBeDefined();
+    expect(reconcile(tempDir, rickgentDir).registry.tickets["T-PATH"]).toBeDefined();
 
     // A non-default path is still consumed when reconcile is pointed at it.
     const customPath = join(rickgentDir, "custom-ledger.jsonl");
@@ -145,7 +149,7 @@ describe("B6 — shared ledger schema round-trips append->reconcile", () => {
       role: "impl",
     });
     customLedger.append(baseEntry(customId, { commitSha, baselineSha, declaredPaths: ["src"], treeChanged: true }));
-    const custom = reconcile(tempDir, rickgentDir, customPath, FIXTURE_CAPABILITY_GATE);
+    const custom = reconcile(tempDir, rickgentDir, customPath);
     expect(custom.registry.tickets["T-CUSTOM"]).toBeDefined();
   });
 
@@ -162,7 +166,7 @@ describe("B6 — shared ledger schema round-trips append->reconcile", () => {
       baseEntry(badId, { commitSha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", baselineSha, declaredPaths: ["src"], treeChanged: true }),
     );
 
-    const result = reconcile(tempDir, rickgentDir, undefined, FIXTURE_CAPABILITY_GATE);
+    const result = reconcile(tempDir, rickgentDir);
     expect(result.registry.tickets["T-GOOD"]?.status).toBe("Done");
     expect(result.registry.tickets["T-BAD"]?.status).not.toBe("Done");
   });

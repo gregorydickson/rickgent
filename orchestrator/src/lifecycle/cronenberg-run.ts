@@ -10,16 +10,19 @@ import { execFileSync, spawnSync } from "child_process";
 import { mkdirSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
-import {
-  PRODUCTION_CAPABILITY_GATE,
-  type CapabilityGate,
-} from "../capabilities/registry.js";
+import { RUNTIME_CAPABILITY_GATE } from "../capabilities/runtime-gate.js";
 import {
   buildCronenbergPlan,
   formatCronenbergPlan,
   type CronenbergFlags,
   type PlannedCommand,
 } from "./cronenberg.js";
+import {
+  failLifecycleCommand,
+  lifecycleCommandCompleted,
+  lifecycleCommandSucceeded,
+  type LifecycleCommandResult,
+} from "./command-result.js";
 
 const CRONENBERG_USAGE = `rickgent cronenberg — deterministic meta-router
 
@@ -151,23 +154,21 @@ function runChild(cmd: PlannedCommand, workingDir: string, childCliPath?: string
 export async function runCronenbergCommand(
   rest: string[],
   childCliPath?: string,
-  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
-): Promise<void> {
+): Promise<LifecycleCommandResult> {
   if (rest.includes("--help") || rest.includes("-h")) {
     console.log(CRONENBERG_USAGE);
-    return;
+    return lifecycleCommandSucceeded();
   }
 
   const { task, workingDir, forward, flags } = parseArgs(rest);
-  if (!flags.dryRun) capabilityGate.require("autonomous_dispatch");
+  if (!flags.dryRun) RUNTIME_CAPABILITY_GATE.require("autonomous_dispatch");
   const rickgentDir = process.env.RICKGENT_DIR ?? join(workingDir, ".rickgent");
   const diffLoc = measureDiffLoc(workingDir);
 
   const plan = buildCronenbergPlan({ task, workingDir, rickgentDir, forward, flags, diffLoc });
 
   if (!plan.ok) {
-    console.error(`rickgent cronenberg: ${plan.error}`);
-    process.exit(1);
+    failLifecycleCommand(`rickgent cronenberg: ${plan.error}`);
   }
 
   console.log(formatCronenbergPlan(plan));
@@ -175,7 +176,7 @@ export async function runCronenbergCommand(
   if (flags.dryRun) {
     console.log("");
     console.log("Dry run — plan only. Re-invoke without --dry-run to run the chain.");
-    return;
+    return lifecycleCommandSucceeded();
   }
 
   console.log("");
@@ -198,7 +199,8 @@ export async function runCronenbergCommand(
     const code = runChild(cmd, workingDir, childCliPath);
     if (code !== 0) {
       console.error(`rickgent cronenberg: step failed (exit ${code}): ${cmd.label}`);
-      process.exit(code);
+      return lifecycleCommandCompleted(code);
     }
   }
+  return lifecycleCommandSucceeded();
 }

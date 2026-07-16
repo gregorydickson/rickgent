@@ -1,11 +1,13 @@
 # Decision: Build Loop (B1 / M3)
 
-## Component
+> Status: target-design / historical decision record. This is not a statement of current `reliability_preview` availability. The compiled capability registry and `docs/reliability-preview.md` control; autonomous dispatch, resume/reconciliation, cross-vendor review, and delivery remain unavailable.
+
+## Target component
 `rickgent build <prd>`, `rickgent build --resume`, `rickgent pipeline <prd>` — the
 autonomous PRD → PR lifecycle that decomposes a PRD into tickets and drives each
 through the real Dispatcher, absorbing failures without human interaction.
 
-## Implementation
+## Historical target implementation
 
 - **`orchestrator/src/lifecycle/prd-parse.ts`** — tolerant markdown decomposition
   into the `PrdInput` the verdict core validates plus ≥1 `TicketPlan` (each ticket
@@ -64,10 +66,10 @@ failure is NOT an intervention.
 
 The conformance and deslop gates are observable in the build report output
 (`build: conformance gate — N/M ACs passed`, `build: deslop gate — checked N
-file(s), M finding(s)`) so the E2E test (VAL-E2E-001..004) can verify each named
-gate is live. They are skippable via `RICKGENT_SKIP_CONFORMANCE=1` and
-`RICKGENT_SKIP_DESLOP=1` (test-only controls for the distinctness assertion
-VAL-E2E-004); in production these are never set.
+file(s), M finding(s)`) so the historical E2E fixture (VAL-E2E-001..004) could
+observe each named gate. The pre-containment prototype used
+`RICKGENT_SKIP_CONFORMANCE=1` and `RICKGENT_SKIP_DESLOP=1`; reliability preview
+rejects these variables and exposes no public build execution path.
 
 Interventions are appended to `.rickgent/interventions.jsonl`; `countInterventions`
 reads the durable count (target 0 for a fully autonomous run).

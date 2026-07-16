@@ -1,16 +1,15 @@
-import type { CapabilityGate } from "../../src/capabilities/registry.js";
-import type { BuildDependencies } from "../../src/lifecycle/build.js";
+import type {
+  BuildOptions,
+  BuildResult,
+  InternalBuildDependencies as FixtureBuildDependencies,
+} from "../../src/lifecycle/build.js";
+import { runFixtureBuild as executeFixtureBuild } from "../../dist-fixture/testing/fixture-runtime.js";
 
-export const FIXTURE_CAPABILITY_GATE: CapabilityGate = Object.freeze({
-  require(): void {
-    // Explicit fixture dependency: never constructed by a production entrypoint.
-  },
-});
+export type { FixtureBuildDependencies };
 
-export const FIXTURE_BUILD_DEPENDENCIES: BuildDependencies = Object.freeze({
-  capabilityGate: FIXTURE_CAPABILITY_GATE,
+export const FIXTURE_BUILD_DEPENDENCIES: FixtureBuildDependencies = Object.freeze({
   assertEnvironment(): void {
-    // Historical fixtures inject their gate controls directly.
+    // Historical fixtures explicitly waive environment-only preflight checks.
   },
   verifyPolicyAttachment() {
     return {
@@ -21,3 +20,10 @@ export const FIXTURE_BUILD_DEPENDENCIES: BuildDependencies = Object.freeze({
     };
   },
 });
+
+export function runFixtureBuild(
+  options: BuildOptions,
+  dependencies: FixtureBuildDependencies = FIXTURE_BUILD_DEPENDENCIES,
+): Promise<BuildResult> {
+  return executeFixtureBuild(options, dependencies);
+}

@@ -25,10 +25,7 @@ import {
   writeFileSync,
 } from "fs";
 import { join, resolve, relative } from "path";
-import {
-  PRODUCTION_CAPABILITY_GATE,
-  type CapabilityGate,
-} from "../capabilities/registry.js";
+import { RUNTIME_CAPABILITY_GATE } from "../capabilities/runtime-gate.js";
 import {
   MicroverseLoop,
   parseLastNumericLine,
@@ -45,6 +42,12 @@ import {
   type Principle,
   type PriorityBucket,
 } from "./szechuan-principles.js";
+import {
+  failLifecycleCommand,
+  lifecycleCommandCompleted,
+  lifecycleCommandSucceeded,
+  type LifecycleCommandResult,
+} from "./command-result.js";
 
 const SZECHUAN_USAGE = `rickgent szechuan — iterative deslopping with 30+ coding principles
 
@@ -576,17 +579,17 @@ function mapClassification(classification: string): string {
 
 export async function runSzechuanCommand(
   rest: string[],
-  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
-): Promise<void> {
+): Promise<LifecycleCommandResult> {
   if (rest.includes("--help") || rest.includes("-h")) {
     console.log(SZECHUAN_USAGE);
-    return;
+    return lifecycleCommandSucceeded();
   }
 
   // ── Parse flags ────────────────────────────────────────────────────────────
   const dryRun = rest.includes("--dry-run");
-  if (rest.includes("--resume")) capabilityGate.require("resume_retry");
-  if (!dryRun) capabilityGate.require("autonomous_dispatch");
+  if (rest.includes("--resume")) RUNTIME_CAPABILITY_GATE.require("resume_retry");
+  // Dry-run still invokes the agent judge and writes analysis/state.
+  RUNTIME_CAPABILITY_GATE.require("autonomous_dispatch");
   const domain = flagValue(rest, "--domain");
   const focus = flagValue(rest, "--focus");
   const designSafe = rest.includes("--design-safe");
@@ -605,17 +608,14 @@ export async function runSzechuanCommand(
 
   // ── Fail-closed input validation (before any spawn or state write) ──────
   if (!isDir(agentDir)) {
-    console.error(`rickgent szechuan: missing agent directory: ${agentDir}`);
-    process.exit(1);
+    failLifecycleCommand(`rickgent szechuan: missing agent directory: ${agentDir}`);
   }
   if (!isDir(workingDir)) {
-    console.error(`rickgent szechuan: missing repo directory: ${workingDir}`);
-    process.exit(1);
+    failLifecycleCommand(`rickgent szechuan: missing repo directory: ${workingDir}`);
   }
 
   if (domain && !isKnownDomain(domain)) {
-    console.error(`rickgent szechuan: unknown domain "${domain}". Available domains: ${availableDomains().join(", ")}`);
-    process.exit(1);
+    failLifecycleCommand(`rickgent szechuan: unknown domain "${domain}". Available domains: ${availableDomains().join(", ")}`);
   }
 
   // ── Load and validate principles catalog ───────────────────────────────────
@@ -626,8 +626,7 @@ export async function runSzechuanCommand(
 
   const validation = validateCatalog(catalog);
   if (!validation.valid) {
-    console.error(`rickgent szechuan: catalog validation failed: ${validation.issues.join("; ")}`);
-    process.exit(1);
+    failLifecycleCommand(`rickgent szechuan: catalog validation failed: ${validation.issues.join("; ")}`);
   }
 
   const rickgentDir = getRickgentDir();
@@ -645,8 +644,7 @@ export async function runSzechuanCommand(
   if (resume) {
     prior = readSzechuanState(statePath);
     if (!prior) {
-      console.error(`rickgent szechuan: --resume but no readable state at ${statePath}`);
-      process.exit(1);
+      failLifecycleCommand(`rickgent szechuan: --resume but no readable state at ${statePath}`);
     }
   }
 
@@ -668,8 +666,7 @@ export async function runSzechuanCommand(
     // Measure violation count via the judge
     const measured = measureViolationCount(agentDir, workingDir, catalog, focus ?? null, designSafe, dataDir);
     if (measured.count === null) {
-      console.error("rickgent szechuan: --dry-run judge failed to produce a numeric violation count");
-      process.exit(1);
+      failLifecycleCommand("rickgent szechuan: --dry-run judge failed to produce a numeric violation count");
     }
 
     // Write violation catalog to gap_analysis.md
@@ -708,7 +705,7 @@ export async function runSzechuanCommand(
       "=".repeat(50),
     ];
     console.log(lines.join("\n"));
-    return;
+    return lifecycleCommandSucceeded();
   }
 
   // ── Measure baseline violation count ────────────────────────────────────────
@@ -722,8 +719,7 @@ export async function runSzechuanCommand(
 
   if (prior) {
     if (typeof prior.baselineCount !== "number" || !Number.isFinite(prior.baselineCount)) {
-      console.error("rickgent szechuan: --resume state has no numeric baselineCount");
-      process.exit(1);
+      failLifecycleCommand("rickgent szechuan: --resume state has no numeric baselineCount");
     }
     baselineCount = prior.baselineCount;
     // Reconstruct accepted-score series from convergence history (improved entries).
@@ -740,8 +736,7 @@ export async function runSzechuanCommand(
   } else {
     const measured = measureViolationCount(agentDir, workingDir, catalog, focus ?? null, designSafe, dataDir);
     if (measured.count === null) {
-      console.error("rickgent szechuan: LLM judge failed to produce a numeric violation count for the baseline");
-      process.exit(1);
+      failLifecycleCommand("rickgent szechuan: LLM judge failed to produce a numeric violation count for the baseline");
     }
     baselineCount = measured.count;
     preFixViolations.push(measured.violations);
@@ -769,7 +764,6 @@ export async function runSzechuanCommand(
   };
 
   const loop = new MicroverseLoop({
-    capabilityGate,
     workingDir,
     ownedPaths,
     metricFn,
@@ -881,9 +875,7 @@ export async function runSzechuanCommand(
   console.log(lines.join("\n"));
 
   // Non-convergence exits non-zero (fail-closed on incomplete deslopping).
-  if (!result.converged) {
-    process.exit(1);
-  }
+  return lifecycleCommandCompleted(result.converged ? 0 : 1);
 }
 
 function renderViolationCatalog(

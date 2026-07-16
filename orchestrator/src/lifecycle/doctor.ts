@@ -5,6 +5,7 @@ import { BUILD_COMMIT } from "../build-commit.js";
 import { RELEASE_CHANNEL, RELEASE_LABEL } from "../capabilities/registry.js";
 import { execFileSync } from "child_process";
 import { existsSync } from "fs";
+import { join } from "path";
 import { fileURLToPath } from "url";
 
 export interface DoctorResult {
@@ -16,6 +17,14 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
   const checks: { name: string; pass: boolean; detail: string }[] = [];
   const cliEntrypoint = fileURLToPath(new URL("../../dist/cli.js", import.meta.url));
   const pythonEnv = { ...process.env, RICKGENT_BIN: cliEntrypoint };
+  // Source checkouts default to their bundled agents. Packed installations
+  // discover external bundles through the same explicit variables consumed by
+  // the configured-attachment audit below.
+  const repoRoot = new URL("../../../", import.meta.url);
+  const managerDir = process.env.RICKGENT_MANAGER_DIR
+    ?? fileURLToPath(new URL("agents/rickgent/", repoRoot));
+  const workerDir = process.env.RICKGENT_WORKER_DIR
+    ?? fileURLToPath(new URL("agents/rickgent/agents/worker/", repoRoot));
 
   // 1. build_commit is available
   const commitValue: string = BUILD_COMMIT;
@@ -75,15 +84,22 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
   }
   checks.push({ name: "policy_registry", pass: registryOk, detail: registryDetail });
 
-  // 5. agent bundle exists — resolve relative to repo root
-  // dist/lifecycle/doctor.js → ../../.. = rickgent/ (repo root)
-  const repoRoot = new URL("../../../", import.meta.url);
-  const agentPath = new URL("agents/rickgent/config.yaml", repoRoot);
-  const agentExists = existsSync(agentPath);
+  // 5. Both configured agent bundles exist. Registration is not attachment,
+  // but the audit cannot be meaningful unless both effective configs exist.
+  const managerConfig = join(managerDir, "config.yaml");
+  const workerConfig = join(workerDir, "config.yaml");
+  const managerExists = existsSync(managerConfig);
+  const workerExists = existsSync(workerConfig);
+  const agentExists = managerExists && workerExists;
   checks.push({
     name: "agent_bundle",
     pass: agentExists,
-    detail: agentExists ? "agents/rickgent/config.yaml found" : "agents/rickgent/config.yaml missing",
+    detail: agentExists
+      ? "configured manager + worker config.yaml files found"
+      : [
+        managerExists ? null : `manager config missing: ${managerConfig}`,
+        workerExists ? null : `worker config missing: ${workerConfig}`,
+      ].filter((entry): entry is string => entry !== null).join("; "),
   });
 
   // 6. verdict CLI works (self-test with a simple completion check)
@@ -132,9 +148,6 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
   // effective set is read from `spec.guardrails.policies` via the omnigent
   // parser. The health audit returns non-zero when either
   // bundle's effective attached set is a strict subset of REQUIRED_POLICIES.
-  const managerDir = process.env.RICKGENT_MANAGER_DIR ?? new URL("agents/rickgent", repoRoot).pathname;
-  const workerDir =
-    process.env.RICKGENT_WORKER_DIR ?? new URL("agents/rickgent/agents/worker", repoRoot).pathname;
   let attachOk = false;
   let attachDetail = "";
   try {

@@ -348,9 +348,11 @@ describe("rickgent cronenberg CLI (M0)", () => {
     expect(metaphorLine(r.stdout)).toBe("");
   });
 
-  // Delegation (non-dry-run) — cronenberg runs the chosen command as a child
-  // rickgent process; the agent spawning is that child's responsibility.
-  it("non-dry-run delegates to the chosen metaphor command (child rickgent process)", () => {
+  // Delegation reaches the selected child, but raw-metric Microverse remains a
+  // contracted capability denial and cannot create state or spawn an agent.
+  it("non-dry-run surfaces the selected child's raw-shell denial without side effects", () => {
+    const headBefore = git(ctx.repo, ["rev-parse", "HEAD"]);
+    const statusBefore = git(ctx.repo, ["status", "--porcelain"]);
     const r = run(ctx, [
       "--task",
       "optimize coverage to 90%",
@@ -365,9 +367,13 @@ describe("rickgent cronenberg CLI (M0)", () => {
       "--owned-paths",
       "src",
     ]);
-    expect(r.status).toBe(0);
+    expect(r.status).toBe(3);
     expect(metaphorLine(r.stdout)).toBe("metaphor: microverse");
-    // The delegated microverse child measured the metric and wrote state.
-    expect(existsSync(join(ctx.rickgentDir, "microverse.json"))).toBe(true);
+    expect(r.stderr).toContain("RICKGENT_CAPABILITY_UNAVAILABLE");
+    expect(r.stderr).toContain("RICKGENT_RAW_SHELL_UNAVAILABLE");
+    expect(existsSync(join(ctx.rickgentDir, "microverse.json"))).toBe(false);
+    expect(spawnCount(ctx)).toBe(0);
+    expect(git(ctx.repo, ["rev-parse", "HEAD"])).toBe(headBefore);
+    expect(git(ctx.repo, ["status", "--porcelain"])).toBe(statusBefore);
   });
 });

@@ -1,5 +1,7 @@
 # Decision: Session Resume
 
+> Status: target-design / historical decision record. This is not a statement of current `reliability_preview` availability. The compiled capability registry and `docs/reliability-preview.md` control; autonomous dispatch, resume/reconciliation, cross-vendor review, and delivery remain unavailable.
+
 ## Component
 §2 matrix row — session resume (restore a paused/crashed pipeline to where it was and continue).
 
@@ -57,7 +59,7 @@ Failure modes:
 ## Evaluation
 For Rickgent's goals, Omnigent's `resume_dispatch.py` is the WRONG layer and Pickle Rick's pipeline-level resume is the RIGHT layer — but Rickgent cannot port Pickle Rick's verbatim because it is coupled to Pickle Rick's runtime.
 
-- Omnigent resume is conversation/wrapper-level restart only. It fetches a conversation by id, reads its wrapper label, and re-launches the matching native wrapper (`resume_dispatch.py:_dispatch_by_runtime`, `_dispatch_wrapper`). There is no notion of tickets, phases, baselines, or reconcile-against-git. Rickgent's resume is a pipeline-level requirement (v0.1), not a conversation-level restart — so Omnigent resume does not satisfy it.
+- Omnigent resume is conversation/wrapper-level restart only. It fetches a conversation by id, reads its wrapper label, and re-launches the matching native wrapper (`resume_dispatch.py:_dispatch_by_runtime`, `_dispatch_wrapper`). There is no notion of tickets, phases, baselines, or reconcile-against-git. Rickgent's target resume design is pipeline-level, not a conversation-level restart — so Omnigent resume does not satisfy it.
 - Pickle Rick's `--resume` + `pickle-recover` is exactly the pipeline-level resume Rickgent needs: read state, recompute from git truth, ff-reattach orphans, salvage/reset inconsistent tickets, re-dispatch the next runnable ticket. The C5 self-heal (`setup.ts:1193, 1344`), the four `pickle-recover` transitions (`pickle-recover.ts:executeTransition`), and the `reconcileTicketTruth` reconcile (`mux-runner.ts`) are the right semantics.
 - But Pickle Rick's resume is tightly coupled to its own runtime: `state.json` schema (`LATEST_SCHEMA_VERSION=5`, `V3_STATE_SHAPE_MARKERS`), the `recovery_exhausted` exit-reason gate, `salvageTicket` / `detectAndRecoverHeadRegression` / `reconcileTicketTruth` internals, the `StateManager.update`-only write path, and the `--resume-from-todo` / `--salvage` / `--reattach-orphan` / `--reset-ticket` / `--reactivate` subcommand surface. Rickgent should PORT THE SEMANTICS (registry.json + git-truth reconcile + re-dispatch), not the Pickle Rick CLI surface or state.json schema.
 
@@ -76,7 +78,7 @@ The finding is adopted as written.
 PORT (Pickle Rick) — Rickgent needs its own resume layer (`.rickgent/registry.json` + git-truth reconcile + orphan-reattach + salvage/reset + re-dispatch), modeled on Pickle Rick's pipeline-level resume semantics, NOT on Omnigent's conversation-level wrapper restart.
 
 ## Reasoning
-Rickgent's resume is a v0.1 requirement and it is pipeline-level, not conversation-level. Omnigent's `resume_dispatch.py` does not satisfy it: it restarts a wrapper attached to a conversation id (`_dispatch_by_runtime` → `_dispatch_wrapper`), with no reconcile against git truth, no orphan-reattach, no salvage/reset, and no notion of tickets or phases. Reusing Omnigent resume would leave Rickgent with no way to recover a crashed pipeline — only a way to re-open a chat.
+Rickgent's target resume design is pipeline-level, not conversation-level. Omnigent's `resume_dispatch.py` does not satisfy it: it restarts a wrapper attached to a conversation id (`_dispatch_by_runtime` → `_dispatch_wrapper`), with no reconcile against git truth, no orphan-reattach, no salvage/reset, and no notion of tickets or phases. Reusing Omnigent resume would leave the target system with no way to recover a crashed pipeline — only a way to re-open a chat.
 
 Pickle Rick's pipeline-level resume is the right model. The `--resume` flag (`setup.ts:664-667`) reads `state.json`, recomputes missing fields from git truth, and heals the pipeline. The C5 self-heal (`setup.ts:1193, 1344`) ff-reattaches orphaned commits. `pickle-recover` (`pickle-recover.ts:runRecover`) performs exactly-one transitions: `--resume-from-todo` (re-queue lowest runnable Todo + ff-reattach), `--salvage` (commit+Done / archive+Todo / ff-reattach / no-op per tree+gate), `--reattach-orphan` (ff-only), `--reset-ticket` (archive+resetTodo), `--reactivate` (un-terminalize). `reconcileTicketTruth` (`mux-runner.ts:reconcileTicketStateDesync`) reconciles frontmatter against git truth at resume and at every terminal finalize — git is ground truth, state.json is a cache.
 

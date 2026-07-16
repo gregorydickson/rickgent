@@ -10,11 +10,8 @@ import {
   isolatedDataDir,
   observeDbSession,
 } from "./evidence.js";
-import {
-  PRODUCTION_CAPABILITY_GATE,
-  type CapabilityGate,
-  InputContractError,
-} from "../capabilities/registry.js";
+import { InputContractError } from "../capabilities/registry.js";
+import { RUNTIME_CAPABILITY_GATE } from "../capabilities/runtime-gate.js";
 import {
   runWorkspaceReadyForSpawn,
   type ReadyRunWorkspace,
@@ -221,7 +218,6 @@ export class Dispatcher {
     private ledger: DispatchLedger,
     private lock: TicketLock,
     private rickgentDir: string,
-    private capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
   ) {}
 
   get activeCount(): number {
@@ -232,7 +228,7 @@ export class Dispatcher {
     if (opts.maxConcurrent !== 1) {
       throw new InputContractError("maxConcurrent must be exactly 1 for the sequential fixture profile");
     }
-    this.capabilityGate.require("autonomous_dispatch");
+    RUNTIME_CAPABILITY_GATE.require("autonomous_dispatch");
     const idStr = dispatchIdString(id);
 
     // Idempotency check — return recorded terminal state without re-spawning

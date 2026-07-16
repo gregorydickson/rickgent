@@ -12,13 +12,12 @@ import {
   TicketLock,
   type DispatchEntry,
   type DispatchId,
-} from "../../src/dispatch/dispatch.js";
+} from "../../dist-fixture/dispatch/dispatch.js";
 import {
   finalizeRunWorkspace,
   provisionRunWorkspace,
   type ReadyRunWorkspace,
 } from "../../src/git/run-workspace.js";
-import { FIXTURE_CAPABILITY_GATE } from "../helpers/capabilities.js";
 
 const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
 const AGENT_ROOT = join(import.meta.dirname, "../../../agents/rickgent");
@@ -68,7 +67,6 @@ describe("M1 capture-only dispatch evidence", () => {
       new DispatchLedger(ledgerPath),
       new TicketLock(join(root, "locks")),
       root,
-      FIXTURE_CAPABILITY_GATE,
     );
   });
 
@@ -126,7 +124,6 @@ describe("M1 capture-only dispatch evidence", () => {
       isolatedLedger,
       new TicketLock(join(root, "isolated-locks")),
       root,
-      FIXTURE_CAPABILITY_GATE,
     );
     await expect(isolated.dispatch(id, {
       agentDir: AGENT_ROOT,

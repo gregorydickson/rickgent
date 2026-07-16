@@ -22,6 +22,9 @@ import { ensureBranch } from "../../src/lifecycle/pr-flow.js";
 import { runPrdCommand } from "../../src/lifecycle/prd-interview.js";
 import { reconcile } from "../../src/lifecycle/reconcile.js";
 import { routeDispatch, type ModelEntry } from "../../src/lifecycle/routing.js";
+import { runSzechuanCommand } from "../../src/lifecycle/szechuan-cli.js";
+import { runAnatomyCommand } from "../../src/lifecycle/anatomy.js";
+import { main } from "../../src/index.js";
 
 const CLI = join(import.meta.dirname, "../../dist/cli.js");
 const roots: string[] = [];
@@ -159,6 +162,52 @@ describe("M1 capability contraction", () => {
       iterationDeadlineMs: 100,
     }).run()).rejects.toThrow("RICKGENT_RAW_SHELL_UNAVAILABLE");
     await expect(runPrdCommand([])).rejects.toThrow("RICKGENT_AUTONOMOUS_FIXTURE_ONLY");
+    await expect(runPrdCommand(["--from", join(root, "missing.md")]))
+      .rejects.toThrow("RICKGENT_AUTONOMOUS_FIXTURE_ONLY");
+    await expect(runSzechuanCommand(["--dry-run", "--repo", root]))
+      .rejects.toThrow("RICKGENT_AUTONOMOUS_FIXTURE_ONLY");
+    await expect(runAnatomyCommand(["--dry-run", "--repo", root]))
+      .rejects.toThrow("RICKGENT_AUTONOMOUS_FIXTURE_ONLY");
+  });
+
+  it("keeps capability authority out of public build and CLI call signatures", async () => {
+    const root = tempRoot("cap-public-api");
+    const noOpGate = { require(): void {} };
+
+    await expect(Reflect.apply(runBuild, undefined, [
+      buildOptions(root),
+      { capabilityGate: noOpGate, assertEnvironment(): void {} },
+    ])).rejects.toThrow("RICKGENT_AUTONOMOUS_FIXTURE_ONLY");
+
+    await expect(Reflect.apply(main, undefined, [
+      ["prd", "--from", join(root, "missing.md")],
+      { capabilityGate: noOpGate, assertEnvironment(): void {} },
+    ])).rejects.toThrow("RICKGENT_AUTONOMOUS_FIXTURE_ONLY");
+
+    const packageJson = JSON.parse(readFileSync(join(import.meta.dirname, "../../package.json"), "utf-8")) as {
+      exports: Record<string, string>;
+    };
+    expect(packageJson.exports).toEqual({
+      ".": "./dist/index.js",
+      "./package.json": "./package.json",
+    });
+
+    const packageRoot = join(import.meta.dirname, "../..");
+    const publicApi = spawnSync(process.execPath, [
+      "--input-type=module",
+      "-e",
+      "const api = await import('rickgent'); console.log(Object.keys(api).sort().join(','));",
+    ], { cwd: packageRoot, encoding: "utf-8" });
+    expect(publicApi.status, publicApi.stderr).toBe(0);
+    expect(publicApi.stdout.trim()).toBe("handleFatal,main");
+
+    const fixtureSubpath = spawnSync(process.execPath, [
+      "--input-type=module",
+      "-e",
+      "await import('rickgent/testing/fixture-runtime.js');",
+    ], { cwd: packageRoot, encoding: "utf-8" });
+    expect(fixtureSubpath.status).not.toBe(0);
+    expect(fixtureSubpath.stderr).toContain("ERR_PACKAGE_PATH_NOT_EXPORTED");
   });
 
   it("rejects unknown, malformed, duplicate, and advertised-but-unparsed CLI flags", () => {

@@ -3,6 +3,7 @@ import { execFileSync } from "child_process";
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { doctorJson } from "../../src/commands/doctor.js";
 
 const cliPath = join(import.meta.dirname, "../../dist/cli.js");
 
@@ -26,6 +27,62 @@ function runDoctor(env: NodeJS.ProcessEnv, asJson = false): { code: number; out:
 }
 
 describe("doctor policy-attachment audit (VAL-ATTACH-016/017)", () => {
+  it("fails aggregate health when the runtime toolchain is unsupported", () => {
+    const unsupportedNode = doctorJson(
+      { ok: true, report: "fixture health passed" },
+      {
+        nodeVersion: "23.9.0",
+        pythonVersion: "3.14.3",
+        packageManager: "pnpm@10.22.0",
+        lockfileVersion: "9.0",
+        platform: "darwin",
+      },
+    );
+    expect(unsupportedNode.toolchain.node.status).toBe("fail");
+    expect(unsupportedNode.health.ok).toBe(false);
+
+    const unsupportedPlatform = doctorJson(
+      { ok: true, report: "fixture health passed" },
+      {
+        nodeVersion: "24.13.1",
+        pythonVersion: "3.14.3",
+        packageManager: "pnpm@10.22.0",
+        lockfileVersion: "9.0",
+        platform: "win32",
+      },
+    );
+    expect(unsupportedPlatform.toolchain.platform.status).toBe("fail");
+    expect(unsupportedPlatform.health.ok).toBe(false);
+
+    for (const [field, runtime] of [
+      ["python", {
+        nodeVersion: "24.13.1",
+        pythonVersion: "3.15.0",
+        packageManager: "pnpm@10.22.0",
+        lockfileVersion: "9.0",
+        platform: "darwin" as const,
+      }],
+      ["package_manager", {
+        nodeVersion: "24.13.1",
+        pythonVersion: "3.14.3",
+        packageManager: "pnpm@10.21.0",
+        lockfileVersion: "9.0",
+        platform: "darwin" as const,
+      }],
+      ["lockfile", {
+        nodeVersion: "24.13.1",
+        pythonVersion: "3.14.3",
+        packageManager: "pnpm@10.22.0",
+        lockfileVersion: "8.0",
+        platform: "darwin" as const,
+      }],
+    ] as const) {
+      const payload = doctorJson({ ok: true, report: "fixture health passed" }, runtime);
+      expect(payload.toolchain[field].status).toBe("fail");
+      expect(payload.health.ok).toBe(false);
+    }
+  });
+
   it("VAL-ATTACH-017: exits 0 and reports attachment PASS with the full required set", () => {
     const { code, out } = runDoctor({ ...process.env });
     expect(code).toBe(0);

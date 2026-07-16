@@ -25,11 +25,14 @@ import {
   writeFileSync,
 } from "fs";
 import { join, resolve, relative } from "path";
-import {
-  PRODUCTION_CAPABILITY_GATE,
-  type CapabilityGate,
-} from "../capabilities/registry.js";
+import { RUNTIME_CAPABILITY_GATE } from "../capabilities/runtime-gate.js";
 import { isPathInScope } from "../core/scope.js";
+import {
+  failLifecycleCommand,
+  lifecycleCommandCompleted,
+  lifecycleCommandSucceeded,
+  type LifecycleCommandResult,
+} from "./command-result.js";
 
 const ANATOMY_USAGE = `rickgent anatomy — deep subsystem review with 3-phase protocol
 
@@ -750,17 +753,17 @@ function advanceRotation(state: AnatomyState): void {
 
 export async function runAnatomyCommand(
   rest: string[],
-  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
-): Promise<void> {
+): Promise<LifecycleCommandResult> {
   if (rest.includes("--help") || rest.includes("-h")) {
     console.log(ANATOMY_USAGE);
-    return;
+    return lifecycleCommandSucceeded();
   }
 
   // ── Parse flags ────────────────────────────────────────────────────────────
   const dryRun = rest.includes("--dry-run");
-  if (rest.includes("--resume")) capabilityGate.require("resume_retry");
-  if (!dryRun) capabilityGate.require("autonomous_dispatch");
+  if (rest.includes("--resume")) RUNTIME_CAPABILITY_GATE.require("resume_retry");
+  // Dry-run still spawns one review agent per subsystem and persists state.
+  RUNTIME_CAPABILITY_GATE.require("autonomous_dispatch");
   const resume = rest.includes("--resume");
   const maxIterations = parseIntFlag(flagValue(rest, "--max-iterations"), 100);
   const stallLimit = parseIntFlag(flagValue(rest, "--stall-limit"), 3);
@@ -776,12 +779,10 @@ export async function runAnatomyCommand(
 
   // ── Fail-closed input validation (before any spawn or state write) ──────
   if (!isDir(agentDir)) {
-    console.error(`rickgent anatomy: missing agent directory: ${agentDir}`);
-    process.exit(1);
+    failLifecycleCommand(`rickgent anatomy: missing agent directory: ${agentDir}`);
   }
   if (!isDir(workingDir)) {
-    console.error(`rickgent anatomy: missing repo directory: ${workingDir}`);
-    process.exit(1);
+    failLifecycleCommand(`rickgent anatomy: missing repo directory: ${workingDir}`);
   }
 
   const rickgentDir = getRickgentDir();
@@ -795,8 +796,7 @@ export async function runAnatomyCommand(
   if (resume) {
     prior = readAnatomyState(statePath);
     if (!prior) {
-      console.error(`rickgent anatomy: --resume but no readable state at ${statePath}`);
-      process.exit(1);
+      failLifecycleCommand(`rickgent anatomy: --resume but no readable state at ${statePath}`);
     }
   }
 
@@ -806,14 +806,12 @@ export async function runAnatomyCommand(
     state = prior;
     // Validate state integrity
     if (!Array.isArray(state.subsystems) || state.subsystems.length === 0) {
-      console.error("rickgent anatomy: --resume state has no subsystems");
-      process.exit(1);
+      failLifecycleCommand("rickgent anatomy: --resume state has no subsystems");
     }
   } else {
     const subsystems = discoverSubsystems(workingDir);
     if (subsystems.length === 0) {
-      console.error(`rickgent anatomy: no subsystems discovered in ${workingDir} (need 3+ source files per immediate subdir)`);
-      process.exit(1);
+      failLifecycleCommand(`rickgent anatomy: no subsystems discovered in ${workingDir} (need 3+ source files per immediate subdir)`);
     }
     state = initState(subsystems, stallLimit);
   }
@@ -834,8 +832,7 @@ export async function runAnatomyCommand(
       );
 
       if (reviewResult.error) {
-        console.error(`rickgent anatomy: --dry-run REVIEW spawn failed for subsystem ${subsystem}`);
-        process.exit(1);
+        failLifecycleCommand(`rickgent anatomy: --dry-run REVIEW spawn failed for subsystem ${subsystem}`);
       }
 
       const { findings } = parseFindingsFromReview(reviewResult.stdout);
@@ -901,7 +898,7 @@ export async function runAnatomyCommand(
       "=".repeat(50),
     ];
     console.log(lines.join("\n"));
-    return;
+    return lifecycleCommandSucceeded();
   }
 
   // ── Main loop: 3-phase protocol per iteration ───────────────────────────────
@@ -949,8 +946,7 @@ export async function runAnatomyCommand(
     );
 
     if (reviewResult.error) {
-      console.error(`rickgent anatomy: REVIEW spawn failed for subsystem ${subsystem}`);
-      process.exit(1);
+      failLifecycleCommand(`rickgent anatomy: REVIEW spawn failed for subsystem ${subsystem}`);
     }
 
     const { findings } = parseFindingsFromReview(reviewResult.stdout);
@@ -1014,8 +1010,7 @@ export async function runAnatomyCommand(
     );
 
     if (fixResult.error) {
-      console.error(`rickgent anatomy: FIX spawn failed for subsystem ${subsystem}`);
-      process.exit(1);
+      failLifecycleCommand(`rickgent anatomy: FIX spawn failed for subsystem ${subsystem}`);
     }
 
     // Check FIX worker exit code — non-zero means the fix failed (convention #2:
@@ -1119,8 +1114,7 @@ export async function runAnatomyCommand(
     );
 
     if (verifyResult.error) {
-      console.error(`rickgent anatomy: VERIFY spawn failed for subsystem ${subsystem}`);
-      process.exit(1);
+      failLifecycleCommand(`rickgent anatomy: VERIFY spawn failed for subsystem ${subsystem}`);
     }
 
     const { passed, details: verifyDetails } = parseVerifyResult(verifyResult.stdout);
@@ -1261,7 +1255,5 @@ export async function runAnatomyCommand(
   console.log(lines.join("\n"));
 
   // Non-convergence exits non-zero (fail-closed on incomplete review).
-  if (!converged) {
-    process.exit(1);
-  }
+  return lifecycleCommandCompleted(converged ? 0 : 1);
 }

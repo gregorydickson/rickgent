@@ -250,6 +250,7 @@
       "proof_corpus": [
         "orchestrator/test/fixtures/ticket-contract/valid.json",
         "orchestrator/test/fixtures/ticket-contract/canonicalization-vectors.json",
+        "orchestrator/test/fixtures/ticket-contract/lexical-parity-vectors.json",
         "orchestrator/test/fixtures/ticket-contract/invalid",
         "orchestrator/test/fixtures/ticket-contract/negative-corpus.json"
       ],

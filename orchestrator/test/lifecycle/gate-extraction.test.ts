@@ -1,14 +1,19 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
 import { runConformanceGate, type ConformanceResult } from "../../src/lifecycle/citadel.js";
-import { FIXTURE_CAPABILITY_GATE } from "../helpers/capabilities.js";
 import { runDeslopGate, type DeslopResult } from "../../src/lifecycle/szechuan.js";
 import type { AcceptanceCriterion } from "../../src/core/prd.js";
 import { sealTicketContracts } from "../../src/contracts/ticket-contract.js";
+
+// Unit-only parity coverage for a legacy raw-command gate; public raw shell is
+// still unavailable and the contracted M1 fixture authority does not grant it.
+vi.mock("../../src/capabilities/runtime-gate.js", () => ({
+  RUNTIME_CAPABILITY_GATE: Object.freeze({ require(): void {} }),
+}));
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BUILD_TS = join(HERE, "..", "..", "src", "lifecycle", "build.ts");
@@ -51,7 +56,6 @@ describe("runConformanceGate parity (VAL-M0-005)", () => {
       acceptanceCriteria,
       process.cwd(),
       process.env,
-      FIXTURE_CAPABILITY_GATE,
     );
 
     expect(result.total).toBe(4);

@@ -10,7 +10,11 @@ from rickgent_policies import scope_fence, completion_evidence, cross_vendor_rev
 
 class TestFalseCompletion:
     """Drill 1: worker claims done, no commit → DENIED."""
-    def test_denies_done_without_commit(self):
+    def test_denies_done_without_commit(self, monkeypatch):
+        monkeypatch.setattr(
+            "rickgent_policies._verified_verdict",
+            lambda check, data: {"verdict": "UNVERIFIED"},
+        )
         event = {"tool_name": "rickgent_mark_done"}
         config = {
             "claimed_sha": None,

@@ -633,16 +633,16 @@ describe("rickgent refine — VAL-REFINE-001..019", () => {
   });
 
   // ── misc-m2-fixes: re-validation is fail-closed ──────────────────────
-  it("re-validation failure exits non-zero (fail-closed, no WARNING)", () => {
+  it("re-validation failure returns a typed non-zero failure (fail-closed, no WARNING)", () => {
     const src = readFileSync(
       join(import.meta.dirname, "../../src/lifecycle/refine.ts"),
       "utf-8",
     );
-    // The old code used "WARNING" and did not exit; the fix exits non-zero
+    // The old code used "WARNING" and continued; the fix produces a typed failure.
     expect(src).not.toMatch(/WARNING/);
-    // The re-validation block must contain process.exit(1) on failure
     expect(src).toMatch(/combinedVerdict\.valid/);
-    expect(src).toMatch(/process\.exit\(1\)/);
+    expect(src).toMatch(/failLifecycleCommand/);
+    expect(src).not.toMatch(/process\.exit/);
   });
 
   it("re-validation success message is present (no WARNING)", () => {

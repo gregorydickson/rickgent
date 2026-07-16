@@ -24,9 +24,8 @@ vi.mock("fs", async (importOriginal) => {
 });
 
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
-import { DispatchLedger, TicketLock, Dispatcher, dispatchIdString, type DispatchId } from "../../src/dispatch/dispatch.js";
+import { DispatchLedger, TicketLock, Dispatcher, dispatchIdString, type DispatchId } from "../../dist-fixture/dispatch/dispatch.js";
 import type { ReadyRunWorkspace } from "../../src/git/run-workspace.js";
-import { FIXTURE_CAPABILITY_GATE } from "../helpers/capabilities.js";
 
 function makeId(ticketId = "T-1"): DispatchId {
   return { runId: "run-1", ticketId, phase: "implement", attempt: 1, role: "worker" };
@@ -57,7 +56,7 @@ describe("TicketLock concurrent-release race (VAL-BUG-013)", () => {
     const ledger = new DispatchLedger(join(dir, "ledger.jsonl"));
     const lock = new TicketLock(join(dir, "locks"));
     writeFileSync(join(dir, "locks", "T-1.lock"), String(Date.now()));
-    const dispatcher = new Dispatcher(ledger, lock, dir, FIXTURE_CAPABILITY_GATE);
+    const dispatcher = new Dispatcher(ledger, lock, dir);
     const id = makeId("T-1");
 
     ctrl.simulateLockEnoent = true;

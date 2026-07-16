@@ -13,17 +13,22 @@
 // These tests FAIL against the unwired code (build.ts never calls select_model,
 // so every ledger entry has vendor: null) and PASS after the wiring fix.
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { spawnSync, execFileSync } from "child_process";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, realpathSync, writeFileSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { runBuild } from "../../src/lifecycle/build.js";
 import { callSelectModel, routeDispatch, type ModelEntry } from "../../src/lifecycle/routing.js";
-import { FIXTURE_BUILD_DEPENDENCIES, FIXTURE_CAPABILITY_GATE } from "../helpers/capabilities.js";
+import { runFixtureBuild } from "../helpers/capabilities.js";
 
-const fixtureBuild = (options: Parameters<typeof runBuild>[0]) =>
-  runBuild(options, FIXTURE_BUILD_DEPENDENCIES);
+// Unit-only coverage of the dormant review-selection algorithm. The fixture
+// build still owns autonomous capture only and cannot exercise review authority.
+vi.mock("../../src/capabilities/runtime-gate.js", () => ({
+  RUNTIME_CAPABILITY_GATE: Object.freeze({ require(): void {} }),
+}));
+
+const fixtureBuild = (options: Parameters<typeof runFixtureBuild>[0]) =>
+  runFixtureBuild(options);
 
 const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
 const PRD_MIN = join(import.meta.dirname, "../../../fixtures/prd-min.md");
@@ -258,7 +263,7 @@ describe("M4 fix: cross-vendor review exclusion in the real dispatch path", () =
     const routed = routeDispatch(MULTI_VENDOR_ROSTER, "code_review", {
       implementerVendor: "anthropic",
       costBudgetUsd: 10.0,
-    }, FIXTURE_CAPABILITY_GATE);
+    });
     expect(routed.ok).toBe(true);
     if (!routed.ok) return;
     expect(routed.selection.vendor).not.toBe("anthropic");
@@ -268,7 +273,7 @@ describe("M4 fix: cross-vendor review exclusion in the real dispatch path", () =
     const routed = routeDispatch(MULTI_VENDOR_ROSTER, "code_review", {
       implementerVendor: "openai",
       costBudgetUsd: 10.0,
-    }, FIXTURE_CAPABILITY_GATE);
+    });
     expect(routed.ok).toBe(true);
     if (!routed.ok) return;
     expect(routed.selection.vendor).not.toBe("openai");
@@ -281,7 +286,7 @@ describe("M4 fix: cross-vendor review exclusion in the real dispatch path", () =
     const routed = routeDispatch(singleVendor, "code_review", {
       implementerVendor: "anthropic",
       costBudgetUsd: 10.0,
-    }, FIXTURE_CAPABILITY_GATE);
+    });
     expect(routed.ok).toBe(false);
     if (routed.ok) return;
     expect(routed.verdict.result).toBe("DENY");

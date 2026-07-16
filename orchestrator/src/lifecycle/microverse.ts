@@ -12,10 +12,7 @@
 // never performs a global hard reset or whole-tree checkout.
 
 import { spawn, spawnSync, execFileSync } from "child_process";
-import {
-  PRODUCTION_CAPABILITY_GATE,
-  type CapabilityGate,
-} from "../capabilities/registry.js";
+import { RUNTIME_CAPABILITY_GATE } from "../capabilities/runtime-gate.js";
 import {
   createBreakerState,
   canExecute,
@@ -248,8 +245,6 @@ export class MicroverseRunner {
 // ── Live convergence loop (real git + real workers + real metric) ────────────
 
 export interface MicroverseLoopOptions {
-  /** Explicit capability dependency; production defaults fail closed. */
-  capabilityGate?: CapabilityGate;
   /** Target git repo the workers mutate and the loop commits/rolls back in. */
   workingDir: string;
   /** Declared scope (repo-relative path prefixes) for owned-paths-only staging. */
@@ -352,9 +347,8 @@ export class MicroverseLoop {
   }
 
   async run(): Promise<MicroverseLoopResult> {
-    const capabilityGate = this.opts.capabilityGate ?? PRODUCTION_CAPABILITY_GATE;
-    if (this.opts.metricCommand) capabilityGate.require("raw_shell");
-    capabilityGate.require("autonomous_dispatch");
+    if (this.opts.metricCommand) RUNTIME_CAPABILITY_GATE.require("raw_shell");
+    RUNTIME_CAPABILITY_GATE.require("autonomous_dispatch");
     const initialBaseline = this.headSha();
     let baselineSha = initialBaseline;
     let baselineScore: number | null;

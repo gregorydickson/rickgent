@@ -10,8 +10,7 @@ import {
   dispatchIdString,
   type DispatchEntry,
   type DispatchId,
-} from "../../src/dispatch/dispatch.js";
-import { FIXTURE_CAPABILITY_GATE } from "../helpers/capabilities.js";
+} from "../../dist-fixture/dispatch/dispatch.js";
 import type { ReadyRunWorkspace } from "../../src/git/run-workspace.js";
 
 const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
@@ -225,7 +224,7 @@ describe("Dispatcher idempotency", () => {
     dir = tmpDir("idem");
     ledger = new DispatchLedger(join(dir, "ledger.jsonl"));
     lock = new TicketLock(join(dir, "locks"));
-    dispatcher = new Dispatcher(ledger, lock, dir, FIXTURE_CAPABILITY_GATE);
+    dispatcher = new Dispatcher(ledger, lock, dir);
   });
 
   afterEach(() => {
@@ -294,7 +293,7 @@ describe("Dispatcher backpressure", () => {
     dir = tmpDir("bp");
     ledger = new DispatchLedger(join(dir, "ledger.jsonl"));
     lock = new TicketLock(join(dir, "locks"));
-    dispatcher = new Dispatcher(ledger, lock, dir, FIXTURE_CAPABILITY_GATE);
+    dispatcher = new Dispatcher(ledger, lock, dir);
   });
 
   afterEach(() => {
@@ -313,6 +312,27 @@ describe("Dispatcher backpressure", () => {
     })).rejects.toThrow("maxConcurrent must be exactly 1");
     expect(dispatcher.activeCount).toBe(0);
     expect(ledger.find(idStr)).toBeNull();
+  });
+
+  it("records planned state without spawning when the legal sequential slot is occupied", async () => {
+    const id = makeId();
+    const idStr = dispatchIdString(id);
+    const materializationRoot = join(dir, "materialized");
+    (dispatcher as unknown as { active: number }).active = 1;
+
+    const result = await dispatcher.dispatch(id, {
+      agentDir: join(dir, "agent"),
+      prompt: "do work",
+      timeout: 1000,
+      maxConcurrent: 1,
+      workspace: {} as ReadyRunWorkspace,
+      materializationRoot,
+    });
+
+    expect(result).toMatchObject({ state: "planned", pid: null, startedAt: null });
+    expect(dispatcher.activeCount).toBe(1);
+    expect(ledger.find(idStr)).toMatchObject({ state: "planned", pid: null });
+    expect(existsSync(materializationRoot)).toBe(false);
   });
 
   it("does not preserve a caller-repository or raw-agent compatibility spawn path", async () => {
@@ -368,7 +388,7 @@ describe("Dispatcher lock failure", () => {
     const otherLock = new TicketLock(join(dir, "locks"));
     otherLock.acquire("T-1");
 
-    const dispatcher = new Dispatcher(ledger, lock, dir, FIXTURE_CAPABILITY_GATE);
+    const dispatcher = new Dispatcher(ledger, lock, dir);
     const id = makeId("T-1");
     const idStr = dispatchIdString(id);
 
@@ -395,7 +415,7 @@ describe("Dispatcher lock failure", () => {
     const liveStamp = String(Date.now() - 60_000);
     writeFileSync(lockPath, liveStamp);
 
-    const dispatcher = new Dispatcher(ledger, lock, dir, FIXTURE_CAPABILITY_GATE);
+    const dispatcher = new Dispatcher(ledger, lock, dir);
     const id = makeId("T-1");
 
     const result = await dispatcher.dispatch(id, {

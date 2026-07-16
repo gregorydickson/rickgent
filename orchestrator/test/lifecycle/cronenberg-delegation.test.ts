@@ -155,7 +155,8 @@ describe("cronenberg non-dry-run delegation — pure planner argv", () => {
 
 // ── CLI end-to-end: a complete delegated PRD records a run. A task-only
 //    placeholder is materialized at the planned path but fails strict admission
-//    before run allocation instead of receiving inferred executable identity.
+//    before run allocation with the stable strict-admission reason instead of
+//    receiving inferred executable identity.
 
 interface Ctx {
   root: string;
@@ -201,7 +202,6 @@ function run(ctx: Ctx, args: string[]): { status: number | null; stdout: string;
       ...process.env,
       PATH: `${ctx.binDir}:${process.env.PATH ?? ""}`,
       RICKGENT_DIR: ctx.rickgentDir,
-      RICKGENT_FIXTURE_SKIP_POLICY_ATTACH: "1",
     },
   });
   return { status: res.status, stdout: res.stdout ?? "", stderr: res.stderr ?? "" };
@@ -216,21 +216,23 @@ describe("cronenberg non-dry-run delegation — CLI pipeline path", () => {
     rmSync(ctx.root, { recursive: true, force: true });
   });
 
-  it("pipeline delegation with an untracked in-repo PRD fails the clean baseline gate", () => {
+  it("pipeline delegation with an untracked in-repo PRD fails at reconciliation authority", () => {
     writeFileSync(join(ctx.repo, "prd.md"), VALID_PRD);
     const r = run(ctx, ["--task", "refine and build the export module", "--repo", ctx.repo]);
+    expect(r.status).toBe(3);
     expect(r.stdout).toContain("metaphor: pipeline");
     expect(existsSync(join(ctx.rickgentDir, "runs.jsonl"))).toBe(false);
-    expect(r.stdout).toContain("RUN_WORKSPACE_DIRTY_BASELINE");
+    expect(r.stderr).toContain("RICKGENT_RECONCILIATION_UNAVAILABLE");
   });
 
-  it("pipeline delegation with no prd materializes a task PRD but does not infer a contract", () => {
+  it("pipeline delegation with no prd materializes task input then fails at reconciliation authority", () => {
     const r = run(ctx, ["--task", "refine and build the export module", "--repo", ctx.repo]);
+    expect(r.status).toBe(3);
     expect(r.stdout).toContain("metaphor: pipeline");
-    // Router writes the task input, but strict build admission rejects it before
-    // allocating a run because free text cannot supply the mandatory contract.
+    // The router owns this input artifact, but the child pipeline cannot start
+    // build admission or allocate lifecycle state without reconciliation.
     expect(existsSync(join(ctx.rickgentDir, "cronenberg-task.md"))).toBe(true);
     expect(existsSync(join(ctx.rickgentDir, "runs.jsonl"))).toBe(false);
-    expect(r.stdout).toContain("before run allocation");
+    expect(r.stderr).toContain("RICKGENT_RECONCILIATION_UNAVAILABLE");
   });
 });

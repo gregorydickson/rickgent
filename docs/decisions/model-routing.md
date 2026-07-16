@@ -1,5 +1,7 @@
 # Decision: Model Routing
 
+> Status: target-design / historical decision record. This is not a statement of current `reliability_preview` availability. The compiled capability registry and `docs/reliability-preview.md` control; autonomous dispatch, resume/reconciliation, cross-vendor review, and delivery remain unavailable.
+
 ## Component
 §2 matrix row: Model Routing — how the system selects which LLM model each worker dispatch should use, based on task difficulty and cost.
 
@@ -100,7 +102,7 @@ The ledger is append-only JSONL, so the vendor label round-trips through
 `DispatchLedger.find` and is available to any consumer (reconcile, metrics,
 status).
 
-### Integration point (WIRED — M4 fix)
+### Historical target integration point (not enabled in reliability preview)
 
 The build loop (`orchestrator/src/lifecycle/build.ts`) calls the Python router
 via subprocess **before each dispatch** through the TypeScript routing bridge

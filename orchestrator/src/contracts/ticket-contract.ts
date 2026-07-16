@@ -1,12 +1,16 @@
 import { execFileSync } from "child_process";
 import { createHash } from "crypto";
 import {
-  existsSync,
   lstatSync,
   realpathSync,
   statSync,
 } from "fs";
-import { basename, isAbsolute, relative, resolve, sep } from "path";
+import { isAbsolute, relative, resolve, sep } from "path";
+import {
+  filesystemIdentityIsEqualOrBelow,
+  resolveFilesystemIdentity,
+  type FilesystemPathIdentity,
+} from "./filesystem-identity.js";
 
 export const TICKET_CONTRACT_SCHEMA_VERSION = "1.0.0" as const;
 
@@ -91,7 +95,7 @@ export class TicketContractError extends Error {
 export interface TicketContractNormalizationContext {
   /** Target repository. Omit only for structural admission of frozen fixtures. */
   readonly repositoryRoot?: string;
-  /** State roots that declarations must not equal or enter. */
+  /** State roots that declarations must not equal, enter, or own as descendants. */
   readonly stateRoots?: readonly string[];
   /** Legitimate dependency IDs not included in candidates (normally completed tickets). */
   readonly knownExternalDependencyIds?: readonly string[];
@@ -233,7 +237,7 @@ function canonicalRepoPath(value: unknown, label: string): string {
   if (segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")) {
     fail("TICKET_SCOPE_PATH_TRAVERSAL", `${label} contains traversal or an empty segment`);
   }
-  if (segments.some((segment) => segment === ".git" || segment === ".rickgent")) {
+  if (segments.some((segment) => /^(?:\.git|\.rickgent)$/i.test(segment))) {
     fail("TICKET_SCOPE_PATH_RESERVED", `${label} names a reserved Git or state root`);
   }
   return path;
@@ -241,8 +245,9 @@ function canonicalRepoPath(value: unknown, label: string): string {
 
 interface RepositoryContext {
   readonly root: string;
-  readonly stateRoots: readonly string[];
-  readonly submodules: readonly string[];
+  readonly gitAdministrativeRoots: readonly string[];
+  readonly stateRoots: readonly FilesystemPathIdentity[];
+  readonly submodules: readonly FilesystemPathIdentity[];
   readonly validateFilesystem: boolean;
 }
 
@@ -251,47 +256,51 @@ function isEqualOrBelow(parent: string, candidate: string): boolean {
   return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
 }
 
-function resolveNearestExistingPath(absolutePath: string, label: string): {
-  resolved: string;
-  exists: boolean;
-} {
-  let cursor = resolve(absolutePath);
-  const missing: string[] = [];
-  while (!existsSync(cursor)) {
-    const parent = resolve(cursor, "..");
-    if (parent === cursor) infrastructure("TICKET_REPOSITORY_INSPECTION_FAILED", `${label} has no existing parent`);
-    missing.unshift(basename(cursor));
-    cursor = parent;
-  }
-  let realParent: string;
+function filesystemIdentity(absolutePath: string, label: string): FilesystemPathIdentity {
   try {
-    realParent = realpathSync(cursor);
+    return resolveFilesystemIdentity(absolutePath);
   } catch (error) {
     infrastructure(
       "TICKET_REPOSITORY_INSPECTION_FAILED",
-      `${label} cannot resolve its nearest existing parent: ${error instanceof Error ? error.message : String(error)}`,
+      `${label} cannot resolve its filesystem identity: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  const resolved = missing.reduce((current, segment) => resolve(current, segment), realParent);
-  return { resolved, exists: missing.length === 0 };
 }
 
-function resolveWithNearestExistingParent(root: string, repoPath: string, label: string): {
-  resolved: string;
-  exists: boolean;
-} {
+function resolveWithNearestExistingParent(
+  root: string,
+  repoPath: string,
+  label: string,
+): FilesystemPathIdentity {
   const lexical = resolve(root, ...repoPath.split("/"));
   if (!isEqualOrBelow(root, lexical)) fail("TICKET_SCOPE_PATH_ESCAPE", `${label} escapes the repository`);
 
-  const endpoint = resolveNearestExistingPath(lexical, label);
-  const { resolved } = endpoint;
-  if (!isEqualOrBelow(root, resolved)) {
-    fail("TICKET_SCOPE_PATH_ESCAPE", `${label} resolves outside the repository`);
-  }
+  const endpoint = filesystemIdentity(lexical, label);
   return endpoint;
 }
 
-function gitSubmodules(root: string): string[] {
+function gitAdministrativeRoots(root: string): string[] {
+  try {
+    const output = execFileSync(
+      "git",
+      ["-C", root, "rev-parse", "--absolute-git-dir", "--git-common-dir"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const paths = output.trim().split(/\r?\n/);
+    if (paths.length !== 2 || paths.some((path) => path.length === 0)) {
+      infrastructure("TICKET_REPOSITORY_INSPECTION_FAILED", "Git administrative paths are incomplete");
+    }
+    return [...new Set(paths.map((path) => realpathSync(isAbsolute(path) ? path : resolve(root, path))))];
+  } catch (error) {
+    if (error instanceof TicketContractError) throw error;
+    infrastructure(
+      "TICKET_REPOSITORY_INSPECTION_FAILED",
+      `cannot inspect Git administrative paths: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function gitSubmodules(root: string): FilesystemPathIdentity[] {
   try {
     const output = execFileSync(
       "git",
@@ -304,7 +313,10 @@ function gitSubmodules(root: string): string[] {
       const match = record.match(/^160000 [0-9a-f]+ \d\t(.+)$/);
       if (match?.[1]) paths.push(match[1]);
     }
-    return paths.sort();
+    return paths
+      .sort()
+      .map((path, index) =>
+        resolveWithNearestExistingParent(root, path, `submodules[${index}]`));
   } catch (error) {
     infrastructure(
       "TICKET_REPOSITORY_INSPECTION_FAILED",
@@ -334,7 +346,7 @@ function repositoryContext(context: TicketContractNormalizationContext): Reposit
       // cannot be named by a repository-relative declaration, but it still
       // needs a canonical identity instead of being misclassified as a path
       // escape during admission.
-      return resolveNearestExistingPath(absolute, `stateRoots[${index}]`).resolved;
+      return filesystemIdentity(absolute, `stateRoots[${index}]`);
     } catch (error) {
       if (error instanceof TicketContractError) throw error;
       infrastructure("TICKET_REPOSITORY_INSPECTION_FAILED", `cannot resolve state root ${stateRoot}`);
@@ -343,23 +355,53 @@ function repositoryContext(context: TicketContractNormalizationContext): Reposit
 
   return {
     root,
+    gitAdministrativeRoots: gitAdministrativeRoots(root),
     stateRoots,
     submodules: gitSubmodules(root),
     validateFilesystem: context.validateFilesystem !== false,
   };
 }
 
-function inspectPath(path: string, label: string, repository: RepositoryContext | null): {
+function inspectPath(
+  path: string,
+  label: string,
+  repository: RepositoryContext | null,
+  ownsDescendants = false,
+): {
   exists: boolean;
   directory: boolean | null;
 } {
   if (repository === null) return { exists: false, directory: null };
-  if (repository.submodules.some((submodule) => path === submodule || path.startsWith(`${submodule}/`))) {
-    fail("TICKET_SCOPE_PATH_SUBMODULE", `${label} crosses submodule ${path}`);
-  }
   const endpoint = resolveWithNearestExistingParent(repository.root, path, label);
-  if (repository.stateRoots.some((stateRoot) => isEqualOrBelow(stateRoot, endpoint.resolved))) {
-    fail("TICKET_SCOPE_PATH_RESERVED", `${label} enters a configured state root`);
+  if (
+    repository.submodules.some(
+      (submodule) =>
+        filesystemIdentityIsEqualOrBelow(submodule, endpoint) ||
+        (ownsDescendants && filesystemIdentityIsEqualOrBelow(endpoint, submodule)),
+    )
+  ) {
+    fail("TICKET_SCOPE_PATH_SUBMODULE", `${label} crosses or owns a submodule boundary`);
+  }
+  if (
+    repository.gitAdministrativeRoots.some(
+      (gitRoot) =>
+        isEqualOrBelow(gitRoot, endpoint.resolved) ||
+        (ownsDescendants && isEqualOrBelow(endpoint.resolved, gitRoot)),
+    )
+  ) {
+    fail("TICKET_SCOPE_PATH_RESERVED", `${label} enters or owns a Git administrative root`);
+  }
+  if (
+    repository.stateRoots.some(
+      (stateRoot) =>
+        filesystemIdentityIsEqualOrBelow(stateRoot, endpoint) ||
+        (ownsDescendants && filesystemIdentityIsEqualOrBelow(endpoint, stateRoot)),
+    )
+  ) {
+    fail("TICKET_SCOPE_PATH_RESERVED", `${label} enters or owns a configured state root`);
+  }
+  if (!isEqualOrBelow(repository.root, endpoint.resolved)) {
+    fail("TICKET_SCOPE_PATH_ESCAPE", `${label} resolves outside the repository`);
   }
   if (!endpoint.exists) return { exists: false, directory: null };
   try {
@@ -428,8 +470,10 @@ function parseScope(value: unknown, repository: RepositoryContext | null): {
       endpointNames.add(candidate);
     }
 
-    const destination = inspectPath(path, `${label}.path`, repository);
-    const source = fromPath === undefined ? null : inspectPath(fromPath, `${label}.from_path`, repository);
+    const destination = inspectPath(path, `${label}.path`, repository, input.directory);
+    const source = fromPath === undefined
+      ? null
+      : inspectPath(fromPath, `${label}.from_path`, repository, input.directory);
     if (repository?.validateFilesystem) {
       if (changeKind === "create" && destination.exists) {
         fail("TICKET_SCOPE_CHANGE_MISMATCH", `${path} already exists and cannot be created`);

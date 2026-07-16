@@ -8,12 +8,12 @@ import {
   canonicalJson,
   ticketContractDigest,
 } from "../../src/contracts/ticket-contract.js";
-import { runBuild } from "../../src/lifecycle/build.js";
 import { ticketPrompt } from "../../src/lifecycle/build.js";
 import {
   adaptPrdMarkdownToTicketContracts,
   parseExecutablePrdMarkdown,
 } from "../../src/lifecycle/prd-parse.js";
+import { runFixtureBuild } from "../helpers/capabilities.js";
 
 const temporaryRoots: string[] = [];
 
@@ -107,6 +107,57 @@ ${extraDescription}
 `;
 }
 
+const SIMPLIFICATION_REVIEW = `## Simplification Review
+- Reviewed: yes
+- Notes: two explicit files
+
+`;
+
+function shortFenceCloserBypassPrd(): string {
+  const replacement = [
+    "````markdown",
+    "## Simplification Review",
+    "- Reviewed: no",
+    "- Notes: the human-visible review is denied",
+    "```",
+    "## Simplification Review",
+    "- Reviewed: yes",
+    "- Notes: parser-only review inside the four-backtick fence",
+    "",
+  ].join("\n");
+  return `${strictPrd().replace(SIMPLIFICATION_REVIEW, replacement)}\n\`\`\`\`\n`;
+}
+
+function indentedFenceCloserBypassPrd(): string {
+  const replacement = [
+    "```markdown",
+    "## Simplification Review",
+    "- Reviewed: no",
+    "- Notes: the human-visible review is denied",
+    "    ```",
+    "## Simplification Review",
+    "- Reviewed: yes",
+    "- Notes: parser-only review after an over-indented pseudo-close",
+    "",
+  ].join("\n");
+  return `${strictPrd().replace(SIMPLIFICATION_REVIEW, replacement)}\n\`\`\`\n`;
+}
+
+function invalidFenceInfoBypassPrd(): string {
+  const replacement = [
+    "```markdown`invalid",
+    "## Simplification Review",
+    "- Reviewed: no",
+    "- Notes: an invalid opener cannot make this review inert",
+    "```",
+    "## Simplification Review",
+    "- Reviewed: yes",
+    "- Notes: parser-only review after an invalid opener",
+    "",
+  ].join("\n");
+  return `${strictPrd().replace(SIMPLIFICATION_REVIEW, replacement)}\n\`\`\`\n`;
+}
+
 afterEach(() => {
   while (temporaryRoots.length > 0) {
     rmSync(temporaryRoots.pop()!, { recursive: true, force: true });
@@ -178,6 +229,54 @@ describe("strict PRD TicketContract adapter", () => {
     expectCode(() => adaptPrdMarkdownToTicketContracts(duplicateKey), "TICKET_MARKDOWN_DUPLICATE_KEY");
   });
 
+  it("requires one exact H2 Simplification Review with strict Reviewed and Notes fields", () => {
+    const unrelatedReviewed = strictPrd()
+      .replace("Exercise complete TicketContract admission.", "Exercise complete TicketContract admission.\nReviewed: yes")
+      .replace(SIMPLIFICATION_REVIEW, "");
+    const actualReviewDenied = strictPrd()
+      .replace("Exercise complete TicketContract admission.", "Exercise complete TicketContract admission.\nReviewed: yes")
+      .replace("- Reviewed: yes", "- Reviewed: no");
+    const duplicateSection = strictPrd().replace("## Tickets", `${SIMPLIFICATION_REVIEW}## Tickets`);
+    const duplicateField = strictPrd().replace("- Notes: two explicit files", "- Reviewed: no\n- Notes: two explicit files");
+    const emptyNotes = strictPrd().replace("- Notes: two explicit files", "- Notes:");
+    const unsupportedLine = strictPrd().replace("- Notes: two explicit files", "Review prose without a field");
+
+    for (const invalid of [
+      unrelatedReviewed,
+      actualReviewDenied,
+      duplicateSection,
+      duplicateField,
+      emptyNotes,
+      unsupportedLine,
+    ]) {
+      expectCode(
+        () => parseExecutablePrdMarkdown(invalid),
+        "TICKET_SIMPLIFICATION_REVIEW_INVALID",
+      );
+    }
+
+    const plainFields = strictPrd()
+      .replace("- Reviewed: yes", "Reviewed: yes")
+      .replace("- Notes: two explicit files", "Notes: two explicit files");
+    expect(parseExecutablePrdMarkdown(plainFields).prd.simplificationReview).toEqual({
+      reviewed: true,
+      notes: "two explicit files",
+    });
+  });
+
+  it("does not let malformed CommonMark fence boundaries expose parser-only approval", () => {
+    for (const invalid of [
+      shortFenceCloserBypassPrd(),
+      indentedFenceCloserBypassPrd(),
+      invalidFenceInfoBypassPrd(),
+    ]) {
+      expectCode(
+        () => parseExecutablePrdMarkdown(invalid),
+        "TICKET_SIMPLIFICATION_REVIEW_INVALID",
+      );
+    }
+  });
+
   it("ignores ticket and AC headings inside fenced Markdown examples", () => {
     const fenced = `~~~markdown
 ### AC-FAKE-99: not executable
@@ -224,7 +323,7 @@ describe("strict PRD TicketContract adapter", () => {
       strictPrd().replace(/- \*\*verifications:\*\* `[^\n]+`/, "- **verifyCommand:** `false`"),
     );
     let postAdmissionGateCalled = false;
-    const result = await runBuild(
+    const result = await runFixtureBuild(
       {
         prdPath,
         workingDir: repo,
@@ -234,7 +333,6 @@ describe("strict PRD TicketContract adapter", () => {
         env: { PATH: process.env.PATH },
       },
       {
-        capabilityGate: { require(): void {} },
         assertEnvironment(): void {},
         verifyPolicyAttachment() {
           postAdmissionGateCalled = true;
@@ -252,5 +350,78 @@ describe("strict PRD TicketContract adapter", () => {
     expect(existsSync(join(rickgentDir, "runs.jsonl"))).toBe(false);
     expect(existsSync(join(rickgentDir, "registry.json"))).toBe(false);
     expect(existsSync(join(rickgentDir, "dispatch-ledger.jsonl"))).toBe(false);
+  });
+
+  it("rejects an unrelated Reviewed line before state allocation or post-admission gates", async () => {
+    const { root, repo } = createRepository();
+    const prdPath = join(root, "invalid-review.md");
+    const rickgentDir = join(root, ".rickgent");
+    writeFileSync(
+      prdPath,
+      strictPrd()
+        .replace("Exercise complete TicketContract admission.", "Exercise complete TicketContract admission.\nReviewed: yes")
+        .replace(SIMPLIFICATION_REVIEW, ""),
+    );
+    let postAdmissionGateCalled = false;
+
+    const result = await runFixtureBuild(
+      {
+        prdPath,
+        workingDir: repo,
+        rickgentDir,
+        agentDir: join(root, "agent"),
+        dataDir: join(root, "data"),
+        env: { PATH: process.env.PATH },
+      },
+      {
+        assertEnvironment(): void {},
+        verifyPolicyAttachment() {
+          postAdmissionGateCalled = true;
+          return { ok: true, detail: "unexpected", managerCount: 1, workerCount: 1 };
+        },
+      },
+    );
+
+    expect(result.outcome.status).toBe("failed");
+    expect(result.outcome.primary).toBe("input_contract");
+    expect(result.gateHit).toBe("ticket-contract-gate");
+    expect(result.outcome.issues[0]?.detail).toContain("TICKET_SIMPLIFICATION_REVIEW_INVALID");
+    expect(result.ticketsDispatched).toBe(0);
+    expect(postAdmissionGateCalled).toBe(false);
+    expect(existsSync(rickgentDir)).toBe(false);
+  });
+
+  it("rejects a short fence-closer review bypass before state allocation", async () => {
+    const { root, repo } = createRepository();
+    const prdPath = join(root, "fenced-review-bypass.md");
+    const rickgentDir = join(root, ".rickgent");
+    writeFileSync(prdPath, shortFenceCloserBypassPrd());
+    let postAdmissionGateCalled = false;
+
+    const result = await runFixtureBuild(
+      {
+        prdPath,
+        workingDir: repo,
+        rickgentDir,
+        agentDir: join(root, "agent"),
+        dataDir: join(root, "data"),
+        env: { PATH: process.env.PATH },
+      },
+      {
+        assertEnvironment(): void {},
+        verifyPolicyAttachment() {
+          postAdmissionGateCalled = true;
+          return { ok: true, detail: "unexpected", managerCount: 1, workerCount: 1 };
+        },
+      },
+    );
+
+    expect(result.outcome.status).toBe("failed");
+    expect(result.outcome.primary).toBe("input_contract");
+    expect(result.gateHit).toBe("ticket-contract-gate");
+    expect(result.outcome.issues[0]?.detail).toContain("TICKET_SIMPLIFICATION_REVIEW_INVALID");
+    expect(result.ticketsDispatched).toBe(0);
+    expect(postAdmissionGateCalled).toBe(false);
+    expect(existsSync(rickgentDir)).toBe(false);
   });
 });

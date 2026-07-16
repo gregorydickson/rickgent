@@ -284,15 +284,27 @@ describe("M6 E2E — full gated pipeline (VAL-E2E-001..004)", () => {
   });
 
   it("fails closed when the required policy-attachment check is disabled", () => {
+    const spawnRecord = join(d.root, "policy-skip-spawn.json");
     const controlOut = runCli(
       ["build", PRD_MIN, "--repo", d.repo, "--agent", AGENT_DIR],
       d,
-      { RICKGENT_FIXTURE_SKIP_POLICY_ATTACH: "1" },
+      {
+        RICKGENT_FIXTURE_SKIP_POLICY_ATTACH: "1",
+        FIXTURE_SPAWN_RECORD: spawnRecord,
+      },
     );
     expect(controlOut.status).toBe(6);
     expect(controlOut.stdout).toContain("policy attachment — skipped");
     expect(controlOut.stdout).toContain("required_gate_failed");
     const s = summary(controlOut.stdout);
     expect(s.outcome).toBe("failed");
+    expect(s.dispatched).toBe("0");
+    expect(s.captured).toBe("0");
+    expect(s.done).toBe("0");
+    expect(existsSync(spawnRecord)).toBe(false);
+    expect(existsSync(join(d.rickgentDir, "runs.jsonl"))).toBe(false);
+    expect(existsSync(join(d.rickgentDir, "registry.json"))).toBe(false);
+    expect(existsSync(join(d.rickgentDir, "dispatch-ledger.jsonl"))).toBe(false);
+    expect(existsSync(join(d.rickgentDir, "materialized-workers"))).toBe(false);
   });
 });

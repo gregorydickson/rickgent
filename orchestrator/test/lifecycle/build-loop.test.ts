@@ -227,13 +227,20 @@ describe("B1 build loop", () => {
   });
 
   // VAL-BUILD-006
-  it("pipeline runs build then the cleanup chain", () => {
-    const out = runCli(["pipeline", PRD_MIN, "--repo", d.repo, "--agent", d.agentDir], d);
-    expect(out.status).toBe(5);
-    const s = summary(out.stdout);
-    expect(Number(s.dispatched)).toBeGreaterThanOrEqual(1);
-    expect(out.stdout).toContain("cleanup: orphan-reaper");
-    expect(out.stdout).toContain("cleanup: reconcile");
+  it("pipeline fails at reconciliation authority before build or cleanup", () => {
+    const spawnRecord = join(d.root, "pipeline-spawn.json");
+    const out = runCli(
+      ["pipeline", PRD_MIN, "--repo", d.repo, "--agent", d.agentDir],
+      d,
+      { FIXTURE_SPAWN_RECORD: spawnRecord },
+    );
+    expect(out.status).toBe(3);
+    expect(out.stderr).toContain("RICKGENT_RECONCILIATION_UNAVAILABLE");
+    expect(out.stdout).not.toContain("cleanup: orphan-reaper");
+    expect(out.stdout).not.toContain("cleanup: reconcile");
+    expect(existsSync(spawnRecord)).toBe(false);
+    expect(existsSync(join(d.rickgentDir, "runs.jsonl"))).toBe(false);
+    expect(existsSync(join(d.rickgentDir, "registry.json"))).toBe(false);
   });
 
   // VAL-BUILD-007

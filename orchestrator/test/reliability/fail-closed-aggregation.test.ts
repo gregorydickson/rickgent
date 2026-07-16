@@ -229,17 +229,20 @@ describe("fail-closed run aggregation", () => {
     expect(result.stdout).toContain("zero_completion");
   });
 
-  it("cleanup observations and infrastructure failures select their distinct exits", () => {
+  it("pipeline authority fails before cleanup while build infrastructure keeps its distinct exit", () => {
     const failingPs = join(d.root, "failing-ps");
+    const psMarker = join(d.root, "ps-invoked");
     mkdirSync(failingPs);
-    executable(join(failingPs, "ps"), "#!/bin/sh\nexit 91\n");
+    executable(join(failingPs, "ps"), `#!/bin/sh\n: > "${psMarker}"\nexit 91\n`);
     const cleanup = runFixture(d, "pipeline", writePrd(d, ["src/a.ts"]), {
       PATH: `${failingPs}:${FIXTURE_BIN}:${process.env.PATH ?? ""}`,
       RICKGENT_ORPHAN_REAP: "on",
       RICKGENT_SANDBOX: "none",
     });
-    expect(cleanup.status).toBe(7);
-    expect(cleanup.stdout).toContain("cleanup_failed");
+    expect(cleanup.status).toBe(3);
+    expect(cleanup.stderr).toContain("RICKGENT_RECONCILIATION_UNAVAILABLE");
+    expect(existsSync(psMarker)).toBe(false);
+    expect(existsSync(join(d.rickgentDir, "runs.jsonl"))).toBe(false);
 
     rmSync(d.rickgentDir, { recursive: true, force: true });
     const failingPython = join(d.root, "failing-python");
@@ -253,22 +256,18 @@ describe("fail-closed run aggregation", () => {
   });
 
   it("retains all issues while cleanup wins combined failure precedence", () => {
-    const failingPs = join(d.root, "combined-ps");
-    mkdirSync(failingPs);
-    executable(join(failingPs, "ps"), "#!/bin/sh\nexit 93\n");
-    const result = runFixture(d, "pipeline", writePrd(d, ["src/a.ts", "src/b.ts"]), {
-      PATH: `${failingPs}:${FIXTURE_BIN}:${process.env.PATH ?? ""}`,
-      FIXTURE_FAIL_PATHS: "src/b.ts",
-      RICKGENT_FIXTURE_SKIP_CONFORMANCE: "1",
-      RICKGENT_ORPHAN_REAP: "on",
-      RICKGENT_SANDBOX: "none",
-    });
-    expect(result.status).toBe(7);
-    expect(result.stdout).toContain("ticket_failed");
-    expect(result.stdout).toContain("zero_completion");
-    expect(result.stdout).not.toContain("required_gate_failed");
-    expect(result.stdout).toContain("cleanup_failed");
-    expect(result.stdout).toContain("pipeline: outcome=failed primary=cleanup");
+    const outcome = aggregateRunOutcome([
+      runIssue({ reason: "ticket_failed", class: "execution", detail: "worker failed", ticketId: "t02" }),
+      runIssue({ reason: "zero_completion", class: "execution", detail: "no verified completion" }),
+      runIssue({ reason: "cleanup_failed", class: "cleanup", detail: "residue remains" }),
+    ]);
+    expect(outcome.primary).toBe("cleanup");
+    expect(outcome.issues.map((issue) => issue.reason)).toEqual([
+      "ticket_failed",
+      "zero_completion",
+      "cleanup_failed",
+    ]);
+    expect(exitCodeForRunOutcome(outcome)).toBe(7);
   });
 
   it("keeps delivery structurally unreachable and never invokes fail-fast push or gh", () => {

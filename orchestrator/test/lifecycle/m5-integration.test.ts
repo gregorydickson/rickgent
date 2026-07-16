@@ -9,9 +9,9 @@
 //   006  cronenberg default → build
 //   007  cronenberg followups append correctly (citadel, anatomy, szechuan)
 //   008  cronenberg routing is deterministic (no LLM inside the matrix)
-//   009  All commands work with fixture omnigent
-//   010  Full pipeline chains prd → refine → build → citadel → szechuan → anatomy → microverse
-//   011  cronenberg end-to-end routes a task and the chain completes
+//   009  Commands either run in the fixture profile or fail at their contracted boundary
+//   010  Admitted stages run; raw-metric Microverse is blocked before side effects
+//   011  Cronenberg routes a task and propagates the selected child's capability denial
 //   012  cronenberg --dry-run shows correct plan for varied inputs
 //
 // The test uses a combination of the shared fixture omnigent (for build-style
@@ -707,7 +707,9 @@ describe("M5 Integration — all commands work with fixture omnigent (VAL-INTEGR
     expect(existsSync(join(ctx.rickgentDir, "anatomy-park.json"))).toBe(true);
   });
 
-  it("microverse --max-iterations 1 with --metric: runs 1 iteration, no spawn failure", () => {
+  it("microverse --metric: returns the raw-shell capability denial before spawn or state", () => {
+    const headBefore = git(ctx.repo, ["rev-parse", "HEAD"]);
+    const statusBefore = git(ctx.repo, ["status", "--porcelain"]);
     const r = runStub(ctx, "microverse", [
       "--metric",
       "echo 5",
@@ -723,14 +725,18 @@ describe("M5 Integration — all commands work with fixture omnigent (VAL-INTEGR
       "1",
       "--non-interactive",
     ]);
-    expect(r.status).toBe(0);
-    expect(r.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
-    expect(existsSync(join(ctx.rickgentDir, "microverse.json"))).toBe(true);
+    expect(r.status).toBe(3);
+    expect(r.stderr).toContain("RICKGENT_CAPABILITY_UNAVAILABLE");
+    expect(r.stderr).toContain("RICKGENT_RAW_SHELL_UNAVAILABLE");
+    expect(existsSync(join(ctx.rickgentDir, "microverse.json"))).toBe(false);
+    expect(spawnCount(ctx)).toBe(0);
+    expect(git(ctx.repo, ["rev-parse", "HEAD"])).toBe(headBefore);
+    expect(git(ctx.repo, ["status", "--porcelain"])).toBe(statusBefore);
   });
 });
 
 // ════════════════════════════════════════════════════════════════════════
-// VAL-INTEGR-010: Full pipeline chains prd → refine → build → citadel → szechuan → anatomy → microverse
+// VAL-INTEGR-010: admitted chain stages run; raw-metric Microverse stays unavailable
 // ════════════════════════════════════════════════════════════════════════
 
 describe("M5 Integration — full pipeline chain (VAL-INTEGR-010)", () => {
@@ -744,7 +750,7 @@ describe("M5 Integration — full pipeline chain (VAL-INTEGR-010)", () => {
     rmSync(ctx.root, { recursive: true, force: true });
   });
 
-  it("chains all 7 stages, each producing its documented artifact", () => {
+  it("runs admitted stages and stops the raw-metric stage at its capability boundary", () => {
     // ── Stage 1: prd → prd.md ──
     const prdRes = runStub(ctx, "prd", ["--non-interactive", "--repo", ctx.repo]);
     expect(prdRes.status).toBe(0);
@@ -838,7 +844,10 @@ describe("M5 Integration — full pipeline chain (VAL-INTEGR-010)", () => {
     expect(anatomyRes.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
     expect(existsSync(join(ctx.rickgentDir, "anatomy-park.json"))).toBe(true);
 
-    // ── Stage 7: microverse → microverse.json convergence record ──
+    // ── Stage 7: raw-metric microverse is unavailable in the M1 profile ──
+    const spawnsBeforeMicroverse = spawnCount(ctx);
+    const headBeforeMicroverse = git(ctx.repo, ["rev-parse", "HEAD"]);
+    const statusBeforeMicroverse = git(ctx.repo, ["status", "--porcelain"]);
     const microverseRes = runStub(ctx, "microverse", [
       "--metric",
       "echo 5",
@@ -854,17 +863,18 @@ describe("M5 Integration — full pipeline chain (VAL-INTEGR-010)", () => {
       "1",
       "--non-interactive",
     ]);
-    expect(microverseRes.status).toBe(0);
-    expect(microverseRes.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
-    expect(existsSync(join(ctx.rickgentDir, "microverse.json"))).toBe(true);
-    const mvState = JSON.parse(readFileSync(join(ctx.rickgentDir, "microverse.json"), "utf-8"));
-    expect(mvState.convergence).toBeDefined();
-    expect(Array.isArray(mvState.convergence.history)).toBe(true);
+    expect(microverseRes.status).toBe(3);
+    expect(microverseRes.stderr).toContain("RICKGENT_CAPABILITY_UNAVAILABLE");
+    expect(microverseRes.stderr).toContain("RICKGENT_RAW_SHELL_UNAVAILABLE");
+    expect(existsSync(join(ctx.rickgentDir, "microverse.json"))).toBe(false);
+    expect(spawnCount(ctx)).toBe(spawnsBeforeMicroverse);
+    expect(git(ctx.repo, ["rev-parse", "HEAD"])).toBe(headBeforeMicroverse);
+    expect(git(ctx.repo, ["status", "--porcelain"])).toBe(statusBeforeMicroverse);
   });
 });
 
 // ════════════════════════════════════════════════════════════════════════
-// VAL-INTEGR-011: cronenberg end-to-end (non-dry-run) routes a task and chain completes
+// VAL-INTEGR-011: cronenberg end-to-end propagates selected child boundaries
 // ════════════════════════════════════════════════════════════════════════
 
 describe("M5 Integration — cronenberg end-to-end (VAL-INTEGR-011)", () => {
@@ -878,9 +888,9 @@ describe("M5 Integration — cronenberg end-to-end (VAL-INTEGR-011)", () => {
     rmSync(ctx.root, { recursive: true, force: true });
   });
 
-  it("non-dry-run dispatches the selected primary and the chain completes", () => {
-    // Use a microverse metaphor (metric + optimize) with --max-iterations 1
-    // so the chain completes quickly. The universal stub handles worker spawns.
+  it("non-dry-run surfaces the selected Microverse child's raw-shell denial", () => {
+    const headBefore = git(ctx.repo, ["rev-parse", "HEAD"]);
+    const statusBefore = git(ctx.repo, ["status", "--porcelain"]);
     const r = runStub(ctx, "cronenberg", [
       "--task",
       "optimize coverage to 90%",
@@ -898,13 +908,14 @@ describe("M5 Integration — cronenberg end-to-end (VAL-INTEGR-011)", () => {
       "1",
       "--non-interactive",
     ]);
-    // cronenberg prints the plan, then delegates. The microverse child should
-    // complete (target 5 == metric 5 → convergence on iteration 1).
-    expect(r.status).toBe(0);
+    expect(r.status).toBe(3);
     expect(r.stdout).toContain("metaphor: microverse");
-    expect(r.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
-    // The delegated microverse child produced state.
-    expect(existsSync(join(ctx.rickgentDir, "microverse.json"))).toBe(true);
+    expect(r.stderr).toContain("RICKGENT_CAPABILITY_UNAVAILABLE");
+    expect(r.stderr).toContain("RICKGENT_RAW_SHELL_UNAVAILABLE");
+    expect(existsSync(join(ctx.rickgentDir, "microverse.json"))).toBe(false);
+    expect(spawnCount(ctx)).toBe(0);
+    expect(git(ctx.repo, ["rev-parse", "HEAD"])).toBe(headBefore);
+    expect(git(ctx.repo, ["status", "--porcelain"])).toBe(statusBefore);
   });
 
   it("non-dry-run with build metaphor delegates to build", () => {

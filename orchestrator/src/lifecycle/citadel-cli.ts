@@ -4,6 +4,12 @@
 import { writeFileSync, mkdirSync } from "fs";
 import { dirname, resolve } from "path";
 import { runCitadelAudit, renderTestStubs } from "./citadel/audit-runner.js";
+import {
+  failLifecycleCommand,
+  lifecycleCommandCompleted,
+  lifecycleCommandSucceeded,
+  type LifecycleCommandResult,
+} from "./command-result.js";
 
 const CITADEL_USAGE = `rickgent citadel — full 19-analyzer conformance audit
 
@@ -106,21 +112,19 @@ function printSummary(report: ReturnType<typeof runCitadelAudit>["report"]): voi
   console.log(lines.join("\n"));
 }
 
-export async function runCitadelCommand(rest: string[]): Promise<void> {
+export async function runCitadelCommand(rest: string[]): Promise<LifecycleCommandResult> {
   if (rest.includes("--help") || rest.includes("-h")) {
     console.log(CITADEL_USAGE);
-    return;
+    return lifecycleCommandSucceeded();
   }
 
   const parsed = parseArgs(rest);
   if ("error" in parsed) {
-    console.error(`rickgent citadel: ${parsed.error}`);
-    process.exit(1);
+    failLifecycleCommand(`rickgent citadel: ${parsed.error}`);
   }
 
   if (!parsed.prdPath) {
-    console.error("rickgent citadel: missing required --prd <path> flag");
-    process.exit(1);
+    failLifecycleCommand("rickgent citadel: missing required --prd <path> flag");
   }
 
   // Fail closed: invalid diff range / missing PRD surface as non-zero exit.
@@ -134,8 +138,7 @@ export async function runCitadelCommand(rest: string[]): Promise<void> {
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`rickgent citadel: ${msg}`);
-    process.exit(1);
+    failLifecycleCommand(`rickgent citadel: ${msg}`);
   }
 
   if (parsed.reportPath) {
@@ -151,7 +154,5 @@ export async function runCitadelCommand(rest: string[]): Promise<void> {
 
   printSummary(result.report);
 
-  if (result.exitCode !== 0) {
-    process.exit(result.exitCode);
-  }
+  return lifecycleCommandCompleted(result.exitCode);
 }

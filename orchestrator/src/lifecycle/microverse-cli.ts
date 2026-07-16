@@ -12,16 +12,18 @@
 import { spawnSync } from "child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
-import {
-  PRODUCTION_CAPABILITY_GATE,
-  type CapabilityGate,
-} from "../capabilities/registry.js";
+import { RUNTIME_CAPABILITY_GATE } from "../capabilities/runtime-gate.js";
 import {
   MicroverseLoop,
   parseLastNumericLine,
   type MetricDirection,
   type MicroverseLoopResult,
 } from "./microverse.js";
+import {
+  failLifecycleCommand,
+  lifecycleCommandSucceeded,
+  type LifecycleCommandResult,
+} from "./command-result.js";
 
 const MICROVERSE_USAGE = `rickgent microverse — metric-driven convergence loop
 
@@ -224,16 +226,15 @@ function readPriorState(statePath: string): MicroverseState | null {
 
 export async function runMicroverseCommand(
   rest: string[],
-  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
-): Promise<void> {
+): Promise<LifecycleCommandResult> {
   if (rest.includes("--help") || rest.includes("-h")) {
     console.log(MICROVERSE_USAGE);
-    return;
+    return lifecycleCommandSucceeded();
   }
 
-  if (rest.includes("--resume")) capabilityGate.require("resume_retry");
-  if (rest.includes("--metric")) capabilityGate.require("raw_shell");
-  capabilityGate.require("autonomous_dispatch");
+  if (rest.includes("--resume")) RUNTIME_CAPABILITY_GATE.require("resume_retry");
+  if (rest.includes("--metric")) RUNTIME_CAPABILITY_GATE.require("raw_shell");
+  RUNTIME_CAPABILITY_GATE.require("autonomous_dispatch");
 
   const task = flagValue(rest, "--task");
   const metric = flagValue(rest, "--metric");
@@ -242,19 +243,16 @@ export async function runMicroverseCommand(
 
   // ── Fail-closed input validation (before any spawn or state write) ──────
   if (!task || task.trim() === "") {
-    console.error("rickgent microverse: --task is required");
-    process.exit(1);
+    failLifecycleCommand("rickgent microverse: --task is required");
   }
 
   const hasMetric = metric !== undefined;
   const hasGoal = goal !== undefined;
   if (hasMetric && hasGoal) {
-    console.error("rickgent microverse: --metric and --goal are mutually exclusive");
-    process.exit(1);
+    failLifecycleCommand("rickgent microverse: --metric and --goal are mutually exclusive");
   }
   if (!hasMetric && !hasGoal) {
-    console.error("rickgent microverse: exactly one of --metric or --goal is required");
-    process.exit(1);
+    failLifecycleCommand("rickgent microverse: exactly one of --metric or --goal is required");
   }
 
   const workingDir = resolve(flagValue(rest, "--repo") ?? process.env.RICKGENT_TARGET_REPO ?? process.cwd());
@@ -265,12 +263,10 @@ export async function runMicroverseCommand(
   );
 
   if (!isDir(agentDir)) {
-    console.error(`rickgent microverse: missing agent directory: ${agentDir}`);
-    process.exit(1);
+    failLifecycleCommand(`rickgent microverse: missing agent directory: ${agentDir}`);
   }
   if (!isDir(workingDir)) {
-    console.error(`rickgent microverse: missing repo directory: ${workingDir}`);
-    process.exit(1);
+    failLifecycleCommand(`rickgent microverse: missing repo directory: ${workingDir}`);
   }
 
   const direction: MetricDirection = flagValue(rest, "--direction") === "lower" ? "lower" : "higher";
@@ -292,8 +288,7 @@ export async function runMicroverseCommand(
   if (resume) {
     prior = readPriorState(statePath);
     if (!prior) {
-      console.error(`rickgent microverse: --resume but no readable state at ${statePath}`);
-      process.exit(1);
+      failLifecycleCommand(`rickgent microverse: --resume but no readable state at ${statePath}`);
     }
   }
 
@@ -302,8 +297,7 @@ export async function runMicroverseCommand(
   let initialAcceptedScores: number[] | undefined;
   if (prior) {
     if (typeof prior.baseline_score !== "number" || !Number.isFinite(prior.baseline_score)) {
-      console.error("rickgent microverse: --resume state has no numeric baseline_score");
-      process.exit(1);
+      failLifecycleCommand("rickgent microverse: --resume state has no numeric baseline_score");
     }
     baselineScore = prior.baseline_score;
     // Reconstruct the accepted-score series so convergence continues cleanly.
@@ -316,21 +310,18 @@ export async function runMicroverseCommand(
   } else if (hasMetric) {
     const measured = measureViaMetric(metric!, workingDir);
     if (!measured.ok) {
-      console.error(
+      failLifecycleCommand(
         `rickgent microverse: metric command failed (exit ${measured.exitCode ?? "spawn-error"}): ${metric}`,
       );
-      process.exit(1);
     }
     if (measured.score === null) {
-      console.error(`rickgent microverse: metric command produced no numeric output: ${metric}`);
-      process.exit(1);
+      failLifecycleCommand(`rickgent microverse: metric command produced no numeric output: ${metric}`);
     }
     baselineScore = measured.score;
   } else {
     const judged = measureViaJudge(agentDir, workingDir, goal!, dataDir);
     if (judged === null) {
-      console.error("rickgent microverse: goal judge produced no numeric score");
-      process.exit(1);
+      failLifecycleCommand("rickgent microverse: goal judge produced no numeric score");
     }
     baselineScore = judged;
   }
@@ -345,7 +336,6 @@ export async function runMicroverseCommand(
   const metricFn = hasGoal ? (): number | null => measureViaJudge(agentDir, workingDir, goal!, dataDir) : undefined;
 
   const loop = new MicroverseLoop({
-    capabilityGate,
     workingDir,
     ownedPaths,
     metricCommand: hasMetric ? metric! : undefined,
@@ -424,4 +414,5 @@ export async function runMicroverseCommand(
     "=".repeat(50),
   ];
   console.log(lines.join("\n"));
+  return lifecycleCommandSucceeded();
 }

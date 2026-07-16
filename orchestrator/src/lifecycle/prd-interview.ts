@@ -7,24 +7,34 @@
 // shell string.
 //
 // Non-interactive mode: emits the canonical PRD template to `--output <path>`
-// (default `.rickgent/prd.md`), then validates any `--from <file>` with
-// `evaluatePrd` (the single PRD oracle — invariant 4). No agent is spawned and
+// (default `.rickgent/prd.md`), then validates any `--from <file>` through the
+// executable TicketContract adapter and `evaluatePrd`. No agent is spawned and
 // stdin is never read.
 //
 // Fail-closed (invariant 1): missing `--agent` in interactive mode, missing
 // repo, or missing `--from` file all exit 1 with a clear error and produce no
-// output. Validation failures from `evaluatePrd` exit 1 with the oracle's
-// error messages.
+// output. Executable-contract or PRD-oracle failures exit 1 with precise errors.
 
 import { spawnSync } from "child_process";
 import { existsSync, mkdirSync, statSync, writeFileSync } from "fs";
 import { dirname, join, resolve } from "path";
+import { RUNTIME_CAPABILITY_GATE } from "../capabilities/runtime-gate.js";
 import {
-  PRODUCTION_CAPABILITY_GATE,
-  type CapabilityGate,
-} from "../capabilities/registry.js";
+  filesystemIdentitiesOverlap,
+  resolveFilesystemIdentity,
+} from "../contracts/filesystem-identity.js";
 import { evaluatePrd } from "../core/prd.js";
-import { parsePrdFile } from "./prd-parse.js";
+import {
+  parseExecutablePrdFile,
+  parseExecutablePrdMarkdown,
+} from "./prd-parse.js";
+import {
+  failLifecycleCommand,
+  LifecycleCommandError,
+  lifecycleCommandCompleted,
+  lifecycleCommandSucceeded,
+  type LifecycleCommandResult,
+} from "./command-result.js";
 
 const PRD_USAGE = `rickgent prd — interactive PRD interview with --non-interactive template mode
 
@@ -36,12 +46,13 @@ Modes:
                           explores the codebase, and drafts prd.md with
                           machine-checkable acceptance criteria.
   --non-interactive       Emits the PRD template to --output (default
-                          .rickgent/prd.md) and validates --from via evaluatePrd.
+                          .rickgent/prd.md) and validates --from as an executable
+                          TicketContract PRD and via evaluatePrd.
                           No agent is spawned; stdin is never read.
 
 Options:
-  --from <file>           Validate an existing PRD file via evaluatePrd (fail-closed
-                          on missing file or invalid PRD).
+  --from <file>           Validate an existing executable PRD file (fail-closed
+                          on missing file, TicketContract, or PRD errors).
   --non-interactive       Template mode — no agent, no stdin.
   --repo <dir>            Target git repo (default: RICKGENT_TARGET_REPO or cwd).
   --agent <dir>           omnigent agent bundle directory (required in interactive
@@ -52,11 +63,9 @@ Options:
 
 // ── Canonical PRD template ───────────────────────────────────────────────
 //
-// The template is designed to pass `evaluatePrd(parsePrdFile(outputPath))` when
-// emitted verbatim: it has ≥1 AC section with non-empty `verifyCommand` and
-// `scope`, no interactive/network commands, and a `Reviewed: yes` line so the
-// simplification-review flag is true. It also includes the `verify:` convention
-// line per AC for human readability (VAL-PRD-004).
+// This is a complete strict executable PRD, not a legacy planning-only sketch.
+// Emitted into a clean repository, it passes the same TicketContract adapter
+// consumed by build and contains one nonterminal example ticket.
 const PRD_TEMPLATE = `# Feature PRD
 
 ## Introduction
@@ -102,19 +111,23 @@ N/A — no shared types/DTOs/payloads for the template.
 | N/A | N/A | N/A | N/A | N/A |
 
 ## Acceptance Criteria
-Each criterion carries a \`verify:\` line referencing an executable command.
+Each criterion carries structured argv-only verification and interface references.
 
-### AC-1: PRD template is written to the output path
-- **verifyCommand:** \`test -f .rickgent/prd.md\`
-- **scope:** \`.rickgent/prd.md\`
+### AC-TEMPLATE-01: example output exists
+- **interfaceIds:** \`["INTERFACE-TEMPLATE"]\`
+- **verifications:** \`[{"id":"VERIFY-TEMPLATE-01","executable":"test","args":["-f","rickgent-template-output.txt"],"cwd_class":"repository_root","env_allowlist":["PATH"],"timeout_ms":30000,"network":"deny","writable_outputs":[],"expected_exit_codes":[0]}]\`
+- **scope:** \`rickgent-template-output.txt\`
 - **type:** test
-- verify: \`test -f .rickgent/prd.md\`
 
-### AC-2: Emitted PRD passes evaluatePrd validation
-- **verifyCommand:** \`node dist/cli.js prd --non-interactive --output /tmp/prd-validate.md\`
-- **scope:** \`orchestrator/src/lifecycle/prd-interview.ts\`
-- **type:** test
-- verify: \`node dist/cli.js prd --non-interactive --output /tmp/prd-validate.md\`
+## Tickets
+
+### Ticket 01: create the example output
+- **description:** Create the example output file; replace this ticket with the real atomic implementation task.
+- **dependsOn:** \`[]\`
+- **scope:** \`[{"path":"rickgent-template-output.txt","change_kind":"create","directory":false}]\`
+- **interfaces:** \`[{"id":"INTERFACE-TEMPLATE","direction":"provides","path":"rickgent-template-output.txt","owner":"t01","description":"Example output contract"}]\`
+- **acceptanceCriteria:** \`["AC-TEMPLATE-01"]\`
+- **budgets:** \`{"max_attempts":2,"max_review_cycles":1,"wall_clock_ms":900000,"remediation_limit":1}\`
 
 ## Test Expectations
 ### Unit Tests
@@ -128,8 +141,9 @@ Each criterion carries a \`verify:\` line referencing an executable command.
 | Non-interactive template | prd-interview.test.ts | Emit template, parse, validate | evaluatePrd passes |
 
 ## Risks
-- Risk: template does not pass evaluatePrd → Mitigation: template is designed to pass evaluatePrd when parsed.
-- Risk: interactive agent does not produce machine-checkable ACs → Mitigation: interview prompt instructs the agent to include verify: commands per AC.
+- Risk: the example output path conflicts with repository content → Mitigation: replace the example ticket and path before implementation.
+- Risk: template drifts from executable admission → Mitigation: emission runs the production TicketContract adapter before reporting success.
+- Risk: interactive agent produces planning-only criteria → Mitigation: the interview prompt requires strict structured criteria and tickets.
 
 ## Simplification Review
 Reviewed: yes
@@ -181,20 +195,28 @@ function buildInterviewPrompt(
     "  ## Scope (In-scope / Not-in-scope)",
     "  ## Functional Requirements (table with Verification column)",
     "  ## Interface Contracts (API / Types / State Transitions)",
-    "  ## Acceptance Criteria — each ### AC-N section MUST have:",
-    "    - **verifyCommand:** <executable command>",
-    "    - **scope:** <file paths>",
+    "  ## Acceptance Criteria — each ### AC-<LOCAL-ID> section MUST have:",
+    "    - **interfaceIds:** <compact JSON string array>",
+    "    - **verifications:** <compact JSON array of argv-only verification objects>",
+    "    - **scope:** <repository-relative file paths>",
     "    - **type:** test|lint|grep",
-    "    - verify: <executable command>",
+    "  ## Tickets — each ### Ticket NN section MUST have:",
+    "    - **description:** <atomic implementation outcome>",
+    "    - **dependsOn:** <compact JSON ticket-ID array>",
+    "    - **scope:** <compact JSON scope array with change_kind and directory>",
+    "    - **interfaces:** <compact JSON interface array>",
+    "    - **acceptanceCriteria:** <compact JSON AC-ID array>",
+    "    - **budgets:** <compact JSON bounded budget object>",
     "  ## Test Expectations (Unit / Integration / Edge Cases)",
     "  ## Risks",
     "  ## Simplification Review",
     "    Reviewed: yes",
     "    Notes: <what was subtracted before adding>",
     "",
-    "Every acceptance criterion MUST have a non-empty verifyCommand and scope.",
-    "No interactive commands (read -p) or network commands (curl/wget/http).",
-    "The PRD must pass evaluatePrd when parsed.",
+    "Every acceptance criterion MUST have non-empty structured verifications and scope.",
+    "Verification executable and args are separate; never encode a shell command string.",
+    "Network must be denied and writable outputs must be declared explicitly.",
+    "The PRD must pass executable TicketContract admission and evaluatePrd.",
   ];
   if (fromFile) {
     lines.push("");
@@ -206,17 +228,18 @@ function buildInterviewPrompt(
 
 export async function runPrdCommand(
   rest: string[],
-  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
-): Promise<void> {
+): Promise<LifecycleCommandResult> {
   if (rest.includes("--help") || rest.includes("-h")) {
     console.log(PRD_USAGE);
-    return;
+    return lifecycleCommandSucceeded();
   }
 
   const nonInteractive = rest.includes("--non-interactive");
   const fromFile = flagValue(rest, "--from");
-  if (!nonInteractive && fromFile === undefined) {
-    capabilityGate.require("autonomous_dispatch");
+  // `--from` changes the interview prompt; it does not make the interview
+  // non-agentic. Only template emission is a capability-free path.
+  if (!nonInteractive) {
+    RUNTIME_CAPABILITY_GATE.require("autonomous_dispatch");
   }
   const outputFlag = flagValue(rest, "--output");
   const repoFlag = flagValue(rest, "--repo");
@@ -225,8 +248,7 @@ export async function runPrdCommand(
   // ── Resolve repo (working dir) ────────────────────────────────────────
   const workingDir = resolve(repoFlag ?? process.env.RICKGENT_TARGET_REPO ?? process.cwd());
   if (!isDir(workingDir)) {
-    console.error(`rickgent prd: repo not found: ${workingDir}`);
-    process.exit(1);
+    failLifecycleCommand(`rickgent prd: repo not found: ${workingDir}`);
   }
 
   const rickgentDir = getRickgentDir();
@@ -235,31 +257,65 @@ export async function runPrdCommand(
   // ── --from validation (fail-closed BEFORE emitting template) ──────────
   if (fromFile) {
     if (!existsSync(fromFile)) {
-      console.error(`rickgent prd: --from file not found: ${fromFile}`);
-      process.exit(1);
+      failLifecycleCommand(`rickgent prd: --from file not found: ${fromFile}`);
     }
     let parsed;
     try {
-      parsed = parsePrdFile(fromFile);
+      parsed = parseExecutablePrdFile(fromFile, { repositoryRoot: workingDir });
     } catch (err) {
-      console.error(
+      failLifecycleCommand(
         `rickgent prd: --from file could not be parsed: ${err instanceof Error ? err.message : String(err)}`,
       );
-      process.exit(1);
     }
     const verdict = evaluatePrd(parsed.prd);
     if (!verdict.valid) {
-      console.error(`rickgent prd: --from PRD failed evaluatePrd validation:`);
-      for (const e of verdict.errors) {
-        console.error(`  - ${e}`);
-      }
-      process.exit(1);
+      failLifecycleCommand([
+        "rickgent prd: --from PRD failed evaluatePrd validation:",
+        ...verdict.errors.map((error) => `  - ${error}`),
+      ].join("\n"));
     }
-    console.log(`rickgent prd: --from ${fromFile} passed evaluatePrd validation.`);
+    console.log(
+      `rickgent prd: --from ${fromFile} passed executable TicketContract and evaluatePrd validation.`,
+    );
   }
 
   if (nonInteractive) {
     // ── Non-interactive: emit template, no agent, no stdin ─────────────
+    let admittedTemplate;
+    try {
+      admittedTemplate = parseExecutablePrdMarkdown(PRD_TEMPLATE, {
+        repositoryRoot: workingDir,
+      });
+    } catch (err) {
+      failLifecycleCommand(
+        `rickgent prd: template failed executable admission before write: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    // A caller-selected PRD destination cannot also be implementation scope:
+    // writing the PRD would immediately invalidate its own `create` contract.
+    try {
+      const outputIdentity = resolveFilesystemIdentity(outputPath);
+      const collidingScope = admittedTemplate.contracts
+        .flatMap((contract) => contract.scope)
+        .find((entry) => {
+          const scopeIdentity = resolveFilesystemIdentity(
+            resolve(workingDir, ...entry.path.split("/")),
+          );
+          return filesystemIdentitiesOverlap(outputIdentity, scopeIdentity);
+        });
+      if (collidingScope !== undefined) {
+        failLifecycleCommand(
+          `rickgent prd: output path overlaps template implementation scope: ${collidingScope.path}`,
+        );
+      }
+    } catch (error) {
+      if (error instanceof LifecycleCommandError) throw error;
+      failLifecycleCommand(
+        `rickgent prd: output path identity failed before write: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
     // Ensure the parent directory exists.
     const parent = dirname(outputPath);
     if (parent && !existsSync(parent)) {
@@ -270,20 +326,18 @@ export async function runPrdCommand(
     }
     writeFileSync(outputPath, PRD_TEMPLATE, "utf-8");
     console.log(`rickgent prd: template written to ${outputPath}`);
-    return;
+    return lifecycleCommandSucceeded();
   }
 
   // ── Interactive mode: requires --agent (explicit, no default fallback) ─
   // VAL-PRD-008: fails closed when --agent is missing in interactive mode.
   const agentRaw = agentFlag ?? process.env.RICKGENT_AGENT_DIR;
   if (!agentRaw) {
-    console.error("rickgent prd: --agent <dir> is required in interactive mode");
-    process.exit(1);
+    failLifecycleCommand("rickgent prd: --agent <dir> is required in interactive mode");
   }
   const agentDir = resolve(agentRaw);
   if (!isDir(agentDir)) {
-    console.error(`rickgent prd: missing agent directory: ${agentDir}`);
-    process.exit(1);
+    failLifecycleCommand(`rickgent prd: missing agent directory: ${agentDir}`);
   }
 
   const dataDir = process.env.OMNIGENT_DATA_DIR ?? join(rickgentDir, "omnigent-data");
@@ -298,13 +352,13 @@ export async function runPrdCommand(
   });
 
   if (res.error) {
-    console.error(`rickgent prd: failed to spawn interview agent: ${res.error.message}`);
-    process.exit(1);
+    failLifecycleCommand(`rickgent prd: failed to spawn interview agent: ${res.error.message}`);
   }
   if (res.status !== 0 && res.status !== null) {
     console.error(`rickgent prd: interview agent exited with code ${res.status}`);
-    process.exit(res.status);
+    return lifecycleCommandCompleted(res.status);
   }
 
   console.log(`rickgent prd: interview complete. PRD should be at ${outputPath}`);
+  return lifecycleCommandSucceeded();
 }

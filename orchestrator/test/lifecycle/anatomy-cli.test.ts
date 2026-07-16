@@ -701,8 +701,9 @@ describe("rickgent anatomy CLI (M4)", () => {
     expect(status).toBe("");
   });
 
-  // VAL-ANATOMY-012: --resume reads rotation state and continues
-  it("--resume loads anatomy-park.json and continues rotation", () => {
+  // VAL-ANATOMY-012: resume is unavailable in the preview and must not touch
+  // the prior rotation state, repository, or worker process boundary.
+  it("--resume fails at the capability boundary without continuing rotation", () => {
     initRepo(ctx.repo);
     seedTwoSubsystems(ctx.repo);
     // First run: 1 iteration, zero findings
@@ -711,30 +712,27 @@ describe("rickgent anatomy CLI (M4)", () => {
       ["--repo", ctx.repo, "--agent", ctx.agentDir, "--max-iterations", "1", "--stall-limit", "3"],
       { AP_REVIEW_FINDINGS: "[]", AP_REVIEW_COUNT: "0" },
     );
+    expect(r1.status).not.toBeNull();
     expect(existsSync(join(ctx.rickgentDir, "anatomy-park.json"))).toBe(true);
-    const state1 = readState(ctx);
-    const idx1 = state1.current_index;
-    const clean1 = { ...state1.consecutive_clean };
+    const statePath = join(ctx.rickgentDir, "anatomy-park.json");
+    const stateBefore = readFileSync(statePath, "utf-8");
+    const spawnsBefore = spawnEntries(ctx);
+    const headBefore = git(ctx.repo, ["rev-parse", "HEAD"]);
+    const statusBefore = git(ctx.repo, ["status", "--porcelain"]);
 
-    // Second run: resume with more iterations
+    // Second run: capability selection rejects resume before state loading.
     const r2 = run(
       ctx,
       ["--resume", "--repo", ctx.repo, "--agent", ctx.agentDir, "--max-iterations", "10", "--stall-limit", "3"],
       { AP_REVIEW_FINDINGS: "[]", AP_REVIEW_COUNT: "0" },
     );
-    const state2 = readState(ctx);
-    // History should be preserved and extended
-    for (const sub of state2.subsystems) {
-      const hist1 = state1.findings_history[sub] ?? [];
-      const hist2 = state2.findings_history[sub] ?? [];
-      expect(hist2.length).toBeGreaterThanOrEqual(hist1.length);
-    }
-    // consecutive_clean should not reset (should continue accumulating)
-    const allConverged = state2.subsystems.every(
-      (sub: string) => (state2.consecutive_clean[sub] ?? 0) >= 2,
-    );
-    expect(allConverged).toBe(true);
-    expect(state2.converged).toBe(true);
+    expect(r2.status).toBe(3);
+    expect(r2.stderr).toContain("RICKGENT_CAPABILITY_UNAVAILABLE");
+    expect(r2.stderr).toContain("RICKGENT_RESUME_UNAVAILABLE");
+    expect(readFileSync(statePath, "utf-8")).toBe(stateBefore);
+    expect(spawnEntries(ctx)).toEqual(spawnsBefore);
+    expect(git(ctx.repo, ["rev-parse", "HEAD"])).toBe(headBefore);
+    expect(git(ctx.repo, ["status", "--porcelain"])).toBe(statusBefore);
   });
 
   // VAL-ANATOMY-013: Fail-closed on errors
@@ -842,4 +840,3 @@ describe("rickgent anatomy CLI (M4)", () => {
     expect(state.converged).toBe(true);
   });
 });
-

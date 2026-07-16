@@ -1,5 +1,5 @@
 import { spawnSync } from "child_process";
-import { mkdtempSync, readFileSync, rmSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -69,6 +69,16 @@ afterAll(() => {
 describe("reliability-preview claim contract", () => {
   it("keeps README and the public contract byte-aligned with the registry matrix", () => {
     const expectedBlock = formatPublicSurfaceMatrixBlock();
+    const retiredClaims = [
+      "autonomous multi-model engineering platform",
+      "production-hardened",
+      "merge-ready pr",
+      "zero required interventions",
+      "configurable concurrent dispatch",
+      "seven fail-closed",
+      "public resume and reconciliation",
+      "multi-vendor review is enforced",
+    ];
     for (const relative of ["README.md", "docs/reliability-preview.md"]) {
       const text = readFileSync(join(repoRoot, relative), "utf-8");
       const start = text.indexOf(CLAIM_MATRIX_BEGIN);
@@ -78,7 +88,9 @@ describe("reliability-preview claim contract", () => {
       expect(text.indexOf(CLAIM_MATRIX_BEGIN, start + 1), relative).toBe(-1);
       expect(text.slice(start, end + CLAIM_MATRIX_END.length), relative).toBe(expectedBlock);
       expect(text).toContain(RELEASE_CHANNEL);
-      expect(text).toContain("explicit test dependency injection");
+      expect(text).toContain("explicit build test dependency injection");
+      expect(text).toContain("legacy compatibility fixtures");
+      expect(text).toContain("non-authoritative");
       expect(text).toContain("fixture-only");
       expect(text).toContain("exactly sequential");
       expect(text).toContain("dedicated run worktree");
@@ -87,18 +99,50 @@ describe("reliability-preview claim contract", () => {
       expect(text).toContain("ready_for_delivery=local_oracle_complete");
       expect(text).toContain("delivered=remote_delivery_verified");
 
-      for (const retiredClaim of [
-        "autonomous multi-model engineering platform",
-        "production-hardened",
-        "merge-ready pr",
-        "zero required interventions",
-        "configurable concurrent dispatch",
-        "seven fail-closed",
-        "public resume and reconciliation",
-        "multi-vendor review is enforced",
-      ]) {
+      for (const retiredClaim of retiredClaims) {
         expect(text.toLowerCase(), `${relative}: ${retiredClaim}`).not.toContain(retiredClaim);
       }
+    }
+
+    const packageMetadata = readFileSync(join(orchestratorRoot, "package.json"), "utf-8").toLowerCase();
+    expect(packageMetadata).toContain("reliability-preview");
+    for (const retiredClaim of retiredClaims) {
+      expect(packageMetadata, `package.json: ${retiredClaim}`).not.toContain(retiredClaim);
+    }
+  });
+
+  it("labels target-design decision records as non-authoritative for current availability", () => {
+    for (const relative of [
+      "docs/decisions/build-loop.md",
+      "docs/decisions/model-routing.md",
+      "docs/decisions/session-resume.md",
+    ]) {
+      const text = readFileSync(join(repoRoot, relative), "utf-8");
+      expect(text, relative).toContain("not a statement of current `reliability_preview` availability");
+      expect(text, relative).toContain("`docs/reliability-preview.md` control");
+      expect(text, relative).toContain("remain unavailable");
+    }
+  });
+
+  it("inventories every intentional public filesystem writer without granting lifecycle authority", () => {
+    const surfaces = publicSurfaceRegistry();
+    expect(surfaces.filter((entry) => entry.mutation_authority === "local_artifact_only")).toEqual([
+      expect.objectContaining({
+        surface: "rickgent prd --non-interactive [--output <path>]",
+        mode: "public_local_artifact",
+        capability: null,
+      }),
+      expect.objectContaining({
+        surface: "rickgent citadel [--report <path>]",
+        mode: "public_local_artifact",
+        capability: null,
+      }),
+    ]);
+    for (const entry of surfaces.filter((candidate) => candidate.mutation_authority === "local_artifact_only")) {
+      expect(entry.boundary).toContain("explicit write authority");
+      expect(entry.boundary).toContain("may be inside the repository or state root");
+      expect(entry.boundary).toContain("read-only Git inspection may run");
+      expect(entry.boundary).toMatch(/no (?:agent spawn|remediation agent), Git mutation, or validated lifecycle transition/i);
     }
   });
 
@@ -112,7 +156,7 @@ describe("reliability-preview claim contract", () => {
       expect(result.stdout).toContain(CAPABILITY_UNAVAILABLE_ERROR_CODE);
       expect(result.stdout).toContain(getCapability("autonomous_dispatch").error_code);
       expect(result.stdout).toContain(INPUT_CONTRACT_ERROR_CODE);
-      expect(result.stdout).toContain("explicit test dependency injection");
+      expect(result.stdout).toContain("explicit build test dependency injection");
       expect(result.stdout).toContain(formatTerminalSummary());
     }
 
@@ -124,6 +168,32 @@ describe("reliability-preview claim contract", () => {
       expect(result.stdout).toContain(getCapability("cross_vendor_review").error_code);
       expect(result.stdout).toContain(LEGACY_HELP_DISCLAIMER);
     }
+  });
+
+  it("executes agent-backed legacy variants and fails before spawn or state writes", () => {
+    const autonomous = getCapability("autonomous_dispatch").error_code;
+    const fixtureBin = join(orchestratorRoot, "test/fixtures/omnigent-fixture");
+    const spawnRecord = join(stateRoot, "blocked-legacy-spawn.json");
+    const env = {
+      PATH: `${fixtureBin}:${process.env.PATH ?? ""}`,
+      FIXTURE_SPAWN_RECORD: spawnRecord,
+    };
+    const agent = join(repoRoot, "agents/rickgent");
+
+    for (const args of [
+      ["prd", "--from", join(repoRoot, "fixtures/prd-min.md"), "--agent", agent],
+      ["szechuan", "--dry-run", "--repo", repoRoot, "--agent", agent],
+      ["anatomy", "--dry-run", "--repo", repoRoot, "--agent", agent],
+    ]) {
+      const result = cli(args, env);
+      expect(result.status, `${args.join(" ")}: ${output(result)}`).toBe(3);
+      expect(result.stderr).toContain(autonomous);
+    }
+
+    expect(existsSync(spawnRecord)).toBe(false);
+    expect(existsSync(join(stateRoot, "szechuan.json"))).toBe(false);
+    expect(existsSync(join(stateRoot, "anatomy-park.json"))).toBe(false);
+    expect(existsSync(join(stateRoot, "gap_analysis.md"))).toBe(false);
   });
 
   it("derives doctor JSON and text from the compiled claims authority", () => {
@@ -149,6 +219,21 @@ describe("reliability-preview claim contract", () => {
     for (const entry of capabilityRegistry()) {
       expect(textResult.stdout).toContain(`${entry.name}: state=${entry.state} code=${entry.error_code}`);
     }
+  });
+
+  it("makes status --deep report and fail the aggregate doctor health result", () => {
+    const bin = join(stateRoot, "unsupported-python-bin");
+    const python = join(bin, "python3");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(python, "#!/bin/sh\nprintf 'Python 3.11.9\\n'\n", "utf-8");
+    chmodSync(python, 0o755);
+
+    const result = cli(["status", "--deep"], {
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+    });
+    expect(result.status, output(result)).toBe(1);
+    expect(result.stdout).toContain("[FAIL] python_runtime: 3.11.9");
+    expect(result.stdout).toContain("health and attachment audit");
   });
 
   it("matches the public capability exits and ordered stable/detail codes", () => {

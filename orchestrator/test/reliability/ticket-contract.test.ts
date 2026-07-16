@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFileSync } from "child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -272,6 +273,14 @@ describe("TicketContract IDs, references, dependencies, and scopes", () => {
 });
 
 describe("TicketContract repository path admission", () => {
+  it("rejects case variants of reserved Git and Rickgent path segments", () => {
+    for (const path of [".GIT/config", "src/.GiT/config", ".RICKGENT/state.json", "src/.RickGent/state.json"]) {
+      const draft = clone(baseDraft()) as any;
+      draft.scope = [{ path, change_kind: "create", directory: false }];
+      expectCode(() => sealTicketContracts([draft]), "TICKET_SCOPE_PATH_RESERVED");
+    }
+  });
+
   it("rejects non-canonical, absolute, traversing, reserved, and NUL scope paths", () => {
     const cases: Array<[string, string]> = [
       ["/tmp/escape", "TICKET_SCOPE_PATH_ABSOLUTE"],
@@ -321,11 +330,58 @@ describe("TicketContract repository path admission", () => {
       "TICKET_SCOPE_PATH_SUBMODULE",
     );
 
+    const ancestor = clone(baseDraft()) as any;
+    ancestor.scope = [{ path: "vendor", change_kind: "create", directory: true }];
+    expectCode(
+      () => sealTicketContracts([ancestor], { repositoryRoot: repo }),
+      "TICKET_SCOPE_PATH_SUBMODULE",
+    );
+
+    const caseAlias = clone(baseDraft()) as any;
+    caseAlias.scope = [{ path: "Vendor/Sub/file.ts", change_kind: "create", directory: false }];
+    if (existsSync(join(repo, "README.MD"))) {
+      expectCode(
+        () => sealTicketContracts([caseAlias], { repositoryRoot: repo }),
+        "TICKET_SCOPE_PATH_SUBMODULE",
+      );
+    } else {
+      // A proven case-sensitive filesystem may legitimately own this distinct path.
+      expect(sealTicketContracts([caseAlias], { repositoryRoot: repo })).toHaveLength(1);
+    }
+
     mkdirSync(join(repo, "vendor", "sub"), { recursive: true });
     expectCode(
       () => sealTicketContracts([crossing], { repositoryRoot: repo }),
       "TICKET_SCOPE_PATH_SUBMODULE",
     );
+  });
+
+  it("rejects resolved aliases to normal and linked-worktree Git administrative roots", () => {
+    const repo = createRepository();
+    symlinkSync(join(repo, ".git"), join(repo, "git-admin"));
+
+    const normalAlias = clone(baseDraft()) as any;
+    normalAlias.scope = [{ path: "git-admin/config", change_kind: "modify", directory: false }];
+    expectCode(
+      () => sealTicketContracts([normalAlias], { repositoryRoot: repo }),
+      "TICKET_SCOPE_PATH_RESERVED",
+    );
+
+    const linked = join(repo, "..", "linked-worktree");
+    git(repo, ["worktree", "add", "-q", "-b", "linked-proof", linked]);
+    const linkedGitDir = git(linked, ["rev-parse", "--absolute-git-dir"]);
+    const commonGitDir = git(repo, ["rev-parse", "--absolute-git-dir"]);
+    symlinkSync(linkedGitDir, join(linked, "worktree-admin"));
+    symlinkSync(commonGitDir, join(linked, "common-admin"));
+
+    for (const path of ["worktree-admin/HEAD", "common-admin/config"]) {
+      const linkedAlias = clone(baseDraft()) as any;
+      linkedAlias.scope = [{ path, change_kind: "modify", directory: false }];
+      expectCode(
+        () => sealTicketContracts([linkedAlias], { repositoryRoot: linked }),
+        "TICKET_SCOPE_PATH_RESERVED",
+      );
+    }
   });
 
   it("rejects configured state roots while allowing external state roots", () => {
@@ -336,6 +392,35 @@ describe("TicketContract repository path admission", () => {
       () => sealTicketContracts([draft], { repositoryRoot: repo, stateRoots: ["state"] }),
       "TICKET_SCOPE_PATH_RESERVED",
     );
+
+    const ancestorDirectory = clone(baseDraft()) as any;
+    ancestorDirectory.scope = [{ path: "state", change_kind: "create", directory: true }];
+    expectCode(
+      () => sealTicketContracts(
+        [ancestorDirectory],
+        { repositoryRoot: repo, stateRoots: ["state/internal"] },
+      ),
+      "TICKET_SCOPE_PATH_RESERVED",
+    );
+
+    const caseAliasAncestor = clone(baseDraft()) as any;
+    caseAliasAncestor.scope = [{ path: "State", change_kind: "create", directory: true }];
+    if (existsSync(join(repo, "README.MD"))) {
+      expectCode(
+        () => sealTicketContracts(
+          [caseAliasAncestor],
+          { repositoryRoot: repo, stateRoots: ["state/internal"] },
+        ),
+        "TICKET_SCOPE_PATH_RESERVED",
+      );
+    } else {
+      // Preserve distinct names when the backing filesystem proves case sensitivity.
+      expect(sealTicketContracts(
+        [caseAliasAncestor],
+        { repositoryRoot: repo, stateRoots: ["state/internal"] },
+      )).toHaveLength(1);
+    }
+
     expect(
       sealTicketContracts([draft], { repositoryRoot: repo, stateRoots: [join(repo, "..", ".rickgent")] }),
     ).toHaveLength(1);

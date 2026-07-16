@@ -53,10 +53,9 @@ import { runDeslopGate } from "./szechuan.js";
 import {
   CapabilityUnavailableError,
   InputContractError,
-  PRODUCTION_CAPABILITY_GATE,
   assertNoProductionBypasses,
-  type CapabilityGate,
 } from "../capabilities/registry.js";
+import { RUNTIME_CAPABILITY_GATE } from "../capabilities/runtime-gate.js";
 import {
   aggregateRunOutcome,
   runIssue,
@@ -67,6 +66,7 @@ import {
   callerRepositoryUnchanged,
   finalizeRunWorkspace,
   provisionRunWorkspace,
+  type ProvisionRunWorkspaceResult,
   type ReadyRunWorkspace,
   type RunWorkspaceCleanupEvidence,
 } from "../git/run-workspace.js";
@@ -108,12 +108,23 @@ export interface BuildOptions {
   deliveryConfigured?: boolean;
 }
 
-export interface BuildDependencies {
-  capabilityGate?: CapabilityGate;
+/**
+ * Test-harness dependencies for the contained lifecycle implementation.
+ *
+ * This type is intentionally not accepted by the public `runBuild` and
+ * `runPipeline` entrypoints.  The only supported consumer is the package-
+ * private fixture bridge under `src/testing/`.
+ *
+ * @internal
+ */
+export interface InternalBuildDependencies {
   assertEnvironment?: (env: NodeJS.ProcessEnv) => void;
   verifyPolicyAttachment?: typeof verifyPolicyAttachment;
   runConformanceGate?: typeof runContractConformanceGate;
   runDeslopGate?: typeof runDeslopGate;
+  provisionRunWorkspace?: typeof provisionRunWorkspace;
+  finalizeRunWorkspace?: typeof finalizeRunWorkspace;
+  recordRun?: typeof recordRun;
   /** Explicit fixture-only omissions; production entrypoints never set these. */
   skipPolicyAttachment?: boolean;
   skipConformance?: boolean;
@@ -187,17 +198,10 @@ function recordSalvageDisposition(rickgentDir: string, entry: Record<string, unk
   );
 }
 
-function revParseHead(repo: string, env: NodeJS.ProcessEnv): string | null {
-  try {
-    return execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], {
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-      env,
-    }).trim();
-  } catch {
-    return null;
-  }
-}
+type RunWorkspaceChangeObservation =
+  | { readonly status: "changed"; readonly detail: string }
+  | { readonly status: "unchanged"; readonly detail: string }
+  | { readonly status: "unknown"; readonly detail: string };
 
 /** Parse the RICKGENT_MODEL_ROSTER env var (JSON array of model entries). */
 function parseRosterEnv(env: NodeJS.ProcessEnv): ModelEntry[] {
@@ -221,19 +225,101 @@ function parseNumberEnv(v: string | undefined): number | undefined {
   return Number.isNaN(n) ? undefined : n;
 }
 
-function computeTreeChanged(repo: string, baseline: string | null, env: NodeJS.ProcessEnv): boolean {
-  let dirty = "";
+function observeRunWorkspaceChange(
+  repo: string,
+  baseline: string,
+  env: NodeJS.ProcessEnv,
+): RunWorkspaceChangeObservation {
+  let dirty: string;
   try {
     dirty = execFileSync("git", ["-C", repo, "status", "--porcelain"], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       env,
     }).trim();
-  } catch {
-    dirty = "";
+  } catch (error) {
+    return {
+      status: "unknown",
+      detail: `run workspace status could not be observed: ${error instanceof Error ? error.message : String(error)}`,
+    };
   }
-  const head = revParseHead(repo, env);
-  return dirty.length > 0 || (head !== null && head !== baseline);
+  let head: string;
+  try {
+    head = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env,
+    }).trim();
+  } catch (error) {
+    return {
+      status: "unknown",
+      detail: `run workspace HEAD could not be observed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  if (dirty.length > 0 || head !== baseline) {
+    return { status: "changed", detail: "run workspace differs from its allocation baseline" };
+  }
+  return { status: "unchanged", detail: "run workspace matches its allocation baseline" };
+}
+
+function cleanupFailureDetail(
+  cleanup: RunWorkspaceCleanupEvidence,
+  retainRequested: boolean,
+): string | null {
+  const errors = cleanup.errors.length > 0 ? cleanup.errors.join("; ") : null;
+  const observedExpectedState = retainRequested
+    ? cleanup.disposition === "retained" && !cleanup.worktreeAbsent &&
+      !cleanup.worktreeRegistrationAbsent && !cleanup.refAbsent
+    : cleanup.disposition === "removed" && cleanup.worktreeAbsent &&
+      cleanup.worktreeRegistrationAbsent && cleanup.refAbsent;
+  if (errors === null && observedExpectedState) return null;
+  const expected = retainRequested
+    ? "retained worktree, registration, and ref"
+    : "absent worktree, registration, and ref";
+  const observed =
+    `disposition=${cleanup.disposition} worktreeAbsent=${cleanup.worktreeAbsent} ` +
+    `worktreeRegistrationAbsent=${cleanup.worktreeRegistrationAbsent} ` +
+    `refAbsent=${cleanup.refAbsent}`;
+  return `run workspace cleanup/retention did not prove ${expected}: ${observed}` +
+    (errors === null ? "" : ` errors=${errors}`);
+}
+
+function provisionFailureIssue(result: Exclude<ProvisionRunWorkspaceResult, { readonly ok: true }>): RunIssue {
+  const cleanupProven =
+    result.cleanup.errors.length === 0 &&
+    result.cleanup.worktreeAbsent &&
+    result.cleanup.worktreeRegistrationAbsent &&
+    result.cleanup.refAbsent &&
+    result.cleanup.disposition !== "retained";
+  const cleanupDetail = cleanupProven
+    ? null
+    : `run workspace allocation cleanup was not proven: disposition=${result.cleanup.disposition} ` +
+      `worktreeAbsent=${result.cleanup.worktreeAbsent} ` +
+      `worktreeRegistrationAbsent=${result.cleanup.worktreeRegistrationAbsent} ` +
+      `refAbsent=${result.cleanup.refAbsent}` +
+      (result.cleanup.errors.length === 0 ? "" : ` errors=${result.cleanup.errors.join("; ")}`);
+  if (cleanupDetail !== null) {
+    return runIssue({
+      reason: "cleanup_failed",
+      class: "cleanup",
+      detail: `${result.code}: ${result.detail}; ${cleanupDetail}`,
+      gate: "run-workspace",
+    });
+  }
+  if (result.failureClass === "infrastructure") {
+    return runIssue({
+      reason: "infrastructure_error",
+      class: "infrastructure",
+      detail: `${result.code}: ${result.detail}`,
+      gate: "run-workspace",
+    });
+  }
+  return runIssue({
+    reason: "input_contract_error",
+    class: "input_contract",
+    detail: `${result.code}: ${result.detail}`,
+    gate: "run-workspace",
+  });
 }
 
 export function ticketPrompt(ticket: TicketContract): string {
@@ -271,9 +357,9 @@ function seedRegistry(registry: Registry, runId: string, tickets: readonly Ticke
   return effectiveRunId;
 }
 
-export async function runBuild(
+async function executeBuild(
   opts: BuildOptions,
-  dependencies: BuildDependencies = {},
+  dependencies: InternalBuildDependencies,
 ): Promise<BuildResult> {
   const env = opts.env ?? process.env;
   (dependencies.assertEnvironment ?? assertNoProductionBypasses)(env);
@@ -281,13 +367,12 @@ export async function runBuild(
   if (cap !== 1) {
     throw new InputContractError("maxConcurrent must be exactly 1 for the sequential fixture profile");
   }
-  const capabilityGate = dependencies.capabilityGate ?? PRODUCTION_CAPABILITY_GATE;
-  if (opts.resume) capabilityGate.require("resume_retry");
+  if (opts.resume) RUNTIME_CAPABILITY_GATE.require("resume_retry");
   if (opts.deliveryConfigured || opts.featureBranch !== undefined || opts.autonomousPrFlow !== undefined) {
-    capabilityGate.require("automatic_delivery");
+    RUNTIME_CAPABILITY_GATE.require("automatic_delivery");
   }
-  if (opts.rawShell || env.RICKGENT_RAW_SHELL === "1") capabilityGate.require("raw_shell");
-  capabilityGate.require("autonomous_dispatch");
+  if (opts.rawShell || env.RICKGENT_RAW_SHELL === "1") RUNTIME_CAPABILITY_GATE.require("raw_shell");
+  RUNTIME_CAPABILITY_GATE.require("autonomous_dispatch");
 
   const report: string[] = [];
 
@@ -378,6 +463,11 @@ export async function runBuild(
       detail: "required policy attachment gate was skipped",
       gate: "policy-attachment",
     }));
+    return finishBuild({
+      ...base,
+      gateHit: "policy-attachment-gate",
+      interventions: countInterventions(opts.rickgentDir),
+    }, issues);
   } else {
     const attachResult = (dependencies.verifyPolicyAttachment ?? verifyPolicyAttachment)(opts.agentDir, env);
     if (attachResult.ok) {
@@ -433,19 +523,14 @@ export async function runBuild(
   // No mutation-capable child can exist before this clean ref/worktree is
   // allocated and verified. Public callers never reach this seam because the
   // production capability gate above remains fixture-only.
-  const provisioned = provisionRunWorkspace({
+  const provisioned = (dependencies.provisionRunWorkspace ?? provisionRunWorkspace)({
     targetRepo: opts.workingDir,
     runId: requestedRunId,
     externalRoots: [opts.rickgentDir, opts.dataDir],
   });
   if (!provisioned.ok) {
     report.push(`build: RUN WORKSPACE GATE hit — ${provisioned.code}: ${provisioned.detail}`);
-    issues.push(runIssue({
-      reason: "input_contract_error",
-      class: "input_contract",
-      detail: `${provisioned.code}: ${provisioned.detail}`,
-      gate: "run-workspace",
-    }));
+    issues.push(provisionFailureIssue(provisioned));
     return finishBuild({
       ...base,
       gateHit: "run-workspace-gate",
@@ -458,15 +543,16 @@ export async function runBuild(
       `baseline=${runWorkspace.baselineSha.slice(0, 12)}`,
   );
 
+  try {
   mkdirSync(opts.rickgentDir, { recursive: true });
   // Durable state allocation begins only after normalized tickets and the
   // clean mutation owner have both been admitted.
-  recordRun(opts.rickgentDir, requestedRunId, parsed.prd.title);
+  (dependencies.recordRun ?? recordRun)(opts.rickgentDir, requestedRunId, parsed.prd.title);
 
   // ── Dispatch infra ───────────────────────────────────────────────────────
   const ledger = new DispatchLedger(dispatchLedgerPath(opts.rickgentDir));
   const lock = new TicketLock(join(opts.rickgentDir, "locks"));
-  const dispatcher = new Dispatcher(ledger, lock, opts.rickgentDir, capabilityGate);
+  const dispatcher = new Dispatcher(ledger, lock, opts.rickgentDir);
   const registry = new Registry(join(opts.rickgentDir, "registry.json"));
   const breaker: CircuitBreakerState = createBreakerState();
 
@@ -475,7 +561,7 @@ export async function runBuild(
   // ── Resume: recover completed tickets from ledger + git via reconcile ─────
   const recoveredDone = new Set<string>();
   if (opts.resume) {
-    const rec = reconcile(opts.workingDir, opts.rickgentDir, undefined, capabilityGate);
+    const rec = reconcile(opts.workingDir, opts.rickgentDir);
     for (const [id, t] of Object.entries(rec.registry.tickets)) {
       if (t.status === "Done") recoveredDone.add(id);
     }
@@ -504,7 +590,7 @@ export async function runBuild(
     toDispatch.push(ticket);
   }
 
-  const queue = new DispatchQueue(ledger, cap, capabilityGate);
+  const queue = new DispatchQueue(ledger, cap);
   const idByTicket = new Map<string, DispatchId>();
   const ticketByDispatchId = new Map<string, TicketContract>();
   for (const ticket of toDispatch) {
@@ -553,7 +639,7 @@ export async function runBuild(
       implementerVendor,
       costBudgetUsd: costBudgetUsd ?? null,
       softThresholdUsd: softThresholdUsd ?? null,
-    }, capabilityGate);
+    });
 
     if (!routed.ok) {
       const v = routed.verdict;
@@ -578,7 +664,21 @@ export async function runBuild(
       ledger.append(failedEntry);
 
       // Absorb via salvage/breaker, same as any other dispatch failure.
-      const treeChanged = computeTreeChanged(runWorkspace.worktreeDir, runWorkspace.baselineSha, env);
+      const treeObservation = observeRunWorkspaceChange(
+        runWorkspace.worktreeDir,
+        runWorkspace.baselineSha,
+        env,
+      );
+      const treeChanged = treeObservation.status === "changed";
+      if (treeObservation.status === "unknown") {
+        issues.push(runIssue({
+          reason: "infrastructure_error",
+          class: "infrastructure",
+          detail: treeObservation.detail,
+          ticketId: ticket.id,
+          gate: "salvage-observation",
+        }));
+      }
       const transition = recordIterationResult(breaker, {
         error: reason,
         gitTreeChanged: treeChanged,
@@ -587,7 +687,7 @@ export async function runBuild(
       recordSalvageDisposition(opts.rickgentDir, {
         ticketId: ticket.id,
         dispatchState: "failed",
-        disposition: treeChanged ? "retained-run-workspace" : "no-op",
+        disposition: treeObservation.status === "unchanged" ? "no-op" : "retained-run-workspace",
         executed: false,
         archivePath: null,
         breaker: transition.transition,
@@ -633,7 +733,21 @@ export async function runBuild(
     }
 
     // FAILURE ABSORBED — circuit breaker + salvage, never a prompt.
-    const treeChanged = computeTreeChanged(runWorkspace.worktreeDir, runWorkspace.baselineSha, env);
+    const treeObservation = observeRunWorkspaceChange(
+      runWorkspace.worktreeDir,
+      runWorkspace.baselineSha,
+      env,
+    );
+    const treeChanged = treeObservation.status === "changed";
+    if (treeObservation.status === "unknown") {
+      issues.push(runIssue({
+        reason: "infrastructure_error",
+        class: "infrastructure",
+        detail: treeObservation.detail,
+        ticketId: ticket.id,
+        gate: "salvage-observation",
+      }));
+    }
     const transition = recordIterationResult(breaker, {
       error: entry.stderr || `dispatch terminal state ${entry.state}`,
       gitTreeChanged: treeChanged,
@@ -642,13 +756,13 @@ export async function runBuild(
     recordSalvageDisposition(opts.rickgentDir, {
       ticketId: ticket.id,
       dispatchState: entry.state,
-      disposition: treeChanged ? "retained-run-workspace" : "no-op",
+      disposition: treeObservation.status === "unchanged" ? "no-op" : "retained-run-workspace",
       executed: false,
       archivePath: null,
       breaker: transition.transition,
     });
     report.push(
-      `  ${ticket.id}: FAILED (${entry.state}) → workspace=${treeChanged ? "retained" : "clean"} ` +
+      `  ${ticket.id}: FAILED (${entry.state}) → workspace=${treeObservation.status === "unchanged" ? "clean" : "retained"} ` +
         `breaker=${transition.transition} — absorbed, continuing non-interactively`,
     );
     return entry;
@@ -847,8 +961,57 @@ export async function runBuild(
   }
 
   report.push("build: local profile complete; automatic delivery is structurally absent");
-  const retainWorkspace = computeTreeChanged(runWorkspace.worktreeDir, runWorkspace.baselineSha, env);
-  base.workspaceCleanup = finalizeRunWorkspace(runWorkspace, retainWorkspace);
+  base.interventions = countInterventions(opts.rickgentDir);
+  } catch (error) {
+    const detail = `post-provision build failure: ${error instanceof Error ? error.message : String(error)}`;
+    report.push(`build: INFRASTRUCTURE ERROR — ${detail}`);
+    issues.push(runIssue({
+      reason: "infrastructure_error",
+      class: "infrastructure",
+      detail,
+      gate: "run-workspace-owner",
+    }));
+  } finally {
+  const treeObservation = observeRunWorkspaceChange(
+    runWorkspace.worktreeDir,
+    runWorkspace.baselineSha,
+    env,
+  );
+  const retainWorkspace = treeObservation.status !== "unchanged";
+  if (treeObservation.status === "unknown") {
+    report.push(`build: run workspace observation unavailable — retaining: ${treeObservation.detail}`);
+    issues.push(runIssue({
+      reason: "infrastructure_error",
+      class: "infrastructure",
+      detail: treeObservation.detail,
+      gate: "run-workspace-finalization",
+    }));
+  }
+  try {
+    base.workspaceCleanup = (dependencies.finalizeRunWorkspace ?? finalizeRunWorkspace)(
+      runWorkspace,
+      retainWorkspace,
+    );
+  } catch (error) {
+    base.workspaceCleanup = Object.freeze({
+      disposition: "retained" as const,
+      worktreeAbsent: false,
+      worktreeRegistrationAbsent: false,
+      refAbsent: false,
+      errors: Object.freeze([
+        `run workspace finalizer threw: ${error instanceof Error ? error.message : String(error)}`,
+      ]),
+    });
+  }
+  const cleanupDetail = cleanupFailureDetail(base.workspaceCleanup, retainWorkspace);
+  if (cleanupDetail !== null) {
+    issues.push(runIssue({
+      reason: "cleanup_failed",
+      class: "cleanup",
+      detail: cleanupDetail,
+      gate: "run-workspace-finalization",
+    }));
+  }
   const callerCheck = callerRepositoryUnchanged(runWorkspace);
   report.push(
     `build: caller checkout — ${callerCheck.unchanged ? "unchanged" : "CHANGED"}; ` +
@@ -862,9 +1025,9 @@ export async function runBuild(
       gate: "caller-integrity",
     }));
   }
+  }
   return finishBuild({
     ...base,
-    interventions: countInterventions(opts.rickgentDir),
   }, issues);
 }
 
@@ -882,7 +1045,6 @@ export function runCleanup(
   workingDir: string,
   rickgentDir: string,
   env: NodeJS.ProcessEnv = process.env,
-  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
 ): CleanupResult {
   const issues: RunIssue[] = [];
   const report: string[] = [];
@@ -890,7 +1052,7 @@ export function runCleanup(
   let rec: ReconcileResult | null = null;
 
   try {
-    capabilityGate.require("reconciliation");
+    RUNTIME_CAPABILITY_GATE.require("reconciliation");
   } catch (error) {
     if (error instanceof CapabilityUnavailableError) {
       issues.push(runIssue({
@@ -935,7 +1097,7 @@ export function runCleanup(
   }
 
   try {
-    rec = reconcile(workingDir, rickgentDir, undefined, capabilityGate);
+    rec = reconcile(workingDir, rickgentDir);
     report.push(
       `cleanup: reconcile rebuilt=${rec.rebuilt} ticketsFound=${rec.ticketsFound} ` +
         `errors=${rec.errors.length}`,
@@ -972,21 +1134,18 @@ export interface PipelineResult extends BuildResult {
   cleanup: CleanupResult;
 }
 
-/** `rickgent pipeline` — the full build followed by the cleanup chain. */
-export async function runPipeline(
+async function executePipeline(
   opts: BuildOptions,
-  dependencies: BuildDependencies = {},
+  dependencies: InternalBuildDependencies,
 ): Promise<PipelineResult> {
-  const capabilityGate = dependencies.capabilityGate ?? PRODUCTION_CAPABILITY_GATE;
   // Preflight cleanup before build mutation; unavailable required cleanup can
   // never be discovered only after work has started.
-  capabilityGate.require("reconciliation");
-  const build = await runBuild(opts, dependencies);
+  RUNTIME_CAPABILITY_GATE.require("reconciliation");
+  const build = await executeBuild(opts, dependencies);
   const cleanup = runCleanup(
     opts.workingDir,
     opts.rickgentDir,
     opts.env,
-    capabilityGate,
   );
   const outcome = aggregateRunOutcome([...build.outcome.issues, ...cleanup.issues]);
   const report = [...build.report, ...cleanup.report];
@@ -995,6 +1154,49 @@ export async function runPipeline(
       `code=${outcome.stableCode} issues=${outcome.issues.map((issue) => issue.reason).join(",") || "none"}`,
   );
   return { ...build, outcome, report, cleanup };
+}
+
+/** Public production build entrypoint. Capability authority is not injectable. */
+export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
+  return executeBuild(opts, {});
+}
+
+/** `rickgent pipeline` — the production build followed by the cleanup chain. */
+export async function runPipeline(opts: BuildOptions): Promise<PipelineResult> {
+  return executePipeline(opts, {});
+}
+
+async function requireFixtureRuntimeAuthority(authority: object): Promise<void> {
+  // This module is deliberately excluded from the npm artifact. A caller that
+  // reaches this internal export through an absolute path therefore fails at
+  // this import before any injected dependency can execute.
+  const { assertFixtureRuntimeAuthority } = await import("../testing/fixture-authority.js");
+  assertFixtureRuntimeAuthority(authority);
+}
+
+/**
+ * Package-private fixture bridge. It is deliberately absent from the package
+ * export map and should only be re-exported by `src/testing/fixture-runtime`.
+ *
+ * @internal
+ */
+export async function runBuildWithDependenciesForTesting(
+  authority: object,
+  opts: BuildOptions,
+  dependencies: InternalBuildDependencies,
+): Promise<BuildResult> {
+  await requireFixtureRuntimeAuthority(authority);
+  return executeBuild(opts, dependencies);
+}
+
+/** @internal — see `runBuildWithDependenciesForTesting`. */
+export async function runPipelineWithDependenciesForTesting(
+  authority: object,
+  opts: BuildOptions,
+  dependencies: InternalBuildDependencies,
+): Promise<PipelineResult> {
+  await requireFixtureRuntimeAuthority(authority);
+  return executePipeline(opts, dependencies);
 }
 
 // ── Policy attachment verification (B4 gate) ────────────────────────────────

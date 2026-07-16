@@ -5,22 +5,20 @@
 // effect: git tree state, git log, salvage commit contents, process liveness,
 // and the circuit-breaker state after the run.
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
-  MicroverseLoop as ProductionMicroverseLoop,
-  type MicroverseLoopOptions,
+  MicroverseLoop,
 } from "../../src/lifecycle/microverse.js";
-import { FIXTURE_CAPABILITY_GATE } from "../helpers/capabilities.js";
 
-class MicroverseLoop extends ProductionMicroverseLoop {
-  constructor(options: MicroverseLoopOptions) {
-    super({ ...options, capabilityGate: FIXTURE_CAPABILITY_GATE });
-  }
-}
+// Unit-only access to dormant loop mechanics; M1 grants neither raw shell nor
+// a public microverse lifecycle through its fixture runtime.
+vi.mock("../../src/capabilities/runtime-gate.js", () => ({
+  RUNTIME_CAPABILITY_GATE: Object.freeze({ require(): void {} }),
+}));
 
 function git(repo: string, args: string[]): string {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf-8" }).trim();

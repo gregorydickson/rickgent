@@ -24,12 +24,15 @@ import {
 import { join, resolve, dirname } from "path";
 import { createHash } from "crypto";
 import { fileURLToPath } from "url";
-import {
-  PRODUCTION_CAPABILITY_GATE,
-  type CapabilityGate,
-} from "../capabilities/registry.js";
+import { RUNTIME_CAPABILITY_GATE } from "../capabilities/runtime-gate.js";
 import { evaluatePrd } from "../core/prd.js";
 import { parsePrdFile, parsePrdMarkdown, type ParsedPrd } from "./prd-parse.js";
+import {
+  failLifecycleCommand,
+  lifecycleCommandCompleted,
+  lifecycleCommandSucceeded,
+  type LifecycleCommandResult,
+} from "./command-result.js";
 
 const REFINE_USAGE = `rickgent refine — 3-analyst parallel refinement + ticket decomposition
 
@@ -240,11 +243,10 @@ async function runCycle(
   // Check for crashes (fail-closed — invariant 1)
   for (const result of results) {
     if (result.exitCode !== 0) {
-      console.error(
+      failLifecycleCommand(
         `rickgent refine: ${result.role} analyst crashed in cycle ${cycle} ` +
           `(exit ${result.exitCode})${result.error ? ": " + result.error : ""}`,
       );
-      process.exit(1);
     }
   }
 
@@ -781,14 +783,13 @@ function launchBuild(prdRefinedPath: string, agentDir: string, workingDir: strin
 
 export async function runRefineCommand(
   rest: string[],
-  capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
-): Promise<void> {
+): Promise<LifecycleCommandResult> {
   if (rest.includes("--help") || rest.includes("-h")) {
     console.log(REFINE_USAGE);
-    return;
+    return lifecycleCommandSucceeded();
   }
 
-  capabilityGate.require("autonomous_dispatch");
+  RUNTIME_CAPABILITY_GATE.require("autonomous_dispatch");
 
   // ── Parse flags ──────────────────────────────────────────────────────
   const valueFlags = new Set(["--cycles", "--max-turns", "--repo", "--agent"]);
@@ -805,8 +806,7 @@ export async function runRefineCommand(
 
   const prdPath = positionals[0];
   if (!prdPath) {
-    console.error("rickgent refine: missing <prd.md> argument");
-    process.exit(1);
+    failLifecycleCommand("rickgent refine: missing <prd.md> argument");
   }
 
   const runFlag = rest.includes("--run");
@@ -818,15 +818,13 @@ export async function runRefineCommand(
   const cyclesRaw = flagValue(rest, "--cycles") ?? "3";
   const cycles = parseInt(cyclesRaw, 10);
   if (Number.isNaN(cycles) || cycles < 1) {
-    console.error(`rickgent refine: invalid --cycles value: ${cyclesRaw}`);
-    process.exit(1);
+    failLifecycleCommand(`rickgent refine: invalid --cycles value: ${cyclesRaw}`);
   }
 
   const maxTurnsRaw = flagValue(rest, "--max-turns");
   const maxTurns: number | undefined = maxTurnsRaw ? parseInt(maxTurnsRaw, 10) : undefined;
   if (maxTurnsRaw && maxTurns !== undefined && (Number.isNaN(maxTurns) || maxTurns < 1)) {
-    console.error(`rickgent refine: invalid --max-turns value: ${maxTurnsRaw}`);
-    process.exit(1);
+    failLifecycleCommand(`rickgent refine: invalid --max-turns value: ${maxTurnsRaw}`);
   }
 
   const repoFlag = flagValue(rest, "--repo");
@@ -835,46 +833,40 @@ export async function runRefineCommand(
   // ── Resolve working dir ──────────────────────────────────────────────
   const workingDir = resolve(repoFlag ?? process.env.RICKGENT_TARGET_REPO ?? process.cwd());
   if (!isDir(workingDir)) {
-    console.error(`rickgent refine: repo not found: ${workingDir}`);
-    process.exit(1);
+    failLifecycleCommand(`rickgent refine: repo not found: ${workingDir}`);
   }
 
   // ── Fail-closed: validate PRD exists BEFORE spawning analysts ────────
   if (!existsSync(prdPath)) {
-    console.error(`rickgent refine: PRD not found: ${prdPath}`);
-    process.exit(1);
+    failLifecycleCommand(`rickgent refine: PRD not found: ${prdPath}`);
   }
 
   let parsedPrd: ParsedPrd;
   try {
     parsedPrd = parsePrdFile(prdPath);
   } catch (err) {
-    console.error(
+    failLifecycleCommand(
       `rickgent refine: PRD could not be parsed: ${err instanceof Error ? err.message : String(err)}`,
     );
-    process.exit(1);
   }
 
   // Fail-closed: validate PRD via evaluatePrd before spawning analysts
   const verdict = evaluatePrd(parsedPrd.prd);
   if (!verdict.valid) {
-    console.error(`rickgent refine: PRD failed evaluatePrd validation:`);
-    for (const e of verdict.errors) {
-      console.error(`  - ${e}`);
-    }
-    process.exit(1);
+    failLifecycleCommand([
+      "rickgent refine: PRD failed evaluatePrd validation:",
+      ...verdict.errors.map((error) => `  - ${error}`),
+    ].join("\n"));
   }
 
   // ── Fail-closed: validate --agent dir ────────────────────────────────
   const agentRaw = agentFlag ?? process.env.RICKGENT_AGENT_DIR;
   if (!agentRaw) {
-    console.error("rickgent refine: --agent <dir> is required");
-    process.exit(1);
+    failLifecycleCommand("rickgent refine: --agent <dir> is required");
   }
   const agentDir = resolve(agentRaw);
   if (!isDir(agentDir)) {
-    console.error(`rickgent refine: missing agent directory: ${agentDir}`);
-    process.exit(1);
+    failLifecycleCommand(`rickgent refine: missing agent directory: ${agentDir}`);
   }
 
   // ── Setup directories ────────────────────────────────────────────────
@@ -961,12 +953,10 @@ export async function runRefineCommand(
     simplificationReview: refinedParsed.prd.simplificationReview,
   });
   if (!combinedVerdict.valid) {
-    console.error(`rickgent refine: refined PRD + ticket ACs failed evaluatePrd re-validation:`);
-    for (const e of combinedVerdict.errors) {
-      console.error(`  - ${e}`);
-    }
-    // Fail-closed (invariant 1): re-validation failure exits non-zero.
-    process.exit(1);
+    failLifecycleCommand([
+      "rickgent refine: refined PRD + ticket ACs failed evaluatePrd re-validation:",
+      ...combinedVerdict.errors.map((error) => `  - ${error}`),
+    ].join("\n"));
   } else {
     console.log(`rickgent refine: refined PRD + ticket ACs pass evaluatePrd re-validation`);
   }
@@ -994,8 +984,9 @@ export async function runRefineCommand(
     } else {
       const buildExit = launchBuild(refinedPrdPath, agentDir, workingDir);
       if (buildExit !== 0) {
-        process.exit(buildExit);
+        return lifecycleCommandCompleted(buildExit);
       }
     }
   }
+  return lifecycleCommandSucceeded();
 }

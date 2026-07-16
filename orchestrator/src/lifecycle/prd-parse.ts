@@ -44,19 +44,46 @@ interface Section {
   lines: string[];
 }
 
+interface MarkdownFence {
+  readonly marker: "`" | "~";
+  readonly length: number;
+}
+
+/** CommonMark fenced-code opener: 0–3 spaces, >=3 markers, valid info string. */
+function markdownFenceOpener(line: string): MarkdownFence | null {
+  const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+  if (match === null) return null;
+  const run = match[1]!;
+  const marker = run[0] as MarkdownFence["marker"];
+  const info = match[2] ?? "";
+  // CommonMark forbids backticks in the info string of a backtick fence.
+  if (marker === "`" && info.includes("`")) return null;
+  return { marker, length: run.length };
+}
+
+/** CommonMark closer: same marker, at least opener length, whitespace suffix only. */
+function closesMarkdownFence(line: string, fence: MarkdownFence): boolean {
+  const match = line.match(/^ {0,3}(`{3,}|~{3,})[\t ]*$/);
+  if (match === null) return false;
+  const run = match[1]!;
+  return run[0] === fence.marker && run.length >= fence.length;
+}
+
 /** Return only executable Markdown lines; fenced examples are inert input. */
 function unfencedLines(text: string): string[] {
   const lines: string[] = [];
-  let fence: string | null = null;
+  let fence: MarkdownFence | null = null;
   for (const rawLine of text.split(/\r?\n/)) {
-    const fenceMatch = rawLine.match(/^\s*(```+|~~~+)/);
-    if (fenceMatch) {
-      const marker = fenceMatch[1]![0]!;
-      if (fence === null) fence = marker;
-      else if (fence === marker) fence = null;
+    if (fence !== null) {
+      if (closesMarkdownFence(rawLine, fence)) fence = null;
       continue;
     }
-    if (fence === null) lines.push(rawLine);
+    const opener = markdownFenceOpener(rawLine);
+    if (opener !== null) {
+      fence = opener;
+      continue;
+    }
+    lines.push(rawLine);
   }
   return lines;
 }
@@ -75,6 +102,96 @@ function splitSections(text: string): Section[] {
     if (current) current.lines.push(line);
   }
   return sections;
+}
+
+/** Split executable Markdown into structural H2 sections. */
+function splitH2Sections(text: string): Section[] {
+  const sections: Section[] = [];
+  let current: Section | null = null;
+  for (const line of unfencedLines(text)) {
+    const heading = line.match(/^##\s+(.*)$/);
+    if (heading) {
+      current = { heading: heading[1]!.trim(), lines: [] };
+      sections.push(current);
+      continue;
+    }
+    if (current) current.lines.push(line);
+  }
+  return sections;
+}
+
+interface SimplificationReviewFields {
+  readonly reviewed: string;
+  readonly notes: string;
+}
+
+function simplificationReviewField(line: string): { key: "reviewed" | "notes"; value: string } | null {
+  const patterns = [
+    /^\s*(?:[-*]\s+)?(Reviewed|Notes)\s*:\s*(.*?)\s*$/i,
+    /^\s*(?:[-*]\s+)?\*\*(Reviewed|Notes):\*\*\s*(.*?)\s*$/i,
+    /^\s*(?:[-*]\s+)?\*\*(Reviewed|Notes)\*\*\s*:\s*(.*?)\s*$/i,
+  ];
+  for (const pattern of patterns) {
+    const match = line.match(pattern);
+    if (match) {
+      return {
+        key: match[1]!.toLowerCase() as "reviewed" | "notes",
+        value: match[2]!.trim(),
+      };
+    }
+  }
+  return null;
+}
+
+function strictSimplificationReview(text: string): SimplificationReviewFields {
+  const sections = splitH2Sections(text).filter(
+    (section) => section.heading.toLowerCase() === "simplification review",
+  );
+  if (sections.length !== 1) {
+    throw new TicketContractError(
+      "TICKET_SIMPLIFICATION_REVIEW_INVALID",
+      `executable PRD requires exactly one H2 Simplification Review section; found ${sections.length}`,
+    );
+  }
+
+  const fields = new Map<"reviewed" | "notes", string>();
+  for (const line of sections[0]!.lines) {
+    if (line.trim().length === 0) continue;
+    const field = simplificationReviewField(line);
+    if (field === null) {
+      throw new TicketContractError(
+        "TICKET_SIMPLIFICATION_REVIEW_INVALID",
+        `Simplification Review contains an unsupported line: ${line.trim()}`,
+      );
+    }
+    if (fields.has(field.key)) {
+      throw new TicketContractError(
+        "TICKET_SIMPLIFICATION_REVIEW_INVALID",
+        `Simplification Review duplicates ${field.key}`,
+      );
+    }
+    fields.set(field.key, field.value);
+  }
+
+  const reviewed = fields.get("reviewed");
+  const notes = fields.get("notes");
+  if (reviewed?.toLowerCase() !== "yes" || notes === undefined || notes.length === 0) {
+    throw new TicketContractError(
+      "TICKET_SIMPLIFICATION_REVIEW_INVALID",
+      "Simplification Review requires exactly `Reviewed: yes` and non-empty `Notes:` fields",
+    );
+  }
+  return { reviewed, notes };
+}
+
+/** Legacy projection remains observational, but malformed review input fails closed. */
+function projectSimplificationReview(text: string): PrdInput["simplificationReview"] {
+  try {
+    const review = strictSimplificationReview(text);
+    return { reviewed: true, notes: review.notes };
+  } catch {
+    return { reviewed: false, notes: "" };
+  }
 }
 
 /** Pull backticked values from a human list, falling back to comma splitting. */
@@ -372,9 +489,7 @@ export function parsePrdMarkdown(text: string): ParsedPrd {
     });
   }
 
-  const reviewedLine = findLine(text, /reviewed:\s*(\w+)/i);
-  const reviewed = reviewedLine !== null && /^(yes|true|done)$/i.test(reviewedLine);
-  const notes = findLine(text, /^\s*[-*]?\s*(?:\*\*)?notes:?(?:\*\*)?\s*(.*)$/i) ?? "";
+  const simplificationReview = projectSimplificationReview(text);
 
   const tickets: LegacyTicketDraft[] = [];
   let ticketIndex = 0;
@@ -397,7 +512,7 @@ export function parsePrdMarkdown(text: string): ParsedPrd {
       title,
       description,
       acceptanceCriteria,
-      simplificationReview: { reviewed, notes },
+      simplificationReview,
     },
     tickets,
   };
@@ -417,8 +532,13 @@ export function parseExecutablePrdMarkdown(
   text: string,
   context: TicketContractNormalizationContext = {},
 ): ExecutablePrd {
+  const simplificationReview = strictSimplificationReview(text);
+  const prd = parsePrdMarkdown(text).prd;
   return {
-    prd: parsePrdMarkdown(text).prd,
+    prd: {
+      ...prd,
+      simplificationReview: { reviewed: true, notes: simplificationReview.notes },
+    },
     contracts: adaptPrdMarkdownToTicketContracts(text, context),
   };
 }

@@ -1,0 +1,229 @@
+{
+  "schema_version": "1.0.0",
+  "vectors": [
+    {
+      "name": "trimmed-title",
+      "schema_pointer": "#/$defs/nonEmptyString",
+      "contract_path": ["title"],
+      "value": "A trimmed title",
+      "expected_accept": true,
+      "expected_runtime_error": null
+    },
+    {
+      "name": "internal-title-whitespace",
+      "schema_pointer": "#/$defs/nonEmptyString",
+      "contract_path": ["title"],
+      "value": "A title\nwith an internal newline",
+      "expected_accept": true,
+      "expected_runtime_error": null
+    },
+    {
+      "name": "leading-title-whitespace",
+      "schema_pointer": "#/$defs/nonEmptyString",
+      "contract_path": ["title"],
+      "value": " A title",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_SCHEMA_INVALID"
+    },
+    {
+      "name": "trailing-title-whitespace",
+      "schema_pointer": "#/$defs/nonEmptyString",
+      "contract_path": ["title"],
+      "value": "A title ",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_SCHEMA_INVALID"
+    },
+    {
+      "name": "title-only-whitespace",
+      "schema_pointer": "#/$defs/nonEmptyString",
+      "contract_path": ["title"],
+      "value": " \t",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_SCHEMA_INVALID"
+    },
+    {
+      "name": "canonical-repository-path",
+      "schema_pointer": "#/$defs/repoPath",
+      "contract_path": ["scope", 0, "path"],
+      "value": "src/feature.ts",
+      "expected_accept": true,
+      "expected_runtime_error": null
+    },
+    {
+      "name": "hidden-repository-path",
+      "schema_pointer": "#/$defs/repoPath",
+      "contract_path": ["scope", 0, "path"],
+      "value": "src/.hidden/feature.ts",
+      "expected_accept": true,
+      "expected_runtime_error": null
+    },
+    {
+      "name": "internal-repository-whitespace",
+      "schema_pointer": "#/$defs/repoPath",
+      "contract_path": ["scope", 0, "path"],
+      "value": "src/a file\nwith newline.ts",
+      "expected_accept": true,
+      "expected_runtime_error": null
+    },
+    {
+      "name": "reserved-rickgent-root",
+      "schema_pointer": "#/$defs/repoPath",
+      "contract_path": ["scope", 0, "path"],
+      "value": ".rickgent/state.sqlite3",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_SCOPE_PATH_RESERVED"
+    },
+    {
+      "name": "nested-reserved-rickgent-root",
+      "schema_pointer": "#/$defs/repoPath",
+      "contract_path": ["scope", 0, "path"],
+      "value": "src/.rickgent/state.sqlite3",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_SCOPE_PATH_RESERVED"
+    },
+    {
+      "name": "reserved-git-root",
+      "schema_pointer": "#/$defs/repoPath",
+      "contract_path": ["scope", 0, "path"],
+      "value": "src/.git/config",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_SCOPE_PATH_RESERVED"
+    },
+    {
+      "name": "mixed-case-reserved-git-root",
+      "schema_pointer": "#/$defs/repoPath",
+      "contract_path": ["scope", 0, "path"],
+      "value": ".GIT/config",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_SCOPE_PATH_RESERVED"
+    },
+    {
+      "name": "mixed-case-reserved-rickgent-root",
+      "schema_pointer": "#/$defs/repoPath",
+      "contract_path": ["scope", 0, "path"],
+      "value": "src/.RickGent/state.sqlite3",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_SCOPE_PATH_RESERVED"
+    },
+    {
+      "name": "dot-segment",
+      "schema_pointer": "#/$defs/repoPath",
+      "contract_path": ["scope", 0, "path"],
+      "value": "src/./feature.ts",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_SCOPE_PATH_TRAVERSAL"
+    },
+    {
+      "name": "parent-segment",
+      "schema_pointer": "#/$defs/repoPath",
+      "contract_path": ["scope", 0, "path"],
+      "value": "src/../feature.ts",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_SCOPE_PATH_TRAVERSAL"
+    },
+    {
+      "name": "trailing-slash",
+      "schema_pointer": "#/$defs/repoPath",
+      "contract_path": ["scope", 0, "path"],
+      "value": "src/feature/",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_SCOPE_PATH_INVALID"
+    },
+    {
+      "name": "double-slash",
+      "schema_pointer": "#/$defs/repoPath",
+      "contract_path": ["scope", 0, "path"],
+      "value": "src//feature.ts",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_SCOPE_PATH_INVALID"
+    },
+    {
+      "name": "backslash-path",
+      "schema_pointer": "#/$defs/repoPath",
+      "contract_path": ["scope", 0, "path"],
+      "value": "src\\feature.ts",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_SCOPE_PATH_INVALID"
+    },
+    {
+      "name": "nul-path",
+      "schema_pointer": "#/$defs/repoPath",
+      "contract_path": ["scope", 0, "path"],
+      "value": "src/\u0000feature.ts",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_SCOPE_PATH_INVALID"
+    },
+    {
+      "name": "posix-absolute-path",
+      "schema_pointer": "#/$defs/repoPath",
+      "contract_path": ["scope", 0, "path"],
+      "value": "/src/feature.ts",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_SCOPE_PATH_ABSOLUTE"
+    },
+    {
+      "name": "windows-drive-path",
+      "schema_pointer": "#/$defs/repoPath",
+      "contract_path": ["scope", 0, "path"],
+      "value": "C:/src/feature.ts",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_SCOPE_PATH_ABSOLUTE"
+    },
+    {
+      "name": "leading-path-whitespace",
+      "schema_pointer": "#/$defs/repoPath",
+      "contract_path": ["scope", 0, "path"],
+      "value": " src/feature.ts",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_SCOPE_PATH_INVALID"
+    },
+    {
+      "name": "node-executable",
+      "schema_pointer": "#/$defs/verification/properties/executable",
+      "contract_path": ["verifications", 0, "executable"],
+      "value": "/usr/bin/node",
+      "expected_accept": true,
+      "expected_runtime_error": null
+    },
+    {
+      "name": "shell-name-substring",
+      "schema_pointer": "#/$defs/verification/properties/executable",
+      "contract_path": ["verifications", 0, "executable"],
+      "value": "tools/bash-runner",
+      "expected_accept": true,
+      "expected_runtime_error": null
+    },
+    {
+      "name": "absolute-bash-executable",
+      "schema_pointer": "#/$defs/verification/properties/executable",
+      "contract_path": ["verifications", 0, "executable"],
+      "value": "/bin/bash",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_VERIFICATION_SHELL_FORBIDDEN"
+    },
+    {
+      "name": "mixed-case-zsh-executable",
+      "schema_pointer": "#/$defs/verification/properties/executable",
+      "contract_path": ["verifications", 0, "executable"],
+      "value": "/usr/local/ZsH",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_VERIFICATION_SHELL_FORBIDDEN"
+    },
+    {
+      "name": "mixed-case-powershell-executable",
+      "schema_pointer": "#/$defs/verification/properties/executable",
+      "contract_path": ["verifications", 0, "executable"],
+      "value": "TOOLS/PowerShell",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_VERIFICATION_SHELL_FORBIDDEN"
+    },
+    {
+      "name": "pwsh-executable",
+      "schema_pointer": "#/$defs/verification/properties/executable",
+      "contract_path": ["verifications", 0, "executable"],
+      "value": "pwsh",
+      "expected_accept": false,
+      "expected_runtime_error": "TICKET_VERIFICATION_SHELL_FORBIDDEN"
+    }
+  ]
+}

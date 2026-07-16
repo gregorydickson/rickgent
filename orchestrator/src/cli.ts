@@ -7,7 +7,6 @@ import {
   CAPABILITY_UNAVAILABLE_ERROR_CODE,
   InputContractError,
   LEGACY_HELP_DISCLAIMER,
-  PRODUCTION_CAPABILITY_GATE,
   RELEASE_CHANNEL,
   RELEASE_LABEL,
   RickgentBoundaryError,
@@ -16,11 +15,15 @@ import {
   formatPublicSurfaceMatrixText,
   formatReliabilityPreviewBanner,
   formatTerminalSummary,
-  type CapabilityGate,
 } from "./capabilities/registry.js";
+import { RUNTIME_CAPABILITY_GATE } from "./capabilities/runtime-gate.js";
 import { runVerdict } from "./core/verdict-cli.js";
-import type { BuildDependencies, BuildOptions } from "./lifecycle/build.js";
+import type { BuildOptions, InternalBuildDependencies } from "./lifecycle/build.js";
 import type { RunOutcome, RunOutcomeClass } from "./lifecycle/run-outcome.js";
+import {
+  LifecycleCommandError,
+  type LifecycleCommandResult,
+} from "./lifecycle/command-result.js";
 
 const RUN_EXIT_CODES: Readonly<Record<RunOutcomeClass, 0 | 2 | 3 | 4 | 5 | 6 | 7>> = Object.freeze({
   success: 0,
@@ -187,9 +190,9 @@ const NUMERIC_OPTION_RULES: Readonly<Record<string, { integer: boolean; minimum?
   "--target": { integer: false },
 };
 
-export interface CliDependencies {
-  capabilityGate?: CapabilityGate;
-  buildDependencies?: BuildDependencies;
+/** @internal — fixture-only CLI seams, never accepted by public `main`. */
+export interface InternalCliDependencies {
+  buildDependencies?: InternalBuildDependencies;
   assertEnvironment?: (env: NodeJS.ProcessEnv) => void;
   /** Explicit fixture-only child entrypoint for delegated Cronenberg commands. */
   cronenbergChildCliPath?: string;
@@ -321,11 +324,11 @@ function resolveBuildOptions(rest: string[]): BuildOptions {
   return options;
 }
 
-function requireBuildCapabilities(rest: string[], gate: CapabilityGate): void {
-  if (rest.includes("--resume")) gate.require("resume_retry");
-  if (rest.includes("--feature") || rest.includes("--no-autonomous-pr")) gate.require("automatic_delivery");
-  if (rest.includes("--raw-shell")) gate.require("raw_shell");
-  gate.require("autonomous_dispatch");
+function requireBuildCapabilities(rest: string[]): void {
+  if (rest.includes("--resume")) RUNTIME_CAPABILITY_GATE.require("resume_retry");
+  if (rest.includes("--feature") || rest.includes("--no-autonomous-pr")) RUNTIME_CAPABILITY_GATE.require("automatic_delivery");
+  if (rest.includes("--raw-shell")) RUNTIME_CAPABILITY_GATE.require("raw_shell");
+  RUNTIME_CAPABILITY_GATE.require("autonomous_dispatch");
 }
 
 async function runDoctor(rest: string[]): Promise<void> {
@@ -336,10 +339,9 @@ async function runDoctor(rest: string[]): Promise<void> {
 
 async function runStatus(rest: string[]): Promise<void> {
   if (rest.includes("--deep")) {
-    const { runDoctorCheck } = await import("./lifecycle/doctor.js");
-    const doctor = await runDoctorCheck();
-    console.log(doctor.report);
-    if (!doctor.ok) throw new Error("status --deep doctor check failed");
+    const { runDoctorCommand } = await import("./commands/doctor.js");
+    const doctor = await runDoctorCommand(false);
+    if (!doctor.ok) process.exit(1);
   }
   const { Registry } = await import("./lifecycle/registry.js");
   const status = new Registry(join(getRickgentDir(), "registry.json")).getPipelineStatus();
@@ -360,33 +362,43 @@ async function runStatus(rest: string[]): Promise<void> {
   console.log([...lines, "=".repeat(50)].join("\n"));
 }
 
-async function runReconcile(gate: CapabilityGate): Promise<void> {
+async function runReconcile(): Promise<void> {
   const { reconcile } = await import("./lifecycle/reconcile.js");
-  const result = reconcile(process.cwd(), getRickgentDir(), undefined, gate);
+  const result = reconcile(process.cwd(), getRickgentDir());
   console.log(`rickgent reconcile — rebuilt=${result.rebuilt} ticketsFound=${result.ticketsFound}`);
   if (!result.ok) process.exit(1);
 }
 
-async function runBuildCommand(rest: string[], pipeline: boolean, dependencies: CliDependencies): Promise<void> {
+async function runBuildCommand(
+  rest: string[],
+  pipeline: boolean,
+  dependencies: InternalCliDependencies,
+): Promise<void> {
   if (rest.length === 1 && (rest[0] === "--help" || rest[0] === "-h")) {
     console.log(pipeline ? PIPELINE_USAGE : BUILD_USAGE);
     return;
   }
   const opts = resolveBuildOptions(rest);
-  const gate = dependencies.capabilityGate ?? PRODUCTION_CAPABILITY_GATE;
   console.log(formatCapabilityReport());
-  requireBuildCapabilities(rest, gate);
-  const buildDependencies: BuildDependencies = {
-    ...dependencies.buildDependencies,
-    capabilityGate: gate,
-  };
-  if (dependencies.assertEnvironment !== undefined) {
-    buildDependencies.assertEnvironment = dependencies.assertEnvironment;
-  }
+  requireBuildCapabilities(rest);
   const lifecycle = await import("./lifecycle/build.js");
-  const result = pipeline
-    ? await lifecycle.runPipeline(opts, buildDependencies)
-    : await lifecycle.runBuild(opts, buildDependencies);
+  const fixtureBuildDependencies = dependencies.buildDependencies === undefined
+    ? undefined
+    : {
+        ...dependencies.buildDependencies,
+        ...(dependencies.assertEnvironment === undefined
+          ? {}
+          : { assertEnvironment: dependencies.assertEnvironment }),
+      };
+  const result = fixtureBuildDependencies === undefined
+    ? pipeline
+      ? await lifecycle.runPipeline(opts)
+      : await lifecycle.runBuild(opts)
+    : pipeline
+      ? await import("./testing/fixture-runtime.js").then(({ runFixturePipeline }) =>
+          runFixturePipeline(opts, fixtureBuildDependencies))
+      : await import("./testing/fixture-runtime.js").then(({ runFixtureBuild }) =>
+          runFixtureBuild(opts, fixtureBuildDependencies));
   console.log(result.report.join("\n"));
   const summary =
     `${pipeline ? "pipeline" : "build"}: planned=${result.ticketsPlanned} ` +
@@ -409,14 +421,28 @@ async function runMetrics(rest: string[]): Promise<void> {
   console.log(rest.includes("--json") ? result.json : result.report);
 }
 
-export async function main(
-  args: string[] = process.argv.slice(2),
-  dependencies: CliDependencies = {},
+async function runLifecycleCommand(
+  execute: () => Promise<LifecycleCommandResult>,
+): Promise<void> {
+  try {
+    const result = await execute();
+    if (result.exitCode !== 0) process.exit(result.exitCode);
+  } catch (error) {
+    if (error instanceof LifecycleCommandError) {
+      console.error(error.message);
+      process.exit(error.exitCode);
+    }
+    throw error;
+  }
+}
+
+async function executeMain(
+  args: string[],
+  dependencies: InternalCliDependencies,
 ): Promise<void> {
   (dependencies.assertEnvironment ?? assertNoProductionBypasses)(process.env);
   const command = args[0] ?? "";
   const rest = args.slice(1);
-  const gate = dependencies.capabilityGate ?? PRODUCTION_CAPABILITY_GATE;
 
   if (["--version", "-v", "--build-commit", "--help", "-h", ""].includes(command)) {
     if (rest.length > 0) throw new InputContractError(`unexpected argument after ${command || "default help"}: ${rest[0]}`);
@@ -445,49 +471,73 @@ export async function main(
     console.log(`${formatReliabilityPreviewBanner()}\n\n${LEGACY_HELP_DISCLAIMER}\n`);
   }
 
-  if (!helpOnly && rest.includes("--resume")) gate.require("resume_retry");
-  if (!helpOnly && command === "microverse" && rest.includes("--metric")) gate.require("raw_shell");
+  if (!helpOnly && rest.includes("--resume")) RUNTIME_CAPABILITY_GATE.require("resume_retry");
+  if (!helpOnly && command === "microverse" && rest.includes("--metric")) RUNTIME_CAPABILITY_GATE.require("raw_shell");
 
   if (command === "verdict") return runVerdict(rest);
   if (command === "doctor") return runDoctor(rest);
   if (command === "status") return runStatus(rest);
-  if (command === "reconcile") return runReconcile(gate);
+  if (command === "reconcile") return runReconcile();
   if (command === "metrics") return runMetrics(rest);
 
   if (command === "microverse") {
-    if (!helpOnly) gate.require("autonomous_dispatch");
+    if (!helpOnly) RUNTIME_CAPABILITY_GATE.require("autonomous_dispatch");
     const { runMicroverseCommand } = await import("./lifecycle/microverse-cli.js");
-    return runMicroverseCommand(rest, gate);
+    return runLifecycleCommand(() => runMicroverseCommand(rest));
   }
   if (command === "cronenberg") {
-    if (!helpOnly && !rest.includes("--dry-run")) gate.require("autonomous_dispatch");
+    if (!helpOnly && !rest.includes("--dry-run")) RUNTIME_CAPABILITY_GATE.require("autonomous_dispatch");
     const { runCronenbergCommand } = await import("./lifecycle/cronenberg-run.js");
-    return runCronenbergCommand(rest, dependencies.cronenbergChildCliPath, gate);
+    return runLifecycleCommand(() =>
+      runCronenbergCommand(rest, dependencies.cronenbergChildCliPath));
   }
   if (command === "citadel") {
     const { runCitadelCommand } = await import("./lifecycle/citadel-cli.js");
-    return runCitadelCommand(rest);
+    return runLifecycleCommand(() => runCitadelCommand(rest));
   }
   if (command === "prd") {
-    if (!helpOnly && !rest.includes("--non-interactive") && !rest.includes("--from")) gate.require("autonomous_dispatch");
+    if (!helpOnly && !rest.includes("--non-interactive")) RUNTIME_CAPABILITY_GATE.require("autonomous_dispatch");
     const { runPrdCommand } = await import("./lifecycle/prd-interview.js");
-    return runPrdCommand(rest, gate);
+    return runLifecycleCommand(() => runPrdCommand(rest));
   }
   if (command === "refine") {
-    if (!helpOnly) gate.require("autonomous_dispatch");
+    if (!helpOnly) RUNTIME_CAPABILITY_GATE.require("autonomous_dispatch");
     const { runRefineCommand } = await import("./lifecycle/refine.js");
-    return runRefineCommand(rest, gate);
+    return runLifecycleCommand(() => runRefineCommand(rest));
   }
   if (command === "szechuan") {
-    if (!helpOnly && !rest.includes("--dry-run")) gate.require("autonomous_dispatch");
+    if (!helpOnly) RUNTIME_CAPABILITY_GATE.require("autonomous_dispatch");
     const { runSzechuanCommand } = await import("./lifecycle/szechuan-cli.js");
-    return runSzechuanCommand(rest, gate);
+    return runLifecycleCommand(() => runSzechuanCommand(rest));
   }
   if (command === "anatomy") {
-    if (!helpOnly && !rest.includes("--dry-run")) gate.require("autonomous_dispatch");
+    if (!helpOnly) RUNTIME_CAPABILITY_GATE.require("autonomous_dispatch");
     const { runAnatomyCommand } = await import("./lifecycle/anatomy.js");
-    return runAnatomyCommand(rest, gate);
+    return runLifecycleCommand(() => runAnatomyCommand(rest));
   }
+}
+
+/** Public production CLI entrypoint. Capability authority is not injectable. */
+export async function main(args: string[] = process.argv.slice(2)): Promise<void> {
+  return executeMain(args, {});
+}
+
+/**
+ * Package-private fixture bridge. The public package export map omits this
+ * module and the public `main` signature cannot receive these dependencies.
+ *
+ * @internal
+ */
+export async function runCliWithDependenciesForTesting(
+  authority: object,
+  args: string[],
+  dependencies: InternalCliDependencies,
+): Promise<void> {
+  // The authority module and bridge are excluded from the npm artifact. An
+  // absolute-path caller therefore fails here before injected code executes.
+  const { assertFixtureRuntimeAuthority } = await import("./testing/fixture-authority.js");
+  assertFixtureRuntimeAuthority(authority);
+  return executeMain(args, dependencies);
 }
 
 export function handleFatal(error: unknown): never {

@@ -22,6 +22,7 @@ export interface CallerRepositorySnapshot {
 export interface RunWorkspaceCleanupEvidence {
   readonly disposition: "not_created" | "removed" | "retained";
   readonly worktreeAbsent: boolean;
+  readonly worktreeRegistrationAbsent: boolean;
   readonly refAbsent: boolean;
   readonly errors: readonly string[];
 }
@@ -35,6 +36,7 @@ export interface ReadyRunWorkspace {
   readonly baselineSha: string;
   readonly runRef: string;
   readonly worktreeDir: string;
+  readonly worktreeGitDir: string;
   readonly allocationRoot: string;
   readonly callerBefore: CallerRepositorySnapshot;
 }
@@ -48,11 +50,24 @@ export interface ProvisionRunWorkspaceOptions {
   readonly requestedRunRef?: string;
 }
 
+export type ProvisionRunWorkspaceFailureCode =
+  | "RUN_WORKSPACE_INVALID_REPOSITORY"
+  | "RUN_WORKSPACE_NOT_ROOT"
+  | "RUN_WORKSPACE_STATE_INSIDE_CALLER"
+  | "RUN_WORKSPACE_DIRTY_BASELINE"
+  | "RUN_WORKSPACE_GIT_OPERATION"
+  | "RUN_WORKSPACE_INVALID_BASELINE"
+  | "RUN_WORKSPACE_PROTECTED_REF"
+  | "RUN_WORKSPACE_INVALID_REF"
+  | "RUN_WORKSPACE_REF_COLLISION"
+  | "RUN_WORKSPACE_ALLOCATION_FAILED";
+
 export type ProvisionRunWorkspaceResult =
   | { readonly ok: true; readonly workspace: ReadyRunWorkspace }
   | {
       readonly ok: false;
-      readonly code: string;
+      readonly code: ProvisionRunWorkspaceFailureCode;
+      readonly failureClass: "input_contract" | "infrastructure";
       readonly detail: string;
       readonly cleanup: RunWorkspaceCleanupEvidence;
     };
@@ -207,23 +222,132 @@ export function runWorkspaceReadyForSpawn(
   }
 }
 
-function refExists(repo: string, ref: string): boolean {
+type RefObservation =
+  | { readonly status: "present" | "absent" }
+  | { readonly status: "unknown"; readonly detail: string };
+
+type PathObservation =
+  | { readonly status: "present" | "absent" }
+  | { readonly status: "unknown"; readonly detail: string };
+
+function commandExitStatus(error: unknown): number | null {
+  if (typeof error !== "object" || error === null || !("status" in error)) return null;
+  const status = (error as { readonly status?: unknown }).status;
+  return typeof status === "number" ? status : null;
+}
+
+function commandStderr(error: unknown): string {
+  if (typeof error !== "object" || error === null || !("stderr" in error)) return "";
+  const stderr = (error as { readonly stderr?: unknown }).stderr;
+  if (Buffer.isBuffer(stderr)) return stderr.toString("utf-8");
+  return typeof stderr === "string" ? stderr : "";
+}
+
+function errorDetail(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function errorCode(error: unknown): string | null {
+  if (typeof error !== "object" || error === null || !("code" in error)) return null;
+  const code = (error as { readonly code?: unknown }).code;
+  return typeof code === "string" ? code : null;
+}
+
+function isNotRepositoryError(error: unknown): boolean {
+  return commandStderr(error).toLowerCase().includes("not a git repository");
+}
+
+function isUnbornHeadError(error: unknown): boolean {
+  const detail = `${errorDetail(error)} ${commandStderr(error)}`.toLowerCase();
+  return detail.includes("needed a single revision") ||
+    detail.includes("unknown revision") ||
+    detail.includes("ambiguous argument 'head") ||
+    detail.includes("bad revision 'head");
+}
+
+function observeRef(repo: string, ref: string): RefObservation {
   try {
     gitText(repo, ["show-ref", "--verify", "--quiet", ref]);
-    return true;
-  } catch {
-    return false;
+    return { status: "present" };
+  } catch (error) {
+    if (commandExitStatus(error) === 1) return { status: "absent" };
+    return {
+      status: "unknown",
+      detail: `run ref observation failed: ${errorDetail(error)}`,
+    };
   }
+}
+
+function observePath(path: string): PathObservation {
+  try {
+    lstatSync(path);
+    return { status: "present" };
+  } catch (error) {
+    const code = errorCode(error);
+    if (code === "ENOENT" || code === "ENOTDIR") return { status: "absent" };
+    return {
+      status: "unknown",
+      detail: `worktree path observation failed: ${errorDetail(error)}`,
+    };
+  }
+}
+
+function observeWorktreeRegistration(gitDir: string): PathObservation {
+  try {
+    lstatSync(gitDir);
+    return { status: "present" };
+  } catch (error) {
+    const code = errorCode(error);
+    if (code === "ENOENT" || code === "ENOTDIR") return { status: "absent" };
+    return {
+      status: "unknown",
+      detail: `worktree registration observation failed: ${errorDetail(error)}`,
+    };
+  }
+}
+
+function appendCleanupError(
+  cleanup: RunWorkspaceCleanupEvidence,
+  detail: string,
+): RunWorkspaceCleanupEvidence {
+  return Object.freeze({
+    disposition: "retained" as const,
+    worktreeAbsent: cleanup.worktreeAbsent,
+    worktreeRegistrationAbsent: cleanup.worktreeRegistrationAbsent,
+    refAbsent: cleanup.refAbsent,
+    errors: Object.freeze([...cleanup.errors, detail]),
+  });
 }
 
 function cleanupAfterAllocation(
   callerRepo: string,
   worktreeDir: string | null,
+  worktreeGitDir: string | null,
+  worktreeRegistrationExpected: boolean,
   runRef: string | null,
   baselineSha: string | null,
 ): RunWorkspaceCleanupEvidence {
   const errors: string[] = [];
-  if (worktreeDir !== null && existsSync(worktreeDir)) {
+  const worktreeBefore = worktreeDir === null
+    ? { status: "absent" as const }
+    : observePath(worktreeDir);
+  const registrationBefore = worktreeGitDir === null
+    ? worktreeRegistrationExpected
+      ? {
+          status: "unknown" as const,
+          detail: "worktree registration identity was not captured after allocation",
+        }
+      : { status: "absent" as const }
+    : observeWorktreeRegistration(worktreeGitDir);
+  if (worktreeBefore.status === "unknown") errors.push(worktreeBefore.detail);
+  if (registrationBefore.status === "unknown") errors.push(registrationBefore.detail);
+  // Git can still remove its administrative registration after the worktree
+  // directory itself has vanished. Never infer registration cleanup from the
+  // filesystem path alone.
+  if (
+    worktreeDir !== null &&
+    (worktreeBefore.status !== "absent" || registrationBefore.status !== "absent")
+  ) {
     try {
       execFileSync("git", ["-C", callerRepo, "worktree", "remove", "--force", worktreeDir], {
         stdio: ["ignore", "ignore", "pipe"],
@@ -232,20 +356,49 @@ function cleanupAfterAllocation(
       errors.push(`worktree cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  if (runRef !== null && baselineSha !== null && refExists(callerRepo, runRef)) {
-    try {
-      execFileSync("git", ["-C", callerRepo, "update-ref", "-d", runRef, baselineSha], {
-        stdio: ["ignore", "ignore", "pipe"],
-      });
-    } catch (error) {
-      errors.push(`run ref cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+  if (runRef !== null && baselineSha !== null) {
+    const before = observeRef(callerRepo, runRef);
+    if (before.status === "present") {
+      try {
+        execFileSync("git", ["-C", callerRepo, "update-ref", "-d", runRef, baselineSha], {
+          stdio: ["ignore", "ignore", "pipe"],
+        });
+      } catch (error) {
+        errors.push(`run ref cleanup failed: ${errorDetail(error)}`);
+      }
+    } else if (before.status === "unknown") {
+      errors.push(before.detail);
     }
   }
-  const worktreeAbsent = worktreeDir === null || !existsSync(worktreeDir);
-  const refAbsent = runRef === null || !refExists(callerRepo, runRef);
+  const worktreeAfter = worktreeDir === null
+    ? { status: "absent" as const }
+    : observePath(worktreeDir);
+  if (worktreeAfter.status === "unknown") {
+    errors.push(`post-cleanup ${worktreeAfter.detail}`);
+  }
+  const worktreeAbsent = worktreeAfter.status === "absent";
+  const registrationAfter = worktreeGitDir === null
+    ? worktreeRegistrationExpected
+      ? {
+          status: "unknown" as const,
+          detail: "worktree registration identity remains unavailable after cleanup",
+        }
+      : { status: "absent" as const }
+    : observeWorktreeRegistration(worktreeGitDir);
+  if (registrationAfter.status === "unknown") {
+    errors.push(`post-cleanup ${registrationAfter.detail}`);
+  }
+  const worktreeRegistrationAbsent = registrationAfter.status === "absent";
+  const after = runRef === null ? { status: "absent" as const } : observeRef(callerRepo, runRef);
+  if (after.status === "unknown") errors.push(`post-cleanup ${after.detail}`);
+  const refAbsent = after.status === "absent";
   return Object.freeze({
-    disposition: "removed" as const,
+    disposition:
+      errors.length === 0 && worktreeAbsent && worktreeRegistrationAbsent && refAbsent
+        ? "removed" as const
+        : "retained" as const,
     worktreeAbsent,
+    worktreeRegistrationAbsent,
     refAbsent,
     errors: Object.freeze(errors),
   });
@@ -255,13 +408,18 @@ function noAllocationCleanup(): RunWorkspaceCleanupEvidence {
   return Object.freeze({
     disposition: "not_created" as const,
     worktreeAbsent: true,
+    worktreeRegistrationAbsent: true,
     refAbsent: true,
     errors: Object.freeze([]),
   });
 }
 
-function fail(code: string, detail: string): ProvisionRunWorkspaceResult {
-  return { ok: false, code, detail, cleanup: noAllocationCleanup() };
+function fail(
+  code: ProvisionRunWorkspaceFailureCode,
+  failureClass: "input_contract" | "infrastructure",
+  detail: string,
+): ProvisionRunWorkspaceResult {
+  return { ok: false, code, failureClass, detail, cleanup: noAllocationCleanup() };
 }
 
 function safeRunId(runId: string): string {
@@ -272,25 +430,52 @@ function safeRunId(runId: string): string {
 export function provisionRunWorkspace(
   options: ProvisionRunWorkspaceOptions,
 ): ProvisionRunWorkspaceResult {
+  try {
+    lstatSync(options.targetRepo);
+  } catch (error) {
+    const code = errorCode(error);
+    return fail(
+      "RUN_WORKSPACE_INVALID_REPOSITORY",
+      code === "ENOENT" || code === "ENOTDIR" ? "input_contract" : "infrastructure",
+      `target cannot be observed: ${errorDetail(error)}`,
+    );
+  }
   let callerRepo: string;
   try {
     callerRepo = realpathSync(options.targetRepo);
-    if (!lstatSync(callerRepo).isDirectory()) return fail("RUN_WORKSPACE_INVALID_REPOSITORY", "target is not a directory");
+    if (!lstatSync(callerRepo).isDirectory()) {
+      return fail("RUN_WORKSPACE_INVALID_REPOSITORY", "input_contract", "target is not a directory");
+    }
     const topLevel = realpathSync(gitText(callerRepo, ["rev-parse", "--show-toplevel"]));
     if (topLevel !== callerRepo) {
-      return fail("RUN_WORKSPACE_NOT_ROOT", "target must be the Git worktree root");
+      return fail("RUN_WORKSPACE_NOT_ROOT", "input_contract", "target must be the Git worktree root");
     }
   } catch (error) {
+    const failureClass = isNotRepositoryError(error) ? "input_contract" : "infrastructure";
     return fail(
       "RUN_WORKSPACE_INVALID_REPOSITORY",
-      `target repository is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      failureClass,
+      `target repository is unavailable: ${errorDetail(error)}`,
     );
   }
 
   for (const root of options.externalRoots ?? []) {
-    const canonical = resolveEvenIfMissing(root);
+    let canonical: string;
+    try {
+      canonical = resolveEvenIfMissing(root);
+    } catch (error) {
+      return fail(
+        "RUN_WORKSPACE_INVALID_REPOSITORY",
+        "infrastructure",
+        `state/materialization root cannot be resolved: ${errorDetail(error)}`,
+      );
+    }
     if (pathInside(callerRepo, canonical)) {
-      return fail("RUN_WORKSPACE_STATE_INSIDE_CALLER", `state/materialization root is inside caller checkout: ${root}`);
+      return fail(
+        "RUN_WORKSPACE_STATE_INSIDE_CALLER",
+        "input_contract",
+        `state/materialization root is inside caller checkout: ${root}`,
+      );
     }
   }
 
@@ -306,16 +491,23 @@ export function provisionRunWorkspace(
     deliveryRef = callerBefore.symbolicRef;
     baselineSha = callerBefore.headSha;
     if (gitBuffer(callerRepo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).length !== 0) {
-      return fail("RUN_WORKSPACE_DIRTY_BASELINE", "caller baseline has staged, unstaged, or untracked changes");
+      return fail(
+        "RUN_WORKSPACE_DIRTY_BASELINE",
+        "input_contract",
+        "caller baseline has staged, unstaged, or untracked changes",
+      );
     }
     const marker = IN_PROGRESS_MARKERS.find(
       (name) => existsSync(join(callerGitDir, name)) || existsSync(join(commonGitDir, name)),
     );
-    if (marker) return fail("RUN_WORKSPACE_GIT_OPERATION", `Git operation is in progress: ${marker}`);
+    if (marker) {
+      return fail("RUN_WORKSPACE_GIT_OPERATION", "input_contract", `Git operation is in progress: ${marker}`);
+    }
   } catch (error) {
     return fail(
       "RUN_WORKSPACE_INVALID_BASELINE",
-      `baseline cannot be proven: ${error instanceof Error ? error.message : String(error)}`,
+      isUnbornHeadError(error) ? "input_contract" : "infrastructure",
+      `baseline cannot be proven: ${errorDetail(error)}`,
     );
   }
 
@@ -323,19 +515,33 @@ export function provisionRunWorkspace(
   const runRef = options.requestedRunRef ?? generatedRef;
   const branchName = runRef.startsWith("refs/heads/") ? runRef.slice("refs/heads/".length) : runRef;
   if (!runRef.startsWith(RUN_REF_PREFIX) || PROTECTED_BRANCH.test(branchName)) {
-    return fail("RUN_WORKSPACE_PROTECTED_REF", `run ref is outside the dedicated namespace or protected: ${runRef}`);
+    return fail(
+      "RUN_WORKSPACE_PROTECTED_REF",
+      "input_contract",
+      `run ref is outside the dedicated namespace or protected: ${runRef}`,
+    );
   }
   try {
     gitText(callerRepo, ["check-ref-format", runRef]);
-  } catch {
-    return fail("RUN_WORKSPACE_INVALID_REF", `invalid run ref: ${runRef}`);
+  } catch (error) {
+    return fail(
+      "RUN_WORKSPACE_INVALID_REF",
+      commandExitStatus(error) === 1 ? "input_contract" : "infrastructure",
+      `invalid run ref: ${runRef}`,
+    );
   }
-  if (refExists(callerRepo, runRef)) {
-    return fail("RUN_WORKSPACE_REF_COLLISION", `run ref already exists: ${runRef}`);
+  const existingRunRef = observeRef(callerRepo, runRef);
+  if (existingRunRef.status === "unknown") {
+    return fail("RUN_WORKSPACE_REF_COLLISION", "infrastructure", existingRunRef.detail);
+  }
+  if (existingRunRef.status === "present") {
+    return fail("RUN_WORKSPACE_REF_COLLISION", "input_contract", `run ref already exists: ${runRef}`);
   }
 
   let allocationRoot: string | null = null;
   let worktreeDir: string | null = null;
+  let worktreeGitDir: string | null = null;
+  let worktreeRegistrationExpected = false;
   let refCreated = false;
   try {
     allocationRoot = mkdtempSync(join(tmpdir(), "rickgent-run-workspace-"));
@@ -347,6 +553,10 @@ export function provisionRunWorkspace(
     execFileSync("git", ["-C", callerRepo, "worktree", "add", "--quiet", worktreeDir, branchName], {
       stdio: ["ignore", "ignore", "pipe"],
     });
+    worktreeRegistrationExpected = true;
+    worktreeGitDir = realpathSync(
+      gitText(worktreeDir, ["rev-parse", "--path-format=absolute", "--git-dir"]),
+    );
 
     const worktreeHead = gitText(worktreeDir, ["rev-parse", "--verify", "HEAD^{commit}"]);
     const worktreeRef = gitText(worktreeDir, ["symbolic-ref", "-q", "HEAD"]);
@@ -373,6 +583,7 @@ export function provisionRunWorkspace(
       baselineSha,
       runRef,
       worktreeDir,
+      worktreeGitDir,
       allocationRoot,
       callerBefore,
     });
@@ -380,22 +591,28 @@ export function provisionRunWorkspace(
     if (!callerCheck.unchanged) throw new Error(callerCheck.detail);
     return { ok: true, workspace };
   } catch (error) {
-    const cleanup = cleanupAfterAllocation(
+    let cleanup = cleanupAfterAllocation(
       callerRepo,
       worktreeDir,
+      worktreeGitDir,
+      worktreeRegistrationExpected,
       refCreated ? runRef : null,
       refCreated ? baselineSha : null,
     );
-    if (allocationRoot !== null && existsSync(allocationRoot)) {
+    if (cleanup.worktreeAbsent && allocationRoot !== null) {
       try {
         rmSync(allocationRoot, { recursive: true, force: true });
-      } catch {
-        // The worktree/ref observations above remain the cleanup authority.
+      } catch (cleanupError) {
+        cleanup = appendCleanupError(
+          cleanup,
+          `allocation root cleanup failed: ${errorDetail(cleanupError)}`,
+        );
       }
     }
     return {
       ok: false,
       code: "RUN_WORKSPACE_ALLOCATION_FAILED",
+      failureClass: "infrastructure",
       detail: `run workspace allocation failed: ${error instanceof Error ? error.message : String(error)}`,
       cleanup,
     };
@@ -407,23 +624,39 @@ export function finalizeRunWorkspace(
   retain: boolean,
 ): RunWorkspaceCleanupEvidence {
   if (retain) {
+    const ref = observeRef(workspace.callerRepo, workspace.runRef);
+    const worktree = observePath(workspace.worktreeDir);
+    const registration = observeWorktreeRegistration(workspace.worktreeGitDir);
+    const errors = [
+      ...(worktree.status === "unknown" ? [worktree.detail] : []),
+      ...(registration.status === "unknown" ? [registration.detail] : []),
+      ...(ref.status === "unknown" ? [ref.detail] : []),
+    ];
     return Object.freeze({
       disposition: "retained" as const,
-      worktreeAbsent: !existsSync(workspace.worktreeDir),
-      refAbsent: !refExists(workspace.callerRepo, workspace.runRef),
-      errors: Object.freeze([]),
+      worktreeAbsent: worktree.status === "absent",
+      worktreeRegistrationAbsent: registration.status === "absent",
+      refAbsent: ref.status === "absent",
+      errors: Object.freeze(errors),
     });
   }
-  const cleanup = cleanupAfterAllocation(
+  let cleanup = cleanupAfterAllocation(
     workspace.callerRepo,
     workspace.worktreeDir,
+    workspace.worktreeGitDir,
+    true,
     workspace.runRef,
     workspace.baselineSha,
   );
-  try {
-    rmSync(workspace.allocationRoot, { recursive: true, force: true });
-  } catch {
-    // cleanupAfterAllocation already captured authoritative ref/worktree state.
+  if (cleanup.worktreeAbsent) {
+    try {
+      rmSync(workspace.allocationRoot, { recursive: true, force: true });
+    } catch (error) {
+      cleanup = appendCleanupError(
+        cleanup,
+        `allocation root cleanup failed: ${errorDetail(error)}`,
+      );
+    }
   }
   return cleanup;
 }

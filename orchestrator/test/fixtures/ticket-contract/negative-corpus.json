@@ -38,6 +38,7 @@
     { "name": "reserved-path", "category": "repository_paths", "expected_error": "TICKET_SCOPE_PATH_RESERVED", "proof": "invalid/reserved-path.json" },
     { "name": "escaping-symlink", "category": "repository_paths", "expected_error": "TICKET_SCOPE_PATH_ESCAPE", "proof": "../../reliability/ticket-contract.test.ts" },
     { "name": "submodule-crossing", "category": "repository_paths", "expected_error": "TICKET_SCOPE_PATH_SUBMODULE", "proof": "../../reliability/ticket-contract.test.ts" },
+    { "name": "state-root-ancestor-directory", "category": "repository_paths", "expected_error": "TICKET_SCOPE_PATH_RESERVED", "proof": "../../reliability/ticket-contract.test.ts" },
 
     { "name": "change-kind-mismatch", "category": "change_kinds", "expected_error": "TICKET_SCOPE_CHANGE_MISMATCH", "proof": "../../reliability/ticket-contract.test.ts" },
     { "name": "unsupported-directory-delete", "category": "change_kinds", "expected_error": "TICKET_SCOPE_CHANGE_UNSUPPORTED", "proof": "../../reliability/ticket-contract.test.ts" },
@@ -54,6 +55,9 @@
 
     { "name": "duplicate-markdown-key", "category": "markdown_adapter", "expected_error": "TICKET_MARKDOWN_DUPLICATE_KEY", "proof": "../../reliability/prd-ticket-adapter.test.ts" },
     { "name": "legacy-verify-command", "category": "markdown_adapter", "expected_error": "TICKET_VERIFICATION_LEGACY_FORBIDDEN", "proof": "../../reliability/prd-ticket-adapter.test.ts" },
-    { "name": "legacy-declared-paths", "category": "markdown_adapter", "expected_error": "TICKET_SCOPE_LEGACY_FORBIDDEN", "proof": "../../reliability/prd-ticket-adapter.test.ts" }
+    { "name": "legacy-declared-paths", "category": "markdown_adapter", "expected_error": "TICKET_SCOPE_LEGACY_FORBIDDEN", "proof": "../../reliability/prd-ticket-adapter.test.ts" },
+    { "name": "missing-simplification-review", "category": "markdown_adapter", "expected_error": "TICKET_SIMPLIFICATION_REVIEW_INVALID", "proof": "../../reliability/prd-ticket-adapter.test.ts" },
+    { "name": "duplicate-simplification-review", "category": "markdown_adapter", "expected_error": "TICKET_SIMPLIFICATION_REVIEW_INVALID", "proof": "../../reliability/prd-ticket-adapter.test.ts" },
+    { "name": "conflicting-simplification-review", "category": "markdown_adapter", "expected_error": "TICKET_SIMPLIFICATION_REVIEW_INVALID", "proof": "../../reliability/prd-ticket-adapter.test.ts" }
   ]
 }

@@ -12,11 +12,7 @@ import {
   type DispatchEntry,
   type DispatchId,
 } from "./dispatch.js";
-import {
-  PRODUCTION_CAPABILITY_GATE,
-  type CapabilityGate,
-  InputContractError,
-} from "../capabilities/registry.js";
+import { InputContractError } from "../capabilities/registry.js";
 
 /** Dispatches one ticket and resolves with its terminal/interim ledger entry. */
 export type DispatchFn = (id: DispatchId) => Promise<DispatchEntry>;
@@ -70,7 +66,6 @@ export class DispatchQueue {
   constructor(
     private ledger: DispatchLedger,
     maxConcurrent: number,
-    _capabilityGate: CapabilityGate = PRODUCTION_CAPABILITY_GATE,
   ) {
     if (maxConcurrent !== 1) {
       throw new InputContractError("maxConcurrent must be exactly 1 for the sequential fixture profile");

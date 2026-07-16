@@ -136,8 +136,9 @@ export class CapabilityUnavailableError extends RickgentBoundaryError {
 
 /**
  * A boundary dependency, not a mutable registry. Production entry points use
- * PRODUCTION_CAPABILITY_GATE. Tests that exercise historical fixture paths may
- * inject a gate explicitly; no production environment/config adapter exists.
+ * PRODUCTION_CAPABILITY_GATE. Fixtures replace the runtime-gate module only in
+ * a separately compiled, package-excluded tree; no caller injects a production
+ * gate and no production environment/config adapter exists.
  */
 export interface CapabilityGate {
   require(name: CapabilityName): void;
@@ -159,11 +160,12 @@ export function getCapability(name: CapabilityName): CapabilityEntry {
 
 export type PublicSurfaceMode =
   | "public_read_only"
+  | "public_local_artifact"
   | "public_blocked"
   | "public_input_rejected"
   | "fixture_dependency_only";
 
-export type MutationAuthority = "none" | "capture_only";
+export type MutationAuthority = "none" | "local_artifact_only" | "capture_only";
 
 export interface PublicSurfaceEntry {
   readonly surface: string;
@@ -224,7 +226,7 @@ const PUBLIC_SURFACES: readonly PublicSurfaceEntry[] = Object.freeze([
     boundary: "Public lifecycle mutation is not available.",
   }),
   capabilitySurface({
-    surface: "explicit test dependency injection",
+    surface: "explicit build test dependency injection",
     mode: "fixture_dependency_only",
     mutation_authority: "capture_only",
     capability: "autonomous_dispatch",
@@ -232,6 +234,24 @@ const PUBLIC_SURFACES: readonly PublicSurfaceEntry[] = Object.freeze([
     exit_code: null,
     stable_code: null,
     boundary: "Exactly one worker in a dedicated run worktree; no trusted commit or gate advancement.",
+  }),
+  nonCapabilitySurface({
+    surface: "rickgent prd --non-interactive [--output <path>]",
+    mode: "public_local_artifact",
+    mutation_authority: "local_artifact_only",
+    result: "resolves the destination and writes or overwrites a deterministic PRD template",
+    exit_code: null,
+    stable_code: null,
+    boundary: "The caller-selected/default path is explicit write authority and may be inside the repository or state root; read-only Git inspection may run, but no agent spawn, Git mutation, or validated lifecycle transition occurs.",
+  }),
+  nonCapabilitySurface({
+    surface: "rickgent citadel [--report <path>]",
+    mode: "public_local_artifact",
+    mutation_authority: "local_artifact_only",
+    result: "reads a diff and may create or overwrite the requested audit report",
+    exit_code: null,
+    stable_code: null,
+    boundary: "The caller-selected report path is explicit write authority and may be inside the repository or state root; read-only Git inspection may run, but no remediation agent, Git mutation, or validated lifecycle transition occurs.",
   }),
   capabilitySurface({
     surface: "build|pipeline --resume",
@@ -324,19 +344,19 @@ const PUBLIC_SURFACES: readonly PublicSurfaceEntry[] = Object.freeze([
     surface: "rickgent status [--deep]",
     mode: "public_read_only",
     mutation_authority: "none",
-    result: "registry observation only",
-    exit_code: 0,
-    stable_code: OK_CODE,
-    boundary: "Cannot terminalize a run or turn a legacy Done label into delivery evidence.",
+    result: "registry observation; --deep also runs the doctor health audit",
+    exit_code: null,
+    stable_code: null,
+    boundary: "Healthy observations exit 0; deep health failure exits 1; neither can terminalize a run.",
   }),
   nonCapabilitySurface({
     surface: "rickgent doctor [--json]",
     mode: "public_read_only",
     mutation_authority: "none",
     result: "health and attachment audit",
-    exit_code: 0,
-    stable_code: OK_CODE,
-    boundary: "Exit is nonzero when a real health check fails.",
+    exit_code: null,
+    stable_code: null,
+    boundary: "Healthy audit exits 0; toolchain, platform, or attachment failure exits 1.",
   }),
   nonCapabilitySurface({
     surface: "rickgent <command> --help",
@@ -371,7 +391,7 @@ export function formatReliabilityPreviewBanner(): string {
   return [
     `${RELEASE_LABEL} (${RELEASE_CHANNEL})`,
     `${CAPABILITY_UNAVAILABLE_ERROR_CODE} (exit 3): public autonomous dispatch is ${autonomous.state} ` +
-      `(${autonomous.error_code}); explicit test dependency injection is sequential, dedicated-worktree, ` +
+      `(${autonomous.error_code}); explicit build test dependency injection is sequential, dedicated-worktree, ` +
       "capture-only, and nonterminal.",
     `Unavailable capabilities: ${unavailable}.`,
     formatTerminalSummary(),

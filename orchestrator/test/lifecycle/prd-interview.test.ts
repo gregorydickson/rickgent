@@ -15,10 +15,15 @@ import {
   readFileSync,
   existsSync,
   chmodSync,
+  lstatSync,
+  symlinkSync,
 } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { parsePrdMarkdown } from "../../src/lifecycle/prd-parse.js";
+import {
+  parseExecutablePrdFile,
+  parsePrdMarkdown,
+} from "../../src/lifecycle/prd-parse.js";
 import { evaluatePrd } from "../../src/core/prd.js";
 
 const CLI_JS = join(import.meta.dirname, "../fixtures/fixture-cli.mjs");
@@ -97,16 +102,27 @@ function spawnEntries(ctx: Ctx): string[][] {
     .map((l) => JSON.parse(l));
 }
 
-// A well-formed PRD that passes evaluatePrd.
+// A well-formed PRD that passes executable TicketContract admission and evaluatePrd.
 const VALID_PRD = `# Test Feature PRD
 
 ## Description
 A test feature.
 
-### AC-1: feature works
-- **verifyCommand:** \`node -e "require('./src/feature.ts')"\`
+### AC-FEATURE-01: feature works
+- **interfaceIds:** \`["INTERFACE-FEATURE"]\`
+- **verifications:** \`[{"id":"VERIFY-FEATURE-01","executable":"test","args":["-f","src/feature.ts"],"cwd_class":"repository_root","env_allowlist":["PATH"],"timeout_ms":30000,"network":"deny","writable_outputs":[],"expected_exit_codes":[0]}]\`
 - **scope:** \`src/feature.ts\`
 - **type:** test
+
+## Tickets
+
+### Ticket 01: create feature
+- **description:** Create the feature output.
+- **dependsOn:** \`[]\`
+- **scope:** \`[{"path":"src/feature.ts","change_kind":"create","directory":false}]\`
+- **interfaces:** \`[{"id":"INTERFACE-FEATURE","direction":"provides","path":"src/feature.ts","owner":"t01","description":"Feature output"}]\`
+- **acceptanceCriteria:** \`["AC-FEATURE-01"]\`
+- **budgets:** \`{"max_attempts":2,"max_review_cycles":1,"wall_clock_ms":900000,"remediation_limit":1}\`
 
 ## Simplification Review
 Reviewed: yes
@@ -174,7 +190,7 @@ describe("rickgent prd — VAL-PRD-001..009", () => {
   });
 
   // VAL-PRD-004: Non-interactive mode emits the PRD template without spawning an agent or reading stdin
-  it("non-interactive emits template, no spawn, no stdin read, has all sections + verify: line", () => {
+  it("non-interactive emits an executable template without spawning or reading stdin", () => {
     const r = run(ctx, ["--non-interactive", "--agent", ctx.agentDir, "--repo", ctx.repo], {
       // stdin is /dev/null (input: "" in run()) — no hang means no stdin read
     });
@@ -195,8 +211,8 @@ describe("rickgent prd — VAL-PRD-001..009", () => {
     expect(text).toContain("Acceptance Criteria");
     expect(text).toContain("Test Expectations");
     expect(text).toContain("Risks");
-    // At least one verify: placeholder line
-    expect(text).toMatch(/verify:\s/);
+    expect(text).toContain("**verifications:**");
+    expect(text).toContain("## Tickets");
     // Verification column in functional requirements
     expect(text).toContain("Verification");
   });
@@ -205,6 +221,8 @@ describe("rickgent prd — VAL-PRD-001..009", () => {
   it("--output writes to custom path; default is .rickgent/prd.md", () => {
     // Custom path
     const custom = join(ctx.root, "custom", "my-prd.md");
+    mkdirSync(join(ctx.root, "custom"), { recursive: true });
+    writeFileSync(custom, "sentinel to overwrite\n");
     const r1 = run(ctx, ["--non-interactive", "--output", custom, "--repo", ctx.repo]);
     expect(r1.status).toBe(0);
     expect(existsSync(custom)).toBe(true);
@@ -220,7 +238,106 @@ describe("rickgent prd — VAL-PRD-001..009", () => {
     expect(defaultContent.length).toBeGreaterThan(0);
   });
 
-  // VAL-PRD-006: --from validates an existing PRD via evaluatePrd
+  it("validates the template before overwrite and rejects output/scope collisions", () => {
+    const outputPath = join(ctx.root, "existing-prd.md");
+    writeFileSync(outputPath, "preserve me\n");
+    writeFileSync(join(ctx.repo, "rickgent-template-output.txt"), "already exists\n");
+
+    const infeasible = run(ctx, [
+      "--non-interactive",
+      "--output", outputPath,
+      "--repo", ctx.repo,
+    ]);
+    expect(infeasible.status).not.toBe(0);
+    expect(infeasible.stderr).toContain("before write");
+    expect(readFileSync(outputPath, "utf-8")).toBe("preserve me\n");
+    expect(spawnEntries(ctx)).toHaveLength(0);
+
+    rmSync(join(ctx.repo, "rickgent-template-output.txt"));
+    const collidingOutput = join(ctx.repo, "rickgent-template-output.txt");
+    const collision = run(ctx, [
+      "--non-interactive",
+      "--output", collidingOutput,
+      "--repo", ctx.repo,
+    ]);
+    expect(collision.status).not.toBe(0);
+    expect(collision.stderr).toContain("overlaps template implementation scope");
+    expect(existsSync(collidingOutput)).toBe(false);
+    expect(spawnEntries(ctx)).toHaveLength(0);
+  });
+
+  it("rejects bidirectional file-scope ancestry before writing or creating directories", () => {
+    const scopedFile = join(ctx.repo, "rickgent-template-output.txt");
+    const nestedOutput = join(scopedFile, "prd.md");
+    const descendant = run(ctx, [
+      "--non-interactive",
+      "--output", nestedOutput,
+      "--repo", ctx.repo,
+    ]);
+    expect(descendant.status).not.toBe(0);
+    expect(descendant.stderr).toContain("overlaps template implementation scope");
+    expect(existsSync(scopedFile)).toBe(false);
+    expect(existsSync(nestedOutput)).toBe(false);
+
+    const readmeBefore = readFileSync(join(ctx.repo, "README.md"), "utf-8");
+    const ancestor = run(ctx, [
+      "--non-interactive",
+      "--output", ctx.repo,
+      "--repo", ctx.repo,
+    ]);
+    expect(ancestor.status).not.toBe(0);
+    expect(ancestor.stderr).toContain("overlaps template implementation scope");
+    expect(readFileSync(join(ctx.repo, "README.md"), "utf-8")).toBe(readmeBefore);
+    expect(existsSync(scopedFile)).toBe(false);
+    expect(spawnEntries(ctx)).toHaveLength(0);
+  });
+
+  it("rejects mixed-case output aliases only when the filesystem identifies them as aliases", () => {
+    const scopedFile = join(ctx.repo, "rickgent-template-output.txt");
+    const mixedCaseOutput = join(ctx.repo, "RICKGENT-TEMPLATE-OUTPUT.TXT");
+    const caseInsensitive = existsSync(join(ctx.repo, "README.MD"));
+    const result = run(ctx, [
+      "--non-interactive",
+      "--output", mixedCaseOutput,
+      "--repo", ctx.repo,
+    ]);
+
+    if (caseInsensitive) {
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("overlaps template implementation scope");
+      expect(existsSync(mixedCaseOutput)).toBe(false);
+      expect(existsSync(scopedFile)).toBe(false);
+    } else {
+      expect(result.status).toBe(0);
+      expect(existsSync(mixedCaseOutput)).toBe(true);
+      expect(existsSync(scopedFile)).toBe(false);
+      expect(parseExecutablePrdFile(mixedCaseOutput, { repositoryRoot: ctx.repo }).contracts)
+        .toHaveLength(1);
+    }
+    expect(spawnEntries(ctx)).toHaveLength(0);
+  });
+
+  it("rejects a dangling relative-symlink output alias without following it for a write", () => {
+    const scopedFile = join(ctx.repo, "rickgent-template-output.txt");
+    const outputLink = join(ctx.repo, "prd-link.md");
+    symlinkSync("rickgent-template-output.txt", outputLink);
+    expect(lstatSync(outputLink).isSymbolicLink()).toBe(true);
+    expect(existsSync(outputLink)).toBe(false);
+
+    const result = run(ctx, [
+      "--non-interactive",
+      "--output", outputLink,
+      "--repo", ctx.repo,
+    ]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("overlaps template implementation scope");
+    expect(lstatSync(outputLink).isSymbolicLink()).toBe(true);
+    expect(existsSync(outputLink)).toBe(false);
+    expect(existsSync(scopedFile)).toBe(false);
+    expect(spawnEntries(ctx)).toHaveLength(0);
+  });
+
+  // VAL-PRD-006: --from validates executable admission before evaluatePrd
   it("--from validates valid PRD → exit 0; invalid PRD → exit non-zero", () => {
     const validPrd = join(ctx.repo, "valid.md");
     writeFileSync(validPrd, VALID_PRD);
@@ -232,18 +349,22 @@ describe("rickgent prd — VAL-PRD-001..009", () => {
     writeFileSync(invalidPrd, INVALID_PRD);
     const rInvalid = run(ctx, ["--non-interactive", "--from", invalidPrd, "--repo", ctx.repo]);
     expect(rInvalid.status).not.toBe(0);
-    expect((rInvalid.stderr + rInvalid.stdout).toLowerCase()).toContain("evaluateprd");
+    expect((rInvalid.stderr + rInvalid.stdout).toLowerCase()).toContain("could not be parsed");
+    expect((rInvalid.stderr + rInvalid.stdout).toLowerCase()).toContain("ticket_simplification_review_invalid");
   });
 
-  // VAL-PRD-007: Output PRD has machine-checkable ACs with verify: and passes evaluatePrd
-  it("emitted template has ACs with verify: lines and passes evaluatePrd", () => {
+  // VAL-PRD-007: Output PRD is admitted as executable and passes evaluatePrd
+  it("emitted template produces a sealed TicketContract and passes evaluatePrd", () => {
     const out = join(ctx.root, "prd-out.md");
     const r = run(ctx, ["--non-interactive", "--output", out, "--repo", ctx.repo]);
     expect(r.status).toBe(0);
     const text = readFileSync(out, "utf-8");
-    // ≥1 AC block with verify: lines
-    expect(text).toMatch(/### AC-\d/);
-    expect(text).toMatch(/verify:\s/);
+    expect(text).toMatch(/### AC-/);
+    expect(text).toContain("**verifications:**");
+    expect(text).toContain("### Ticket 01:");
+    const executable = parseExecutablePrdFile(out, { repositoryRoot: ctx.repo });
+    expect(executable.contracts).toHaveLength(1);
+    expect(executable.contracts[0]!.digest).toMatch(/^sha256:[0-9a-f]{64}$/);
     // Parse and validate with the single PRD oracle
     const parsed = parsePrdMarkdown(text);
     expect(parsed.prd.acceptanceCriteria.length).toBeGreaterThanOrEqual(1);

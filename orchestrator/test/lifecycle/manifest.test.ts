@@ -6,11 +6,40 @@
  * mutation check confirms removing any incident-class guard fails the suite.
  */
 import { describe, it, expect } from "vitest";
+import { execFile } from "child_process";
+import { join } from "path";
 import {
   generateManifest,
-  runMutationCheck,
   INCIDENT_CLASSES,
 } from "../../scripts/coverage-manifest.cjs";
+
+interface MutationResult {
+  guardFound: boolean;
+  testFailed: boolean;
+  sourceFile?: string;
+  sourceUnchanged?: boolean;
+  error?: string | null;
+}
+
+function runMutationCheckIsolated(id: string): Promise<MutationResult> {
+  const script = join(import.meta.dirname, "../../scripts/coverage-manifest.cjs");
+  return new Promise((resolve, reject) => {
+    execFile(process.execPath, [script, "mutate", id], {
+      cwd: join(import.meta.dirname, "../.."),
+      encoding: "utf-8",
+      maxBuffer: 1024 * 1024,
+      timeout: 90_000,
+    }, (error, stdout, stderr) => {
+      try {
+        resolve(JSON.parse(stdout) as MutationResult);
+      } catch (parseError) {
+        reject(new Error(
+          `mutation subprocess ${id} produced invalid JSON: ${error?.message ?? stderr ?? String(parseError)}`,
+        ));
+      }
+    });
+  });
+}
 
 describe("VAL-COV-001 — coverage manifest is GENERATED from discovered test ids", () => {
   const manifest = generateManifest();
@@ -71,8 +100,8 @@ describe("VAL-COV-003 — mutation check: removing any incident-class guard fail
 
   // Use a longer timeout since each mutation check runs a subprocess.
   for (const cls of INCIDENT_CLASSES) {
-    it(`mutation: removing ${cls.id} guard fails the test suite`, { timeout: 90000 }, () => {
-      const result = runMutationCheck(cls.id);
+    it(`mutation: removing ${cls.id} guard fails the test suite`, { timeout: 90000 }, async () => {
+      const result = await runMutationCheckIsolated(cls.id);
 
       // The guard must be found in the source
       expect(result.guardFound, `${cls.id}: guard marker not found in ${cls.sourceFile}`).toBe(true);

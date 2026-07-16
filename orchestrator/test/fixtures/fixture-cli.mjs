@@ -2,24 +2,9 @@
 import { fileURLToPath } from "url";
 import { cpSync, existsSync, mkdirSync } from "fs";
 import { join } from "path";
-import { main, handleFatal } from "../../dist/cli.js";
-import {
-  CapabilityUnavailableError,
-  getCapability,
-} from "../../dist/capabilities/registry.js";
-
-// Historical lifecycle fixtures may exercise local-only machinery, but the M1
-// fixture profile never enables delivery. This makes the delivery call graph
-// unavailable even when every local gate dependency is injected.
-const capabilityGate = Object.freeze({
-  require(name) {
-    if (name === "automatic_delivery") {
-      throw new CapabilityUnavailableError(getCapability(name));
-    }
-  },
-});
+import { handleFatal } from "../../dist-fixture/cli.js";
+import { runFixtureCli } from "../../dist-fixture/testing/fixture-runtime.js";
 const buildDependencies = {
-  capabilityGate,
   verifyPolicyAttachment: (agentDir) => {
     const workerDir = join(agentDir, "agents", "worker");
     if (!existsSync(join(workerDir, "config.yaml"))) {
@@ -39,9 +24,9 @@ const buildDependencies = {
   skipDeslop: process.env.RICKGENT_FIXTURE_SKIP_DESLOP === "1",
 };
 
-main(process.argv.slice(2), {
-  capabilityGate,
+runFixtureCli(process.argv.slice(2), {
   buildDependencies,
   assertEnvironment() {},
-  cronenbergChildCliPath: fileURLToPath(import.meta.url),
+  cronenbergChildCliPath:
+    process.env.RICKGENT_FIXTURE_CHILD_CLI_PATH ?? fileURLToPath(import.meta.url),
 }).catch(handleFatal);

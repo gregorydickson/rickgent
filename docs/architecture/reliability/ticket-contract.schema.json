@@ -57,7 +57,7 @@
     "nonEmptyString": {
       "type": "string",
       "minLength": 1,
-      "pattern": ".*\\S.*"
+      "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)[\\s\\S]+$"
     },
     "ticketId": {
       "type": "string",
@@ -70,7 +70,7 @@
     "repoPath": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*(?:^|/)\\.git(?:/|$))(?!.*//)(?!.*\\\\).+$"
+      "pattern": "^(?!\\s)(?![\\s\\S]*\\s$)(?!/)(?![A-Za-z]:/)(?!(?:\\.{1,2}|\\.[gG][iI][tT]|\\.[rR][iI][cC][kK][gG][eE][nN][tT])(?:/|$))[^/\\\\\\u0000]+(?:/(?!(?:\\.{1,2}|\\.[gG][iI][tT]|\\.[rR][iI][cC][kK][gG][eE][nN][tT])(?:/|$))[^/\\\\\\u0000]+)*$"
     },
     "scopeEntry": {
       "type": "object",
@@ -146,7 +146,9 @@
         "executable": {
           "type": "string",
           "pattern": "^[A-Za-z0-9._+/-]+$",
-          "not": { "enum": ["sh", "bash", "zsh", "cmd", "powershell", "pwsh"] }
+          "not": {
+            "pattern": "(?:^|/)(?:[sS][hH]|[bB][aA][sS][hH]|[zZ][sS][hH]|[cC][mM][dD]|[pP][oO][wW][eE][rR][sS][hH][eE][lL][lL]|[pP][wW][sS][hH])$"
+          }
         },
         "args": {
           "type": "array",
