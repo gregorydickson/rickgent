@@ -20,7 +20,10 @@ function fail(message) {
 }
 
 function parseArgs(argv) {
-  const parsed = { writeResult: false };
+  const parsed = {
+    writeResult: false,
+    python: process.env.OMNIGENT_PYTHON,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--write-result") {
@@ -35,8 +38,11 @@ function parseArgs(argv) {
     parsed[arg.slice(2)] = value;
     i += 1;
   }
-  for (const key of ["root", "python", "contract"]) {
+  for (const key of ["root", "contract"]) {
     if (!parsed[key]) fail(`--${key} is required`);
+  }
+  if (!parsed.python) {
+    fail("--python or OMNIGENT_PYTHON is required");
   }
   return parsed;
 }
