@@ -58,14 +58,18 @@ describe("SalvageExecutor staging safety (A-SEC-5)", () => {
     expect(existsSync(join(tempDir, "PWNED3"))).toBe(false);
   });
 
-  it("stages and commits a genuinely owned path", () => {
+  it("captures a genuinely owned path without committing or terminalizing it", () => {
+    writeFileSync(join(tempDir, "seed.txt"), "seed");
+    execSync("git add -- seed.txt && git commit -qm seed", { cwd: tempDir });
+    const baseline = execSync("git rev-parse HEAD", { cwd: tempDir, encoding: "utf-8" }).trim();
     writeFileSync(join(tempDir, "real.txt"), "content");
     const executor = new SalvageExecutor(tempDir);
     const result = executor.execute(committedDoneInput(["real.txt"]));
     expect(result.decision.disposition).toBe("committed-done");
     expect(result.executed).toBe(true);
-    expect(result.gitOutput).toMatch(/^[0-9a-f]{7,40}$/);
-    const committed = execSync("git show --stat HEAD", { cwd: tempDir, encoding: "utf-8" });
-    expect(committed).toContain("real.txt");
+    expect(result.terminal).toBe(false);
+    expect(result.archivePath).not.toBeNull();
+    expect(execSync("git rev-parse HEAD", { cwd: tempDir, encoding: "utf-8" }).trim()).toBe(baseline);
+    expect(execSync("git status --porcelain", { cwd: tempDir, encoding: "utf-8" })).toContain("real.txt");
   });
 });

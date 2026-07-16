@@ -73,7 +73,7 @@ runtime drift fail the claims-contract test.
 | build\|pipeline --max-concurrent <not-1> | public_input_rejected | none | — | input contract rejected | 2 | RICKGENT_INPUT_CONTRACT_ERROR | — | Greater, zero, fractional, malformed, and non-finite values fail before capability selection. |
 | build\|pipeline --max-iterations <N> | public_input_rejected | none | — | parsed legacy flag rejected as unimplemented | 2 | RICKGENT_INPUT_CONTRACT_ERROR | — | A parsed flag is not an enabled capability. |
 | cross-vendor review (no public command) | public_blocked | none | cross_vendor_review/unavailable | independent vendor proof unavailable | — | — | RICKGENT_CROSS_VENDOR_UNAVAILABLE | Requested vendor labels are not independently observed identity. |
-| rickgent status [--deep] | public_read_only | none | — | registry observation; --deep also runs the doctor health audit | — | — | — | Healthy observations exit 0; deep health failure exits 1; neither can terminalize a run. |
+| rickgent status [--deep] | public_read_only | none | — | canonical SQLite lifecycle observation; --deep also runs the doctor health audit | — | — | — | Healthy observations exit 0; deep health failure exits 1; neither can terminalize a run. |
 | rickgent doctor [--json] | public_read_only | none | — | health and attachment audit | — | — | — | Healthy audit exits 0; toolchain, platform, or attachment failure exits 1. |
 | rickgent <command> --help | public_read_only | none | — | claim observation only | 0 | RICKGENT_OK | — | Help text does not activate a mutating capability. |
 <!-- RICKGENT_CLAIMS_MATRIX_END -->

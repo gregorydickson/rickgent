@@ -1,5 +1,6 @@
 // Salvage disposition logic — PURE decision functions.
-// The verdict core DECIDES the disposition; the lifecycle layer EXECUTES git mutations.
+// The verdict core DECIDES the legacy-named disposition; the lifecycle layer
+// may capture evidence but cannot terminalize or mutate lifecycle authority.
 // §14.8: decide / execute / verify split.
 
 export type SalvageDisposition =
@@ -43,7 +44,8 @@ export function decideSalvage(input: SalvageInput): SalvageDecision {
     ? input.ownedPaths.filter((p): p is string => typeof p === "string")
     : [];
 
-  // ff-reattached: orphan-reset detected → fast-forward reattach
+  // Legacy name only: the executor requires separate SQLite recovery authority
+  // and therefore cannot move refs from this diagnostic decision alone.
   if (orphanReset && ffReattachPossible) {
     return {
       disposition: "ff-reattached",
@@ -51,7 +53,7 @@ export function decideSalvage(input: SalvageInput): SalvageDecision {
     };
   }
 
-  // committed-done: gate-green + tree changed
+  // Legacy name only: gate-green dirty work is captured, never terminalized.
   if (gatePassed && treeChanged) {
     return {
       disposition: "committed-done",
@@ -60,11 +62,11 @@ export function decideSalvage(input: SalvageInput): SalvageDecision {
     };
   }
 
-  // archived-todo: gate-failing but tree changed
+  // Legacy name only: the executor archives without resetting lifecycle state.
   if (!gatePassed && treeChanged) {
     return {
       disposition: "archived-todo",
-      reason: "gate failing but tree changed, archive and reset to Todo",
+      reason: "gate failing but tree changed; capture for authorized recovery",
       stagedPaths: ownedPaths,
     };
   }

@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawnSync, execFileSync } from "child_process";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, readFileSync, writeFileSync, existsSync } from "fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -98,23 +98,6 @@ function runCli(args: string[], d: Dirs, extraEnv: Record<string, string> = {}):
   return { status: res.status, stdout: res.stdout ?? "", stderr: res.stderr ?? "" };
 }
 
-function ledgerEntries(rickgentDir: string): Array<Record<string, unknown>> {
-  const p = join(rickgentDir, "dispatch-ledger.jsonl");
-  if (!existsSync(p)) return [];
-  return readFileSync(p, "utf-8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
-}
-
-function ticketOf(dispatchId: string): string {
-  return dispatchId.split("/")[1] ?? "";
-}
-
-/** Latest ledger state for each ticketId, in ledger (append) order. */
-function latestStateByTicket(entries: Array<Record<string, unknown>>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const e of entries) out[ticketOf(String(e.dispatchId))] = String(e.state);
-  return out;
-}
-
 describe("B3 backpressure queue via the real build loop", () => {
   let d: Dirs;
   beforeEach(() => {
@@ -131,35 +114,20 @@ describe("B3 backpressure queue via the real build loop", () => {
     const out = runCli(["build", prd, "--repo", d.repo, "--agent", d.agentDir, "--max-concurrent", "1"], d);
     expect(out.status).toBe(5);
 
-    const entries = ledgerEntries(d.rickgentDir);
     const tickets = ["t01", "t02", "t03", "t04", "t05"];
 
-    // Every ticket was durably queued. Only the first can spawn: its retained
-    // nonterminal delta makes the run-level worktree dirty, so later workers
-    // fail closed before spawn until per-attempt ownership lands.
+    // The CLI report is the public observation; dispatch transport stays
+    // process-local and cannot be replayed as lifecycle authority. Every ticket
+    // is accounted for in FIFO report order, with only the head capturing work.
+    let prior = -1;
     for (const t of tickets) {
-      expect(entries.some((e) => ticketOf(String(e.dispatchId)) === t && e.state === "planned")).toBe(true);
+      const position = out.stdout.indexOf(`${t}:`);
+      expect(position).toBeGreaterThan(prior);
+      prior = position;
     }
-    expect(entries.filter((entry) => entry.state === "spawned").map((entry) => ticketOf(String(entry.dispatchId)))).toEqual(["t01"]);
-
-    // No ticket is left stuck: its latest state is beyond 'planned'.
-    const latest = latestStateByTicket(entries);
-    for (const t of tickets) {
-      expect(latest[t]).toBeDefined();
-      expect(latest[t]).not.toBe("planned");
-      expect(latest[t]).not.toBe("completed");
-    }
-
-    // The only safe spawn is the FIFO head.
-    const firstSpawnOrder: string[] = [];
-    for (const e of entries) {
-      if (e.state !== "spawned") continue;
-      const t = ticketOf(String(e.dispatchId));
-      if (!firstSpawnOrder.includes(t)) firstSpawnOrder.push(t);
-    }
-    expect(firstSpawnOrder).toEqual(["t01"]);
-    expect(entries.filter((entry) => entry.state === "implementation_captured")).toHaveLength(1);
-    expect(Object.values(latest).filter((state) => state === "failed")).toHaveLength(4);
+    expect(out.stdout).toContain("t01: implementation captured (nonterminal)");
+    expect(out.stdout).toContain("planned=5 dispatched=5 captured=1 done=0 failed=4");
+    expect(existsSync(join(d.rickgentDir, "dispatch-ledger.jsonl"))).toBe(false);
   });
 
   it("rejects maxConcurrent greater than one before allocation or spawn", () => {

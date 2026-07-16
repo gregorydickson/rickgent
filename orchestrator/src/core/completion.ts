@@ -26,7 +26,7 @@ export interface CompletionInput {
  * Each member must correspond to a real `evaluateCompletion` call site — a value
  * with no call site is a phantom entry and fails the AC-5 import-graph audit.
  */
-export type CompletionCaller = "cli.verdict" | "dispatch.completion" | "reconcile.completion";
+export type CompletionCaller = "cli.verdict" | "dispatch.completion";
 
 /**
  * ALLOWED callers of evaluateCompletion — pinned by test (AC-5).
@@ -35,7 +35,6 @@ export type CompletionCaller = "cli.verdict" | "dispatch.completion" | "reconcil
 export const ALLOWED_COMPLETION_CALLERS: ReadonlySet<CompletionCaller> = new Set<CompletionCaller>([
   "cli.verdict",
   "dispatch.completion",
-  "reconcile.completion",
 ]);
 
 export function evaluateCompletion(input: CompletionInput, caller: CompletionCaller): CompletionVerdict {

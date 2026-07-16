@@ -223,9 +223,9 @@
       "covered": true
     },
     {
-      "id": "dispatch-idempotency",
+      "id": "dispatch-contract-incompatibility",
       "test": "test/dispatch/dispatch.test.ts",
-      "testCase": "returns recorded terminal state without re-spawning",
+      "testCase": "rejects a changed ticket contract instead of treating its allocation as a cache hit",
       "source": "src/dispatch/dispatch.ts",
       "fileExists": true,
       "testCaseExists": true,

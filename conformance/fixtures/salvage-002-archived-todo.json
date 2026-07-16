@@ -10,7 +10,7 @@
   },
   "expected": {
     "disposition": "archived-todo",
-    "reason": "gate failing but tree changed, archive and reset to Todo",
+    "reason": "gate failing but tree changed; capture for authorized recovery",
     "stagedPaths": ["src/feature.py"]
   },
   "source": "salvage-ticket.ts:204 — gate_failing_archived"

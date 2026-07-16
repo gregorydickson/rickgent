@@ -17,6 +17,7 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import { join, relative } from "path";
+import { DatabaseSync } from "node:sqlite";
 import { parse } from "yaml";
 import { exitCodeForRunOutcome } from "../../src/cli.js";
 import { finalizeRunWorkspace, provisionRunWorkspace } from "../../src/git/run-workspace.js";
@@ -501,14 +502,28 @@ describe("M1 sequential run workspace", () => {
       env: { ...process.env },
     }, {
       ...FIXTURE_BUILD_DEPENDENCIES,
-      recordRun(): void {
-        throw new Error("injected run-ledger failure");
+      provisionRunWorkspace(input) {
+        const provisioned = provisionRunWorkspace(input);
+        if (!provisioned.ok) return provisioned;
+        const database = new DatabaseSync(join(repo, ".git", "rickgent", "state.sqlite3"));
+        try {
+          database.exec(`
+            CREATE TRIGGER injected_attempt_allocation_failure
+            BEFORE INSERT ON attempts
+            BEGIN
+              SELECT RAISE(ABORT, 'injected attempt allocation failure');
+            END;
+          `);
+        } finally {
+          database.close();
+        }
+        return provisioned;
       },
     });
 
     expect(result.outcome.primary).toBe("infrastructure");
     expect(result.outcome.issues.some((issue) =>
-      issue.reason === "infrastructure_error" && issue.detail.includes("injected run-ledger failure")
+      issue.reason === "infrastructure_error" && issue.detail.includes("post-provision build failure")
     )).toBe(true);
     expect(result.workspaceCleanup).toMatchObject({
       disposition: "removed",
@@ -623,9 +638,6 @@ describe("M1 sequential run workspace", () => {
       env: { ...process.env },
     }, {
       ...FIXTURE_BUILD_DEPENDENCIES,
-      recordRun(): void {
-        throw new Error("injected state failure");
-      },
       finalizeRunWorkspace() {
         return {
           disposition: "retained" as const,

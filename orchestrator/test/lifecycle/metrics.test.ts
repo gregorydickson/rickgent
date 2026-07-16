@@ -26,6 +26,7 @@ import {
 const CLI_JS = join(import.meta.dirname, "../fixtures/fixture-cli.mjs");
 const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
 const PRD_MIN = join(import.meta.dirname, "../../../fixtures/prd-min.md");
+const PROJECT_ROOT = join(import.meta.dirname, "../../..");
 
 const TEST_ROSTER_JSON = JSON.stringify([
   { harness: "claude", model: "anthropic/claude-sonnet-4", vendor: "anthropic", tier: "mid", pricing: { cost_per_dispatch: 0.50 } },
@@ -52,19 +53,28 @@ function initGitRepo(repo: string): void {
   git(repo, ["commit", "-q", "-m", "initial"]);
 }
 
-function runMetricsJson(rickgentDir: string): { status: number | null; json: Record<string, unknown>; stdout: string; stderr: string } {
+function runMetricsJson(rickgentDir: string, cwd?: string): {
+  status: number | null;
+  json: Record<string, unknown>;
+  rawJson: Record<string, unknown>;
+  stdout: string;
+  stderr: string;
+} {
   const res = spawnSync(process.execPath, [CLI_JS, "metrics", "--json"], {
     encoding: "utf-8",
     env: { ...process.env, RICKGENT_DIR: rickgentDir },
+    cwd: cwd ?? PROJECT_ROOT,
     timeout: 30000,
   });
-  let json: Record<string, unknown> = {};
+  let rawJson: Record<string, unknown> = {};
   try {
-    json = JSON.parse(res.stdout.trim());
+    rawJson = JSON.parse(res.stdout.trim());
   } catch {
-    json = {};
+    rawJson = {};
   }
-  return { status: res.status, json, stdout: res.stdout ?? "", stderr: res.stderr ?? "" };
+  const legacy = rawJson["legacyDiagnostics"] as { metrics?: Record<string, unknown> } | undefined;
+  const json = legacy?.metrics ?? {};
+  return { status: res.status, json, rawJson, stdout: res.stdout ?? "", stderr: res.stderr ?? "" };
 }
 
 function appendJsonl(path: string, obj: unknown): void {
@@ -189,6 +199,7 @@ describe("B9 metrics — `rickgent metrics` CLI (real entrypoint)", () => {
     const human = spawnSync(process.execPath, [CLI_JS, "metrics"], {
       encoding: "utf-8",
       env: { ...process.env, RICKGENT_DIR: rg },
+      cwd: PROJECT_ROOT,
       timeout: 30000,
     });
     expect(human.status).toBe(0);
@@ -216,6 +227,24 @@ describe("B9 metrics — `rickgent metrics` CLI (real entrypoint)", () => {
     const out = runMetricsJson(rg);
     expect(out.status).toBe(0);
     expect(out.json["maturityWindowDays"]).toBe(DEFAULT_MATURITY_WINDOW_DAYS);
+  });
+
+  it("separates absent SQLite authority from nonzero legacy diagnostics without creating state", () => {
+    const repo = join(dir, "repo");
+    initGitRepo(repo);
+    recordRun(rg, "legacy-run", "legacy only");
+
+    const out = runMetricsJson(rg, repo);
+    const authoritative = out.rawJson["authoritative"] as Record<string, unknown>;
+    const legacy = out.rawJson["legacyDiagnostics"] as Record<string, unknown>;
+    expect(out.status).toBe(0);
+    expect(authoritative["source"]).toBe("sqlite");
+    expect(authoritative["availability"]).toBe("absent");
+    expect(authoritative["runs"]).toBeNull();
+    expect(existsSync(String(authoritative["databasePath"]))).toBe(false);
+    expect(legacy["source"]).toBe("legacy_jsonl");
+    expect(legacy["trust"]).toBe("diagnostic_only");
+    expect((legacy["metrics"] as Record<string, unknown>)["runs"]).toBe(1);
   });
 });
 
@@ -270,14 +299,14 @@ describe("B9 metrics — contained build profile", () => {
     const intPath = join(d.rickgentDir, "interventions.jsonl");
     expect(existsSync(intPath)).toBe(false);
     expect(existsSync(join(d.rickgentDir, "runs.jsonl"))).toBe(false);
-    const out = runMetricsJson(d.rickgentDir);
+    const out = runMetricsJson(d.rickgentDir, d.repo);
     expect(out.status).toBe(0);
     expect(out.json["interventions"]).toBe(0);
     expect(out.json["runs"]).toBe(0);
     expect(out.json["interventionsPerRun"]).toBe(0);
   });
 
-  it("a nonterminal capture records a run but cannot manufacture delivery metrics", () => {
+  it("a nonterminal capture records a canonical run but cannot manufacture delivery metrics", () => {
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       PATH: `${FIXTURE_BIN}:${process.env.PATH ?? ""}`,
@@ -300,9 +329,13 @@ describe("B9 metrics — contained build profile", () => {
     const prPath = join(d.rickgentDir, "prs.jsonl");
     expect(existsSync(prPath)).toBe(false);
     expect(existsSync(join(d.root, "gh.log"))).toBe(false);
-    const out = runMetricsJson(d.rickgentDir);
+    const out = runMetricsJson(d.rickgentDir, d.repo);
+    const authoritative = out.rawJson["authoritative"] as Record<string, unknown>;
     expect(out.status).toBe(0);
-    expect(Number(out.json["runs"])).toBe(1);
+    expect(authoritative["availability"]).toBe("present");
+    expect(Number(authoritative["runs"])).toBe(1);
+    expect(Number(authoritative["deliveryRecords"])).toBe(0);
+    expect(Number(authoritative["delivered"])).toBe(0);
     expect(Number(out.json["shippedPrs"])).toBe(0);
     expect(Number(out.json["immaturePrs"])).toBe(0);
     expect(out.json["qualityDenominator"]).toBe(0);

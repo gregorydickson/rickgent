@@ -33,6 +33,7 @@ import {
 import {
   APPEND_ONLY_STATE_TABLES,
   ATTEMPT_TRANSITIONS,
+  LEGACY_ARTIFACT_KINDS,
   PROMOTION_TRANSITIONS,
   RUN_TRANSITIONS,
   STATE_SQLITE_MINIMUM_NODE_VERSION,
@@ -48,6 +49,11 @@ import {
   type AttemptOracleProjection,
   type OracleResolvedReferenceProjection,
 } from "./oracle.js";
+import {
+  LEGACY_QUARANTINE_RECOVERY,
+  LegacyInventoryCommand,
+  isAuthorizedLegacyInventoryCommand,
+} from "./legacy-quarantine.js";
 import {
   DeliveryCommand,
   LifecycleRecordCommand,
@@ -102,6 +108,57 @@ export interface StateLocation {
   readonly shmPath: string;
   readonly journalPath: string;
 }
+
+export interface ObservedAttemptState {
+  readonly attemptId: string;
+  readonly attemptNumber: number;
+  readonly state: string;
+  readonly stateVersion: number;
+  readonly commitOid: string | null;
+  readonly oracleResult: "accepted" | "rejected" | null;
+}
+
+export interface ObservedTicketState {
+  readonly ticketInstanceId: string;
+  readonly ticketId: string;
+  readonly planIndex: number;
+  readonly state: string;
+  readonly stateVersion: number;
+  readonly latestAttempt: ObservedAttemptState | null;
+}
+
+export interface ObservedRunState {
+  readonly runId: string;
+  readonly runSequence: number;
+  readonly state: string;
+  readonly stateVersion: number;
+  readonly createdAt: string;
+  readonly currentDeliveryOid: string;
+  readonly promotionSequence: number;
+  readonly tickets: readonly ObservedTicketState[];
+}
+
+export interface StateObservationAggregates {
+  readonly runs: number;
+  readonly deliveryRecords: number;
+  readonly delivered: number;
+  readonly deliveryFailed: number;
+}
+
+export type StateObservation =
+  | Readonly<{
+      state: "absent";
+      repositoryId: string;
+      databasePath: string;
+    }>
+  | Readonly<{
+      state: "present";
+      repositoryId: string;
+      databasePath: string;
+      schemaVersion: number;
+      latestRun: ObservedRunState | null;
+      aggregates: StateObservationAggregates;
+    }>;
 
 export interface StateErrorMetadata {
   readonly sqliteCode?: string;
@@ -2976,6 +3033,73 @@ export class StateStore {
     });
   }
 
+  /** @internal Accepts only runtime-unforgeable bounded metadata minted by LegacyDiagnosticService. */
+  commitAuthorizedLegacyInventory(command: LegacyInventoryCommand): readonly StateRecord[] {
+    if (!isAuthorizedLegacyInventoryCommand(command)) throw new TypeError("legacy inventory command was not minted by LegacyDiagnosticService");
+    if (command.discoveredAt.length < 20 || !command.discoveredAt.endsWith("Z") || Number.isNaN(Date.parse(command.discoveredAt))) {
+      throw new TypeError("legacy inventory discovery time must be a UTC timestamp");
+    }
+    const kinds = new Set<string>(LEGACY_ARTIFACT_KINDS);
+    const digestPattern = /^sha256:[0-9a-f]{64}$/;
+    const seen = new Set<string>();
+    const desired = command.entries.map((entry): MutableStateRecord => {
+      if (!kinds.has(entry.kind)) throw new TypeError(`unsupported legacy artifact kind: ${entry.kind}`);
+      const path = entry.boundedPathIdentity;
+      if (
+        path.length === 0 || path.startsWith("/") || path.includes("\\") || path.includes("\0") || path.includes("//") ||
+        path.split("/").some((segment) => segment === "" || segment === "." || segment === "..") ||
+        (!path.startsWith(".rickgent/") && path !== ".rickgent" && !path.startsWith("git/"))
+      ) throw new TypeError("legacy inventory path identity is not bounded to the canonical repository diagnostic namespaces");
+      if (
+        (entry.statDigest !== null && !digestPattern.test(entry.statDigest)) ||
+        (entry.contentDigest !== null && !digestPattern.test(entry.contentDigest))
+      ) throw new TypeError("legacy inventory digest is invalid");
+      if (!/^(?:quarantined|diagnostic)_[a-z0-9_]+$/.test(entry.disposition)) {
+        throw new TypeError("legacy inventory disposition is not a diagnostic or quarantine disposition");
+      }
+      const identity = `${entry.kind}\0${path}`;
+      if (seen.has(identity)) throw new TypeError("legacy inventory command contains a duplicate artifact identity");
+      seen.add(identity);
+      return this.#validatedColumns("legacy_artifacts", normalizeRow({
+        legacy_artifact_id: `legacy-${sha256Text(canonicalJson({ repository_id: this.location.repositoryId, kind: entry.kind, bounded_path_identity: path })).slice(7)}`,
+        repository_id: this.location.repositoryId,
+        kind: entry.kind,
+        bounded_path_identity: path,
+        stat_digest: entry.statDigest,
+        content_digest: entry.contentDigest,
+        discovered_at: command.discoveredAt,
+        disposition: entry.disposition,
+      }));
+    });
+    const records = this.#immediate("inventory_legacy", () => Object.freeze(desired.map((candidate) => {
+      this.#requireCompleteRow("legacy_artifacts", candidate);
+      const existing = this.#selectBy("legacy_artifacts", candidate, ["repository_id", "kind", "bounded_path_identity"]);
+      if (existing !== undefined) {
+        const semanticColumns = ["legacy_artifact_id", "repository_id", "kind", "bounded_path_identity", "stat_digest", "content_digest", "disposition"];
+        if (semanticColumns.every((column) => sameValue(existing[column], candidate[column]))) return frozenRow(existing);
+        throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "legacy artifact identity changed after its immutable quarantine record", this.location.databasePath);
+      }
+      this.#validateRecordSemantics("legacy_artifacts", candidate);
+      this.#insert("legacy_artifacts", candidate);
+      return frozenRow(candidate);
+    })));
+    if (command.requireClear && records.length > 0) {
+      throw new StateStoreError(
+        "RICKGENT_LEGACY_STATE_QUARANTINED",
+        `legacy lifecycle authority is quarantined (${records.length} diagnostic record${records.length === 1 ? "" : "s"})`,
+        { databasePath: this.location.databasePath, recovery: LEGACY_QUARANTINE_RECOVERY },
+      );
+    }
+    return records;
+  }
+
+  readLegacyInventory(): readonly StateRecord[] {
+    const rows = this.#requireDatabase().prepare(
+      "SELECT * FROM legacy_artifacts WHERE repository_id = ? ORDER BY bounded_path_identity, kind",
+    ).all(this.location.repositoryId) as MutableStateRecord[];
+    return Object.freeze(rows.map(frozenRow));
+  }
+
   readEvidence(evidenceId: string): StateRecord | undefined {
     const row = this.#requireDatabase().prepare("SELECT * FROM evidence WHERE evidence_id = ?").get(evidenceId) as MutableStateRecord | undefined;
     return row === undefined ? undefined : frozenRow(row);
@@ -4395,6 +4519,218 @@ export class StateStore {
 
 export interface OpenStateStoreOptions {
   readonly repoPath: string;
+}
+
+/**
+ * Observe canonical durable state without creating, registering, migrating, or
+ * repairing anything. An absent database is an explicit observation, while an
+ * unsafe or corrupt existing state path remains a typed infrastructure error.
+ */
+export function observeState(repoPath: string): StateObservation {
+  assertRuntime();
+  assertValidMigrationCatalog();
+  const location = resolveStateLocation(repoPath);
+
+  if (!existsSync(location.stateDirectory)) {
+    return Object.freeze({
+      state: "absent" as const,
+      repositoryId: location.repositoryId,
+      databasePath: location.databasePath,
+    });
+  }
+
+  // These helpers create only when absent. The existence guards keep this path
+  // strictly observational while reusing the mutation path's ownership/mode
+  // validation for paths that already exist.
+  ensureStateDirectory(location);
+  if (existsSync(location.resourceDirectory)) ensureResourceDirectory(location);
+
+  if (!existsSync(location.databasePath)) {
+    for (const sidecar of [location.walPath, location.shmPath, location.journalPath]) {
+      if (existsSync(sidecar)) {
+        assertSafeStateFile(sidecar, "orphaned state sidecar", location.databasePath);
+        throw typedError(
+          "RICKGENT_STATE_CORRUPT",
+          "state sidecar exists without its canonical database",
+          location.databasePath,
+        );
+      }
+    }
+    return Object.freeze({
+      state: "absent" as const,
+      repositoryId: location.repositoryId,
+      databasePath: location.databasePath,
+    });
+  }
+
+  validateCanonicalFiles(location);
+  let database: DatabaseSync;
+  try {
+    database = new DatabaseSync(location.databasePath, {
+      readOnly: true,
+      enableForeignKeyConstraints: true,
+      defensive: true,
+      allowExtension: false,
+      enableDoubleQuotedStringLiterals: false,
+      allowBareNamedParameters: false,
+      allowUnknownNamedParameters: false,
+      timeout: BUSY_TIMEOUT_MS,
+    });
+  } catch (error) {
+    if (isBusy(error)) translateBusy(error, "observe_state", location.databasePath);
+    throw typedError("RICKGENT_STATE_CORRUPT", "state database could not be opened read-only", location.databasePath, error);
+  }
+
+  let primary: unknown;
+  try {
+    validateCanonicalFiles(location);
+    const version = validateIntegrity(database, location.databasePath, true);
+    if (version !== LATEST_STATE_SCHEMA_VERSION) {
+      throw typedError(
+        "RICKGENT_STATE_MIGRATION_FAILED",
+        `read-only observation cannot migrate state schema ${version} to ${LATEST_STATE_SCHEMA_VERSION}`,
+        location.databasePath,
+      );
+    }
+    if (pragmaValue(database, "PRAGMA journal_mode", "journal_mode") !== "wal") {
+      throw typedError("RICKGENT_STATE_CORRUPT", "existing state database is not in WAL mode", location.databasePath);
+    }
+    const sqlitePath = database.location();
+    if (sqlitePath === null || realpathSync.native(sqlitePath) !== location.databasePath) {
+      unsafe("SQLite opened a database other than the canonical state path", location.databasePath);
+    }
+
+    const repository = database.prepare(`
+      SELECT repository_id, repo_realpath, git_common_dir_realpath, object_format, state_directory, identity_digest
+      FROM repositories WHERE repository_id = ?
+    `).get(location.repositoryId) as MutableStateRecord | undefined;
+    if (
+      repository === undefined || repository.repo_realpath !== location.repoRealpath ||
+      repository.git_common_dir_realpath !== location.gitCommonDirRealpath ||
+      repository.object_format !== location.objectFormat || repository.state_directory !== location.stateDirectory ||
+      repository.identity_digest !== location.identityDigest
+    ) {
+      throw typedError(
+        "RICKGENT_STATE_CORRUPT",
+        "state database repository identity differs from the selected canonical repository",
+        location.databasePath,
+      );
+    }
+
+    const run = database.prepare(`
+      SELECT run_id, run_sequence, state, state_version, created_at, current_delivery_oid, promotion_sequence
+      FROM runs WHERE repository_id = ? ORDER BY run_sequence DESC LIMIT 1
+    `).get(location.repositoryId) as MutableStateRecord | undefined;
+
+    let latestRun: ObservedRunState | null = null;
+    if (run !== undefined) {
+      const ticketRows = database.prepare(`
+        SELECT ticket_instance_id, ticket_id, plan_index, state, state_version
+        FROM run_tickets WHERE run_id = ? ORDER BY plan_index
+      `).all(run.run_id ?? null) as MutableStateRecord[];
+      const tickets = ticketRows.map((ticket): ObservedTicketState => {
+        const attempt = database.prepare(`
+          SELECT
+            a.attempt_id,
+            a.attempt_number,
+            a.state,
+            a.state_version,
+            (SELECT c.commit_oid FROM commit_attributions c
+              WHERE c.attempt_id = a.attempt_id
+              ORDER BY c.created_at DESC, c.commit_attribution_id DESC LIMIT 1) AS commit_oid,
+            (SELECT o.result FROM oracle_decisions o
+              WHERE o.attempt_id = a.attempt_id
+              ORDER BY o.created_at DESC, o.oracle_decision_id DESC LIMIT 1) AS oracle_result
+          FROM attempts a
+          WHERE a.ticket_instance_id = ?
+          ORDER BY a.attempt_number DESC LIMIT 1
+        `).get(ticket.ticket_instance_id ?? null) as MutableStateRecord | undefined;
+        const oracleResult = attempt?.oracle_result;
+        if (oracleResult !== undefined && oracleResult !== null && oracleResult !== "accepted" && oracleResult !== "rejected") {
+          throw typedError("RICKGENT_STATE_CORRUPT", "oracle result is outside the released state vocabulary", location.databasePath);
+        }
+        const latestAttempt = attempt === undefined ? null : Object.freeze({
+          attemptId: String(attempt.attempt_id),
+          attemptNumber: Number(attempt.attempt_number),
+          state: String(attempt.state),
+          stateVersion: Number(attempt.state_version),
+          commitOid: attempt.commit_oid === null ? null : String(attempt.commit_oid),
+          oracleResult: oracleResult as "accepted" | "rejected" | null,
+        });
+        return Object.freeze({
+          ticketInstanceId: String(ticket.ticket_instance_id),
+          ticketId: String(ticket.ticket_id),
+          planIndex: Number(ticket.plan_index),
+          state: String(ticket.state),
+          stateVersion: Number(ticket.state_version),
+          latestAttempt,
+        });
+      });
+      latestRun = Object.freeze({
+        runId: String(run.run_id),
+        runSequence: Number(run.run_sequence),
+        state: String(run.state),
+        stateVersion: Number(run.state_version),
+        createdAt: String(run.created_at),
+        currentDeliveryOid: String(run.current_delivery_oid),
+        promotionSequence: Number(run.promotion_sequence),
+        tickets: Object.freeze(tickets),
+      });
+    }
+
+    const aggregateRow = database.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM runs WHERE repository_id = ?) AS runs,
+        (SELECT COUNT(*) FROM delivery_records d
+          JOIN delivery_intents i ON i.delivery_intent_id = d.delivery_intent_id
+          JOIN runs r ON r.run_id = i.run_id
+          WHERE r.repository_id = ?) AS delivery_records,
+        (SELECT COUNT(*) FROM runs WHERE repository_id = ? AND state = 'delivered') AS delivered,
+        (SELECT COUNT(*) FROM runs WHERE repository_id = ? AND state = 'delivery_failed') AS delivery_failed
+    `).get(
+      location.repositoryId,
+      location.repositoryId,
+      location.repositoryId,
+      location.repositoryId,
+    ) as MutableStateRecord | undefined;
+    if (aggregateRow === undefined) {
+      throw typedError("RICKGENT_STATE_CORRUPT", "state aggregate observation returned no row", location.databasePath);
+    }
+    const aggregates = Object.freeze({
+      runs: Number(aggregateRow.runs),
+      deliveryRecords: Number(aggregateRow.delivery_records),
+      delivered: Number(aggregateRow.delivered),
+      deliveryFailed: Number(aggregateRow.delivery_failed),
+    });
+    validateCanonicalFiles(location);
+    return Object.freeze({
+      state: "present" as const,
+      repositoryId: location.repositoryId,
+      databasePath: location.databasePath,
+      schemaVersion: version,
+      latestRun,
+      aggregates,
+    });
+  } catch (error) {
+    primary = error;
+    if (error instanceof StateStoreError) throw error;
+    if (isBusy(error)) translateBusy(error, "observe_state", location.databasePath);
+    const detail = error instanceof Error ? error.message : String(error);
+    throw typedError(
+      "RICKGENT_STATE_CORRUPT",
+      `state observation failed integrity or projection checks: ${detail}`,
+      location.databasePath,
+      error,
+    );
+  } finally {
+    try {
+      database.close();
+    } catch (closeError) {
+      if (primary === undefined) {
+        throw typedError("RICKGENT_STATE_CORRUPT", "read-only state database could not be closed", location.databasePath, closeError);
+      }
+    }
+  }
 }
 
 export function openStateStore(options: OpenStateStoreOptions): StateStore {

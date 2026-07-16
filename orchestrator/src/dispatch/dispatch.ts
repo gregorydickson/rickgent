@@ -41,6 +41,7 @@ import {
 import { canonicalDispatchId } from "../context/execution-context.js";
 import { ticketOwnedPaths, type TicketContract } from "../contracts/ticket-contract.js";
 import type { RouterSelection } from "../lifecycle/routing.js";
+import type { AllocatedAttempt } from "../state/store.js";
 
 export type DispatchState =
   | "planned" | "spawned" | "db_session_observed" | "implementation_captured" | "completed"
@@ -149,6 +150,24 @@ export class DispatchLedger {
     const entry = this.find(dispatchId);
     if (!entry) return false;
     return TERMINAL_STATES.has(entry.state);
+  }
+}
+
+/** Append-only diagnostic sink. It cannot answer replay or ownership queries. */
+export interface DispatchJournal {
+  append(entry: DispatchEntry): void;
+}
+
+/** Fixture transport journal; lifecycle truth remains exclusively in SQLite. */
+export class InMemoryDispatchJournal implements DispatchJournal {
+  readonly #entries: DispatchEntry[] = [];
+
+  append(entry: DispatchEntry): void {
+    this.#entries.push(Object.freeze({ ...entry }));
+  }
+
+  observations(): readonly DispatchEntry[] {
+    return Object.freeze([...this.#entries]);
   }
 }
 
@@ -279,6 +298,8 @@ export interface DispatchOptions {
    */
   /** @deprecated Production derives the vendor from selection. */
   vendor?: string;
+  /** Canonical allocation identity. Required by the non-legacy fixture transport. */
+  attempt?: AllocatedAttempt;
 }
 
 export const DEFAULT_TERMINATION_GRACE_MS = 5_000;
@@ -292,13 +313,37 @@ export interface DispatcherDependencies {
 
 export class Dispatcher {
   private active = 0;
+  private readonly ledger: DispatchJournal;
+  private readonly legacyLock: TicketLock | null;
+  private readonly rickgentDir: string;
+  private readonly dependencies: DispatcherDependencies;
 
+  /** Fixture transport: journal observations in memory; no filesystem ownership authority. */
+  constructor(journal: DispatchJournal, rickgentDir: string, dependencies?: DispatcherDependencies);
+  /** @deprecated Test compatibility only. Filesystem locks are not production lifecycle authority. */
   constructor(
-    private ledger: DispatchLedger,
-    private lock: TicketLock,
-    private rickgentDir: string,
-    private dependencies: DispatcherDependencies = {},
-  ) {}
+    journal: DispatchJournal,
+    legacyLock: TicketLock,
+    rickgentDir: string,
+    dependencies?: DispatcherDependencies,
+  );
+  constructor(
+    journal: DispatchJournal,
+    lockOrRickgentDir: TicketLock | string,
+    rickgentDirOrDependencies: string | DispatcherDependencies = {},
+    dependencies: DispatcherDependencies = {},
+  ) {
+    this.ledger = journal;
+    if (typeof lockOrRickgentDir === "string") {
+      this.legacyLock = null;
+      this.rickgentDir = lockOrRickgentDir;
+      this.dependencies = rickgentDirOrDependencies as DispatcherDependencies;
+    } else {
+      this.legacyLock = lockOrRickgentDir;
+      this.rickgentDir = rickgentDirOrDependencies as string;
+      this.dependencies = dependencies;
+    }
+  }
 
   get activeCount(): number {
     return this.active;
@@ -317,14 +362,23 @@ export class Dispatcher {
     RUNTIME_CAPABILITY_GATE.require("autonomous_dispatch");
     const idStr = dispatchIdString(id);
 
-    // Idempotency check — return recorded terminal state without re-spawning
-    const existing = this.ledger.find(idStr);
-    if (existing?.state === "cleanup_pending") {
-      return existing;
+    if (this.legacyLock === null) {
+      const attempt = opts.attempt;
+      if (attempt === undefined) throw new InputContractError("fixture dispatch requires a canonical allocated attempt");
+      if (
+        id.runId !== attempt.runId || id.ticketId !== attempt.ticketId || id.attempt !== attempt.attemptNumber
+      ) throw new InputContractError("diagnostic dispatch identity differs from its canonical allocated attempt");
+      if (opts.ticket === undefined) {
+        throw new InputContractError("fixture dispatch requires its canonically allocated ticket contract");
+      }
+      if (opts.ticket.id !== attempt.ticketId || opts.ticket.digest !== attempt.contractDigest) {
+        throw new InputContractError("dispatch ticket contract differs from its canonical allocated attempt");
+      }
     }
-    if (existing && this.ledger.isTerminal(idStr)) {
-      return existing;
-    }
+
+    // The JSONL ledger is diagnostic history only. A prior terminal-looking
+    // row cannot authorize skipping a fresh observation of an already-
+    // allocated attempt; only the SQLite lifecycle trust spine may do that.
     if (!opts.workspace) {
       throw new InputContractError(
         "dispatch requires a verified run workspace",
@@ -349,7 +403,7 @@ export class Dispatcher {
     }
 
     // Acquire lock — fail closed if another worker holds the ticket
-    if (!this.lock.acquire(id.ticketId)) {
+    if (this.legacyLock !== null && !this.legacyLock.acquire(id.ticketId)) {
       const failed: DispatchEntry = {
         dispatchId: idStr,
         state: "failed",
@@ -473,7 +527,7 @@ export class Dispatcher {
       return entry;
     } finally {
       this.active--;
-      if (releaseTicketLock) this.lock.release(id.ticketId);
+      if (releaseTicketLock) this.legacyLock?.release(id.ticketId);
     }
   }
 
@@ -584,7 +638,10 @@ export class Dispatcher {
         if (graceTimer !== null) clearTimeout(graceTimer);
         if (processDeathPoll !== null) clearTimeout(processDeathPoll);
         let completedEntry = entry;
-        if (entry.ownershipReleased === false && !this.lock.markCleanupPending(id.ticketId)) {
+        if (
+          entry.ownershipReleased === false && this.legacyLock !== null &&
+          !this.legacyLock.markCleanupPending(id.ticketId)
+        ) {
           completedEntry = {
             ...entry,
             state: "cleanup_pending",

@@ -1,10 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync, spawnSync } from "child_process";
-import { writeFileSync, mkdirSync, rmSync } from "fs";
+import { existsSync, writeFileSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { pathToFileURL } from "url";
 
 const cliPath = join(import.meta.dirname, "../../dist/cli.js");
+const stateStorePath = join(import.meta.dirname, "../../dist/state/store.js");
+const projectRoot = join(import.meta.dirname, "../../..");
 
 function run(args: string[], options: { env?: NodeJS.ProcessEnv; cwd?: string; input?: string } = {}): string {
   return execFileSync(process.execPath, [cliPath, ...args], {
@@ -13,6 +16,11 @@ function run(args: string[], options: { env?: NodeJS.ProcessEnv; cwd?: string; i
     cwd: options.cwd,
     input: options.input,
   });
+}
+
+function initRepo(repo: string): void {
+  mkdirSync(repo, { recursive: true });
+  execFileSync("git", ["init", "-q"], { cwd: repo });
 }
 
 describe("CLI commands", () => {
@@ -64,42 +72,65 @@ describe("CLI commands", () => {
   });
 
   it("status prints pipeline status", () => {
-    const result = run(["status"]);
-    expect(result).toContain("pipeline");
+    const result = run(["status"], { cwd: projectRoot });
+    expect(result).toContain("SQLite lifecycle");
   });
 
   it("status --deep runs the read-only health audit", () => {
-    const result = spawnSync(process.execPath, [cliPath, "status", "--deep"], { encoding: "utf-8" });
+    const result = spawnSync(process.execPath, [cliPath, "status", "--deep"], { encoding: "utf-8", cwd: projectRoot });
     expect(result.stdout).toContain("read-only health and configured-attachment audit");
     expect(result.status).toBe(0);
   });
 
-  it("status exits 0 with an empty table on an empty-object registry", () => {
+  it("status reports absent SQLite state without creating it or consulting an empty registry", () => {
     const tmp = join(tmpdir(), `rickgent-status-empty-${Date.now()}`);
     const rickgentDir = join(tmp, ".rickgent");
     mkdirSync(rickgentDir, { recursive: true });
     try {
+      initRepo(tmp);
       writeFileSync(join(rickgentDir, "registry.json"), "{}");
-      const result = run(["status"], { env: { ...process.env, RICKGENT_DIR: rickgentDir } });
-      expect(result).toContain("pipeline");
-      expect(result).toContain("tickets: 0");
+      const result = run(["status"], { cwd: tmp, env: { ...process.env, RICKGENT_DIR: rickgentDir } });
+      expect(result).toContain("state: absent");
+      expect(result).toContain("tickets: (unavailable)");
+      expect(existsSync(join(tmp, ".git", "rickgent"))).toBe(false);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
 
-  it("status exits 0 with an empty table on a truncated/malformed registry", () => {
+  it("status ignores a hostile legacy Done claim", () => {
     const tmp = join(tmpdir(), `rickgent-status-malformed-${Date.now()}`);
     const rickgentDir = join(tmp, ".rickgent");
     mkdirSync(rickgentDir, { recursive: true });
     try {
-      writeFileSync(join(rickgentDir, "registry.json"), '{"runId":"run-x","tickets":');
-      const result = run(["status"], { env: { ...process.env, RICKGENT_DIR: rickgentDir } });
-      expect(result).toContain("pipeline");
-      expect(result).toContain("tickets: 0");
+      initRepo(tmp);
+      writeFileSync(join(rickgentDir, "registry.json"), JSON.stringify({
+        runId: "hostile-run",
+        tickets: { hostile: { status: "Done", completionCommitSha: "f".repeat(40) } },
+      }));
+      const result = run(["status"], { cwd: tmp, env: { ...process.env, RICKGENT_DIR: rickgentDir } });
+      expect(result).toContain("state: absent");
+      expect(result).toContain("tickets: (unavailable)");
+      expect(result).not.toContain("hostile-run");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+
+  it.each([
+    ["RICKGENT_LEGACY_STATE_QUARANTINED", 4],
+    ["RICKGENT_STATE_RESUME_INCOMPATIBLE", 2],
+  ])("maps %s through the stable state-store CLI boundary", (code, exitCode) => {
+    const script = [
+      `import { handleFatal } from ${JSON.stringify(pathToFileURL(cliPath).href)};`,
+      `import { StateStoreError } from ${JSON.stringify(pathToFileURL(stateStorePath).href)};`,
+      `handleFatal(new StateStoreError(${JSON.stringify(code)}, "state failure", { recovery: "recover safely" }));`,
+    ].join("\n");
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf-8" });
+    expect(result.status).toBe(exitCode);
+    expect(result.stderr).toContain(`${code}: state failure`);
+    expect(result.stderr).toContain("recovery: recover safely");
+    expect(result.stderr).not.toContain("RICKGENT_INTERNAL_ERROR");
   });
 
   it("reconcile fails with its stable unavailable capability", () => {

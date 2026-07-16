@@ -1,11 +1,16 @@
-// B9 — Metrics ledger + `rickgent metrics` (goal-4 measurement).
+// B9 — SQLite lifecycle metrics plus explicitly legacy diagnostics.
 //
-// `rickgent metrics` reports two computed metrics, both REAL ledger reads:
+// Canonical run and delivery counts come only from the read-only SQLite state
+// observation. The historical JSONL files below lack canonical run/attempt/
+// delivery lineage and are therefore reported in a separate diagnostic section
+// that cannot be mistaken for lifecycle truth.
 //
-//   (a) interventions/run — the autonomy metric (target 0). A human-gate hit
-//       during `build` (B1) appends to the durable intervention ledger
-//       (.rickgent/interventions.jsonl); a run start appends to the runs ledger
-//       (.rickgent/runs.jsonl). metrics reads both and computes the ratio.
+// Legacy diagnostics retain two historical computations:
+//
+//   (a) interventions/run — the historical autonomy metric (target 0).
+//       Earlier toolbelt versions appended `.rickgent/interventions.jsonl` and
+//       `.rickgent/runs.jsonl`; current lifecycle callers never write them.
+//       Metrics may still read them, but labels the result diagnostic-only.
 //
 //   (b) rolling matured-PR quality (target 99%, Mission 1 §5.4). PR quality % =
 //       1 − (defective / shipped), measured over MATURED PRs only. The quality
@@ -25,6 +30,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { join } from "path";
+import { observeState, type StateObservation } from "../state/store.js";
 
 /** Maturity window (days) before a shipped PR enters the quality denominator. */
 export const DEFAULT_MATURITY_WINDOW_DAYS = 14;
@@ -80,20 +86,20 @@ export interface DefectRecord {
 
 // ── Record helpers (append-only JSONL) ──────────────────────────────────────
 
-/** Record a run start so interventions/run is well-defined. */
+/** @deprecated Legacy diagnostic writer; never lifecycle authority. */
 export function recordRun(rickgentDir: string, runId: string, prdTitle: string): void {
   mkdirSync(rickgentDir, { recursive: true });
   const rec: RunRecord = { runId, startedAt: new Date().toISOString(), prdTitle };
   appendFileSync(runLedgerPath(rickgentDir), JSON.stringify(rec) + "\n");
 }
 
-/** Record a shipped PR in the durable PR ledger. */
+/** @deprecated Legacy diagnostic writer; never delivery authority. */
 export function recordPr(rickgentDir: string, pr: PrRecord): void {
   mkdirSync(rickgentDir, { recursive: true });
   appendFileSync(prLedgerPath(rickgentDir), JSON.stringify(pr) + "\n");
 }
 
-/** Record a defect attributed to a PR in the durable defect ledger. */
+/** @deprecated Legacy diagnostic writer; never adjudication authority. */
 export function recordDefect(rickgentDir: string, defect: DefectRecord): void {
   mkdirSync(rickgentDir, { recursive: true });
   appendFileSync(defectLedgerPath(rickgentDir), JSON.stringify(defect) + "\n");
@@ -152,9 +158,9 @@ export interface MetricsResult {
 }
 
 /**
- * Compute the B9 metrics from the durable ledgers. Every number is a real
- * ledger read; nothing is hardcoded. `now` is injectable for deterministic
- * tests; the production path uses `new Date()`.
+ * Compute legacy JSONL diagnostics. These values are useful historical signals
+ * but do not represent canonical lifecycle state. `now` is injectable for
+ * deterministic tests; the production path uses `new Date()`.
  */
 export function computeMetrics(
   rickgentDir: string,
@@ -243,7 +249,7 @@ export function computeMetrics(
 export function formatMetricsReport(m: MetricsResult): string {
   const qualityStr = m.qualityPct === null ? "N/A (no matured PRs)" : `${m.qualityPct.toFixed(1)}%`;
   const lines: string[] = [
-    "rickgent metrics — autonomy + quality (real ledger reads)",
+    "legacy JSONL diagnostics — autonomy + quality (non-authoritative)",
     "=".repeat(56),
     `runs:                    ${m.runs}`,
     `interventions:           ${m.interventions}`,
@@ -264,15 +270,80 @@ export function formatMetricsReport(m: MetricsResult): string {
 export interface MetricsOutput {
   report: string;
   json: string;
-  metrics: MetricsResult;
+  authoritative: AuthoritativeMetrics;
+  legacyDiagnostics: LegacyDiagnosticMetrics;
+}
+
+export interface AuthoritativeMetrics {
+  readonly source: "sqlite";
+  readonly availability: StateObservation["state"];
+  readonly repositoryId: string;
+  readonly databasePath: string;
+  readonly schemaVersion: number | null;
+  /** Null means the canonical database is absent; it must not be reported as zero. */
+  readonly runs: number | null;
+  readonly deliveryRecords: number | null;
+  readonly delivered: number | null;
+  readonly deliveryFailed: number | null;
+}
+
+export interface LegacyDiagnosticMetrics {
+  readonly source: "legacy_jsonl";
+  readonly trust: "diagnostic_only";
+  readonly metrics: MetricsResult;
+}
+
+function authoritativeProjection(observation: StateObservation): AuthoritativeMetrics {
+  if (observation.state === "absent") {
+    return Object.freeze({
+      source: "sqlite" as const,
+      availability: "absent" as const,
+      repositoryId: observation.repositoryId,
+      databasePath: observation.databasePath,
+      schemaVersion: null,
+      runs: null,
+      deliveryRecords: null,
+      delivered: null,
+      deliveryFailed: null,
+    });
+  }
+  return Object.freeze({
+    source: "sqlite" as const,
+    availability: "present" as const,
+    repositoryId: observation.repositoryId,
+    databasePath: observation.databasePath,
+    schemaVersion: observation.schemaVersion,
+    runs: observation.aggregates.runs,
+    deliveryRecords: observation.aggregates.deliveryRecords,
+    delivered: observation.aggregates.delivered,
+    deliveryFailed: observation.aggregates.deliveryFailed,
+  });
+}
+
+function formatAuthoritativeMetrics(metrics: AuthoritativeMetrics): string {
+  const value = (count: number | null): string => count === null ? "N/A (state absent)" : String(count);
+  return [
+    "rickgent metrics — canonical lifecycle projection",
+    "=".repeat(56),
+    `source:                   ${metrics.source}`,
+    `availability:             ${metrics.availability}`,
+    `runs:                    ${value(metrics.runs)}`,
+    `delivery records:        ${value(metrics.deliveryRecords)}`,
+    `delivered:               ${value(metrics.delivered)}`,
+    `delivery failed:         ${value(metrics.deliveryFailed)}`,
+    "=".repeat(56),
+  ].join("\n");
 }
 
 /**
- * Resolve ledgers under `rickgentDir` and produce the metrics report + JSON.
+ * Observe canonical SQLite state under `repoPath`, then separately read legacy
+ * diagnostics under `rickgentDir`. The two projections are never flattened or
+ * merged, so a JSONL claim cannot manufacture an authoritative count.
  * The maturity window defaults to the decision-doc constant (14 days) and is
  * overridable via RICKGENT_MATURITY_WINDOW_DAYS for test determinism.
  */
 export function runMetrics(
+  repoPath: string,
   rickgentDir: string,
   env: NodeJS.ProcessEnv = process.env,
 ): MetricsOutput {
@@ -282,10 +353,17 @@ export function runMetrics(
     const n = Number(overrideRaw);
     if (!Number.isNaN(n) && n >= 0) maturityWindowDays = n;
   }
-  const metrics = computeMetrics(rickgentDir, new Date(), maturityWindowDays);
+  const authoritative = authoritativeProjection(observeState(repoPath));
+  const legacyDiagnostics = Object.freeze({
+    source: "legacy_jsonl" as const,
+    trust: "diagnostic_only" as const,
+    metrics: computeMetrics(rickgentDir, new Date(), maturityWindowDays),
+  });
+  const jsonProjection = Object.freeze({ authoritative, legacyDiagnostics });
   return {
-    report: formatMetricsReport(metrics),
-    json: JSON.stringify(metrics),
-    metrics,
+    report: `${formatAuthoritativeMetrics(authoritative)}\n\n${formatMetricsReport(legacyDiagnostics.metrics)}`,
+    json: JSON.stringify(jsonProjection),
+    authoritative,
+    legacyDiagnostics,
   };
 }

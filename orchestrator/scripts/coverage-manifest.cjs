@@ -290,14 +290,14 @@ const TS_INCIDENT_CLASSES = [
   },
   // ── Dispatch (src/dispatch/dispatch.ts) ──
   {
-    id: "dispatch-idempotency",
+    id: "dispatch-contract-incompatibility",
     testFile: "test/dispatch/dispatch.test.ts",
-    testCase: "returns recorded terminal state without re-spawning",
+    testCase: "rejects a changed ticket contract instead of treating its allocation as a cache hit",
     sourceFile: "src/dispatch/dispatch.ts",
-    guardMarker: "if (existing && this.ledger.isTerminal(idStr)) {",
+    guardMarker: 'throw new InputContractError("dispatch ticket contract differs from its canonical allocated attempt");',
     mutate: (s) => s.replace(
-      "if (existing && this.ledger.isTerminal(idStr)) {\n      return existing;\n    }",
-      'if (existing && this.ledger.isTerminal(idStr)) {\n      return { ...existing, state: "planned" }; /* mutation: terminal replay corrupted */\n    }'
+      'throw new InputContractError("dispatch ticket contract differs from its canonical allocated attempt");',
+      "/* mutation: changed contract accepted */"
     ),
   },
   {

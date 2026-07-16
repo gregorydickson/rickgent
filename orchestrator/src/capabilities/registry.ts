@@ -344,7 +344,7 @@ const PUBLIC_SURFACES: readonly PublicSurfaceEntry[] = Object.freeze([
     surface: "rickgent status [--deep]",
     mode: "public_read_only",
     mutation_authority: "none",
-    result: "registry observation; --deep also runs the doctor health audit",
+    result: "canonical SQLite lifecycle observation; --deep also runs the doctor health audit",
     exit_code: null,
     stable_code: null,
     boundary: "Healthy observations exit 0; deep health failure exits 1; neither can terminalize a run.",

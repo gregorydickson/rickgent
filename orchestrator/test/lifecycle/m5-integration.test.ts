@@ -645,9 +645,10 @@ describe("M5 Integration — all commands work with fixture omnigent (VAL-INTEGR
     expect(r.status, `${r.stdout}\n${r.stderr}`).toBe(5);
     expect(r.stdout).toContain("captured=1 done=0");
     expect(r.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
-    // Build should produce a registry and dispatch ledger
-    expect(existsSync(join(ctx.rickgentDir, "registry.json"))).toBe(true);
-    expect(existsSync(join(ctx.rickgentDir, "dispatch-ledger.jsonl"))).toBe(true);
+    // Build allocates canonical SQLite state and never dual-writes legacy authority.
+    expect(existsSync(join(ctx.repo, ".git", "rickgent", "state.sqlite3"))).toBe(true);
+    expect(existsSync(join(ctx.rickgentDir, "registry.json"))).toBe(false);
+    expect(existsSync(join(ctx.rickgentDir, "dispatch-ledger.jsonl"))).toBe(false);
   });
 
   it("citadel: pure JS audit, no omnigent, exit 0", () => {
@@ -780,7 +781,7 @@ describe("M5 Integration — full pipeline chain (VAL-INTEGR-010)", () => {
       readdirSync(ctx.rickgentDir).some((n) => /^rick_ticket_/.test(n));
     expect(hasTickets).toBe(true);
 
-    // ── Stage 3: build → registry.json + dispatch-ledger.jsonl ──
+    // ── Stage 3: build → canonical SQLite allocation, no legacy dual-write ──
     // Build needs a PRD with tickets and declaredPaths. Use the original PRD
     // which has the right format. Use the shared fixture omnigent for dispatch.
     const buildPrd = prdPath;
@@ -789,8 +790,9 @@ describe("M5 Integration — full pipeline chain (VAL-INTEGR-010)", () => {
     expect(buildRes.status).toBe(5);
     expect(buildRes.stdout).toContain("captured=1 done=0");
     expect(buildRes.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
-    expect(existsSync(join(ctx.rickgentDir, "registry.json"))).toBe(true);
-    expect(existsSync(join(ctx.rickgentDir, "dispatch-ledger.jsonl"))).toBe(true);
+    expect(existsSync(join(ctx.repo, ".git", "rickgent", "state.sqlite3"))).toBe(true);
+    expect(existsSync(join(ctx.rickgentDir, "registry.json"))).toBe(false);
+    expect(existsSync(join(ctx.rickgentDir, "dispatch-ledger.jsonl"))).toBe(false);
 
     // ── Stage 4: citadel → citadel_report.json ──
     // Capture no longer creates a caller-repository commit. Seed a second
@@ -943,7 +945,8 @@ describe("M5 Integration — cronenberg end-to-end (VAL-INTEGR-011)", () => {
     expect(r.status).toBe(5);
     expect(r.stdout).toContain("metaphor: build");
     expect(r.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
-    // The delegated build child produced a registry.
-    expect(existsSync(join(ctx.rickgentDir, "registry.json"))).toBe(true);
+    // The delegated build child allocated canonical state without a legacy registry.
+    expect(existsSync(join(ctx.repo, ".git", "rickgent", "state.sqlite3"))).toBe(true);
+    expect(existsSync(join(ctx.rickgentDir, "registry.json"))).toBe(false);
   });
 });

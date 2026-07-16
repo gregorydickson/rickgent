@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync } from "child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { DatabaseSync } from "node:sqlite";
 import type { BuildOptions } from "../../src/lifecycle/build.js";
 import {
   FIXTURE_BUILD_DEPENDENCIES,
@@ -41,6 +42,17 @@ function cleanupDedicatedWorktrees(repo: string): void {
   const refs = git(repo, ["for-each-ref", "--format=%(refname)", "refs/heads/rickgent/runs"]);
   for (const ref of refs.split("\n").filter(Boolean)) {
     try { git(repo, ["update-ref", "-d", ref]); } catch { /* test cleanup */ }
+  }
+}
+
+function stateRows(repo: string, sql: string): Array<Record<string, unknown>> {
+  const database = new DatabaseSync(join(repo, ".git", "rickgent", "state.sqlite3"), {
+    readOnly: true,
+  });
+  try {
+    return database.prepare(sql).all() as Array<Record<string, unknown>>;
+  } finally {
+    database.close();
   }
 }
 
@@ -113,20 +125,15 @@ describe("fixture mutation capture is explicitly nonterminal", () => {
     expect(result.outcome.status).toBe("failed");
     expect(result.outcome.issues.some((issue) => issue.reason === "zero_completion")).toBe(true);
 
-    const registry = JSON.parse(readFileSync(join(state, "registry.json"), "utf-8")) as {
-      tickets: Record<string, { status: string; phase: string; completionCommitSha: string | null }>;
-    };
-    expect(registry.tickets["t01"]).toMatchObject({
-      status: "In Progress",
-      phase: "implementation_captured",
-      completionCommitSha: null,
-    });
-
-    const ledger = readFileSync(join(state, "dispatch-ledger.jsonl"), "utf-8")
-      .trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
-    const capture = ledger.find((entry) => entry["state"] === "implementation_captured");
-    expect(capture?.["captureReceipt"]).toMatchObject({ kind: "implementation_captured_nonterminal" });
-    expect(ledger.some((entry) => ["completed", "verified", "ready_for_delivery", "delivered", "Done"].includes(String(entry["state"])))).toBe(false);
+    expect(existsSync(join(state, "registry.json"))).toBe(false);
+    expect(existsSync(join(state, "dispatch-ledger.jsonl"))).toBe(false);
+    expect(stateRows(repo, "SELECT state, state_version FROM runs"))
+      .toEqual([expect.objectContaining({ state: "planned", state_version: 0 })]);
+    expect(stateRows(repo, "SELECT state, state_version FROM run_tickets"))
+      .toEqual([expect.objectContaining({ state: "planned", state_version: 0 })]);
+    expect(stateRows(repo, "SELECT state, state_version FROM attempts"))
+      .toEqual([expect.objectContaining({ state: "planned", state_version: 0 })]);
+    expect(stateRows(repo, "SELECT transition_id FROM state_transitions")).toEqual([]);
   });
 
   it.each([
@@ -156,8 +163,35 @@ describe("fixture mutation capture is explicitly nonterminal", () => {
     expect(result.captureReceipts).toEqual([]);
     expect(result.ticketsDone).toBe(0);
     expect(git(repo, ["rev-parse", "HEAD"])).toBe(callerHead);
-    const ledgerText = readFileSync(join(state, "dispatch-ledger.jsonl"), "utf-8");
-    expect(ledgerText).not.toContain('"state":"completed"');
+    expect(existsSync(join(state, "dispatch-ledger.jsonl"))).toBe(false);
+    expect(existsSync(join(state, "registry.json"))).toBe(false);
+    expect(stateRows(repo, "SELECT state FROM attempts"))
+      .toEqual([expect.objectContaining({ state: "planned" })]);
+  });
+
+  it("quarantines target-repository legacy authority before run allocation or spawn", async () => {
+    const legacy = join(repo, ".rickgent");
+    mkdirSync(legacy, { recursive: true });
+    writeFileSync(join(legacy, "registry.json"), JSON.stringify({
+      runId: "legacy-run",
+      tickets: { t01: { id: "t01", status: "Done", completionCommitSha: git(repo, ["rev-parse", "HEAD"]) } },
+    }));
+    writeFileSync(join(legacy, "dispatch-ledger.jsonl"), `${JSON.stringify({
+      dispatchId: "legacy-run/t01/implement/1/worker",
+      state: "completed",
+      commitSha: git(repo, ["rev-parse", "HEAD"]),
+    })}\n`);
+    const spawnRecord = join(root, "legacy-spawn.json");
+
+    const result = await runFixtureBuild(options({ FIXTURE_SPAWN_RECORD: spawnRecord }));
+
+    expect(result.gateHit).toBe("state-authority-gate");
+    expect(result.outcome.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ detail: expect.stringContaining("RICKGENT_LEGACY_STATE_QUARANTINED") }),
+    ]));
+    expect(existsSync(spawnRecord)).toBe(false);
+    expect(stateRows(repo, "SELECT run_id FROM runs")).toEqual([]);
+    expect(stateRows(repo, "SELECT kind, disposition FROM legacy_artifacts").length).toBeGreaterThanOrEqual(2);
   });
 
   it("cannot resume an adversarial ticket-subject baseline or promote lifecycle state", async () => {

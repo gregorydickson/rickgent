@@ -2,8 +2,8 @@
 //
 // Drives the REAL build path (`runBuild`) with a live roster and verifies:
 //   1. The Python `select_model` router is called before each dispatch (via
-//      subprocess) and the selected `vendor` flows into every ledger entry
-//      (not null) — the production path populates the vendor label.
+//      subprocess) and the selected `vendor` flows into process-local transport
+//      observations (not null) — without persisting replay authority.
 //   2. The pre-dispatch cost gate is enforced: an all-unpriced roster → DENY
 //      → no dispatch spawns (fail-closed).
 //   3. The cross-vendor review exclusion flows through the router in the real
@@ -11,11 +11,11 @@
 //   4. An over-hard-budget roster → DENY → no dispatch.
 //
 // These tests FAIL against the unwired code (build.ts never calls select_model,
-// so every ledger entry has vendor: null) and PASS after the wiring fix.
+// so every spawned observation has vendor: null) and PASS after the wiring fix.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { spawnSync, execFileSync } from "child_process";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, realpathSync, writeFileSync, existsSync } from "fs";
+import { mkdtempSync, mkdirSync, rmSync, realpathSync, writeFileSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { callSelectModel, routeDispatch, type ModelEntry } from "../../src/lifecycle/routing.js";
@@ -98,16 +98,6 @@ const OVER_BUDGET_ROSTER: ModelEntry[] = [
   { harness: "codex", model: "openai/gpt-5", vendor: "openai", tier: "capable", pricing: { cost_per_dispatch: 100.0 } },
 ];
 
-function ledgerEntries(rickgentDir: string): Array<Record<string, unknown>> {
-  const p = join(rickgentDir, "dispatch-ledger.jsonl");
-  if (!existsSync(p)) return [];
-  return readFileSync(p, "utf-8")
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((l) => JSON.parse(l));
-}
-
 function fixtureEnv(d: Dirs, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   return {
     ...process.env,
@@ -128,9 +118,9 @@ describe("M4 fix: build path calls select_model before each dispatch", () => {
     rmSync(d.root, { recursive: true, force: true });
   });
 
-  // VAL-ROUTE-WIRING-001: the production build path populates the vendor label
-  // from the router's selection. Ledger entries have vendor != null.
-  it("populates vendor from the router's selection in every spawned ledger entry", async () => {
+  // VAL-ROUTE-WIRING-001: the build path populates the vendor label from the
+  // router's selection without creating a replayable JSONL ledger.
+  it("populates vendor from the router's selection in every spawned observation", async () => {
     const result = await fixtureBuild({
       prdPath: PRD_MIN,
       workingDir: d.repo,
@@ -143,7 +133,7 @@ describe("M4 fix: build path calls select_model before each dispatch", () => {
     });
     expect(result.outcome.status).toBe("failed");
     expect(result.ticketsCaptured).toBe(1);
-    const entries = ledgerEntries(d.rickgentDir);
+    const entries = result.dispatchObservations;
     const spawned = entries.filter((e) => e.state === "spawned" || e.state === "implementation_captured");
     expect(spawned.length).toBeGreaterThan(0);
     // Every spawned/completed entry carries a non-null vendor from the router.
@@ -154,10 +144,11 @@ describe("M4 fix: build path calls select_model before each dispatch", () => {
       // The vendor must be one from the roster (not a fabricated default).
       expect(MULTI_VENDOR_ROSTER.some((m) => m.vendor === e.vendor)).toBe(true);
     }
+    expect(existsSync(join(d.rickgentDir, "dispatch-ledger.jsonl"))).toBe(false);
   });
 
   // VAL-ROUTE-WIRING-002: the vendor label matches the router's ALLOW selection.
-  it("the ledger vendor matches the router's ALLOW selection for the implement role", async () => {
+  it("the observation vendor matches the router's ALLOW selection for the implement role", async () => {
     // First, determine what the router selects for the implement role.
     const routed = routeDispatch(MULTI_VENDOR_ROSTER, "implement", { costBudgetUsd: 10.0 });
     expect(routed.ok).toBe(true);
@@ -176,7 +167,7 @@ describe("M4 fix: build path calls select_model before each dispatch", () => {
     });
     expect(result.outcome.status).toBe("failed");
     expect(result.ticketsCaptured).toBe(1);
-    const entries = ledgerEntries(d.rickgentDir);
+    const entries = result.dispatchObservations;
     const spawned = entries.filter((e) => e.state === "spawned");
     expect(spawned.length).toBeGreaterThan(0);
     for (const e of spawned) {
@@ -207,7 +198,7 @@ describe("M4 fix: pre-dispatch cost gate is enforced in the build path", () => {
     });
     // The build completes (non-interactive, failure absorbed) but no dispatch
     // was spawned — every ticket was blocked by the cost gate.
-    const entries = ledgerEntries(d.rickgentDir);
+    const entries = result.dispatchObservations;
     const spawned = entries.filter((e) => e.state === "spawned");
     expect(spawned.length).toBe(0);
     // The failed entries carry the cost-gate DENY reason.
@@ -231,7 +222,7 @@ describe("M4 fix: pre-dispatch cost gate is enforced in the build path", () => {
       costBudgetUsd: 1.0,
       env: fixtureEnv(d),
     });
-    const entries = ledgerEntries(d.rickgentDir);
+    const entries = result.dispatchObservations;
     const spawned = entries.filter((e) => e.state === "spawned");
     expect(spawned.length).toBe(0);
     const failed = entries.filter((e) => e.state === "failed");
@@ -249,7 +240,7 @@ describe("M4 fix: pre-dispatch cost gate is enforced in the build path", () => {
       roster: [],
       env: fixtureEnv(d),
     });
-    const entries = ledgerEntries(d.rickgentDir);
+    const entries = result.dispatchObservations;
     const spawned = entries.filter((e) => e.state === "spawned");
     expect(spawned.length).toBe(0);
   });

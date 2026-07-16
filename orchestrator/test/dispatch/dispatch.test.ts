@@ -5,6 +5,7 @@ import { tmpdir } from "os";
 import { join, dirname } from "path";
 import {
   DispatchLedger,
+  InMemoryDispatchJournal,
   TicketLock,
   Dispatcher,
   dispatchIdString,
@@ -12,6 +13,8 @@ import {
   type DispatchId,
 } from "../../dist-fixture/dispatch/dispatch.js";
 import type { ReadyRunWorkspace } from "../../src/git/run-workspace.js";
+import type { AllocatedAttempt } from "../../src/state/store.js";
+import type { TicketContract } from "../../src/contracts/ticket-contract.js";
 
 const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
 
@@ -65,6 +68,27 @@ function makeTerminalEntry(dispatchId: string, state: DispatchEntry["state"]): D
     exitCode: 0,
     stdout: "done",
     stderr: null,
+  };
+}
+
+function allocatedAttempt(overrides: Partial<AllocatedAttempt> = {}): AllocatedAttempt {
+  return {
+    runnable: false,
+    attemptId: "attempt-1",
+    ticketInstanceId: "ticket-instance-1",
+    runId: "run-1",
+    ticketId: "T-1",
+    attemptNumber: 1,
+    contractDigest: "sha256:contract",
+    allocationOwnerDigest: "sha256:owner",
+    deliveryBaselineOid: "a".repeat(40),
+    contextSchemaVersion: "1",
+    oracleVersion: "1",
+    capabilitySnapshotDigest: "sha256:capability",
+    resourceIdentityVersion: "1",
+    state: "planned",
+    stateVersion: 0,
+    ...overrides,
   };
 }
 
@@ -233,7 +257,7 @@ describe("TicketLock", () => {
   });
 });
 
-describe("Dispatcher idempotency", () => {
+describe("Dispatcher diagnostic ledger non-authority", () => {
   let dir: string;
   let ledger: DispatchLedger;
   let lock: TicketLock;
@@ -250,55 +274,78 @@ describe("Dispatcher idempotency", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("returns recorded terminal state without re-spawning", async () => {
+  it("does not replay a recorded completed row", async () => {
     const id = makeId();
     const idStr = dispatchIdString(id);
     const terminal = makeTerminalEntry(idStr, "completed");
     ledger.append(terminal);
 
-    const result = await dispatcher.dispatch(id, {
+    await expect(dispatcher.dispatch(id, {
       agentDir: "/tmp/agent",
       prompt: "do work",
       timeout: 1000,
       maxConcurrent: 1,
-    });
-
-    expect(result.state).toBe("completed");
-    expect(result.exitCode).toBe(0);
-    // Should not have spawned — active count stays 0
+    })).rejects.toThrow(/verified run workspace/i);
     expect(dispatcher.activeCount).toBe(0);
   });
 
-  it("returns recorded failed state as terminal", async () => {
+  it("does not replay a recorded failed row", async () => {
     const id = makeId();
     const idStr = dispatchIdString(id);
     ledger.append(makeTerminalEntry(idStr, "failed"));
 
-    const result = await dispatcher.dispatch(id, {
+    await expect(dispatcher.dispatch(id, {
       agentDir: "/tmp/agent",
       prompt: "do work",
       timeout: 1000,
       maxConcurrent: 1,
-    });
-
-    expect(result.state).toBe("failed");
+    })).rejects.toThrow(/verified run workspace/i);
     expect(dispatcher.activeCount).toBe(0);
   });
 
-  it("returns recorded timed_out state as terminal", async () => {
+  it("does not replay a recorded timed_out row", async () => {
     const id = makeId();
     const idStr = dispatchIdString(id);
     ledger.append(makeTerminalEntry(idStr, "timed_out"));
 
-    const result = await dispatcher.dispatch(id, {
+    await expect(dispatcher.dispatch(id, {
       agentDir: "/tmp/agent",
       prompt: "do work",
       timeout: 1000,
       maxConcurrent: 1,
-    });
-
-    expect(result.state).toBe("timed_out");
+    })).rejects.toThrow(/verified run workspace/i);
     expect(dispatcher.activeCount).toBe(0);
+  });
+
+  it("requires the diagnostic dispatch id to match its canonical allocation", async () => {
+    const journal = new InMemoryDispatchJournal();
+    const canonicalDispatcher = new Dispatcher(journal, dir);
+
+    await expect(canonicalDispatcher.dispatch(makeId(), {
+      agentDir: "/tmp/agent",
+      prompt: "do work",
+      timeout: 1000,
+      maxConcurrent: 1,
+      attempt: allocatedAttempt({ runId: "different-run" }),
+    })).rejects.toThrow(/diagnostic dispatch identity differs/i);
+    expect(journal.observations()).toEqual([]);
+  });
+
+  it("rejects a changed ticket contract instead of treating its allocation as a cache hit", async () => {
+    const journal = new InMemoryDispatchJournal();
+    const canonicalDispatcher = new Dispatcher(journal, dir);
+    const attempt = allocatedAttempt();
+    const changedContract = { id: attempt.ticketId, digest: "sha256:changed" } as TicketContract;
+
+    await expect(canonicalDispatcher.dispatch(makeId(), {
+      agentDir: "/tmp/agent",
+      prompt: "do work",
+      timeout: 1000,
+      maxConcurrent: 1,
+      attempt,
+      ticket: changedContract,
+    })).rejects.toThrow(/ticket contract differs/i);
+    expect(journal.observations()).toEqual([]);
   });
 });
 

@@ -1,28 +1,15 @@
-// B6 — single shared ledger schema (append->reconcile round-trip), durable
-// salvage dispositions, and oracle-validated reconcile. Every test drives the
-// REAL code path and observes the REAL effect (git delta, on-disk archive,
-// registry status, recovered ticket) — never a mock's return value.
+// B6 — durable salvage dispositions. Legacy reconcile coverage was removed
+// with the Git/JSONL reconstruction implementation; the fail-closed boundary
+// is covered by reconcile.test.ts and reconcile-queue.test.ts.
 
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { execFileSync } from "child_process";
-import {
-  DispatchLedger,
-  dispatchIdString,
-  dispatchLedgerPath,
-  type DispatchEntry,
-} from "../../dist-fixture/dispatch/dispatch.js";
-import { reconcile } from "../../src/lifecycle/reconcile.js";
 import { SalvageExecutor } from "../../src/lifecycle/salvage.js";
 import type { SalvageInput } from "../../src/core/salvage.js";
 import { Registry, type PipelineStatus } from "../../src/lifecycle/registry.js";
-
-// Unit-only access to legacy reconciliation mechanics; not fixture authority.
-vi.mock("../../src/capabilities/runtime-gate.js", () => ({
-  RUNTIME_CAPABILITY_GATE: Object.freeze({ require(): void {} }),
-}));
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
@@ -43,134 +30,6 @@ function commitFile(dir: string, relPath: string, content: string, message: stri
   git(dir, ["commit", "-m", message]);
   return git(dir, ["rev-parse", "HEAD"]);
 }
-
-function baseEntry(dispatchId: string, over: Partial<DispatchEntry>): DispatchEntry {
-  return {
-    dispatchId,
-    state: "completed",
-    pid: null,
-    startedAt: new Date().toISOString(),
-    completedAt: new Date().toISOString(),
-    exitCode: 0,
-    stdout: null,
-    stderr: null,
-    ...over,
-  };
-}
-
-describe("B6 — shared ledger schema round-trips append->reconcile", () => {
-  let tempDir: string;
-  let rickgentDir: string;
-
-  beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "rickgent-b6-reconcile-"));
-    rickgentDir = join(tempDir, ".rickgent");
-    mkdirSync(rickgentDir, { recursive: true });
-    initRepo(tempDir);
-  });
-
-  afterEach(() => {
-    rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  it("VAL-SALVAGE-001: append() writes exactly the fields reconcile reads (round-trip recovers the ticket)", () => {
-    const baselineSha = commitFile(tempDir, "base.txt", "base", "baseline");
-    const commitSha = commitFile(tempDir, "src/foo.ts", "export const x = 1;", "work on ticket");
-
-    const ledger = new DispatchLedger(dispatchLedgerPath(rickgentDir));
-    const dispatchId = dispatchIdString({
-      runId: "run1",
-      ticketId: "T-RT",
-      phase: "implement",
-      attempt: 2,
-      role: "impl",
-    });
-    ledger.append(
-      baseEntry(dispatchId, {
-        commitSha,
-        baselineSha,
-        declaredPaths: ["src"],
-        treeChanged: true,
-      }),
-    );
-
-    const result = reconcile(tempDir, rickgentDir);
-    expect(result.ticketsFound).toBeGreaterThan(0);
-    const t = result.registry.tickets["T-RT"];
-    expect(t).toBeDefined();
-    expect(t?.status).toBe("Done");
-    expect(t?.phase).toBe("implement");
-    expect(t?.attempt).toBe(2);
-    expect(t?.completionCommitSha).toBe(commitSha);
-    expect(t?.declaredPaths).toEqual(["src"]);
-  });
-
-  it("VAL-SALVAGE-002: reconcile keys on the camelCase fields the ledger emits, not snake_case", () => {
-    // A legacy snake_case-only line (no dispatchId) is NOT recoverable — reconcile
-    // must not key on ticket_id/commit_sha/declared_paths.
-    const ledgerPath = dispatchLedgerPath(rickgentDir);
-    writeFileSync(
-      ledgerPath,
-      JSON.stringify({
-        ticket_id: "T-SNAKE",
-        state: "completed",
-        commit_sha: "deadbeef",
-        declared_paths: ["src"],
-      }) + "\n",
-    );
-    const result = reconcile(tempDir, rickgentDir);
-    expect(result.registry.tickets["T-SNAKE"]).toBeUndefined();
-  });
-
-  it("VAL-SALVAGE-003: reconcile reads the Dispatcher's actual ledger path", () => {
-    const baselineSha = commitFile(tempDir, "base.txt", "base", "baseline");
-    const commitSha = commitFile(tempDir, "src/foo.ts", "export const x = 1;", "work");
-
-    // Canonical shared path: Dispatcher writes here, reconcile reads here.
-    const ledger = new DispatchLedger(dispatchLedgerPath(rickgentDir));
-    const dispatchId = dispatchIdString({
-      runId: "run1",
-      ticketId: "T-PATH",
-      phase: "implement",
-      attempt: 1,
-      role: "impl",
-    });
-    ledger.append(baseEntry(dispatchId, { commitSha, baselineSha, declaredPaths: ["src"], treeChanged: true }));
-    expect(reconcile(tempDir, rickgentDir).registry.tickets["T-PATH"]).toBeDefined();
-
-    // A non-default path is still consumed when reconcile is pointed at it.
-    const customPath = join(rickgentDir, "custom-ledger.jsonl");
-    const customLedger = new DispatchLedger(customPath);
-    const customId = dispatchIdString({
-      runId: "run2",
-      ticketId: "T-CUSTOM",
-      phase: "implement",
-      attempt: 1,
-      role: "impl",
-    });
-    customLedger.append(baseEntry(customId, { commitSha, baselineSha, declaredPaths: ["src"], treeChanged: true }));
-    const custom = reconcile(tempDir, rickgentDir, customPath);
-    expect(custom.registry.tickets["T-CUSTOM"]).toBeDefined();
-  });
-
-  it("VAL-SALVAGE-007: reconcile validates each commit via evaluateCompletion before assigning Done", () => {
-    const baselineSha = commitFile(tempDir, "base.txt", "base", "baseline");
-    const goodSha = commitFile(tempDir, "src/foo.ts", "export const x = 1;", "real work");
-
-    const ledger = new DispatchLedger(dispatchLedgerPath(rickgentDir));
-    const goodId = dispatchIdString({ runId: "r", ticketId: "T-GOOD", phase: "implement", attempt: 1, role: "impl" });
-    const badId = dispatchIdString({ runId: "r", ticketId: "T-BAD", phase: "implement", attempt: 1, role: "impl" });
-    ledger.append(baseEntry(goodId, { commitSha: goodSha, baselineSha, declaredPaths: ["src"], treeChanged: true }));
-    // Completed claim whose commit does not exist → oracle must reject → not Done.
-    ledger.append(
-      baseEntry(badId, { commitSha: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", baselineSha, declaredPaths: ["src"], treeChanged: true }),
-    );
-
-    const result = reconcile(tempDir, rickgentDir);
-    expect(result.registry.tickets["T-GOOD"]?.status).toBe("Done");
-    expect(result.registry.tickets["T-BAD"]?.status).not.toBe("Done");
-  });
-});
 
 describe("B6 — durable salvage dispositions (verified post-mutation)", () => {
   let tempDir: string;
@@ -261,7 +120,7 @@ describe("B6 — durable salvage dispositions (verified post-mutation)", () => {
     expect(readFileSync(join(tempDir, "brand-new.txt"), "utf-8")).toContain("untracked salvaged work");
   });
 
-  it("VAL-SALVAGE-005: archived-todo resets the ticket registry status to Todo", () => {
+  it("VAL-SALVAGE-005: archived capture does not use registry JSON as lifecycle authority", () => {
     commitFile(tempDir, "owned.txt", "original\n", "seed");
     writeFileSync(join(tempDir, "owned.txt"), "original\nwork\n");
 
@@ -287,10 +146,10 @@ describe("B6 — durable salvage dispositions (verified post-mutation)", () => {
 
     const executor = new SalvageExecutor(tempDir);
     executor.execute(archivedTodoInput(["owned.txt"]), { ticketId: "T-ARCH", registry });
-    expect(registry.getTicketState("T-ARCH")?.status).toBe("Todo");
+    expect(registry.getTicketState("T-ARCH")?.status).toBe("In Progress");
   });
 
-  it("VAL-SALVAGE-006: ff-reattached performs a real git merge --ff-only with explicit refs", () => {
+  it("VAL-SALVAGE-006: ff-reattach remains non-authoritative without SQLite recovery", () => {
     const baseSha = commitFile(tempDir, "base.txt", "base", "A");
     const targetBranch = git(tempDir, ["rev-parse", "--abbrev-ref", "HEAD"]);
     git(tempDir, ["branch", "orphan"]);
@@ -303,9 +162,11 @@ describe("B6 — durable salvage dispositions (verified post-mutation)", () => {
     const executor = new SalvageExecutor(tempDir);
     const result = executor.execute(ffInput(), { sourceRef: "orphan", targetRef: targetBranch });
     expect(result.decision.disposition).toBe("ff-reattached");
-    expect(result.executed).toBe(true);
-    // Post-mutation: target fast-forwarded to the orphan commit.
-    expect(git(tempDir, ["rev-parse", targetBranch])).toBe(orphanSha);
+    expect(result.executed).toBe(false);
+    expect(result.terminal).toBe(false);
+    expect(result.gitOutput).toContain("SQLite recovery authority");
+    expect(git(tempDir, ["rev-parse", targetBranch])).toBe(baseSha);
+    expect(orphanSha).not.toBe(baseSha);
   });
 
   it("VAL-SALVAGE-006b: ff-reattached fails closed when refs are absent (no silent success)", () => {
@@ -315,14 +176,18 @@ describe("B6 — durable salvage dispositions (verified post-mutation)", () => {
     expect(result.executed).toBe(false);
   });
 
-  it("VAL-SALVAGE-009: committed-done staging is owned-paths-only (never git add -A)", () => {
+  it("VAL-SALVAGE-009: legacy committed-done captures owned paths without creating a commit", () => {
     commitFile(tempDir, "seed.txt", "seed", "seed");
     writeFileSync(join(tempDir, "real.txt"), "owned change");
     writeFileSync(join(tempDir, "evil.txt"), "out of scope untracked");
 
     const executor = new SalvageExecutor(tempDir);
+    const baseline = git(tempDir, ["rev-parse", "HEAD"]);
     const result = executor.execute(committedDoneInput(["real.txt"]));
     expect(result.executed).toBe(true);
+    expect(result.terminal).toBe(false);
+    expect(result.archivePath).not.toBeNull();
+    expect(git(tempDir, ["rev-parse", "HEAD"])).toBe(baseline);
     const porcelain = git(tempDir, ["status", "--porcelain"]);
     expect(porcelain).toContain("?? evil.txt");
   });

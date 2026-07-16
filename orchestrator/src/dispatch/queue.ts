@@ -7,10 +7,10 @@
 // draining.
 
 import {
-  DispatchLedger,
   dispatchIdString,
   type DispatchEntry,
   type DispatchId,
+  type DispatchJournal,
 } from "./dispatch.js";
 import { InputContractError } from "../capabilities/registry.js";
 
@@ -64,7 +64,7 @@ export class DispatchQueue {
   private queued: DispatchId[] = [];
 
   constructor(
-    private ledger: DispatchLedger,
+    private ledger: DispatchJournal,
     maxConcurrent: number,
   ) {
     if (maxConcurrent !== 1) {
@@ -82,16 +82,13 @@ export class DispatchQueue {
   }
 
   /**
-   * Enqueue a ticket and durably record it `planned` in the ledger (unless it
-   * already reached a terminal state — idempotent across a resume). The planned
-   * entry is what reconcile reads back to reconstruct the queued state.
+   * Enqueue a ticket and record a diagnostic `planned` observation. JSONL is
+   * never consulted for terminal replay; ordinary reruns are fresh attempts.
    */
   enqueue(id: DispatchId): void {
     this.queued.push(id);
     const idStr = dispatchIdString(id);
-    if (!this.ledger.isTerminal(idStr)) {
-      this.ledger.append(plannedEntry(idStr));
-    }
+    this.ledger.append(plannedEntry(idStr));
   }
 
   /**

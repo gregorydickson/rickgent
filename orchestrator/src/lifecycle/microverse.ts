@@ -704,8 +704,8 @@ export class MicroverseLoop {
    *
    * All salvage calls in the microverse loop are for INCOMPLETE work (deadline
    * breach, attrition/stall, convergence-stalled) — the gate did NOT pass.
-   * So gatePassed is false when there is dirty work, producing an archived-todo
-   * disposition (archive + reset to Todo for re-pickup) rather than
+   * So gatePassed is false when there is dirty work, producing a nonterminal
+   * archived capture rather than
    * committed-done (which would falsely mark incomplete work as "done").
    * When there is no dirty work, there is nothing to salvage → no-op.
    */
@@ -718,8 +718,8 @@ export class MicroverseLoop {
         this.opts.rickgentDir ? { archiveDir: this.opts.rickgentDir } : {},
       );
     }
-    // Dirty work + incomplete (attrition/deadline) → archived-todo, NOT
-    // committed-done. gatePassed:false → archive and reset to Todo.
+    // Dirty work + incomplete (attrition/deadline) → archived capture, never
+    // terminal completion. Lifecycle state remains exclusively in SQLite.
     return this.salvageExecutor.execute(
       { gatePassed: false, treeChanged: true, orphanReset: false, ffReattachPossible: false, ownedPaths: dirty },
       this.opts.rickgentDir ? { archiveDir: this.opts.rickgentDir } : {},
@@ -757,9 +757,9 @@ export class MicroverseLoop {
         /* leave commits empty on read failure */
       }
     }
-    const improvementCommits = commits.filter(
-      (c) => c.subject.startsWith("microverse:") && c.files.length > 0,
-    ).length;
+    // Commit subjects are diagnostic text, never completion authority. Count
+    // only independently observed in-scope tree history here.
+    const improvementCommits = commits.filter((commit) => commit.files.length > 0).length;
     return {
       baselineSha: initialBaseline,
       headSha,

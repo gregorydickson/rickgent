@@ -56,8 +56,8 @@ Usage:
   rickgent anatomy             Legacy toolbelt; mutation unavailable
   rickgent microverse          Legacy toolbelt; mutation/raw shell unavailable
   rickgent cronenberg          Legacy toolbelt; mutation unavailable
-  rickgent status [--deep]     Read-only registry/health observation
-  rickgent metrics [--json]    Read-only historical metrics
+  rickgent status [--deep]     Read-only SQLite lifecycle observation
+  rickgent metrics [--json]    SQLite lifecycle + legacy diagnostics
   rickgent reconcile           Unavailable (exit 3)
   rickgent doctor [--json]     Read-only health and capability contract
   rickgent verdict <check> --json
@@ -343,21 +343,48 @@ async function runStatus(rest: string[]): Promise<void> {
     const doctor = await runDoctorCommand(false);
     if (!doctor.ok) process.exit(1);
   }
-  const { Registry } = await import("./lifecycle/registry.js");
-  const status = new Registry(join(getRickgentDir(), "registry.json")).getPipelineStatus();
+  const { observeState } = await import("./state/store.js");
+  const observation = observeState(process.cwd());
   const lines = [
     `${RELEASE_LABEL} (${RELEASE_CHANNEL})`,
-    "rickgent status — read-only pipeline-state observation",
+    "rickgent status — read-only SQLite lifecycle observation",
     formatTerminalSummary(),
-    "Status cannot terminalize a run; a stored legacy Done label is not ready_for_delivery or delivery evidence.",
+    "A legacy Done label is ignored; it is not ready_for_delivery or delivery evidence.",
     "=".repeat(50),
-    `runId: ${status.runId || "(none)"}`,
-    `startedAt: ${status.startedAt || "(none)"}`,
-    `updatedAt: ${status.updatedAt || "(none)"}`,
-    `tickets: ${Object.keys(status.tickets).length}`,
   ];
-  for (const [id, ticket] of Object.entries(status.tickets)) {
-    lines.push(`  ${id}: [${ticket.status}] phase=${ticket.phase} attempt=${ticket.attempt} commit=${ticket.completionCommitSha ?? "(none)"}`);
+  if (observation.state === "absent") {
+    lines.push(
+      "state: absent (no canonical SQLite database)",
+      `repositoryId: ${observation.repositoryId}`,
+      "runs: (unavailable)",
+      "tickets: (unavailable)",
+    );
+  } else {
+    const run = observation.latestRun;
+    lines.push(
+      "state: present",
+      `schemaVersion: ${observation.schemaVersion}`,
+      `repositoryId: ${observation.repositoryId}`,
+      `runs: ${observation.aggregates.runs}`,
+      `deliveryRecords: ${observation.aggregates.deliveryRecords}`,
+      `delivered: ${observation.aggregates.delivered}`,
+      `deliveryFailed: ${observation.aggregates.deliveryFailed}`,
+      `runId: ${run?.runId ?? "(none)"}`,
+      `runState: ${run?.state ?? "(none)"}`,
+      `runVersion: ${run?.stateVersion ?? "(none)"}`,
+      `createdAt: ${run?.createdAt ?? "(none)"}`,
+      `currentDeliveryOid: ${run?.currentDeliveryOid ?? "(none)"}`,
+      `promotionSequence: ${run?.promotionSequence ?? "(none)"}`,
+      `tickets: ${run?.tickets.length ?? 0}`,
+    );
+    for (const ticket of run?.tickets ?? []) {
+      const attempt = ticket.latestAttempt;
+      lines.push(
+        `  ${ticket.ticketId}: [${ticket.state}] plan=${ticket.planIndex} version=${ticket.stateVersion} ` +
+          `attempt=${attempt?.attemptNumber ?? "(none)"} attemptState=${attempt?.state ?? "(none)"} ` +
+          `oracle=${attempt?.oracleResult ?? "(none)"} commit=${attempt?.commitOid ?? "(none)"}`,
+      );
+    }
   }
   console.log([...lines, "=".repeat(50)].join("\n"));
 }
@@ -417,7 +444,7 @@ async function runBuildCommand(
 
 async function runMetrics(rest: string[]): Promise<void> {
   const { runMetrics: collect } = await import("./lifecycle/metrics.js");
-  const result = collect(getRickgentDir(), process.env);
+  const result = collect(process.cwd(), getRickgentDir(), process.env);
   console.log(rest.includes("--json") ? result.json : result.report);
 }
 
@@ -540,10 +567,31 @@ export async function runCliWithDependenciesForTesting(
   return executeMain(args, dependencies);
 }
 
+interface StateBoundaryError extends Error {
+  readonly name: "StateStoreError";
+  readonly code: string;
+  readonly failureClass: "input_contract" | "infrastructure";
+  readonly recovery: string;
+}
+
+function isStateBoundaryError(error: unknown): error is StateBoundaryError {
+  if (!(error instanceof Error) || error.name !== "StateStoreError") return false;
+  const candidate = error as Partial<StateBoundaryError>;
+  return typeof candidate.code === "string" &&
+    (candidate.code.startsWith("RICKGENT_STATE_") || candidate.code === "RICKGENT_LEGACY_STATE_QUARANTINED") &&
+    (candidate.failureClass === "input_contract" || candidate.failureClass === "infrastructure") &&
+    typeof candidate.recovery === "string" && candidate.recovery.length > 0;
+}
+
 export function handleFatal(error: unknown): never {
   if (error instanceof RickgentBoundaryError) {
     console.error(`${error.stableCode}: ${error.message}`);
     process.exit(error.exitCode);
+  }
+  if (isStateBoundaryError(error)) {
+    console.error(`${error.code}: ${error.message}`);
+    console.error(`recovery: ${error.recovery}`);
+    process.exit(error.failureClass === "input_contract" ? 2 : 4);
   }
   console.error(`RICKGENT_INTERNAL_ERROR: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(70);

@@ -1,15 +1,16 @@
 // B1 — build loop (VAL-BUILD-001..008).
 //
 // Drives the REAL `rickgent` CLI (dist/cli.js) against the deterministic fixture
-// omnigent and observes REAL effects: the dispatch ledger, the registry, git
-// nonterminal capture receipts, the intervention ledger, and the
-// salvage-disposition ledger. No fixture worker commit can terminalize a ticket.
+// omnigent and observes REAL effects: canonical SQLite allocations, git
+// nonterminal capture reports, and caller-workspace isolation. No fixture
+// worker output can terminalize a ticket.
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawnSync, execFileSync } from "child_process";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, readFileSync, writeFileSync, existsSync } from "fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { DatabaseSync } from "node:sqlite";
 
 const CLI_JS = join(import.meta.dirname, "../fixtures/fixture-cli.mjs");
 const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
@@ -136,14 +137,15 @@ function summary(stdout: string): Record<string, string> {
   return out;
 }
 
-function ledgerEntries(rickgentDir: string): Array<Record<string, unknown>> {
-  const p = join(rickgentDir, "dispatch-ledger.jsonl");
-  if (!existsSync(p)) return [];
-  return readFileSync(p, "utf-8")
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((l) => JSON.parse(l));
+function stateRows(repo: string, sql: string): Array<Record<string, unknown>> {
+  const database = new DatabaseSync(join(repo, ".git", "rickgent", "state.sqlite3"), {
+    readOnly: true,
+  });
+  try {
+    return database.prepare(sql).all() as Array<Record<string, unknown>>;
+  } finally {
+    database.close();
+  }
 }
 
 describe("B1 build loop", () => {
@@ -163,11 +165,11 @@ describe("B1 build loop", () => {
     const s = summary(out.stdout);
     expect(Number(s.planned)).toBeGreaterThanOrEqual(1);
     expect(Number(s.dispatched)).toBeGreaterThanOrEqual(1);
-    const entries = ledgerEntries(d.rickgentDir);
-    const spawned = entries.filter((e) => e.state === "spawned");
-    expect(spawned.length).toBeGreaterThanOrEqual(1);
-    // Ledger entries are Dispatcher-written (carry the trace dispatchId shape).
-    expect(spawned.every((e) => typeof e.dispatchId === "string" && (e.dispatchId as string).includes("/t01/"))).toBe(true);
+    expect(out.stdout).toContain("implementation captured (nonterminal)");
+    expect(stateRows(d.repo, "SELECT ticket_id, attempt_number, state FROM attempts"))
+      .toEqual([expect.objectContaining({ ticket_id: "t01", attempt_number: 1, state: "planned" })]);
+    expect(existsSync(join(d.rickgentDir, "dispatch-ledger.jsonl"))).toBe(false);
+    expect(existsSync(join(d.rickgentDir, "locks"))).toBe(false);
   });
 
   // VAL-BUILD-002 is intentionally contracted in M1: fixture output is a
@@ -175,20 +177,18 @@ describe("B1 build loop", () => {
   it("captures implementation without producing completed or Done", () => {
     const out = runCli(["build", PRD_MIN, "--repo", d.repo, "--agent", d.agentDir], d);
     expect(out.status).toBe(5);
-    const entries = ledgerEntries(d.rickgentDir);
-    const completed = entries.filter((e) => e.state === "completed");
-    expect(completed).toEqual([]);
-    const captured = entries.filter((e) => e.state === "implementation_captured");
-    expect(captured).toHaveLength(1);
-    expect(captured[0]?.captureReceipt).toMatchObject({ kind: "implementation_captured_nonterminal" });
-    const reg = JSON.parse(readFileSync(join(d.rickgentDir, "registry.json"), "utf-8"));
-    const done = Object.values(reg.tickets).filter((t: any) => t.status === "Done");
-    expect(done).toEqual([]);
-    expect(reg.tickets.t01).toMatchObject({
-      status: "In Progress",
-      phase: "implementation_captured",
-      completionCommitSha: null,
-    });
+    const s = summary(out.stdout);
+    expect(Number(s.captured)).toBe(1);
+    expect(Number(s.done)).toBe(0);
+    expect(existsSync(join(d.rickgentDir, "registry.json"))).toBe(false);
+    expect(existsSync(join(d.rickgentDir, "dispatch-ledger.jsonl"))).toBe(false);
+    expect(stateRows(d.repo, "SELECT state, state_version FROM runs"))
+      .toEqual([expect.objectContaining({ state: "planned", state_version: 0 })]);
+    expect(stateRows(d.repo, "SELECT state, state_version FROM run_tickets"))
+      .toEqual([expect.objectContaining({ state: "planned", state_version: 0 })]);
+    expect(stateRows(d.repo, "SELECT state, state_version FROM attempts"))
+      .toEqual([expect.objectContaining({ state: "planned", state_version: 0 })]);
+    expect(stateRows(d.repo, "SELECT transition_id FROM state_transitions")).toEqual([]);
   });
 
   // VAL-BUILD-003
@@ -271,14 +271,9 @@ describe("B1 build loop", () => {
     const s = summary(out.stdout);
     expect(Number(s.failed)).toBe(1);
     expect(Number(s.interventions)).toBe(0); // failure is NOT a human intervention
-    // Durable salvage disposition recorded for the failed ticket.
-    const salvagePath = join(d.rickgentDir, "salvage-dispositions.jsonl");
-    expect(existsSync(salvagePath)).toBe(true);
-    const salvage = readFileSync(salvagePath, "utf-8").trim().split("\n").map((l) => JSON.parse(l));
-    const t2 = salvage.find((x) => x.ticketId === "t02");
-    expect(t2).toBeTruthy();
-    expect(typeof t2.disposition).toBe("string");
-    expect(t2.breaker).toBeTruthy();
+    expect(out.stdout).toContain("FAILED");
+    expect(existsSync(join(d.rickgentDir, "salvage-dispositions.jsonl"))).toBe(false);
+    expect(existsSync(join(d.rickgentDir, "dispatch-ledger.jsonl"))).toBe(false);
     // Non-interactive: no prompt emitted.
     expect(out.stdout).not.toMatch(/run this yourself|press enter|awaiting input/i);
   });

@@ -321,7 +321,7 @@ describe("M1 capture-only dispatch evidence", () => {
     expect(leaseStatus(bundle.leasePath)).toBe("active");
     expect(states(ledgerPath)).toEqual(["spawned", "cleanup_pending"]);
 
-    const resumed = await new Dispatcher(
+    const retried = await new Dispatcher(
       new DispatchLedger(ledgerPath),
       new TicketLock(join(root, "locks")),
       join(root, "state"),
@@ -331,9 +331,15 @@ describe("M1 capture-only dispatch evidence", () => {
       prompt: "must not respawn",
       timeout: 5_000,
       maxConcurrent: 1,
+      workspace,
     });
-    expect(resumed).toEqual(entry);
-    expect(states(ledgerPath)).toEqual(["spawned", "cleanup_pending"]);
+    expect(retried).toMatchObject({
+      state: "failed",
+      terminalReason: "infrastructure_error",
+      stderr: "could not acquire ticket lock",
+    });
+    expect(retried).not.toEqual(entry);
+    expect(states(ledgerPath)).toEqual(["spawned", "cleanup_pending", "failed"]);
   });
 
   it.each([
