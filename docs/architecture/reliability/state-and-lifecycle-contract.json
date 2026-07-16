@@ -1,0 +1,750 @@
+{
+  "schema_version": "1.0.0",
+  "contract_id": "rickgent-state-and-lifecycle-v1",
+  "decision_status": "frozen_decision_only",
+  "decision_digest": "sha256:0b25dd42f678b66daa134abcc077261b47e3cc900f0e365e1f40d2a0b66e7eaf",
+  "parent_authority": {
+    "contract_id": "rickgent-trust-spine-v1",
+    "path": "docs/architecture/reliability/trust-spine-contract.json"
+  },
+  "activation_boundary": {
+    "decision_artifacts_enable_capabilities": false,
+    "implementation_status": "reserved_contract_only",
+    "adoption_requires_tickets": ["t13", "t14", "t15", "t16", "t17"],
+    "forbidden_in_this_ticket": [
+      "open_or_create_database",
+      "execute_migration",
+      "switch_production_caller",
+      "allocate_runtime_resource",
+      "update_git_ref",
+      "enable_resume_or_retry",
+      "enable_reconciliation",
+      "perform_delivery"
+    ]
+  },
+  "state_root": {
+    "repository_selector": "--repo",
+    "selection_rule": "select exactly one target repository before state lookup",
+    "caller_cwd_authoritative": false,
+    "environment_override_allowed": false,
+    "forbidden_authorities": ["caller_cwd", "RICKGENT_DIR", "prd_path", "ticket_id", "registry", "ledger"],
+    "resolution_steps": [
+      "lstat the selected repository and reject a symbolic link or non-directory",
+      "resolve realpath, query the absolute Git worktree top level with array argv, and require the selected repository to equal that canonical top level",
+      "run git-common-dir and object-format queries with array argv against the canonical repository",
+      "reject relative, malformed, absent, non-directory, or unsupported Git results",
+      "lstat canonical ancestor components and reject symlinks, wrong types, or realpath mismatch",
+      "at ownership-scoped endpoints reject owner mismatch and reject unsafe Git-administration or private-state modes",
+      "derive repository identity from the canonical repository tuple",
+      "derive the private state directory and database path"
+    ],
+    "git_top_level_command": ["git", "-C", "<selected-repo-realpath>", "rev-parse", "--path-format=absolute", "--show-toplevel"],
+    "git_common_dir_command": ["git", "-C", "<repo-realpath>", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    "object_format_command": ["git", "-C", "<repo-realpath>", "rev-parse", "--show-object-format"],
+    "allowed_object_formats": ["sha1", "sha256"],
+    "repository_identity_tuple": ["repo_realpath", "git_common_dir_realpath", "object_format"],
+    "repository_identity_digest": "sha256 over length-delimited UTF-8 canonical tuple fields",
+    "state_directory": "<git-common-dir-realpath>/rickgent",
+    "database_path": "<git-common-dir-realpath>/rickgent/state.sqlite3",
+    "resource_directory": "<git-common-dir-realpath>/rickgent/resources",
+    "directory_mode": "0700",
+    "database_mode": "0600",
+    "sidecar_mode": "0600",
+    "symlink_allowed": false,
+    "unsafe_existing_paths_are_repaired": false,
+    "required_owner": "effective process owner for the selected repository, Git common directory, state directory, database, and sidecars; canonical ancestor directories may have a different owner",
+    "git_admin_group_or_other_writable_allowed": false,
+    "production_dependency_injection": false,
+    "test_dependency_injection": "resolver or store dependency against a disposable Git repository only",
+    "unsafe_result": "RICKGENT_STATE_ROOT_UNSAFE"
+  },
+  "sqlite": {
+    "implementation_profile": "node:sqlite DatabaseSync reserved for t13",
+    "minimum_node_version": "24.12.0",
+    "unsupported_runtime_result": "RICKGENT_STATE_RUNTIME_UNSUPPORTED",
+    "connection_options": {
+      "foreign_keys": true,
+      "defensive": true,
+      "allow_extension_loading": false,
+      "allow_double_quoted_string_literals": false,
+      "allow_unknown_named_parameters": false
+    },
+    "node_database_sync_option_mapping": {
+      "foreign_keys": "enableForeignKeyConstraints",
+      "defensive": "defensive",
+      "allow_extension_loading": "allowExtension",
+      "allow_double_quoted_string_literals": "enableDoubleQuotedStringLiterals",
+      "allow_unknown_named_parameters": "allowUnknownNamedParameters"
+    },
+    "pragmas": [
+      {"name": "foreign_keys", "value": "ON"},
+      {"name": "journal_mode", "value": "WAL"},
+      {"name": "synchronous", "value": "FULL"},
+      {"name": "busy_timeout", "value": 5000},
+      {"name": "wal_autocheckpoint", "value": 1000},
+      {"name": "trusted_schema", "value": "OFF"},
+      {"name": "recursive_triggers", "value": "ON"}
+    ],
+    "writer_begin": "BEGIN IMMEDIATE",
+    "migration_begin": "exclusive migration critical section",
+    "integrity_checks_before_use": ["PRAGMA quick_check", "PRAGMA foreign_key_check", "migration contiguity and checksum", "PRAGMA user_version supported and equal to migration rows"],
+    "busy_policy": {
+      "bounded": true,
+      "timeout_ms": 5000,
+      "sqlite_busy_or_locked_result": "RICKGENT_STATE_BUSY",
+      "unbounded_retry_allowed": false,
+      "retry_unit": "complete named transaction"
+    },
+    "durability": {
+      "journal": "WAL",
+      "synchronous": "FULL",
+      "state_change_atomicity": "old-or-new committed state only",
+      "foreign_key_enforcement": "required and verified on every connection"
+    },
+    "error_preservation": "never delete, rename, recreate, truncate, or reinterpret invalid state as empty"
+  },
+  "scalar_formats": {
+    "canonical_id": "nonempty canonical UTF-8 text",
+    "nonnegative_integer": "SQLite INTEGER >= 0",
+    "positive_integer": "SQLite INTEGER > 0",
+    "utc_timestamp": "RFC3339 UTC text with Z suffix",
+    "canonical_json_object": "canonical UTF-8 JSON text with json_valid and json_type object",
+    "canonical_json_array": "canonical UTF-8 JSON text with json_valid and json_type array",
+    "sha256_digest": "sha256 followed by colon and 64 lowercase hexadecimal characters",
+    "git_oid": "lowercase hexadecimal text of length 40 for sha1 or 64 for sha256, matched to repository object_format",
+    "ref_name": "canonical full Git ref accepted by git check-ref-format"
+  },
+  "migrations": {
+    "numbering": "positive contiguous integers rendered as three digits",
+    "released_migrations_are_immutable": true,
+    "user_version_must_equal_latest_row": true,
+    "creation_and_each_migration_atomic": true,
+    "checksum_policy": "sha256 of the exact released executable migration definition",
+    "initial": [
+      {
+        "version": 1,
+        "number": "001",
+        "name": "001_initial_durable_state",
+        "sql_owner_ticket": "t13",
+        "released_checksum": "assigned by t13 from executable SQL",
+        "status": "reserved_contract_only"
+      }
+    ],
+    "future_policy": "append 002, 003, and later; never edit a released name, definition, or checksum"
+  },
+  "entity_model": {
+    "all_tables_strict": true,
+    "foreign_keys_explicit_delete_action": true,
+    "evidence_delete_action": "RESTRICT",
+    "generic_update_api_allowed": false,
+    "catalog": [
+      {
+        "name": "schema_migrations",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"version": "positive_integer", "name": "canonical_id", "checksum": "sha256_digest", "applied_at": "utc_timestamp"},
+        "primary_key": ["version"],
+        "foreign_keys": [],
+        "unique_constraints": [{"name": "schema_migrations_name_uq", "columns": ["name"]}],
+        "checks": ["version > 0", "versions are contiguous", "checksum matches released migration definition"],
+        "mutation": {"mode": "append_only", "update_trigger": "schema_migrations_no_update", "delete_trigger": "schema_migrations_no_delete", "immutable_columns": ["version", "name", "checksum", "applied_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "repositories",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"repository_id": "canonical_id", "repo_realpath": "canonical_id", "git_common_dir_realpath": "canonical_id", "object_format": "canonical_id", "state_directory": "canonical_id", "identity_digest": "sha256_digest", "created_at": "utc_timestamp"},
+        "primary_key": ["repository_id"],
+        "foreign_keys": [],
+        "unique_constraints": [{"name": "repositories_tuple_uq", "columns": ["repo_realpath", "git_common_dir_realpath", "object_format"]}, {"name": "repositories_digest_uq", "columns": ["identity_digest"]}],
+        "checks": ["object_format IN ('sha1','sha256')", "state_directory equals canonical Git common directory plus /rickgent"],
+        "mutation": {"mode": "append_only", "update_trigger": "repositories_no_update", "delete_trigger": "repositories_no_delete", "immutable_columns": ["repository_id", "repo_realpath", "git_common_dir_realpath", "object_format", "state_directory", "identity_digest", "created_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "run_manifests",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"manifest_digest": "sha256_digest", "schema_version": "canonical_id", "canonical_manifest_json": "canonical_json_object", "capability_snapshot_digest": "sha256_digest", "context_schema_version": "canonical_id", "oracle_version": "canonical_id", "created_at": "utc_timestamp"},
+        "primary_key": ["manifest_digest"],
+        "foreign_keys": [],
+        "unique_constraints": [],
+        "checks": ["canonical_manifest_json hashes to manifest_digest", "manifest includes the normalized ordered contract set"],
+        "mutation": {"mode": "append_only", "update_trigger": "run_manifests_no_update", "delete_trigger": "run_manifests_no_delete", "immutable_columns": ["manifest_digest", "schema_version", "canonical_manifest_json", "capability_snapshot_digest", "context_schema_version", "oracle_version", "created_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "runs",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"run_id": "canonical_id", "repository_id": "canonical_id", "run_sequence": "positive_integer", "manifest_digest": "sha256_digest", "initial_delivery_oid": "git_oid", "delivery_ref": "ref_name", "state": "run_state", "state_version": "nonnegative_integer", "current_delivery_oid": "git_oid", "promotion_sequence": "nonnegative_integer", "created_at": "utc_timestamp"},
+        "primary_key": ["run_id"],
+        "foreign_keys": [{"columns": ["repository_id"], "references": "repositories(repository_id)", "on_delete": "RESTRICT"}, {"columns": ["manifest_digest"], "references": "run_manifests(manifest_digest)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "runs_repository_sequence_uq", "columns": ["repository_id", "run_sequence"]}, {"name": "runs_delivery_ref_uq", "columns": ["delivery_ref"]}],
+        "checks": ["state is a declared run state", "state_version >= 0", "promotion_sequence >= 0", "delivery_ref equals refs/rickgent/runs/<run-id>/delivery"],
+        "mutation": {"mode": "cas_snapshot", "update_trigger": "runs_immutable_identity", "delete_trigger": "runs_no_delete", "immutable_columns": ["run_id", "repository_id", "run_sequence", "manifest_digest", "initial_delivery_oid", "delivery_ref", "created_at"], "cas_columns": ["state", "state_version", "current_delivery_oid", "promotion_sequence"], "cas_predicate": "WHERE run_id = ? AND state = ? AND state_version = ?"}
+      },
+      {
+        "name": "ticket_contracts",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"contract_digest": "sha256_digest", "schema_version": "canonical_id", "canonical_contract_json": "canonical_json_object", "created_at": "utc_timestamp"},
+        "primary_key": ["contract_digest"],
+        "foreign_keys": [],
+        "unique_constraints": [],
+        "checks": ["canonical_contract_json hashes to contract_digest"],
+        "mutation": {"mode": "append_only", "update_trigger": "ticket_contracts_no_update", "delete_trigger": "ticket_contracts_no_delete", "immutable_columns": ["contract_digest", "schema_version", "canonical_contract_json", "created_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "run_tickets",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"ticket_instance_id": "canonical_id", "run_id": "canonical_id", "ticket_id": "canonical_id", "plan_index": "nonnegative_integer", "contract_digest": "sha256_digest", "state": "ticket_state", "state_version": "nonnegative_integer", "created_at": "utc_timestamp"},
+        "primary_key": ["ticket_instance_id"],
+        "foreign_keys": [{"columns": ["run_id"], "references": "runs(run_id)", "on_delete": "RESTRICT"}, {"columns": ["contract_digest"], "references": "ticket_contracts(contract_digest)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "run_tickets_id_uq", "columns": ["run_id", "ticket_id"]}, {"name": "run_tickets_plan_uq", "columns": ["run_id", "plan_index"]}, {"name": "run_tickets_instance_contract_uq", "columns": ["ticket_instance_id", "contract_digest"]}, {"name": "run_tickets_instance_run_uq", "columns": ["ticket_instance_id", "run_id"]}],
+        "checks": ["state is a declared ticket state", "state_version >= 0", "plan_index >= 0"],
+        "mutation": {"mode": "cas_snapshot", "update_trigger": "run_tickets_immutable_identity", "delete_trigger": "run_tickets_no_delete", "immutable_columns": ["ticket_instance_id", "run_id", "ticket_id", "plan_index", "contract_digest", "created_at"], "cas_columns": ["state", "state_version"], "cas_predicate": "WHERE ticket_instance_id = ? AND state = ? AND state_version = ?"}
+      },
+      {
+        "name": "run_ticket_dependencies",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"run_id": "canonical_id", "ticket_id": "canonical_id", "depends_on_ticket_id": "canonical_id", "dependency_digest": "sha256_digest"},
+        "primary_key": ["run_id", "ticket_id", "depends_on_ticket_id"],
+        "foreign_keys": [{"columns": ["run_id", "ticket_id"], "references": "run_tickets(run_id,ticket_id)", "on_delete": "RESTRICT"}, {"columns": ["run_id", "depends_on_ticket_id"], "references": "run_tickets(run_id,ticket_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "run_ticket_dependencies_edge_uq", "columns": ["run_id", "ticket_id", "depends_on_ticket_id"]}, {"name": "run_ticket_dependencies_digest_uq", "columns": ["dependency_digest"]}],
+        "checks": ["ticket_id <> depends_on_ticket_id", "both endpoints belong to the same run"],
+        "mutation": {"mode": "append_only", "update_trigger": "run_ticket_dependencies_no_update", "delete_trigger": "run_ticket_dependencies_no_delete", "immutable_columns": ["run_id", "ticket_id", "depends_on_ticket_id", "dependency_digest"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "attempts",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"attempt_id": "canonical_id", "ticket_instance_id": "canonical_id", "run_id": "canonical_id", "ticket_id": "canonical_id", "attempt_number": "positive_integer", "contract_digest": "sha256_digest", "allocation_owner_digest": "sha256_digest", "delivery_baseline_oid": "git_oid", "context_schema_version": "canonical_id", "oracle_version": "canonical_id", "capability_snapshot_digest": "sha256_digest", "resource_identity_version": "canonical_id", "state": "attempt_state", "state_version": "nonnegative_integer", "created_at": "utc_timestamp"},
+        "primary_key": ["attempt_id"],
+        "foreign_keys": [{"columns": ["ticket_instance_id", "contract_digest"], "references": "run_tickets(ticket_instance_id,contract_digest)", "on_delete": "RESTRICT"}, {"columns": ["run_id", "ticket_id"], "references": "run_tickets(run_id,ticket_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "attempts_run_ticket_number_uq", "columns": ["run_id", "ticket_id", "attempt_number"]}, {"name": "attempts_instance_number_uq", "columns": ["ticket_instance_id", "attempt_number"]}, {"name": "attempts_identity_scope_uq", "columns": ["attempt_id", "ticket_instance_id", "run_id"]}],
+        "checks": ["attempt_number > 0", "state is a declared attempt state", "state_version >= 0", "delivery_baseline_oid equals run current_delivery_oid at allocation commit"],
+        "mutation": {"mode": "cas_snapshot", "update_trigger": "attempts_immutable_identity", "delete_trigger": "attempts_no_delete", "immutable_columns": ["attempt_id", "ticket_instance_id", "run_id", "ticket_id", "attempt_number", "contract_digest", "allocation_owner_digest", "delivery_baseline_oid", "context_schema_version", "oracle_version", "capability_snapshot_digest", "resource_identity_version", "created_at"], "cas_columns": ["state", "state_version"], "cas_predicate": "WHERE attempt_id = ? AND state = ? AND state_version = ?"}
+      },
+      {
+        "name": "execution_contexts",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"context_id": "canonical_id", "context_digest": "sha256_digest", "attempt_id": "canonical_id", "phase": "canonical_id", "phase_ordinal": "nonnegative_integer", "role": "canonical_id", "canonical_context_json": "canonical_json_object", "contract_digest": "sha256_digest", "capability_snapshot_digest": "sha256_digest", "policy_bundle_digest": "sha256_digest", "model_selection_digest": "sha256_digest", "budget_digest": "sha256_digest", "scope_digest": "sha256_digest", "context_schema_version": "canonical_id", "oracle_version": "canonical_id", "created_at": "utc_timestamp"},
+        "primary_key": ["context_id"],
+        "foreign_keys": [{"columns": ["attempt_id"], "references": "attempts(attempt_id)", "on_delete": "RESTRICT"}, {"columns": ["contract_digest"], "references": "ticket_contracts(contract_digest)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "execution_contexts_digest_uq", "columns": ["context_digest"]}, {"name": "execution_contexts_phase_role_uq", "columns": ["attempt_id", "phase", "phase_ordinal", "role"]}, {"name": "execution_contexts_identity_attempt_uq", "columns": ["context_id", "attempt_id"]}],
+        "checks": ["canonical_context_json hashes to context_digest", "phase_ordinal >= 0", "all compatibility digests match the owning attempt"],
+        "mutation": {"mode": "append_only", "update_trigger": "execution_contexts_no_update", "delete_trigger": "execution_contexts_no_delete", "immutable_columns": ["context_id", "context_digest", "attempt_id", "phase", "phase_ordinal", "role", "canonical_context_json", "contract_digest", "capability_snapshot_digest", "policy_bundle_digest", "model_selection_digest", "budget_digest", "scope_digest", "context_schema_version", "oracle_version", "created_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "phase_executions",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"phase_execution_id": "canonical_id", "attempt_id": "canonical_id", "context_id": "canonical_id", "phase": "canonical_id", "phase_ordinal": "nonnegative_integer", "role": "canonical_id", "identity_digest": "sha256_digest", "created_at": "utc_timestamp"},
+        "primary_key": ["phase_execution_id"],
+        "foreign_keys": [{"columns": ["attempt_id"], "references": "attempts(attempt_id)", "on_delete": "RESTRICT"}, {"columns": ["context_id"], "references": "execution_contexts(context_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "phase_executions_context_uq", "columns": ["context_id"]}, {"name": "phase_executions_identity_uq", "columns": ["identity_digest"]}],
+        "checks": ["phase completion is represented only by immutable receipts and transitions", "phase_ordinal >= 0"],
+        "mutation": {"mode": "append_only", "update_trigger": "phase_executions_no_update", "delete_trigger": "phase_executions_no_delete", "immutable_columns": ["phase_execution_id", "attempt_id", "context_id", "phase", "phase_ordinal", "role", "identity_digest", "created_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "evidence",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"evidence_id": "canonical_id", "attempt_id": "canonical_id?", "phase_execution_id": "canonical_id?", "context_id": "canonical_id", "producer_service": "canonical_id", "scope": "canonical_id", "schema_version": "canonical_id", "content_digest": "sha256_digest", "inline_payload_json": "canonical_json_object?", "external_path": "canonical_id?", "external_digest": "sha256_digest?", "external_size": "nonnegative_integer?", "idempotency_key": "canonical_id", "created_at": "utc_timestamp"},
+        "primary_key": ["evidence_id"],
+        "foreign_keys": [{"columns": ["attempt_id"], "references": "attempts(attempt_id)", "on_delete": "RESTRICT"}, {"columns": ["phase_execution_id"], "references": "phase_executions(phase_execution_id)", "on_delete": "RESTRICT"}, {"columns": ["context_id"], "references": "execution_contexts(context_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "evidence_producer_idempotency_uq", "columns": ["producer_service", "scope", "idempotency_key"]}, {"name": "evidence_producer_content_uq", "columns": ["producer_service", "scope", "content_digest"]}, {"name": "evidence_identity_attempt_uq", "columns": ["evidence_id", "attempt_id"]}],
+        "checks": ["exactly one of inline payload or external path/hash/size identity is present", "external_size is bounded and nonnegative", "content identity is canonical and content-addressed"],
+        "mutation": {"mode": "append_only", "update_trigger": "evidence_no_update", "delete_trigger": "evidence_no_delete", "immutable_columns": ["evidence_id", "attempt_id", "phase_execution_id", "context_id", "producer_service", "scope", "schema_version", "content_digest", "inline_payload_json", "external_path", "external_digest", "external_size", "idempotency_key", "created_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "state_transitions",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"transition_id": "canonical_id", "run_id": "canonical_id?", "ticket_instance_id": "canonical_id?", "attempt_id": "canonical_id?", "entity_sequence": "positive_integer", "from_state": "canonical_id", "to_state": "canonical_id", "owner_service": "canonical_id", "owner_context_digest": "sha256_digest", "input_digest": "sha256_digest", "idempotency_key": "canonical_id", "created_at": "utc_timestamp"},
+        "primary_key": ["transition_id"],
+        "foreign_keys": [{"columns": ["run_id"], "references": "runs(run_id)", "on_delete": "RESTRICT"}, {"columns": ["ticket_instance_id"], "references": "run_tickets(ticket_instance_id)", "on_delete": "RESTRICT"}, {"columns": ["attempt_id"], "references": "attempts(attempt_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "state_transitions_run_sequence_uq", "columns": ["run_id", "entity_sequence"], "where": "run_id IS NOT NULL"}, {"name": "state_transitions_ticket_sequence_uq", "columns": ["ticket_instance_id", "entity_sequence"], "where": "ticket_instance_id IS NOT NULL"}, {"name": "state_transitions_attempt_sequence_uq", "columns": ["attempt_id", "entity_sequence"], "where": "attempt_id IS NOT NULL"}, {"name": "state_transitions_run_idempotency_uq", "columns": ["run_id", "idempotency_key"], "where": "run_id IS NOT NULL"}, {"name": "state_transitions_ticket_idempotency_uq", "columns": ["ticket_instance_id", "idempotency_key"], "where": "ticket_instance_id IS NOT NULL"}, {"name": "state_transitions_attempt_idempotency_uq", "columns": ["attempt_id", "idempotency_key"], "where": "attempt_id IS NOT NULL"}],
+        "checks": ["exactly one of run_id, ticket_instance_id, attempt_id is nonnull", "entity_sequence > 0", "from_state differs from to_state", "edge and owner match the declared state machine"],
+        "mutation": {"mode": "append_only", "update_trigger": "state_transitions_no_update", "delete_trigger": "state_transitions_no_delete", "immutable_columns": ["transition_id", "run_id", "ticket_instance_id", "attempt_id", "entity_sequence", "from_state", "to_state", "owner_service", "owner_context_digest", "input_digest", "idempotency_key", "created_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "transition_evidence_refs",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"transition_id": "canonical_id", "ordinal": "nonnegative_integer", "purpose": "canonical_id", "evidence_id": "canonical_id"},
+        "primary_key": ["transition_id", "ordinal"],
+        "foreign_keys": [{"columns": ["transition_id"], "references": "state_transitions(transition_id)", "on_delete": "RESTRICT"}, {"columns": ["evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "transition_evidence_purpose_uq", "columns": ["transition_id", "purpose", "evidence_id"]}],
+        "checks": ["ordinal >= 0", "references are inserted in the same transaction as transition and snapshot CAS"],
+        "mutation": {"mode": "append_only", "update_trigger": "transition_evidence_refs_no_update", "delete_trigger": "transition_evidence_refs_no_delete", "immutable_columns": ["transition_id", "ordinal", "purpose", "evidence_id"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "leases",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"lease_id": "canonical_id", "attempt_id": "canonical_id", "generation": "positive_integer", "owner_token_digest": "sha256_digest", "owner_context_id": "canonical_id", "heartbeat_at": "utc_timestamp", "expires_at": "utc_timestamp", "state": "lease_state", "state_version": "nonnegative_integer", "acquisition_evidence_id": "canonical_id", "release_evidence_id": "canonical_id?", "created_at": "utc_timestamp"},
+        "primary_key": ["lease_id"],
+        "foreign_keys": [{"columns": ["attempt_id"], "references": "attempts(attempt_id)", "on_delete": "RESTRICT"}, {"columns": ["owner_context_id"], "references": "execution_contexts(context_id)", "on_delete": "RESTRICT"}, {"columns": ["acquisition_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}, {"columns": ["release_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "leases_attempt_generation_uq", "columns": ["attempt_id", "generation"]}, {"name": "leases_one_live_uq", "columns": ["attempt_id"], "where": "state IN ('live','cleanup_pending')"}],
+        "checks": ["generation > 0", "plain owner token is never stored", "heartbeat and expiry mutations require token digest, generation, context, state, and version", "expires_at is later than heartbeat_at", "acquire and every CAS post-image atomically append immutable evidence schema rickgent.lease-snapshot.v1 with matching attempt_id and state_version"],
+        "mutation": {"mode": "cas_snapshot", "update_trigger": "leases_immutable_identity", "delete_trigger": "leases_no_delete", "immutable_columns": ["lease_id", "attempt_id", "generation", "owner_token_digest", "owner_context_id", "acquisition_evidence_id", "created_at"], "cas_columns": ["heartbeat_at", "expires_at", "state", "state_version", "release_evidence_id"], "cas_predicate": "WHERE lease_id = ? AND owner_token_digest = ? AND generation = ? AND owner_context_id = ? AND state = ? AND state_version = ?"}
+      },
+      {
+        "name": "attempt_resources",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"resource_id": "canonical_id", "attempt_id": "canonical_id", "slot": "canonical_id", "kind": "resource_kind", "canonical_identity": "canonical_id", "identity_digest": "sha256_digest", "allocation_lease_id": "canonical_id", "allocation_evidence_id": "canonical_id", "owner_generation": "positive_integer", "owner_context_id": "canonical_id", "state": "resource_state", "state_version": "nonnegative_integer", "release_evidence_id": "canonical_id?", "quarantine_evidence_id": "canonical_id?", "created_at": "utc_timestamp"},
+        "primary_key": ["resource_id"],
+        "foreign_keys": [{"columns": ["attempt_id"], "references": "attempts(attempt_id)", "on_delete": "RESTRICT"}, {"columns": ["allocation_lease_id"], "references": "leases(lease_id)", "on_delete": "RESTRICT"}, {"columns": ["allocation_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}, {"columns": ["owner_context_id"], "references": "execution_contexts(context_id)", "on_delete": "RESTRICT"}, {"columns": ["release_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}, {"columns": ["quarantine_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "attempt_resources_slot_uq", "columns": ["attempt_id", "slot"]}, {"name": "attempt_resources_active_identity_uq", "columns": ["kind", "identity_digest"], "where": "state IN ('reserved','allocated','active','cleanup_pending')"}],
+        "checks": ["kind is a declared resource kind", "identity is reserved before side effect", "owner mutations require token digest through lease, generation, context, resource state, and resource version", "reserve and every CAS post-image atomically append immutable evidence schema rickgent.attempt-resource-snapshot.v1 with matching attempt_id and state_version"],
+        "mutation": {"mode": "cas_snapshot", "update_trigger": "attempt_resources_immutable_identity", "delete_trigger": "attempt_resources_no_delete", "immutable_columns": ["resource_id", "attempt_id", "slot", "kind", "canonical_identity", "identity_digest", "allocation_lease_id", "allocation_evidence_id", "created_at"], "cas_columns": ["owner_generation", "owner_context_id", "state", "state_version", "release_evidence_id", "quarantine_evidence_id"], "cas_predicate": "WHERE resource_id = ? AND owner_generation = ? AND owner_context_id = ? AND state = ? AND state_version = ? AND allocation_lease_id = ?"}
+      },
+      {
+        "name": "process_receipts",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"process_receipt_id": "canonical_id", "phase_execution_id": "canonical_id", "context_id": "canonical_id", "lease_id": "canonical_id", "lease_generation": "positive_integer", "pid": "positive_integer", "pgid": "positive_integer", "boot_identity": "canonical_id", "process_start_identity": "canonical_id", "argv_digest": "sha256_digest", "environment_digest": "sha256_digest", "launch_evidence_id": "canonical_id", "exit_evidence_id": "canonical_id?", "termination_evidence_id": "canonical_id?", "group_death_evidence_id": "canonical_id?", "stdout_evidence_id": "canonical_id?", "stderr_evidence_id": "canonical_id?", "created_at": "utc_timestamp"},
+        "primary_key": ["process_receipt_id"],
+        "foreign_keys": [{"columns": ["phase_execution_id"], "references": "phase_executions(phase_execution_id)", "on_delete": "RESTRICT"}, {"columns": ["context_id"], "references": "execution_contexts(context_id)", "on_delete": "RESTRICT"}, {"columns": ["lease_id"], "references": "leases(lease_id)", "on_delete": "RESTRICT"}, {"columns": ["launch_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}, {"columns": ["exit_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}, {"columns": ["termination_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}, {"columns": ["group_death_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}, {"columns": ["stdout_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}, {"columns": ["stderr_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "process_receipts_phase_uq", "columns": ["phase_execution_id"]}],
+        "checks": ["PID alone is never ownership proof", "identity includes PID, PGID, boot identity, process start identity, phase, context, and lease generation", "stdout and stderr evidence are bounded"],
+        "mutation": {"mode": "append_only", "update_trigger": "process_receipts_no_update", "delete_trigger": "process_receipts_no_delete", "immutable_columns": ["process_receipt_id", "phase_execution_id", "context_id", "lease_id", "lease_generation", "pid", "pgid", "boot_identity", "process_start_identity", "argv_digest", "environment_digest", "launch_evidence_id", "exit_evidence_id", "termination_evidence_id", "group_death_evidence_id", "stdout_evidence_id", "stderr_evidence_id", "created_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "gate_results",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"gate_result_id": "canonical_id", "attempt_id": "canonical_id", "gate_id": "canonical_id", "evaluation_ordinal": "nonnegative_integer", "status": "gate_status", "required": "boolean_integer", "context_id": "canonical_id", "contract_digest": "sha256_digest", "evidence_id": "canonical_id", "result_digest": "sha256_digest", "created_at": "utc_timestamp"},
+        "primary_key": ["gate_result_id"],
+        "foreign_keys": [{"columns": ["attempt_id"], "references": "attempts(attempt_id)", "on_delete": "RESTRICT"}, {"columns": ["context_id"], "references": "execution_contexts(context_id)", "on_delete": "RESTRICT"}, {"columns": ["contract_digest"], "references": "ticket_contracts(contract_digest)", "on_delete": "RESTRICT"}, {"columns": ["evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "gate_results_evaluation_uq", "columns": ["attempt_id", "gate_id", "evaluation_ordinal"]}],
+        "checks": ["status is a declared gate status", "required IN (0,1)", "only passed is green for a required gate"],
+        "mutation": {"mode": "append_only", "update_trigger": "gate_results_no_update", "delete_trigger": "gate_results_no_delete", "immutable_columns": ["gate_result_id", "attempt_id", "gate_id", "evaluation_ordinal", "status", "required", "context_id", "contract_digest", "evidence_id", "result_digest", "created_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "review_records",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"review_record_id": "canonical_id", "attempt_id": "canonical_id", "cycle": "positive_integer", "reviewer_context_id": "canonical_id", "verdict": "canonical_id", "verdict_evidence_id": "canonical_id", "findings_evidence_id": "canonical_id", "input_tree_oid": "git_oid", "input_diff_digest": "sha256_digest", "created_at": "utc_timestamp"},
+        "primary_key": ["review_record_id"],
+        "foreign_keys": [{"columns": ["attempt_id"], "references": "attempts(attempt_id)", "on_delete": "RESTRICT"}, {"columns": ["reviewer_context_id"], "references": "execution_contexts(context_id)", "on_delete": "RESTRICT"}, {"columns": ["verdict_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}, {"columns": ["findings_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "review_records_cycle_uq", "columns": ["attempt_id", "cycle"]}],
+        "checks": ["cycle > 0", "cycle is within immutable ticket budget", "tree and diff inputs are content-pinned"],
+        "mutation": {"mode": "append_only", "update_trigger": "review_records_no_update", "delete_trigger": "review_records_no_delete", "immutable_columns": ["review_record_id", "attempt_id", "cycle", "reviewer_context_id", "verdict", "verdict_evidence_id", "findings_evidence_id", "input_tree_oid", "input_diff_digest", "created_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "remediation_records",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"remediation_record_id": "canonical_id", "attempt_id": "canonical_id", "cycle": "positive_integer", "context_id": "canonical_id", "findings_evidence_id": "canonical_id", "output_evidence_id": "canonical_id", "result_tree_oid": "git_oid", "result_diff_digest": "sha256_digest", "created_at": "utc_timestamp"},
+        "primary_key": ["remediation_record_id"],
+        "foreign_keys": [{"columns": ["attempt_id"], "references": "attempts(attempt_id)", "on_delete": "RESTRICT"}, {"columns": ["context_id"], "references": "execution_contexts(context_id)", "on_delete": "RESTRICT"}, {"columns": ["findings_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}, {"columns": ["output_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "remediation_records_cycle_uq", "columns": ["attempt_id", "cycle"]}],
+        "checks": ["cycle > 0", "cycle is within immutable remediation budget", "output tree and diff are content-pinned"],
+        "mutation": {"mode": "append_only", "update_trigger": "remediation_records_no_update", "delete_trigger": "remediation_records_no_delete", "immutable_columns": ["remediation_record_id", "attempt_id", "cycle", "context_id", "findings_evidence_id", "output_evidence_id", "result_tree_oid", "result_diff_digest", "created_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "commit_attributions",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"commit_attribution_id": "canonical_id", "attempt_id": "canonical_id", "baseline_oid": "git_oid", "parent_oid": "git_oid", "tree_before_oid": "git_oid", "tree_after_oid": "git_oid", "commit_oid": "git_oid", "contract_digest": "sha256_digest", "context_digest": "sha256_digest", "path_set_digest": "sha256_digest", "change_kind_set_digest": "sha256_digest", "mode_set_digest": "sha256_digest", "attribution_evidence_id": "canonical_id", "created_at": "utc_timestamp"},
+        "primary_key": ["commit_attribution_id"],
+        "foreign_keys": [{"columns": ["attempt_id"], "references": "attempts(attempt_id)", "on_delete": "RESTRICT"}, {"columns": ["contract_digest"], "references": "ticket_contracts(contract_digest)", "on_delete": "RESTRICT"}, {"columns": ["attribution_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "commit_attributions_attempt_uq", "columns": ["attempt_id"]}, {"name": "commit_attributions_commit_uq", "columns": ["commit_oid"]}, {"name": "commit_attributions_identity_attempt_uq", "columns": ["commit_attribution_id", "attempt_id"]}],
+        "checks": ["parent_oid equals baseline_oid", "candidate commit has exactly one parent", "baseline_oid equals attempt delivery_baseline_oid", "path, change-kind, and mode sets exactly match accepted scope evidence"],
+        "mutation": {"mode": "append_only", "update_trigger": "commit_attributions_no_update", "delete_trigger": "commit_attributions_no_delete", "immutable_columns": ["commit_attribution_id", "attempt_id", "baseline_oid", "parent_oid", "tree_before_oid", "tree_after_oid", "commit_oid", "contract_digest", "context_digest", "path_set_digest", "change_kind_set_digest", "mode_set_digest", "attribution_evidence_id", "created_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "salvage_records",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"salvage_record_id": "canonical_id", "attempt_id": "canonical_id", "disposition": "canonical_id", "artifact_path": "canonical_id?", "artifact_digest": "sha256_digest?", "artifact_size": "nonnegative_integer?", "evidence_id": "canonical_id", "created_at": "utc_timestamp"},
+        "primary_key": ["salvage_record_id"],
+        "foreign_keys": [{"columns": ["attempt_id"], "references": "attempts(attempt_id)", "on_delete": "RESTRICT"}, {"columns": ["evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "salvage_records_attempt_disposition_uq", "columns": ["attempt_id", "disposition"]}],
+        "checks": ["artifact metadata is bounded", "salvage cannot be referenced as successful completion or finalization evidence"],
+        "mutation": {"mode": "append_only", "update_trigger": "salvage_records_no_update", "delete_trigger": "salvage_records_no_delete", "immutable_columns": ["salvage_record_id", "attempt_id", "disposition", "artifact_path", "artifact_digest", "artifact_size", "evidence_id", "created_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "cleanup_records",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"cleanup_record_id": "canonical_id", "attempt_id": "canonical_id", "sequence": "positive_integer", "context_id": "canonical_id", "outcome": "canonical_id", "group_dead": "boolean_integer", "worktree_disposition": "canonical_id", "index_disposition": "canonical_id", "ref_disposition": "canonical_id", "context_disposition": "canonical_id", "bundle_disposition": "canonical_id", "delivery_ref_observed_oid": "git_oid", "resources_absent": "boolean_integer", "lease_release_eligible": "boolean_integer", "evidence_id": "canonical_id", "record_digest": "sha256_digest", "created_at": "utc_timestamp"},
+        "primary_key": ["cleanup_record_id"],
+        "foreign_keys": [{"columns": ["attempt_id"], "references": "attempts(attempt_id)", "on_delete": "RESTRICT"}, {"columns": ["context_id"], "references": "execution_contexts(context_id)", "on_delete": "RESTRICT"}, {"columns": ["evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "cleanup_records_sequence_uq", "columns": ["attempt_id", "sequence"]}, {"name": "cleanup_records_digest_uq", "columns": ["record_digest"]}],
+        "checks": ["sequence > 0", "boolean fields are zero or one", "lease release eligibility requires proven process-group death and resource absence or quarantine"],
+        "mutation": {"mode": "append_only", "update_trigger": "cleanup_records_no_update", "delete_trigger": "cleanup_records_no_delete", "immutable_columns": ["cleanup_record_id", "attempt_id", "sequence", "context_id", "outcome", "group_dead", "worktree_disposition", "index_disposition", "ref_disposition", "context_disposition", "bundle_disposition", "delivery_ref_observed_oid", "resources_absent", "lease_release_eligible", "evidence_id", "record_digest", "created_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "oracle_decisions",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"oracle_decision_id": "canonical_id", "oracle_version": "canonical_id", "scope_kind": "canonical_id", "run_id": "canonical_id", "ticket_instance_id": "canonical_id?", "attempt_id": "canonical_id?", "input_set_digest": "sha256_digest", "result": "canonical_id", "reasons_json": "canonical_json_array", "output_digest": "sha256_digest", "idempotency_key": "canonical_id", "created_at": "utc_timestamp"},
+        "primary_key": ["oracle_decision_id"],
+        "foreign_keys": [{"columns": ["run_id"], "references": "runs(run_id)", "on_delete": "RESTRICT"}, {"columns": ["ticket_instance_id", "run_id"], "references": "run_tickets(ticket_instance_id,run_id)", "on_delete": "RESTRICT"}, {"columns": ["attempt_id", "ticket_instance_id", "run_id"], "references": "attempts(attempt_id,ticket_instance_id,run_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "oracle_decisions_input_uq", "columns": ["oracle_version", "scope_kind", "input_set_digest"]}, {"name": "oracle_decisions_identity_run_scope_uq", "columns": ["oracle_decision_id", "run_id"]}, {"name": "oracle_decisions_identity_ticket_scope_uq", "columns": ["oracle_decision_id", "run_id", "ticket_instance_id"]}, {"name": "oracle_decisions_identity_attempt_scope_uq", "columns": ["oracle_decision_id", "run_id", "ticket_instance_id", "attempt_id"]}, {"name": "oracle_decisions_run_idempotency_uq", "columns": ["run_id", "idempotency_key"], "where": "scope_kind = 'run'"}, {"name": "oracle_decisions_ticket_idempotency_uq", "columns": ["ticket_instance_id", "idempotency_key"], "where": "scope_kind = 'ticket'"}, {"name": "oracle_decisions_attempt_idempotency_uq", "columns": ["attempt_id", "idempotency_key"], "where": "scope_kind = 'attempt'"}],
+        "checks": ["result IN ('accepted','rejected')", "run scope has null ticket_instance_id and attempt_id; ticket scope has nonnull ticket_instance_id and null attempt_id; attempt scope has nonnull ticket_instance_id and attempt_id", "composite foreign keys bind every nonnull scope component to one run, ticket, and attempt hierarchy", "reasons contain every missing, failed, stale, and conflicting reason", "oracle decision never updates a snapshot"],
+        "mutation": {"mode": "append_only", "update_trigger": "oracle_decisions_no_update", "delete_trigger": "oracle_decisions_no_delete", "immutable_columns": ["oracle_decision_id", "oracle_version", "scope_kind", "run_id", "ticket_instance_id", "attempt_id", "input_set_digest", "result", "reasons_json", "output_digest", "idempotency_key", "created_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "oracle_input_references",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"oracle_decision_id": "canonical_id", "run_id": "canonical_id", "ticket_instance_id": "canonical_id?", "attempt_id": "canonical_id?", "ordinal": "nonnegative_integer", "reference_kind": "oracle_reference_kind", "run_manifest_digest": "sha256_digest?", "contract_digest": "sha256_digest?", "context_id": "canonical_id?", "evidence_id": "canonical_id?", "gate_result_id": "canonical_id?", "review_record_id": "canonical_id?", "commit_attribution_id": "canonical_id?", "cleanup_record_id": "canonical_id?", "dependency_digest": "sha256_digest?", "resource_snapshot_evidence_id": "canonical_id?", "lease_snapshot_evidence_id": "canonical_id?", "process_receipt_id": "canonical_id?", "content_digest": "sha256_digest"},
+        "primary_key": ["oracle_decision_id", "ordinal"],
+        "foreign_keys": [{"columns": ["oracle_decision_id", "run_id"], "references": "oracle_decisions(oracle_decision_id,run_id)", "on_delete": "RESTRICT"}, {"columns": ["oracle_decision_id", "run_id", "ticket_instance_id"], "references": "oracle_decisions(oracle_decision_id,run_id,ticket_instance_id)", "on_delete": "RESTRICT"}, {"columns": ["oracle_decision_id", "run_id", "ticket_instance_id", "attempt_id"], "references": "oracle_decisions(oracle_decision_id,run_id,ticket_instance_id,attempt_id)", "on_delete": "RESTRICT"}, {"columns": ["run_manifest_digest"], "references": "run_manifests(manifest_digest)", "on_delete": "RESTRICT"}, {"columns": ["contract_digest"], "references": "ticket_contracts(contract_digest)", "on_delete": "RESTRICT"}, {"columns": ["context_id"], "references": "execution_contexts(context_id)", "on_delete": "RESTRICT"}, {"columns": ["evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}, {"columns": ["evidence_id", "attempt_id"], "references": "evidence(evidence_id,attempt_id)", "on_delete": "RESTRICT"}, {"columns": ["gate_result_id"], "references": "gate_results(gate_result_id)", "on_delete": "RESTRICT"}, {"columns": ["review_record_id"], "references": "review_records(review_record_id)", "on_delete": "RESTRICT"}, {"columns": ["commit_attribution_id"], "references": "commit_attributions(commit_attribution_id)", "on_delete": "RESTRICT"}, {"columns": ["cleanup_record_id"], "references": "cleanup_records(cleanup_record_id)", "on_delete": "RESTRICT"}, {"columns": ["dependency_digest"], "references": "run_ticket_dependencies(dependency_digest)", "on_delete": "RESTRICT"}, {"columns": ["resource_snapshot_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}, {"columns": ["resource_snapshot_evidence_id", "attempt_id"], "references": "evidence(evidence_id,attempt_id)", "on_delete": "RESTRICT"}, {"columns": ["lease_snapshot_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}, {"columns": ["lease_snapshot_evidence_id", "attempt_id"], "references": "evidence(evidence_id,attempt_id)", "on_delete": "RESTRICT"}, {"columns": ["process_receipt_id"], "references": "process_receipts(process_receipt_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "oracle_input_reference_identity_uq", "columns": ["oracle_decision_id", "reference_kind", "content_digest"]}],
+        "checks": ["ordinal >= 0", "reference_kind is declared", "exactly one typed nullable reference column is nonnull and agrees with reference_kind", "scope columns exactly equal the owning oracle decision", "persist_oracle_decision rejects any referenced row whose canonical run, ticket, or attempt lineage differs from the decision scope", "dependency references use the immutable dependency_digest", "attempt_resource_snapshot and lease_snapshot reference immutable schema-versioned evidence post-images and never mutable attempt_resources or leases rows", "content_digest pins the immutable referenced row", "all references resolve in one read transaction before decision acceptance"],
+        "mutation": {"mode": "append_only", "update_trigger": "oracle_input_references_no_update", "delete_trigger": "oracle_input_references_no_delete", "immutable_columns": ["oracle_decision_id", "run_id", "ticket_instance_id", "attempt_id", "ordinal", "reference_kind", "run_manifest_digest", "contract_digest", "context_id", "evidence_id", "gate_result_id", "review_record_id", "commit_attribution_id", "cleanup_record_id", "dependency_digest", "resource_snapshot_evidence_id", "lease_snapshot_evidence_id", "process_receipt_id", "content_digest"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "promotion_intents",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"promotion_intent_id": "canonical_id", "run_id": "canonical_id", "ticket_instance_id": "canonical_id", "attempt_id": "canonical_id", "promotion_sequence": "positive_integer", "delivery_ref": "ref_name", "expected_old_oid": "git_oid", "candidate_oid": "git_oid", "oracle_decision_id": "canonical_id", "commit_attribution_id": "canonical_id", "owner_context_id": "canonical_id", "idempotency_key": "canonical_id", "state": "promotion_state", "state_version": "nonnegative_integer", "observed_oid": "git_oid?", "observation_evidence_id": "canonical_id?", "finalization_evidence_id": "canonical_id?", "created_at": "utc_timestamp"},
+        "primary_key": ["promotion_intent_id"],
+        "foreign_keys": [{"columns": ["run_id"], "references": "runs(run_id)", "on_delete": "RESTRICT"}, {"columns": ["ticket_instance_id", "run_id"], "references": "run_tickets(ticket_instance_id,run_id)", "on_delete": "RESTRICT"}, {"columns": ["attempt_id", "ticket_instance_id", "run_id"], "references": "attempts(attempt_id,ticket_instance_id,run_id)", "on_delete": "RESTRICT"}, {"columns": ["oracle_decision_id", "run_id", "ticket_instance_id", "attempt_id"], "references": "oracle_decisions(oracle_decision_id,run_id,ticket_instance_id,attempt_id)", "on_delete": "RESTRICT"}, {"columns": ["commit_attribution_id", "attempt_id"], "references": "commit_attributions(commit_attribution_id,attempt_id)", "on_delete": "RESTRICT"}, {"columns": ["owner_context_id", "attempt_id"], "references": "execution_contexts(context_id,attempt_id)", "on_delete": "RESTRICT"}, {"columns": ["observation_evidence_id", "attempt_id"], "references": "evidence(evidence_id,attempt_id)", "on_delete": "RESTRICT"}, {"columns": ["finalization_evidence_id", "attempt_id"], "references": "evidence(evidence_id,attempt_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "promotion_intents_attempt_uq", "columns": ["attempt_id"]}, {"name": "promotion_intents_ticket_inflight_uq", "columns": ["ticket_instance_id"], "where": "state NOT IN ('finalized','conflicted')"}, {"name": "promotion_intents_sequence_uq", "columns": ["run_id", "promotion_sequence"]}, {"name": "promotion_intents_idempotency_uq", "columns": ["run_id", "idempotency_key"]}, {"name": "promotion_intents_one_inflight_uq", "columns": ["run_id"], "where": "state NOT IN ('finalized','conflicted')"}],
+        "checks": ["promotion_sequence > 0", "all scope-bearing composite foreign keys resolve to the same run, ticket, and attempt hierarchy", "delivery_ref equals the run delivery_ref", "expected_old_oid equals attempt delivery baseline", "candidate_oid equals accepted commit attribution for that attempt", "oracle decision is accepted, attempt-scoped, and exact for that same hierarchy", "sequence one expects run initial OID and later sequences expect previous candidate OID", "a conflicted terminal intent does not block a later intent for a newly allocated attempt of the same ticket"],
+        "mutation": {"mode": "cas_intent", "update_trigger": "promotion_intents_immutable_identity", "delete_trigger": "promotion_intents_no_delete", "immutable_columns": ["promotion_intent_id", "run_id", "ticket_instance_id", "attempt_id", "promotion_sequence", "delivery_ref", "expected_old_oid", "candidate_oid", "oracle_decision_id", "commit_attribution_id", "owner_context_id", "idempotency_key", "created_at"], "cas_columns": ["state", "state_version", "observed_oid", "observation_evidence_id", "finalization_evidence_id"], "cas_predicate": "WHERE promotion_intent_id = ? AND state = ? AND state_version = ? AND owner_context_id = ?"}
+      },
+      {
+        "name": "delivery_intents",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"delivery_intent_id": "canonical_id", "run_id": "canonical_id", "delivery_oid": "git_oid", "remote_name": "canonical_id", "branch_name": "canonical_id", "expected_remote_oid": "git_oid?", "base_branch": "canonical_id", "provider_identity_digest": "sha256_digest", "idempotency_key": "canonical_id", "created_at": "utc_timestamp"},
+        "primary_key": ["delivery_intent_id"],
+        "foreign_keys": [{"columns": ["run_id"], "references": "runs(run_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "delivery_intents_run_uq", "columns": ["run_id"]}, {"name": "delivery_intents_idempotency_uq", "columns": ["run_id", "idempotency_key"]}],
+        "checks": ["run is ready_for_delivery", "delivery_oid equals run current_delivery_oid"],
+        "mutation": {"mode": "append_only", "update_trigger": "delivery_intents_no_update", "delete_trigger": "delivery_intents_no_delete", "immutable_columns": ["delivery_intent_id", "run_id", "delivery_oid", "remote_name", "branch_name", "expected_remote_oid", "base_branch", "provider_identity_digest", "idempotency_key", "created_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "remote_observations",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"remote_observation_id": "canonical_id", "delivery_intent_id": "canonical_id", "sequence": "positive_integer", "operation": "canonical_id", "outcome": "canonical_id", "observed_remote_oid": "git_oid?", "evidence_id": "canonical_id", "created_at": "utc_timestamp"},
+        "primary_key": ["remote_observation_id"],
+        "foreign_keys": [{"columns": ["delivery_intent_id"], "references": "delivery_intents(delivery_intent_id)", "on_delete": "RESTRICT"}, {"columns": ["evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "remote_observations_sequence_uq", "columns": ["delivery_intent_id", "sequence"]}, {"name": "remote_observations_identity_intent_uq", "columns": ["remote_observation_id", "delivery_intent_id"]}],
+        "checks": ["sequence > 0", "final success requires independent ls-remote observation", "observed OID is not inferred from push exit status"],
+        "mutation": {"mode": "append_only", "update_trigger": "remote_observations_no_update", "delete_trigger": "remote_observations_no_delete", "immutable_columns": ["remote_observation_id", "delivery_intent_id", "sequence", "operation", "outcome", "observed_remote_oid", "evidence_id", "created_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "pr_observations",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"pr_observation_id": "canonical_id", "delivery_intent_id": "canonical_id", "sequence": "positive_integer", "provider_repository_id": "canonical_id", "base_branch": "canonical_id", "head_branch": "canonical_id", "pr_identity": "canonical_id", "observed_head_oid": "git_oid", "evidence_id": "canonical_id", "created_at": "utc_timestamp"},
+        "primary_key": ["pr_observation_id"],
+        "foreign_keys": [{"columns": ["delivery_intent_id"], "references": "delivery_intents(delivery_intent_id)", "on_delete": "RESTRICT"}, {"columns": ["evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "pr_observations_sequence_uq", "columns": ["delivery_intent_id", "sequence"]}, {"name": "pr_observations_identity_uq", "columns": ["provider_repository_id", "pr_identity", "sequence"]}, {"name": "pr_observations_identity_intent_uq", "columns": ["pr_observation_id", "delivery_intent_id"]}],
+        "checks": ["sequence > 0", "head OID is independently queried from the provider", "provider repository, base, and head identities match intent"],
+        "mutation": {"mode": "append_only", "update_trigger": "pr_observations_no_update", "delete_trigger": "pr_observations_no_delete", "immutable_columns": ["pr_observation_id", "delivery_intent_id", "sequence", "provider_repository_id", "base_branch", "head_branch", "pr_identity", "observed_head_oid", "evidence_id", "created_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "delivery_records",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"delivery_record_id": "canonical_id", "delivery_intent_id": "canonical_id", "terminal_from_state": "delivery_state", "remote_observation_id": "canonical_id?", "pr_observation_id": "canonical_id?", "decision_evidence_id": "canonical_id", "cleanup_evidence_id": "canonical_id", "delivery_oid": "git_oid", "decision": "canonical_id", "output_digest": "sha256_digest", "created_at": "utc_timestamp"},
+        "primary_key": ["delivery_record_id"],
+        "foreign_keys": [{"columns": ["delivery_intent_id"], "references": "delivery_intents(delivery_intent_id)", "on_delete": "RESTRICT"}, {"columns": ["remote_observation_id", "delivery_intent_id"], "references": "remote_observations(remote_observation_id,delivery_intent_id)", "on_delete": "RESTRICT"}, {"columns": ["pr_observation_id", "delivery_intent_id"], "references": "pr_observations(pr_observation_id,delivery_intent_id)", "on_delete": "RESTRICT"}, {"columns": ["decision_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}, {"columns": ["cleanup_evidence_id"], "references": "evidence(evidence_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "delivery_records_intent_uq", "columns": ["delivery_intent_id"]}],
+        "checks": ["decision IN ('delivered','delivery_failed')", "delivered requires terminal_from_state pr_observed plus nonnull remote and PR observations whose intent and OIDs all equal the run delivery OID", "delivery_failed from intent_recorded has null remote and PR observations; from remote_observed has nonnull remote and null PR; from pr_observed has both nonnull", "decision evidence is exact and immutable and observation rows, when present, belong to the same delivery intent", "cleanup evidence is exact and immutable"],
+        "mutation": {"mode": "append_only", "update_trigger": "delivery_records_no_update", "delete_trigger": "delivery_records_no_delete", "immutable_columns": ["delivery_record_id", "delivery_intent_id", "terminal_from_state", "remote_observation_id", "pr_observation_id", "decision_evidence_id", "cleanup_evidence_id", "delivery_oid", "decision", "output_digest", "created_at"], "cas_columns": [], "cas_predicate": null}
+      },
+      {
+        "name": "legacy_artifacts",
+        "status": "reserved_contract_only",
+        "strict": true,
+        "columns": {"legacy_artifact_id": "canonical_id", "repository_id": "canonical_id", "kind": "canonical_id", "bounded_path_identity": "canonical_id", "stat_digest": "sha256_digest?", "content_digest": "sha256_digest?", "discovered_at": "utc_timestamp", "disposition": "canonical_id"},
+        "primary_key": ["legacy_artifact_id"],
+        "foreign_keys": [{"columns": ["repository_id"], "references": "repositories(repository_id)", "on_delete": "RESTRICT"}],
+        "unique_constraints": [{"name": "legacy_artifacts_identity_uq", "columns": ["repository_id", "kind", "bounded_path_identity"]}],
+        "checks": ["inventory does not follow symlinks", "only bounded path, stat, and content hash metadata is recorded", "no legacy lifecycle value is parsed or imported", "no foreign key or conversion route enters lifecycle, evidence, oracle, promotion, or delivery authority"],
+        "mutation": {"mode": "append_only", "update_trigger": "legacy_artifacts_no_update", "delete_trigger": "legacy_artifacts_no_delete", "immutable_columns": ["legacy_artifact_id", "repository_id", "kind", "bounded_path_identity", "stat_digest", "content_digest", "discovered_at", "disposition"], "cas_columns": [], "cas_predicate": null}
+      }
+    ]
+  },
+  "transactions": {
+    "default_write_begin": "BEGIN IMMEDIATE",
+    "transition_order": ["load exact state and version; validate edge, guard, and owner", "resolve immutable context and evidence inputs", "check entity-scoped idempotency key and input digest", "insert evidence, transition, and ordered references", "compare-and-set snapshot state and increment state_version; require exactly one changed row"],
+    "lease_resource_snapshot_order": ["load or derive the exact owner, state, and state_version", "insert or compare-and-set the mutable lease or resource row", "append a schema-versioned immutable evidence post-image with matching attempt_id and state_version", "commit the mutable row and immutable post-image atomically"],
+    "idempotency": {"same_key_same_input": "return existing committed result", "same_key_different_input": "RICKGENT_STATE_IDEMPOTENCY_CONFLICT"},
+    "cas_zero_rows": "RICKGENT_STATE_CONFLICT",
+    "invalid_edge": "RICKGENT_STATE_TRANSITION_ILLEGAL",
+    "wrong_owner": "RICKGENT_STATE_OWNER_MISMATCH",
+    "crash_visibility": "exactly old or new committed state",
+    "named": [
+      {"name": "open_and_migrate", "begin": "exclusive migration critical section", "owner": "StateMigrationService", "cas": false, "owner_check": false},
+      {"name": "allocate_run", "begin": "BEGIN IMMEDIATE", "owner": "RunAllocationService", "cas": true, "owner_check": false},
+      {"name": "allocate_attempt", "begin": "BEGIN IMMEDIATE", "owner": "RetryAllocationService", "cas": true, "owner_check": false},
+      {"name": "append_evidence", "begin": "BEGIN IMMEDIATE", "owner": "EvidenceService", "cas": false, "owner_check": true},
+      {"name": "transition_entity_cas", "begin": "BEGIN IMMEDIATE", "owner": "TransitionService", "cas": true, "owner_check": true},
+      {"name": "acquire_lease", "begin": "BEGIN IMMEDIATE", "owner": "LeaseService", "cas": true, "owner_check": true},
+      {"name": "heartbeat_lease", "begin": "BEGIN IMMEDIATE", "owner": "LeaseService", "cas": true, "owner_check": true},
+      {"name": "begin_lease_cleanup", "begin": "BEGIN IMMEDIATE", "owner": "LeaseService", "cas": true, "owner_check": true},
+      {"name": "release_lease", "begin": "BEGIN IMMEDIATE", "owner": "LeaseService", "cas": true, "owner_check": true},
+      {"name": "reserve_resource", "begin": "BEGIN IMMEDIATE", "owner": "ResourceService", "cas": true, "owner_check": true},
+      {"name": "advance_resource", "begin": "BEGIN IMMEDIATE", "owner": "ResourceService", "cas": true, "owner_check": true},
+      {"name": "quarantine_resource", "begin": "BEGIN IMMEDIATE", "owner": "ResourceService", "cas": true, "owner_check": true},
+      {"name": "release_resource", "begin": "BEGIN IMMEDIATE", "owner": "ResourceService", "cas": true, "owner_check": true},
+      {"name": "persist_oracle_decision", "begin": "BEGIN IMMEDIATE", "owner": "OracleDecisionService", "cas": false, "owner_check": true},
+      {"name": "create_promotion_intent", "begin": "BEGIN IMMEDIATE", "owner": "TicketFinalizationService", "cas": true, "owner_check": true},
+      {"name": "observe_promotion", "begin": "BEGIN IMMEDIATE", "owner": "TicketFinalizationService", "cas": true, "owner_check": true},
+      {"name": "finalize_promotion", "begin": "BEGIN IMMEDIATE", "owner": "TicketFinalizationService", "cas": true, "owner_check": true},
+      {"name": "create_delivery_intent", "begin": "BEGIN IMMEDIATE", "owner": "DeliveryService", "cas": false, "owner_check": true},
+      {"name": "append_remote_observation", "begin": "BEGIN IMMEDIATE", "owner": "DeliveryService", "cas": false, "owner_check": true},
+      {"name": "append_pr_observation", "begin": "BEGIN IMMEDIATE", "owner": "DeliveryService", "cas": false, "owner_check": true},
+      {"name": "finalize_delivery", "begin": "BEGIN IMMEDIATE", "owner": "DeliveryService", "cas": true, "owner_check": true},
+      {"name": "inventory_legacy", "begin": "BEGIN IMMEDIATE", "owner": "LegacyDiagnosticService", "cas": false, "owner_check": false}
+    ]
+  },
+  "state_machines": {
+    "attempt": {
+      "initial": "planned",
+      "states": ["planned", "implementing", "implementation_captured", "reviewing", "remediating", "remediation_captured", "verification_queued", "verifying", "converging", "cleanup_pending", "oracle_evaluation", "failed_clean", "quarantined", "verified"],
+      "terminal": ["failed_clean", "quarantined", "verified"],
+      "timeout_is_terminal": false,
+      "edges": [
+        {"from": "planned", "to": "implementing", "owner": "AttemptLifecycleService", "guard": "live owner-checked lease and reserved resources"},
+        {"from": "implementing", "to": "implementation_captured", "owner": "AttemptLifecycleService", "guard": "immutable implementation receipt"},
+        {"from": "implementation_captured", "to": "reviewing", "owner": "ReviewService", "guard": "review context and immutable input tree"},
+        {"from": "reviewing", "to": "verification_queued", "owner": "ReviewService", "guard": "review accepted and required review evidence present"},
+        {"from": "reviewing", "to": "remediating", "owner": "ReviewService", "guard": "review rejected and immutable remediation budget remains"},
+        {"from": "remediating", "to": "remediation_captured", "owner": "RemediationService", "guard": "immutable remediation output"},
+        {"from": "remediation_captured", "to": "reviewing", "owner": "ReviewService", "guard": "new review cycle within immutable budget"},
+        {"from": "verification_queued", "to": "verifying", "owner": "VerificationService", "guard": "verification context and owner-checked resources"},
+        {"from": "verifying", "to": "converging", "owner": "VerificationService", "guard": "all required gate results recorded"},
+        {"from": "converging", "to": "cleanup_pending", "owner": "AttemptLifecycleService", "guard": "candidate attribution or failure evidence recorded"},
+        {"from": "cleanup_pending", "to": "oracle_evaluation", "owner": "TicketFinalizationService", "guard": "accepted exact oracle decision and promotable candidate"},
+        {"from": "oracle_evaluation", "to": "verified", "owner": "TicketFinalizationService", "guard": "promotion finalized, cleanup proven, resources absent or quarantined, lease released"},
+        {"from": "cleanup_pending", "to": "failed_clean", "owner": "CleanupService", "guard": "failure or oracle rejection and complete cleanup proof"},
+        {"from": "cleanup_pending", "to": "quarantined", "owner": "CleanupService", "guard": "ownership or cleanup cannot be proven"}
+      ]
+    },
+    "ticket": {
+      "initial": "planned",
+      "states": ["planned", "active", "cleanup_pending", "failed", "quarantined", "ready_for_delivery"],
+      "terminal": ["failed", "quarantined", "ready_for_delivery"],
+      "edges": [
+        {"from": "planned", "to": "active", "owner": "RunAllocationService", "guard": "initial attempt allocated"},
+        {"from": "active", "to": "cleanup_pending", "owner": "AttemptLifecycleService", "guard": "attempt entered cleanup"},
+        {"from": "cleanup_pending", "to": "active", "owner": "RetryAllocationService", "guard": "next attempt committed before spawn and budget remains"},
+        {"from": "cleanup_pending", "to": "failed", "owner": "CleanupService", "guard": "clean terminal failure and no retry"},
+        {"from": "cleanup_pending", "to": "quarantined", "owner": "CleanupService", "guard": "attempt quarantine"},
+        {"from": "cleanup_pending", "to": "ready_for_delivery", "owner": "TicketFinalizationService", "guard": "accepted exact oracle decision, promotion finalized, and cleanup evidence"}
+      ]
+    },
+    "run": {
+      "initial": "planned",
+      "states": ["planned", "active", "cleanup_pending", "failed", "delivery_failed", "ready_for_delivery", "delivered"],
+      "terminal": ["failed", "delivery_failed", "delivered"],
+      "edges": [
+        {"from": "planned", "to": "active", "owner": "RunAllocationService", "guard": "run manifest and initial transitions committed"},
+        {"from": "active", "to": "cleanup_pending", "owner": "RunLifecycleService", "guard": "run-owned cleanup required"},
+        {"from": "active", "to": "failed", "owner": "RunFinalizationService", "guard": "irrecoverable cleaned run failure"},
+        {"from": "active", "to": "ready_for_delivery", "owner": "RunFinalizationService", "guard": "every planned ticket ready and delivery ref equals recorded chain OID"},
+        {"from": "cleanup_pending", "to": "active", "owner": "RunLifecycleService", "guard": "cleanup proven and work remains"},
+        {"from": "cleanup_pending", "to": "failed", "owner": "RunFinalizationService", "guard": "cleanup proven and run cannot continue"},
+        {"from": "ready_for_delivery", "to": "delivered", "owner": "DeliveryService", "guard": "remote branch and PR head independently observed at exact delivery OID"},
+        {"from": "ready_for_delivery", "to": "delivery_failed", "owner": "DeliveryService", "guard": "immutable delivery failure record"}
+      ]
+    },
+    "lease": {
+      "initial": "reserved",
+      "states": ["reserved", "live", "cleanup_pending", "released", "quarantined"],
+      "terminal": ["released", "quarantined"],
+      "edges": [["reserved", "live"], ["live", "cleanup_pending"], ["cleanup_pending", "released"], ["cleanup_pending", "quarantined"]],
+      "owner": "LeaseService"
+    },
+    "resource": {
+      "initial": "reserved",
+      "states": ["reserved", "allocated", "active", "cleanup_pending", "released", "quarantined"],
+      "terminal": ["released", "quarantined"],
+      "edges": [["reserved", "allocated"], ["allocated", "active"], ["allocated", "cleanup_pending"], ["active", "cleanup_pending"], ["cleanup_pending", "released"], ["cleanup_pending", "quarantined"]],
+      "owner": "ResourceService"
+    },
+    "promotion": {
+      "initial": "intent_recorded",
+      "states": ["intent_recorded", "ref_observed_old", "ref_observed_candidate", "conflicted", "finalized"],
+      "terminal": ["conflicted", "finalized"],
+      "edges": [["intent_recorded", "ref_observed_old"], ["intent_recorded", "ref_observed_candidate"], ["intent_recorded", "conflicted"], ["ref_observed_old", "ref_observed_candidate"], ["ref_observed_old", "conflicted"], ["ref_observed_candidate", "finalized"], ["ref_observed_candidate", "conflicted"]],
+      "owner": "TicketFinalizationService"
+    },
+    "delivery": {
+      "initial": "intent_recorded",
+      "states": ["intent_recorded", "remote_observed", "pr_observed", "delivered", "delivery_failed"],
+      "terminal": ["delivered", "delivery_failed"],
+      "edges": [["intent_recorded", "remote_observed"], ["remote_observed", "pr_observed"], ["pr_observed", "delivered"], ["intent_recorded", "delivery_failed"], ["remote_observed", "delivery_failed"], ["pr_observed", "delivery_failed"]],
+      "owner": "DeliveryService"
+    },
+    "terminal_rows_never_reopen": true,
+    "stored_done_state_allowed": false,
+    "done_presentation_alias": "run delivered"
+  },
+  "allocation_and_recovery": {
+    "ordinary_run": {
+      "always_new": true,
+      "identical_input_reused": false,
+      "transaction": "allocate_run",
+      "preconditions": ["strict PRD and TicketContract normalization", "canonical repository and state resolution"],
+      "atomic_writes": ["fresh random run ID", "next repository run sequence", "immutable run manifest", "all run tickets", "all dependency edges", "initial transition events"],
+      "forbidden_lookup": ["find-or-create", "latest run", "terminal dispatch cache", "cross-run ticket lookup"]
+    },
+    "attempt": {
+      "transaction": "allocate_attempt",
+      "next_number": "max(attempt_number) + 1 within the named run ticket",
+      "commit_before": ["lease acquisition", "resource side effect", "policy materialization", "agent spawn"],
+      "copies_run_delivery_oid_as_immutable_baseline": true,
+      "reuse_attempt_or_dispatch_identity": false
+    },
+    "retry": {
+      "public_capability": "unavailable",
+      "future_internal_identity": ["repository_identity", "run_id", "ticket_id"],
+      "requires": ["cleaned terminal failed attempt", "remaining immutable attempt budget"],
+      "quarantined_direct_retry_allowed": false,
+      "new_spawn_requires_new_attempt_first": true
+    },
+    "resume": {
+      "public_capability": "unavailable",
+      "required_selector": ["--repo", "--run"],
+      "explicit_run_required": true,
+      "forbidden_selectors": ["bare --resume", "caller CWD", "latest run", "ticket ID", "registry run ID", "ledger dispatch ID"],
+      "reject_incompatibility": ["repository identity", "contract or manifest digest", "context schema version", "oracle version", "capability snapshot", "resource identity version"],
+      "allowed_same_attempt_actions": ["observe or persist an idempotent side effect", "continue cleanup"],
+      "spawn_under_existing_attempt_number_allowed": false
+    }
+  },
+  "resource_identity": {
+    "status": "reserved_contract_only",
+    "kinds": ["delivery_ref", "attempt_ref", "worktree", "isolated_index", "policy_context", "policy_bundle", "process_group", "stdout", "stderr", "verification_output", "salvage_archive"],
+    "delivery_ref_template": "refs/rickgent/runs/<run-id>/delivery",
+    "attempt_ref_template": "refs/rickgent/runs/<run-id>/attempts/<attempt-id>",
+    "ref_validation": "git check-ref-format before reservation",
+    "private_attempt_directory": "<state-directory>/resources/<sha256(repository,run,ticket,attempt)>",
+    "private_attempt_directory_mode": "0700",
+    "fixed_slot_names": true,
+    "reserve_before_side_effect": true,
+    "process_identity_fields": ["pid", "pgid", "platform_boot_identity", "process_start_identity", "phase_execution_id", "context_digest", "lease_generation"],
+    "pid_alone_is_ownership_proof": false,
+    "owner_mutation_checks": ["owner_token_digest", "lease_generation", "owner_context", "resource_state", "resource_version"],
+    "stale_recovery_requires": ["expired heartbeat", "proven old process-group death", "immutable recovery evidence", "transition to cleanup before new generation ownership"]
+  },
+  "oracle": {
+    "status": "reserved_contract_only",
+    "result_states": ["accepted", "rejected"],
+    "gate_statuses": ["passed", "failed", "missing", "null", "skipped", "unavailable", "infrastructure_error", "stale", "conflicting"],
+    "required_gate_green_statuses": ["passed"],
+    "required_gate_blocking_statuses": ["failed", "missing", "null", "skipped", "unavailable", "infrastructure_error", "stale", "conflicting"],
+    "reference_kinds": ["run_manifest", "ticket_contract", "execution_context", "evidence", "gate_result", "review_record", "commit_attribution", "cleanup_record", "dependency_edge", "attempt_resource_snapshot", "lease_snapshot", "process_receipt"],
+    "required_input_classes": ["exact TicketContract", "dependency-ready and promotion set", "ExecutionContext", "capability snapshot", "baseline and workspace identity", "resource and lease identity", "process receipts and process-group death", "required phases and gates", "independent review and remediation", "convergence and commit attribution", "scope and model identity when profile-required", "cleanup and resource absence"],
+    "reference_resolution": "resolve the complete ordered content-pinned reference set in one read transaction before accepting a decision",
+    "snapshot_references": {
+      "direct_mutable_row_references_allowed": false,
+      "write_atomic_with_source_mutation": true,
+      "lease": {"reference_kind": "lease_snapshot", "column": "lease_snapshot_evidence_id", "evidence_schema_version": "rickgent.lease-snapshot.v1", "source_table": "leases", "source_version_column": "state_version"},
+      "attempt_resource": {"reference_kind": "attempt_resource_snapshot", "column": "resource_snapshot_evidence_id", "evidence_schema_version": "rickgent.attempt-resource-snapshot.v1", "source_table": "attempt_resources", "source_version_column": "state_version"}
+    },
+    "scope_congruence": "persist_oracle_decision copies the decision scope into every reference and rejects any input whose canonical run, ticket, or attempt lineage differs",
+    "pure_function": true,
+    "reads_live_files": false,
+    "reads_live_git_refs": false,
+    "reads_live_processes": false,
+    "reads_environment": false,
+    "reads_legacy_state": false,
+    "reads_commit_messages": false,
+    "updates_sqlite": false,
+    "version_change_behavior": "persist a new immutable evaluation; never relabel an old decision",
+    "ticket_ready_writer": "TicketFinalizationService",
+    "run_ready_writer": "RunFinalizationService",
+    "delivered_writer": "DeliveryService",
+    "forbidden_terminal_writers": ["worker", "phase_runner", "dispatcher", "cli", "status", "metrics", "reconcile", "generic_state_repository"]
+  },
+  "promotion": {
+    "status": "reserved_contract_only",
+    "mode": "sequential_compare_and_swap_fast_forward",
+    "scope_congruence": "composite foreign keys and create_promotion_intent require run, ticket, attempt, accepted oracle decision, commit attribution, and owner context to share one exact hierarchy",
+    "candidate_requirements": ["candidate sole parent equals attempt delivery_baseline_oid", "exact commit attribution, tree, and scope evidence", "accepted exact oracle decision"],
+    "protocol": [
+      {"step": 1, "operation": "persist immutable promotion intent", "authority": "SQLite transaction create_promotion_intent"},
+      {"step": 2, "operation": "git compare-and-swap", "authority": "array argv git -C <repo-realpath> update-ref <delivery-ref> <candidate-oid> <expected-old-oid>"},
+      {"step": 3, "operation": "independently observe delivery ref", "authority": "candidate is success; old is retryable; third OID is conflict"},
+      {"step": 4, "operation": "finalize promotion", "authority": "single BEGIN IMMEDIATE CAS transaction after cleanup and lease release"}
+    ],
+    "one_inflight_intent_per_run": true,
+    "git_update_ref_command": ["git", "-C", "<repo-realpath>", "update-ref", "<delivery-ref>", "<candidate-oid>", "<expected-old-oid>"],
+    "conflicted_retry_requires_new_attempt": true,
+    "merge_allowed": false,
+    "rebase_allowed": false,
+    "force_allowed": false,
+    "fallback_allowed": false,
+    "observation": {"candidate_oid": "success", "expected_old_oid": "retryable", "third_oid": "RICKGENT_PROMOTION_CONFLICT"},
+    "sequence_rule": "sequence 1 expected_old_oid equals run initial_delivery_oid; sequence n expected_old_oid equals sequence n-1 candidate_oid",
+    "finalization_atomic_writes": ["CAS run current_delivery_oid, state_version, and promotion_sequence", "finalize promotion intent", "attempt oracle_evaluation then verified transitions", "ticket ready_for_delivery transition by TicketFinalizationService"],
+    "accepted_commits_form_one_fast_forward_chain": true,
+    "crash_recovery": "compare only the exact persisted expected_old_oid and candidate_oid with the independently observed ref"
+  },
+  "delivery": {
+    "status": "reserved_contract_only",
+    "ready_for_delivery": "local oracle and finalization success; ticket commit is on the recorded local delivery chain and cleanup is proven",
+    "delivered": "verified remote delivery; independently observed remote branch and PR head equal the run delivery OID",
+    "done_alias": "presentation-only alias for run delivered",
+    "run_ready_is_terminal": false,
+    "ticket_ready_is_terminal": true,
+    "delivered_requires": ["exact delivery intent", "independently observed remote OID", "independently queried PR head OID", "cleanup evidence", "all observed OIDs equal run current_delivery_oid"],
+    "failure_recording": "delivery_failed records terminal_from_state and immutable decision evidence; remote and PR observation references are nullable and present only when that stage was actually observed",
+    "automatic_delivery_enabled": false
+  },
+  "legacy": {
+    "policy": "quarantine_or_diagnostic_read_only",
+    "inventory_kinds": ["registry.json", "dispatch-ledger.jsonl", "runs.jsonl", "interventions.jsonl", "salvage-dispositions.jsonl", "prs.jsonl", "defects.jsonl", "locks/*.lock", "legacy attempt receipts", "salvage archives", "ticket: <id> Git subjects"],
+    "resolver_uses_RICKGENT_DIR": false,
+    "resolver_scans_caller_cwd": false,
+    "diagnostics_follow_symlinks": false,
+    "diagnostic_fields": ["bounded_path_identity", "stat_digest", "content_digest", "discovered_at", "disposition"],
+    "authoritative_import_allowed": false,
+    "terminal_import_allowed": false,
+    "nonterminal_cache_import_allowed": false,
+    "git_subject_authoritative": false,
+    "corrupt_legacy_means_empty_state": false,
+    "mutation_open_with_lifecycle_legacy": "RICKGENT_LEGACY_STATE_QUARANTINED",
+    "quarantine_guidance": "archive or remove through an explicit nonzero operator action before mutation open",
+    "cutover_ticket": "t16",
+    "cutover_scope": ["run", "ticket", "attempt", "phase", "evidence", "status", "metrics"],
+    "post_cutover_authoritative_writer": "SQLite only",
+    "environment_fallback_allowed": false,
+    "feature_flag_fallback_allowed": false,
+    "shadow_write_allowed": false,
+    "long_lived_dual_write_allowed": false,
+    "historic_metrics_merge_into_terminal_truth": false
+  },
+  "capability_reservations": [
+    {"name": "durable_sqlite_state", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "t13"},
+    {"name": "run_attempt_allocation", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "t14"},
+    {"name": "oracle_and_promotion", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "t15"},
+    {"name": "caller_cutover_and_resume_retry", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "t16"},
+    {"name": "recovery_and_reconciliation", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "t17"},
+    {"name": "attempt_resources", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "t18_or_later"},
+    {"name": "automatic_delivery", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "post_milestone_3"}
+  ],
+  "stable_errors": [
+    {"code": "RICKGENT_STATE_RUNTIME_UNSUPPORTED", "class": "infrastructure", "condition": "Node runtime is older than 24.12.0 and cannot enforce the frozen DatabaseSync defensive and named-parameter options"},
+    {"code": "RICKGENT_STATE_ROOT_UNSAFE", "class": "infrastructure", "condition": "unsafe, symlinked, wrong-owner, wrong-mode, or wrong-type state root"},
+    {"code": "RICKGENT_STATE_BUSY", "class": "infrastructure", "condition": "bounded SQLite busy or locked result"},
+    {"code": "RICKGENT_STATE_CORRUPT", "class": "infrastructure", "condition": "not-a-database, integrity or foreign-key failure, migration gap, checksum drift, or user_version disagreement"},
+    {"code": "RICKGENT_STATE_SCHEMA_FUTURE", "class": "infrastructure", "condition": "database schema newer than the binary supports"},
+    {"code": "RICKGENT_STATE_MIGRATION_FAILED", "class": "infrastructure", "condition": "atomic migration rolled back and old schema remains intact"},
+    {"code": "RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "class": "input_contract", "condition": "same idempotency key with different input digest"},
+    {"code": "RICKGENT_STATE_CONFLICT", "class": "infrastructure", "condition": "compare-and-set changed zero rows"},
+    {"code": "RICKGENT_STATE_TRANSITION_ILLEGAL", "class": "input_contract", "condition": "requested lifecycle edge is not declared or its guard fails"},
+    {"code": "RICKGENT_STATE_OWNER_MISMATCH", "class": "infrastructure", "condition": "service, owner token digest, lease generation, context, or resource version mismatch"},
+    {"code": "RICKGENT_STATE_RESUME_INCOMPATIBLE", "class": "input_contract", "condition": "explicit run is incompatible with repository, contract, context, oracle, capability, or resource identity"},
+    {"code": "RICKGENT_LEGACY_STATE_QUARANTINED", "class": "infrastructure", "condition": "legacy lifecycle state blocks mutation open pending explicit quarantine"},
+    {"code": "RICKGENT_PROMOTION_CONFLICT", "class": "infrastructure", "condition": "delivery ref independently observed at a third OID"}
+  ]
+}
