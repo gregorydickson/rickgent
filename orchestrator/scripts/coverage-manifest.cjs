@@ -544,7 +544,10 @@ function runMutationCheck(incidentClassId) {
   const disposableOrchestrator = join(disposableRoot, "orchestrator");
   const disposablePolicies = join(disposableRoot, "rickgent-policies");
 
-  const copyFilter = (source) => !["node_modules", "dist", ".git", ".pytest_cache", "__pycache__"].includes(basename(source));
+  // Python policy fixtures authenticate and execute the built CLI. Keep dist
+  // in the disposable tree so their unmutated baseline is runnable; only the
+  // selected source file is mutated below.
+  const copyFilter = (source) => !["node_modules", ".git", ".pytest_cache", "__pycache__"].includes(basename(source));
   cpSync(ORCH_DIR, disposableOrchestrator, { recursive: true, filter: copyFilter });
   cpSync(POLICIES_DIR, disposablePolicies, { recursive: true, filter: copyFilter });
   cpSync(join(REPO_ROOT, "agents", "rickgent"), join(disposableRoot, "agents", "rickgent"), { recursive: true, filter: copyFilter });
