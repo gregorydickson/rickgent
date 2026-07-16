@@ -185,12 +185,30 @@ An ordinary build always allocates a fresh random run and next repository run
 sequence in one `allocate_run` transaction after strict contract
 normalization. Identical input is still a new run: there is no find-or-create,
 latest-run lookup, terminal-dispatch cache, or cross-run ticket reuse.
+The transaction commits only planned, version-zero identity snapshots. Those
+snapshots are explicitly non-runnable: the legal activation transitions owned
+by `t15` must commit before any lease, resource, policy materialization, or
+spawn activity. Dependency digests hash the canonical
+`{run_id,ticket_id,depends_on_ticket_id}` tuple so identical plans in distinct
+runs cannot collide.
 
 `allocate_attempt` chooses `max(attempt_number) + 1` inside the explicit run
 ticket and commits the attempt, allocation owner, baseline delivery OID, and
-initial transitions before lease acquisition, resource side effects, policy
-materialization, or spawn. A retry that will spawn must allocate first and can
-never reuse an attempt or dispatch identity.
+compatibility projection before the legal activation transition, lease
+acquisition, resource side effects, policy materialization, or spawn. Initial
+and retry allocation therefore return a non-runnable planned identity; `t15`
+atomically activates it through the frozen transition graph. A retry checks
+its exact contract, context, oracle, capability, and resource versions inside
+the same allocation transaction. It can never reuse an attempt or dispatch
+identity.
+
+Run allocation accepts only the compiled, versioned capability snapshot and
+an existing commit in the selected repository as its initial delivery
+baseline. Durable execution contexts project the allocated repository, run,
+ticket, attempt, phase, budgets, timeout, scope, model, and authenticated
+pre-context policy-bundle identities exactly. Context and phase rows commit as
+one transaction; terminal attempts may replay an existing tuple but cannot
+mint a new one.
 
 Resume names exactly `--repo <repo> --run <run-id>`. Bare/latest/CWD resume is
 invalid. It rejects repository, manifest/contract, context-schema, oracle,

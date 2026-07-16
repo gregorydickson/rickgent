@@ -13,8 +13,15 @@ import {
   statSync,
   unlinkSync,
 } from "node:fs";
-import { isAbsolute, join, parse, sep } from "node:path";
+import { isAbsolute, join, parse, relative, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import {
+  capabilityRegistry,
+  CLAIMS_SCHEMA_VERSION,
+  RELEASE_CHANNEL,
+  RELEASE_LABEL,
+} from "../capabilities/registry.js";
+import { normalizeTicketContracts } from "../contracts/ticket-contract.js";
 import {
   INITIAL_STATE_SCHEMA_OBJECTS,
   INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM,
@@ -37,7 +44,7 @@ const WAL_AUTOCHECKPOINT = 1_000;
 const MAX_GIT_OUTPUT = 1024 * 1024;
 
 type SqlValue = null | string | number | bigint | Uint8Array;
-type StateRecord = Readonly<Record<string, SqlValue>>;
+export type StateRecord = Readonly<Record<string, SqlValue>>;
 type MutableStateRecord = Record<string, SqlValue>;
 export type StateTableName = (typeof STATE_TABLES)[number];
 export type AppendOnlyStateTableName = Exclude<(typeof APPEND_ONLY_STATE_TABLES)[number], "schema_migrations">;
@@ -107,6 +114,165 @@ export class StateStoreError extends Error {
 }
 
 export type StateRowInput = Readonly<Record<string, SqlValue | boolean>>;
+
+export interface ImmutableJsonInput {
+  readonly schemaVersion: string;
+  readonly canonicalJson: string;
+  readonly digest: `sha256:${string}`;
+}
+
+export interface RunManifestAllocationInput extends ImmutableJsonInput {
+  readonly capabilitySnapshot: ImmutableJsonInput;
+  readonly contextSchemaVersion: string;
+  readonly oracleVersion: string;
+  readonly resourceIdentityVersion: string;
+}
+
+export interface RunTicketAllocationInput {
+  readonly ticketId: string;
+  readonly planIndex: number;
+  readonly contract: ImmutableJsonInput;
+  readonly dependsOnTicketIds: readonly string[];
+}
+
+export interface AllocateFreshRunInput {
+  readonly manifest: RunManifestAllocationInput;
+  readonly tickets: readonly RunTicketAllocationInput[];
+  readonly initialDeliveryOid: string;
+}
+
+export interface AllocatedRunTicket {
+  readonly ticketInstanceId: string;
+  readonly runId: string;
+  readonly ticketId: string;
+  readonly planIndex: number;
+  readonly contractDigest: string;
+  readonly state: "planned";
+  readonly stateVersion: 0;
+}
+
+export interface AllocatedRun {
+  /** t14 identities are committed but cannot run until t15 records legal activation transitions. */
+  readonly runnable: false;
+  readonly runId: string;
+  readonly repositoryId: string;
+  readonly runSequence: number;
+  readonly manifestDigest: string;
+  readonly initialDeliveryOid: string;
+  readonly currentDeliveryOid: string;
+  readonly deliveryRef: string;
+  readonly state: "planned";
+  readonly stateVersion: 0;
+  readonly tickets: readonly AllocatedRunTicket[];
+}
+
+export interface AttemptAllocationInput {
+  readonly runId: string;
+  readonly ticketId: string;
+}
+
+export interface AllocatedAttempt {
+  /** Allocation commits identity only; it grants no spawn authority. */
+  readonly runnable: false;
+  readonly attemptId: string;
+  readonly ticketInstanceId: string;
+  readonly runId: string;
+  readonly ticketId: string;
+  readonly attemptNumber: number;
+  readonly contractDigest: string;
+  readonly allocationOwnerDigest: string;
+  readonly deliveryBaselineOid: string;
+  readonly contextSchemaVersion: string;
+  readonly oracleVersion: string;
+  readonly capabilitySnapshotDigest: string;
+  readonly resourceIdentityVersion: string;
+  readonly state: "planned";
+  readonly stateVersion: 0;
+}
+
+export interface ResumeTicketCompatibility {
+  readonly ticketId: string;
+  readonly contractDigest: string;
+}
+
+export interface ResumeCompatibilityInput {
+  readonly runId: string;
+  readonly manifestDigest: string;
+  readonly contextSchemaVersion: string;
+  readonly oracleVersion: string;
+  readonly capabilitySnapshotDigest: string;
+  readonly resourceIdentityVersion: string;
+  readonly tickets: readonly ResumeTicketCompatibility[];
+}
+
+export interface ResumeTicketSelection {
+  readonly ticketInstanceId: string;
+  readonly ticketId: string;
+  readonly contractDigest: string;
+  readonly state: string;
+  readonly latestAttempt: PersistedAttemptSelection | null;
+}
+
+export interface PersistedAttemptSelection extends Omit<AllocatedAttempt, "state" | "stateVersion"> {
+  readonly state: string;
+  readonly stateVersion: number;
+}
+
+export interface ResumeSelection {
+  readonly runId: string;
+  readonly repositoryId: string;
+  readonly runSequence: number;
+  readonly manifestDigest: string;
+  readonly state: string;
+  readonly tickets: readonly ResumeTicketSelection[];
+}
+
+export interface RetryCompatibilityInput {
+  readonly runId: string;
+  readonly ticketId: string;
+  readonly contractDigest: string;
+  readonly contextSchemaVersion: string;
+  readonly oracleVersion: string;
+  readonly capabilitySnapshotDigest: string;
+  readonly resourceIdentityVersion: string;
+}
+
+export interface RetrySelection {
+  readonly runnable: false;
+  readonly runId: string;
+  readonly ticketId: string;
+  readonly ticketInstanceId: string;
+  readonly contractDigest: string;
+  readonly latestAttemptId: string;
+  readonly latestAttemptNumber: number;
+  readonly maxAttempts: number;
+  readonly nextAttemptNumber: number;
+}
+
+export interface PersistDurableExecutionContextInput {
+  readonly attemptId: string;
+  readonly phase: string;
+  readonly phaseOrdinal: number;
+  readonly role: string;
+  readonly worktreeRealpath: string;
+  readonly policyRootRealpath: string;
+  readonly bundleRootRealpath: string;
+  readonly timeoutMs: number;
+  readonly canonicalContextJson: string;
+  readonly policyBundleDigest: string;
+  readonly modelSelectionDigest: string;
+  readonly budgetDigest: string;
+  readonly scopeDigest: string;
+}
+
+export interface PersistedExecutionContextRows {
+  readonly contextId: string;
+  readonly contextDigest: string;
+  readonly phaseExecutionId: string;
+  readonly phaseIdentityDigest: string;
+  readonly context: StateRecord;
+  readonly phaseExecution: StateRecord;
+}
 
 export interface LeaseCasRequest {
   readonly leaseId: string;
@@ -796,6 +962,14 @@ function frozenRow(row: Record<string, SqlValue>): StateRecord {
   return Object.freeze({ ...row });
 }
 
+function freezeValue<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value as Record<string, unknown>)) freezeValue(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
   if (typeof value === "number") {
@@ -884,6 +1058,186 @@ export class StateStore {
     validateCanonicalFiles(this.location);
   }
 
+  allocateFreshRun(input: AllocateFreshRunInput): AllocatedRun {
+    this.#assertRepositoryCommit(input.initialDeliveryOid, "initial delivery oid");
+    this.#validateFreshRunInput(input);
+    return this.#immediate("allocate_fresh_run", () => {
+      const createdAt = new Date().toISOString();
+      this.#insertSharedImmutable(
+        "run_manifests",
+        {
+          manifest_digest: input.manifest.digest,
+          schema_version: input.manifest.schemaVersion,
+          canonical_manifest_json: input.manifest.canonicalJson,
+          capability_snapshot_digest: input.manifest.capabilitySnapshot.digest,
+          context_schema_version: input.manifest.contextSchemaVersion,
+          oracle_version: input.manifest.oracleVersion,
+          created_at: createdAt,
+        },
+        ["manifest_digest"],
+        ["schema_version", "canonical_manifest_json", "capability_snapshot_digest", "context_schema_version", "oracle_version"],
+      );
+      for (const ticket of input.tickets) {
+        this.#insertSharedImmutable(
+          "ticket_contracts",
+          {
+            contract_digest: ticket.contract.digest,
+            schema_version: ticket.contract.schemaVersion,
+            canonical_contract_json: ticket.contract.canonicalJson,
+            created_at: createdAt,
+          },
+          ["contract_digest"],
+          ["schema_version", "canonical_contract_json"],
+        );
+      }
+
+      const sequenceRow = this.#requireDatabase().prepare(
+        "SELECT COALESCE(MAX(run_sequence), 0) + 1 AS next_sequence FROM runs WHERE repository_id = ?",
+      ).get(this.location.repositoryId) as MutableStateRecord;
+      const runSequence = Number(sequenceRow.next_sequence);
+      if (!Number.isSafeInteger(runSequence) || runSequence < 1) throw new StateStoreError("RICKGENT_STATE_CORRUPT", "next run sequence is invalid");
+      const runId = `run-${randomBytes(16).toString("hex")}`;
+      const deliveryRef = `refs/rickgent/runs/${runId}/delivery`;
+      try {
+        execFileSync("git", ["check-ref-format", deliveryRef], { cwd: this.location.repoRealpath, stdio: "ignore" });
+      } catch (error) {
+        throw typedError("RICKGENT_STATE_CONFLICT", "generated delivery ref is invalid", this.location.databasePath, error);
+      }
+      this.#insert("runs", {
+        run_id: runId,
+        repository_id: this.location.repositoryId,
+        run_sequence: runSequence,
+        manifest_digest: input.manifest.digest,
+        initial_delivery_oid: input.initialDeliveryOid,
+        delivery_ref: deliveryRef,
+        state: "planned",
+        state_version: 0,
+        current_delivery_oid: input.initialDeliveryOid,
+        promotion_sequence: 0,
+        created_at: createdAt,
+      });
+
+      const allocatedTickets: AllocatedRunTicket[] = [];
+      for (const ticket of [...input.tickets].sort((left, right) => left.planIndex - right.planIndex)) {
+        const ticketInstanceId = `ticket-${randomBytes(16).toString("hex")}`;
+        this.#insert("run_tickets", {
+          ticket_instance_id: ticketInstanceId,
+          run_id: runId,
+          ticket_id: ticket.ticketId,
+          plan_index: ticket.planIndex,
+          contract_digest: ticket.contract.digest,
+          state: "planned",
+          state_version: 0,
+          created_at: createdAt,
+        });
+        allocatedTickets.push({
+          ticketInstanceId,
+          runId,
+          ticketId: ticket.ticketId,
+          planIndex: ticket.planIndex,
+          contractDigest: ticket.contract.digest,
+          state: "planned",
+          stateVersion: 0,
+        });
+      }
+      for (const ticket of input.tickets) {
+        for (const dependency of ticket.dependsOnTicketIds) {
+          const payload = canonicalJson({ run_id: runId, ticket_id: ticket.ticketId, depends_on_ticket_id: dependency });
+          this.#insert("run_ticket_dependencies", {
+            run_id: runId,
+            ticket_id: ticket.ticketId,
+            depends_on_ticket_id: dependency,
+            dependency_digest: sha256Text(payload),
+          });
+        }
+      }
+      return freezeValue({
+        runnable: false as const,
+        runId,
+        repositoryId: this.location.repositoryId,
+        runSequence,
+        manifestDigest: input.manifest.digest,
+        initialDeliveryOid: input.initialDeliveryOid,
+        currentDeliveryOid: input.initialDeliveryOid,
+        deliveryRef,
+        state: "planned" as const,
+        stateVersion: 0 as const,
+        tickets: allocatedTickets,
+      });
+    });
+  }
+
+  allocateInitialAttempt(input: AttemptAllocationInput): AllocatedAttempt {
+    return this.#allocateAttempt(input, "initial");
+  }
+
+  allocateRetryAttempt(input: RetryCompatibilityInput): AllocatedAttempt {
+    return this.#allocateAttempt(input, "retry");
+  }
+
+  selectCompatibleResume(input: ResumeCompatibilityInput): ResumeSelection {
+    return this.#immediate("select_compatible_resume", () => {
+      if (typeof input.runId !== "string" || input.runId === "") this.#resumeIncompatible("resume requires an explicit run id");
+      const run = this.#requireDatabase().prepare(`
+        SELECT r.*, rm.capability_snapshot_digest, rm.context_schema_version, rm.oracle_version, rm.canonical_manifest_json
+        FROM runs r JOIN run_manifests rm ON rm.manifest_digest = r.manifest_digest
+        WHERE r.run_id = ? AND r.repository_id = ?
+      `).get(input.runId, this.location.repositoryId) as MutableStateRecord | undefined;
+      if (run === undefined) this.#resumeIncompatible("explicit run does not belong to the selected repository");
+      if (
+        run.manifest_digest !== input.manifestDigest || run.context_schema_version !== input.contextSchemaVersion ||
+        run.oracle_version !== input.oracleVersion || run.capability_snapshot_digest !== input.capabilitySnapshotDigest
+      ) this.#resumeIncompatible("run compatibility projection changed");
+      const manifest = this.#parseJsonObject(String(run.canonical_manifest_json), "run manifest");
+      if (manifest.resource_identity_version !== input.resourceIdentityVersion) this.#resumeIncompatible("resource identity version changed");
+
+      const expected = new Map<string, string>();
+      for (const ticket of input.tickets) {
+        if (expected.has(ticket.ticketId)) this.#resumeIncompatible("resume ticket set contains duplicates");
+        expected.set(ticket.ticketId, ticket.contractDigest);
+      }
+      const rows = this.#requireDatabase().prepare(
+        "SELECT * FROM run_tickets WHERE run_id = ? ORDER BY plan_index",
+      ).all(input.runId) as MutableStateRecord[];
+      if (rows.length !== expected.size) this.#resumeIncompatible("resume ticket set differs from the persisted run");
+      const tickets: ResumeTicketSelection[] = [];
+      for (const row of rows) {
+        const ticketId = String(row.ticket_id);
+        if (expected.get(ticketId) !== row.contract_digest) this.#resumeIncompatible(`ticket contract changed for ${ticketId}`);
+        const attempts = this.#requireDatabase().prepare(
+          "SELECT * FROM attempts WHERE ticket_instance_id = ? ORDER BY attempt_number",
+        ).all(row.ticket_instance_id ?? null) as MutableStateRecord[];
+        for (const attempt of attempts) {
+          if (
+            attempt.contract_digest !== row.contract_digest || attempt.context_schema_version !== input.contextSchemaVersion ||
+            attempt.oracle_version !== input.oracleVersion || attempt.capability_snapshot_digest !== input.capabilitySnapshotDigest ||
+            attempt.resource_identity_version !== input.resourceIdentityVersion
+          ) this.#resumeIncompatible(`attempt compatibility changed for ${ticketId}`);
+        }
+        const latest = attempts.at(-1);
+        tickets.push({
+          ticketInstanceId: String(row.ticket_instance_id),
+          ticketId,
+          contractDigest: String(row.contract_digest),
+          state: String(row.state),
+          latestAttempt: latest === undefined ? null : this.#persistedAttempt(latest),
+        });
+      }
+      return freezeValue({
+        runId: String(run.run_id),
+        repositoryId: String(run.repository_id),
+        runSequence: Number(run.run_sequence),
+        manifestDigest: String(run.manifest_digest),
+        state: String(run.state),
+        tickets,
+      });
+    });
+  }
+
+  selectCompatibleRetry(input: RetryCompatibilityInput): RetrySelection {
+    return this.#immediate("select_compatible_retry", () => this.#selectRetryInTransaction(input));
+  }
+
   recordRunManifest(input: StateRowInput): StateRecord {
     return this.#appendIdempotent(
       "run_manifests",
@@ -902,17 +1256,102 @@ export class StateStore {
     );
   }
 
-  recordExecutionContext(input: StateRowInput): StateRecord {
-    return this.#appendIdempotent(
-      "execution_contexts",
-      input,
-      ["context_id"],
-      [
-        "context_digest", "attempt_id", "phase", "phase_ordinal", "role", "canonical_context_json",
-        "contract_digest", "capability_snapshot_digest", "policy_bundle_digest", "model_selection_digest",
-        "budget_digest", "scope_digest", "context_schema_version", "oracle_version",
-      ],
-    );
+  persistDurableExecutionContext(input: PersistDurableExecutionContextInput): PersistedExecutionContextRows {
+    return this.#immediate("persist_durable_execution_context", () => {
+      const projection = this.#validateDurableContextProjection(input);
+      const contextDigest = sha256Text(input.canonicalContextJson);
+      const tupleJson = canonicalJson({
+        attempt_id: input.attemptId,
+        phase: input.phase,
+        phase_ordinal: input.phaseOrdinal,
+        role: input.role,
+      });
+      const contextId = `context-${sha256Text(tupleJson).slice("sha256:".length)}`;
+      const phaseIdentityJson = canonicalJson({
+        attempt_id: input.attemptId,
+        context_id: contextId,
+        phase: input.phase,
+        phase_ordinal: input.phaseOrdinal,
+        role: input.role,
+      });
+      const phaseIdentityDigest = sha256Text(phaseIdentityJson);
+      const phaseExecutionId = `phase-${phaseIdentityDigest.slice("sha256:".length)}`;
+      const createdAt = new Date().toISOString();
+      const contextRow: MutableStateRecord = {
+        context_id: contextId,
+        context_digest: contextDigest,
+        attempt_id: input.attemptId,
+        phase: input.phase,
+        phase_ordinal: input.phaseOrdinal,
+        role: input.role,
+        canonical_context_json: input.canonicalContextJson,
+        contract_digest: String(projection.contract_digest),
+        capability_snapshot_digest: String(projection.capability_snapshot_digest),
+        policy_bundle_digest: input.policyBundleDigest,
+        model_selection_digest: input.modelSelectionDigest,
+        budget_digest: input.budgetDigest,
+        scope_digest: input.scopeDigest,
+        context_schema_version: String(projection.context_schema_version),
+        oracle_version: String(projection.oracle_version),
+        created_at: createdAt,
+      };
+      const contextExisting = this.#selectBy("execution_contexts", contextRow, ["context_id"]);
+      let storedContext: StateRecord;
+      if (contextExisting !== undefined) {
+        const equality = Object.keys(contextRow).filter((column) => column !== "created_at");
+        if (!equality.every((column) => sameValue(contextExisting[column], contextRow[column]))) {
+          throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "execution phase tuple already has a different immutable context", this.location.databasePath);
+        }
+        storedContext = frozenRow(contextExisting);
+      } else {
+        this.#validateRecordSemantics("execution_contexts", contextRow);
+        this.#insert("execution_contexts", contextRow);
+        storedContext = frozenRow(contextRow);
+      }
+
+      const phaseRow: MutableStateRecord = {
+        phase_execution_id: phaseExecutionId,
+        attempt_id: input.attemptId,
+        context_id: contextId,
+        phase: input.phase,
+        phase_ordinal: input.phaseOrdinal,
+        role: input.role,
+        identity_digest: phaseIdentityDigest,
+        created_at: contextExisting === undefined ? createdAt : String(storedContext.created_at),
+      };
+      const phaseExisting = this.#selectBy("phase_executions", phaseRow, ["phase_execution_id"]);
+      if (
+        ["failed_clean", "quarantined", "verified"].includes(String(projection.attempt_state)) &&
+        (contextExisting === undefined || phaseExisting === undefined)
+      ) {
+        throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "terminal attempts cannot mint a new execution context or phase tuple", this.location.databasePath);
+      }
+      if (
+        !["planned", "active"].includes(String(projection.run_state)) &&
+        (contextExisting === undefined || phaseExisting === undefined)
+      ) {
+        throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "inactive or terminal runs cannot mint a new execution context or phase tuple", this.location.databasePath);
+      }
+      let storedPhase: StateRecord;
+      if (phaseExisting !== undefined) {
+        const equality = Object.keys(phaseRow).filter((column) => column !== "created_at");
+        if (!equality.every((column) => sameValue(phaseExisting[column], phaseRow[column]))) {
+          throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "phase execution identity already has different immutable input", this.location.databasePath);
+        }
+        storedPhase = frozenRow(phaseExisting);
+      } else {
+        this.#insert("phase_executions", phaseRow);
+        storedPhase = frozenRow(phaseRow);
+      }
+      return freezeValue({
+        contextId,
+        contextDigest,
+        phaseExecutionId,
+        phaseIdentityDigest,
+        context: storedContext,
+        phaseExecution: storedPhase,
+      });
+    });
   }
 
   appendEvidence(input: StateRowInput): StateRecord {
@@ -1269,6 +1708,409 @@ export class StateStore {
     return row === undefined ? undefined : frozenRow(row);
   }
 
+  #validateDurableContextProjection(input: PersistDurableExecutionContextInput): MutableStateRecord {
+    if (!Number.isSafeInteger(input.phaseOrdinal) || input.phaseOrdinal < 0) throw new TypeError("phase ordinal must be a nonnegative safe integer");
+    const text = assertCanonicalJsonText(input.canonicalContextJson, "durable execution context");
+    for (const [label, digest] of [
+      ["policy bundle", input.policyBundleDigest],
+      ["model selection", input.modelSelectionDigest],
+      ["budget", input.budgetDigest],
+      ["scope", input.scopeDigest],
+    ] as const) {
+      if (!/^sha256:[0-9a-f]{64}$/.test(digest)) throw new TypeError(`${label} digest is invalid`);
+    }
+    const context = this.#parseJsonObject(text, "durable execution context");
+    const lineage = this.#requireDatabase().prepare(`
+      SELECT a.attempt_id, a.ticket_instance_id, a.run_id, a.ticket_id, a.attempt_number, a.state AS attempt_state,
+             a.contract_digest, a.capability_snapshot_digest, a.context_schema_version,
+             a.oracle_version, a.resource_identity_version,
+             r.repository_id, r.state AS run_state, repo.repo_realpath, repo.git_common_dir_realpath, repo.object_format,
+             tc.canonical_contract_json
+      FROM attempts a
+      JOIN run_tickets rt ON rt.ticket_instance_id = a.ticket_instance_id
+      JOIN runs r ON r.run_id = a.run_id
+      JOIN repositories repo ON repo.repository_id = r.repository_id
+      JOIN ticket_contracts tc ON tc.contract_digest = a.contract_digest
+      WHERE a.attempt_id = ? AND r.repository_id = ?
+    `).get(input.attemptId, this.location.repositoryId) as MutableStateRecord | undefined;
+    if (lineage === undefined) this.#resumeIncompatible("execution context attempt does not belong to the selected repository");
+    const contract = this.#parseJsonObject(String(lineage.canonical_contract_json), "ticket contract");
+    const expected: Readonly<Record<string, unknown>> = {
+      schema_version: lineage.context_schema_version,
+      repository_id: this.location.repositoryId,
+      repo_realpath: this.location.repoRealpath,
+      git_common_dir_realpath: this.location.gitCommonDirRealpath,
+      object_format: this.location.objectFormat,
+      state_root_realpath: this.location.stateDirectory,
+      resource_root_realpath: this.location.resourceDirectory,
+      run_id: lineage.run_id,
+      ticket_instance_id: lineage.ticket_instance_id,
+      ticket_id: lineage.ticket_id,
+      attempt_id: lineage.attempt_id,
+      attempt_number: lineage.attempt_number,
+      phase: input.phase,
+      phase_ordinal: input.phaseOrdinal,
+      role: input.role,
+      worktree_realpath: input.worktreeRealpath,
+      policy_root_realpath: input.policyRootRealpath,
+      bundle_root_realpath: input.bundleRootRealpath,
+      timeout_ms: input.timeoutMs,
+      contract_digest: lineage.contract_digest,
+      capability_snapshot_digest: lineage.capability_snapshot_digest,
+      policy_bundle_digest: input.policyBundleDigest,
+      model_selection_digest: input.modelSelectionDigest,
+      budget_digest: input.budgetDigest,
+      scope_digest: input.scopeDigest,
+      context_schema_version: lineage.context_schema_version,
+      oracle_version: lineage.oracle_version,
+      resource_identity_version: lineage.resource_identity_version,
+      budgets: contract.budgets,
+      scope: contract.scope,
+    };
+    const allowedKeys = new Set(Object.keys(expected));
+    const contextKeys = Object.keys(context);
+    if (contextKeys.length !== allowedKeys.size || contextKeys.some((key) => !allowedKeys.has(key))) {
+      this.#resumeIncompatible("durable execution context contains fields outside the frozen schema");
+    }
+    for (const [key, value] of Object.entries(expected)) {
+      if (canonicalJson(context[key]) !== canonicalJson(value)) {
+        this.#resumeIncompatible(`execution context ${key} differs from authoritative lineage`);
+      }
+    }
+    if (sha256Text(canonicalJson(contract.budgets)) !== input.budgetDigest || sha256Text(canonicalJson(contract.scope)) !== input.scopeDigest) {
+      this.#resumeIncompatible("execution context budget or scope digest differs from its ticket contract");
+    }
+    if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1) throw new TypeError("execution context timeoutMs must be positive");
+    for (const [field, value] of [
+      ["worktreeRealpath", input.worktreeRealpath],
+      ["policyRootRealpath", input.policyRootRealpath],
+      ["bundleRootRealpath", input.bundleRootRealpath],
+    ] as const) {
+      if (!isAbsolute(value) || realpathSync.native(value) !== value) throw new TypeError(`execution context ${field} must be an existing canonical absolute path`);
+    }
+    if (input.worktreeRealpath !== this.location.repoRealpath) {
+      throw new TypeError("t14 context worktree must remain the selected repository until t15 persists attempt resources");
+    }
+    for (const [field, value] of [
+      ["policyRootRealpath", input.policyRootRealpath],
+      ["bundleRootRealpath", input.bundleRootRealpath],
+    ] as const) {
+      const fromResourceRoot = relative(this.location.resourceDirectory, value);
+      if (fromResourceRoot === ".." || fromResourceRoot.startsWith(`..${sep}`) || isAbsolute(fromResourceRoot)) {
+        throw new TypeError(`t14 context ${field} must be contained by the canonical resource root`);
+      }
+    }
+    return lineage;
+  }
+
+  #validateFreshRunInput(input: AllocateFreshRunInput): void {
+    if (input.tickets.length === 0) throw new TypeError("fresh run allocation requires at least one ticket");
+    this.#validateImmutableJson(input.manifest, "run manifest");
+    this.#validateImmutableJson(input.manifest.capabilitySnapshot, "capability snapshot");
+    if (
+      input.manifest.schemaVersion !== "rickgent.run-manifest/v1" ||
+      input.manifest.contextSchemaVersion !== "rickgent.execution-context/v1" ||
+      input.manifest.resourceIdentityVersion !== "rickgent.attempt-resource-identity/v1"
+    ) throw new TypeError("fresh run allocation uses an unsupported identity schema version");
+    const compiledCapabilityJson = canonicalJson({
+      schema_version: "rickgent.capability-snapshot/v1",
+      claims_schema_version: CLAIMS_SCHEMA_VERSION,
+      release_channel: RELEASE_CHANNEL,
+      release_label: RELEASE_LABEL,
+      capabilities: capabilityRegistry(),
+    });
+    if (
+      input.manifest.capabilitySnapshot.schemaVersion !== "rickgent.capability-snapshot/v1" ||
+      input.manifest.capabilitySnapshot.canonicalJson !== compiledCapabilityJson ||
+      input.manifest.capabilitySnapshot.digest !== sha256Text(compiledCapabilityJson)
+    ) throw new TypeError("capability snapshot differs from the compiled release boundary");
+    const manifest = this.#parseJsonObject(input.manifest.canonicalJson, "run manifest");
+    const capability = JSON.parse(input.manifest.capabilitySnapshot.canonicalJson) as unknown;
+    const ordered = [...input.tickets].sort((left, right) => left.planIndex - right.planIndex);
+    const ids = new Set<string>();
+    const indexes = new Set<number>();
+    for (const [position, ticket] of ordered.entries()) {
+      this.#validateImmutableJson(ticket.contract, `ticket ${ticket.ticketId} contract`);
+      if (typeof ticket.ticketId !== "string" || ticket.ticketId === "" || ids.has(ticket.ticketId)) throw new TypeError("fresh run ticket ids must be nonempty and unique");
+      if (!Number.isSafeInteger(ticket.planIndex) || ticket.planIndex !== position || indexes.has(ticket.planIndex)) {
+        throw new TypeError("fresh run plan indexes must be unique and contiguous from zero");
+      }
+      ids.add(ticket.ticketId);
+      indexes.add(ticket.planIndex);
+      const contract = this.#parseJsonObject(ticket.contract.canonicalJson, `ticket ${ticket.ticketId} contract`);
+      if (
+        contract.schema_version !== ticket.contract.schemaVersion || contract.id !== ticket.ticketId ||
+        canonicalJson(contract.depends_on) !== canonicalJson(ticket.dependsOnTicketIds)
+      ) {
+        throw new TypeError(`ticket ${ticket.ticketId} contract projection differs from allocation identity`);
+      }
+    }
+    for (const ticket of input.tickets) {
+      const dependencies = new Set<string>();
+      for (const dependency of ticket.dependsOnTicketIds) {
+        if (!ids.has(dependency) || dependency === ticket.ticketId || dependencies.has(dependency)) {
+          throw new TypeError(`ticket ${ticket.ticketId} has an invalid dependency set`);
+        }
+        dependencies.add(dependency);
+      }
+    }
+    const normalizedContracts = normalizeTicketContracts(
+      ordered.map((ticket) => ({
+        ...this.#parseJsonObject(ticket.contract.canonicalJson, `ticket ${ticket.ticketId} contract`),
+        digest: ticket.contract.digest,
+      })),
+      {
+        repositoryRoot: this.location.repoRealpath,
+        stateRoots: [this.location.stateDirectory, this.location.resourceDirectory],
+      },
+    );
+    for (const [index, normalized] of normalizedContracts.entries()) {
+      const ticket = ordered[index];
+      if (ticket === undefined || normalized.id !== ticket.ticketId || normalized.digest !== ticket.contract.digest) {
+        throw new TypeError("normalized ticket contract order or identity differs from the run allocation");
+      }
+    }
+    const ticketProjection = ordered.map((ticket) => ({
+      contract_digest: ticket.contract.digest,
+      depends_on_ticket_ids: [...ticket.dependsOnTicketIds],
+      plan_index: ticket.planIndex,
+      ticket_id: ticket.ticketId,
+    }));
+    const expected: Readonly<Record<string, unknown>> = {
+      schema_version: input.manifest.schemaVersion,
+      capability_snapshot: capability,
+      capability_snapshot_digest: input.manifest.capabilitySnapshot.digest,
+      capability_snapshot_schema_version: input.manifest.capabilitySnapshot.schemaVersion,
+      context_schema_version: input.manifest.contextSchemaVersion,
+      git_common_dir_realpath: this.location.gitCommonDirRealpath,
+      object_format: this.location.objectFormat,
+      oracle_version: input.manifest.oracleVersion,
+      repo_realpath: this.location.repoRealpath,
+      repository_id: this.location.repositoryId,
+      resource_identity_version: input.manifest.resourceIdentityVersion,
+      tickets: ticketProjection,
+    };
+    if (Object.keys(manifest).length !== Object.keys(expected).length || Object.keys(manifest).some((key) => !Object.hasOwn(expected, key))) {
+      throw new TypeError("run manifest must contain exactly the frozen schema fields");
+    }
+    for (const [key, value] of Object.entries(expected)) {
+      if (canonicalJson(manifest[key]) !== canonicalJson(value)) throw new TypeError(`run manifest ${key} projection differs from allocation input`);
+    }
+  }
+
+  #validateImmutableJson(input: ImmutableJsonInput, label: string): void {
+    if (typeof input.schemaVersion !== "string" || input.schemaVersion === "") throw new TypeError(`${label} schema version is required`);
+    const text = assertCanonicalJsonText(input.canonicalJson, `${label} canonical JSON`);
+    if (sha256Text(text) !== input.digest) throw new TypeError(`${label} digest does not hash its canonical JSON`);
+    const value = this.#parseJsonObject(text, label);
+    if (value.schema_version !== input.schemaVersion) throw new TypeError(`${label} schema version differs from its canonical JSON`);
+  }
+
+  #parseJsonObject(text: string, label: string): Record<string, unknown> {
+    const value = JSON.parse(text) as unknown;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${label} must be a JSON object`);
+    return value as Record<string, unknown>;
+  }
+
+  #insertSharedImmutable(
+    table: "run_manifests" | "ticket_contracts",
+    input: StateRowInput,
+    identityColumns: readonly string[],
+    equalityColumns: readonly string[],
+  ): StateRecord {
+    const row = this.#validatedColumns(table, normalizeRow(input));
+    this.#requireCompleteRow(table, row);
+    this.#validateRecordSemantics(table, row);
+    const existing = this.#selectBy(table, row, identityColumns);
+    if (existing !== undefined) {
+      if (equalityColumns.every((column) => sameValue(existing[column], row[column]))) return frozenRow(existing);
+      throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", `${table} digest already has different immutable input`, this.location.databasePath);
+    }
+    this.#insert(table, row);
+    return frozenRow(row);
+  }
+
+  #allocateAttempt(input: AttemptAllocationInput | RetryCompatibilityInput, mode: "initial" | "retry"): AllocatedAttempt {
+    return this.#immediate(mode === "initial" ? "allocate_initial_attempt" : "allocate_retry_attempt", () => {
+      if (typeof input.runId !== "string" || input.runId === "" || typeof input.ticketId !== "string" || input.ticketId === "") {
+        throw new TypeError("attempt allocation requires explicit run and ticket ids");
+      }
+      const lineage = this.#requireDatabase().prepare(`
+        SELECT rt.ticket_instance_id, rt.run_id, rt.ticket_id, rt.contract_digest, rt.state AS ticket_state,
+               r.repository_id, r.state AS run_state, r.current_delivery_oid,
+               rm.context_schema_version, rm.oracle_version, rm.capability_snapshot_digest, rm.canonical_manifest_json,
+               tc.canonical_contract_json
+        FROM run_tickets rt
+        JOIN runs r ON r.run_id = rt.run_id
+        JOIN run_manifests rm ON rm.manifest_digest = r.manifest_digest
+        JOIN ticket_contracts tc ON tc.contract_digest = rt.contract_digest
+        WHERE rt.run_id = ? AND rt.ticket_id = ? AND r.repository_id = ?
+      `).get(input.runId, input.ticketId, this.location.repositoryId) as MutableStateRecord | undefined;
+      if (lineage === undefined) this.#resumeIncompatible("attempt allocation lineage does not belong to the selected repository");
+      const allowedRunStates = mode === "initial" ? ["planned", "active"] : ["active", "cleanup_pending"];
+      if (!allowedRunStates.includes(String(lineage.run_state))) {
+        throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", `${mode} attempt allocation is forbidden while the run is ${String(lineage.run_state)}`, this.location.databasePath);
+      }
+      const attempts = this.#requireDatabase().prepare(
+        "SELECT * FROM attempts WHERE ticket_instance_id = ? ORDER BY attempt_number",
+      ).all(lineage.ticket_instance_id ?? null) as MutableStateRecord[];
+      let attemptNumber: number;
+      if (mode === "initial") {
+        if (attempts.length !== 0 || lineage.ticket_state !== "planned") {
+          throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "initial attempt requires an unallocated planned ticket", this.location.databasePath);
+        }
+        attemptNumber = 1;
+      } else {
+        const compatibility = input as RetryCompatibilityInput;
+        this.#assertRetryCompatibility(lineage, compatibility);
+        const selection = this.#retrySelectionFromRows(lineage, attempts, compatibility);
+        attemptNumber = selection.nextAttemptNumber;
+      }
+      const manifest = this.#parseJsonObject(String(lineage.canonical_manifest_json), "run manifest");
+      const resourceIdentityVersion = manifest.resource_identity_version;
+      if (typeof resourceIdentityVersion !== "string" || resourceIdentityVersion === "") {
+        throw new StateStoreError("RICKGENT_STATE_CORRUPT", "run manifest lacks a resource identity version");
+      }
+      this.#assertRepositoryCommit(lineage.current_delivery_oid, "attempt delivery baseline oid");
+      const attemptId = `attempt-${randomBytes(16).toString("hex")}`;
+      const ownerPayload = canonicalJson({
+        allocator: mode === "initial" ? "rickgent.initial-attempt-allocator/v1" : "rickgent.retry-attempt-allocator/v1",
+        attempt_id: attemptId,
+        attempt_number: attemptNumber,
+        repository_id: this.location.repositoryId,
+        run_id: input.runId,
+        ticket_instance_id: String(lineage.ticket_instance_id),
+      });
+      const row: MutableStateRecord = {
+        attempt_id: attemptId,
+        ticket_instance_id: String(lineage.ticket_instance_id),
+        run_id: input.runId,
+        ticket_id: input.ticketId,
+        attempt_number: attemptNumber,
+        contract_digest: String(lineage.contract_digest),
+        allocation_owner_digest: sha256Text(ownerPayload),
+        delivery_baseline_oid: String(lineage.current_delivery_oid),
+        context_schema_version: String(lineage.context_schema_version),
+        oracle_version: String(lineage.oracle_version),
+        capability_snapshot_digest: String(lineage.capability_snapshot_digest),
+        resource_identity_version: resourceIdentityVersion,
+        state: "planned",
+        state_version: 0,
+        created_at: new Date().toISOString(),
+      };
+      this.#insert("attempts", row);
+      return this.#allocatedAttempt(row);
+    });
+  }
+
+  #selectRetryInTransaction(input: RetryCompatibilityInput): RetrySelection {
+    if (typeof input.runId !== "string" || input.runId === "" || typeof input.ticketId !== "string" || input.ticketId === "") {
+      this.#resumeIncompatible("retry selection requires explicit run and ticket ids");
+    }
+    const lineage = this.#requireDatabase().prepare(`
+      SELECT rt.ticket_instance_id, rt.run_id, rt.ticket_id, rt.contract_digest, rt.state AS ticket_state,
+             r.repository_id, rm.context_schema_version, rm.oracle_version, rm.capability_snapshot_digest,
+             rm.canonical_manifest_json, tc.canonical_contract_json
+      FROM run_tickets rt
+      JOIN runs r ON r.run_id = rt.run_id
+      JOIN run_manifests rm ON rm.manifest_digest = r.manifest_digest
+      JOIN ticket_contracts tc ON tc.contract_digest = rt.contract_digest
+      WHERE rt.run_id = ? AND rt.ticket_id = ? AND r.repository_id = ?
+    `).get(input.runId, input.ticketId, this.location.repositoryId) as MutableStateRecord | undefined;
+    if (lineage === undefined) this.#resumeIncompatible("retry lineage does not belong to the selected repository");
+    this.#assertRetryCompatibility(lineage, input);
+    const attempts = this.#requireDatabase().prepare(
+      "SELECT * FROM attempts WHERE ticket_instance_id = ? ORDER BY attempt_number",
+    ).all(lineage.ticket_instance_id ?? null) as MutableStateRecord[];
+    return this.#retrySelectionFromRows(lineage, attempts, input);
+  }
+
+  #assertRetryCompatibility(lineage: MutableStateRecord, input: RetryCompatibilityInput): void {
+    const manifest = this.#parseJsonObject(String(lineage.canonical_manifest_json), "run manifest");
+    if (
+      lineage.contract_digest !== input.contractDigest || lineage.context_schema_version !== input.contextSchemaVersion ||
+      lineage.oracle_version !== input.oracleVersion || lineage.capability_snapshot_digest !== input.capabilitySnapshotDigest ||
+      manifest.resource_identity_version !== input.resourceIdentityVersion
+    ) this.#resumeIncompatible("retry compatibility projection changed");
+  }
+
+  #retrySelectionFromRows(
+    lineage: MutableStateRecord,
+    attempts: readonly MutableStateRecord[],
+    compatibility: RetryCompatibilityInput | undefined,
+  ): RetrySelection {
+    const latest = attempts.at(-1);
+    if (latest === undefined || latest.state !== "failed_clean" || lineage.ticket_state !== "cleanup_pending") {
+      throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "retry requires the latest attempt to be failed_clean and its ticket cleanup_pending", this.location.databasePath);
+    }
+    if (attempts.some((attempt) => attempt.state === "quarantined")) {
+      throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "quarantined attempts cannot be retried", this.location.databasePath);
+    }
+    const manifest = this.#parseJsonObject(String(lineage.canonical_manifest_json), "run manifest");
+    if (
+      latest.contract_digest !== lineage.contract_digest || latest.context_schema_version !== lineage.context_schema_version ||
+      latest.oracle_version !== lineage.oracle_version || latest.capability_snapshot_digest !== lineage.capability_snapshot_digest ||
+      latest.resource_identity_version !== manifest.resource_identity_version
+    ) {
+      this.#resumeIncompatible("retry compatibility differs from the latest attempt");
+    }
+    if (compatibility !== undefined && latest.resource_identity_version !== compatibility.resourceIdentityVersion) {
+      this.#resumeIncompatible("retry resource identity differs from the explicit selection");
+    }
+    const contract = this.#parseJsonObject(String(lineage.canonical_contract_json), "ticket contract");
+    const budgets = contract.budgets;
+    const maxAttempts = budgets !== null && typeof budgets === "object" && !Array.isArray(budgets)
+      ? (budgets as Record<string, unknown>).max_attempts : undefined;
+    if (!Number.isSafeInteger(maxAttempts) || (maxAttempts as number) < 1) throw new StateStoreError("RICKGENT_STATE_CORRUPT", "ticket contract has an invalid max_attempts budget");
+    const latestNumber = Number(latest.attempt_number);
+    if (latestNumber >= (maxAttempts as number)) {
+      throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "retry would exceed the immutable max_attempts budget", this.location.databasePath);
+    }
+    return freezeValue({
+      runnable: false as const,
+      runId: String(lineage.run_id),
+      ticketId: String(lineage.ticket_id),
+      ticketInstanceId: String(lineage.ticket_instance_id),
+      contractDigest: String(lineage.contract_digest),
+      latestAttemptId: String(latest.attempt_id),
+      latestAttemptNumber: latestNumber,
+      maxAttempts: maxAttempts as number,
+      nextAttemptNumber: latestNumber + 1,
+    });
+  }
+
+  #allocatedAttempt(row: MutableStateRecord): AllocatedAttempt {
+    const selected = this.#persistedAttempt(row);
+    if (selected.state !== "planned" || selected.stateVersion !== 0) {
+      throw new StateStoreError("RICKGENT_STATE_CORRUPT", "newly allocated attempt did not persist as planned at version zero");
+    }
+    return freezeValue({ ...selected, state: "planned" as const, stateVersion: 0 as const });
+  }
+
+  #persistedAttempt(row: MutableStateRecord): PersistedAttemptSelection {
+    return freezeValue({
+      runnable: false as const,
+      attemptId: String(row.attempt_id),
+      ticketInstanceId: String(row.ticket_instance_id),
+      runId: String(row.run_id),
+      ticketId: String(row.ticket_id),
+      attemptNumber: Number(row.attempt_number),
+      contractDigest: String(row.contract_digest),
+      allocationOwnerDigest: String(row.allocation_owner_digest),
+      deliveryBaselineOid: String(row.delivery_baseline_oid),
+      contextSchemaVersion: String(row.context_schema_version),
+      oracleVersion: String(row.oracle_version),
+      capabilitySnapshotDigest: String(row.capability_snapshot_digest),
+      resourceIdentityVersion: String(row.resource_identity_version),
+      state: String(row.state),
+      stateVersion: Number(row.state_version),
+    });
+  }
+
+  #resumeIncompatible(message: string): never {
+    throw typedError("RICKGENT_STATE_RESUME_INCOMPATIBLE", message, this.location.databasePath);
+  }
+
   #registerRepository(): void {
     this.#appendIdempotent(
       "repositories",
@@ -1392,6 +2234,18 @@ export class StateStore {
       typeof value !== "string" || value.length !== (this.location.objectFormat === "sha1" ? 40 : 64) ||
       !/^[0-9a-f]+$/.test(value)
     ) throw new TypeError(`${label} does not match repository object format ${this.location.objectFormat}`);
+  }
+
+  #assertRepositoryCommit(value: SqlValue | undefined, label: string): void {
+    this.#assertRepositoryOid(value, label);
+    try {
+      execFileSync("git", ["cat-file", "-e", `${String(value)}^{commit}`], {
+        cwd: this.location.repoRealpath,
+        stdio: "ignore",
+      });
+    } catch (error) {
+      throw typedError("RICKGENT_STATE_RESUME_INCOMPATIBLE", `${label} is not an existing commit in the selected repository`, this.location.databasePath, error);
+    }
   }
 
   #validateRecordSemantics(table: StateTableName, row: Readonly<Record<string, SqlValue>>): void {

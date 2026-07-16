@@ -702,7 +702,8 @@ function validateAllocationAndResources(contract) {
   equal(allocation.ordinary_run.transaction, "allocate_run", "STATE_CONTRACT_ALLOCATION_INVALID", "run transaction");
   equal(allocation.attempt.transaction, "allocate_attempt", "STATE_CONTRACT_ALLOCATION_INVALID", "attempt transaction");
   equal(allocation.attempt.next_number, "max(attempt_number) + 1 within the named run ticket", "STATE_CONTRACT_ALLOCATION_INVALID", "attempt numbering");
-  equal(allocation.attempt.commit_before, ["lease acquisition", "resource side effect", "policy materialization", "agent spawn"], "STATE_CONTRACT_ALLOCATION_INVALID", "pre-spawn attempt commit");
+  equal(allocation.ordinary_run.atomic_writes.at(-1), "planned version-zero allocation snapshots only", "STATE_CONTRACT_ALLOCATION_INVALID", "non-runnable run allocation");
+  equal(allocation.attempt.commit_before, ["legal activation transition", "lease acquisition", "resource side effect", "policy materialization", "agent spawn"], "STATE_CONTRACT_ALLOCATION_INVALID", "pre-spawn attempt commit");
   equal(allocation.attempt.copies_run_delivery_oid_as_immutable_baseline, true, "STATE_CONTRACT_ALLOCATION_INVALID", "attempt baseline");
   equal(allocation.attempt.reuse_attempt_or_dispatch_identity, false, "STATE_CONTRACT_ALLOCATION_INVALID", "attempt reuse");
   equal(allocation.retry.public_capability, "unavailable", "STATE_CONTRACT_ALLOCATION_INVALID", "retry capability");

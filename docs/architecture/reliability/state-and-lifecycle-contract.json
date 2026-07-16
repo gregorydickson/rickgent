@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "contract_id": "rickgent-state-and-lifecycle-v1",
   "decision_status": "frozen_decision_only",
-  "decision_digest": "sha256:52c8b43797ae9cce26e3822aebfb63c8c8812f144e5d21927e11c7478f3adf54",
+  "decision_digest": "sha256:2f91768577623a1be79d698765a6e41eac5066fcb811ffce2950485515d18a1c",
   "parent_authority": {
     "contract_id": "rickgent-trust-spine-v1",
     "path": "docs/architecture/reliability/trust-spine-contract.json"
@@ -594,13 +594,13 @@
       "identical_input_reused": false,
       "transaction": "allocate_run",
       "preconditions": ["strict PRD and TicketContract normalization", "canonical repository and state resolution"],
-      "atomic_writes": ["fresh random run ID", "next repository run sequence", "immutable run manifest", "all run tickets", "all dependency edges", "initial transition events"],
+      "atomic_writes": ["fresh random run ID", "next repository run sequence", "immutable run manifest", "all run tickets", "all dependency edges", "planned version-zero allocation snapshots only"],
       "forbidden_lookup": ["find-or-create", "latest run", "terminal dispatch cache", "cross-run ticket lookup"]
     },
     "attempt": {
       "transaction": "allocate_attempt",
       "next_number": "max(attempt_number) + 1 within the named run ticket",
-      "commit_before": ["lease acquisition", "resource side effect", "policy materialization", "agent spawn"],
+      "commit_before": ["legal activation transition", "lease acquisition", "resource side effect", "policy materialization", "agent spawn"],
       "copies_run_delivery_oid_as_immutable_baseline": true,
       "reuse_attempt_or_dispatch_identity": false
     },

@@ -297,6 +297,8 @@ describe("state contract validator sensitivity", () => {
     ["root-owner-scope", "STATE_CONTRACT_ROOT_INVALID", (draft) => { draft.state_root.required_owner = "every ancestor"; }],
     ["symlink-root", "STATE_CONTRACT_ROOT_INVALID", (draft) => { draft.state_root.symlink_allowed = true; }],
     ["fresh-run", "STATE_CONTRACT_ALLOCATION_INVALID", (draft) => { draft.allocation_and_recovery.ordinary_run.always_new = false; }],
+    ["non-runnable-run-allocation", "STATE_CONTRACT_ALLOCATION_INVALID", (draft) => { draft.allocation_and_recovery.ordinary_run.atomic_writes.pop(); }],
+    ["activation-before-spawn", "STATE_CONTRACT_ALLOCATION_INVALID", (draft) => { draft.allocation_and_recovery.attempt.commit_before.shift(); }],
     ["retry-before-spawn", "STATE_CONTRACT_ALLOCATION_INVALID", (draft) => { draft.allocation_and_recovery.retry.new_spawn_requires_new_attempt_first = false; }],
     ["explicit-resume", "STATE_CONTRACT_ALLOCATION_INVALID", (draft) => { draft.allocation_and_recovery.resume.explicit_run_required = false; }],
     ["lease-owner-generation", "STATE_CONTRACT_TABLE_INVALID", (draft) => { draft.entity_model.catalog.find((table: any) => table.name === "leases").mutation.cas_predicate = "WHERE lease_id = ? AND state = ? AND state_version = ?"; }],

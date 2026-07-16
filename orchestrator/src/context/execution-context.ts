@@ -8,7 +8,12 @@ import {
   readFileSync,
   writeSync,
 } from "fs";
-import { canonicalJson, TICKET_CONTRACT_SCHEMA_VERSION, type TicketScopeEntry } from "../contracts/ticket-contract.js";
+import {
+  canonicalJson,
+  TICKET_CONTRACT_SCHEMA_VERSION,
+  type TicketBudgets,
+  type TicketScopeEntry,
+} from "../contracts/ticket-contract.js";
 
 export const EXECUTION_CONTEXT_SCHEMA_VERSION = "rickgent-attempt-context/v1" as const;
 export const POLICY_ABI_VERSION = "omnigent-function-policy/current-v1" as const;
@@ -17,6 +22,7 @@ export const RUNTIME_PROVENANCE_SCHEMA_VERSION = "rickgent-runtime-provenance/v2
 export const ATTEMPT_LEASE_SCHEMA_VERSION = "rickgent-attempt-lease/v1" as const;
 export const NONCE_CLAIM_SCHEMA_VERSION = "rickgent-attempt-nonce-claim/v1" as const;
 export const MAX_EXECUTION_CONTEXT_BYTES = 1_048_576;
+export const DURABLE_EXECUTION_CONTEXT_SCHEMA_VERSION = "rickgent.execution-context/v1" as const;
 
 const ID_COMPONENT = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -152,6 +158,78 @@ export interface MaterializedExecutionContext {
   readonly byteLength: number;
 }
 
+export interface DurableExecutionContext {
+  readonly schema_version: string;
+  readonly repository_id: string;
+  readonly repo_realpath: string;
+  readonly git_common_dir_realpath: string;
+  readonly object_format: "sha1" | "sha256";
+  readonly state_root_realpath: string;
+  readonly resource_root_realpath: string;
+  readonly worktree_realpath: string;
+  readonly policy_root_realpath: string;
+  readonly bundle_root_realpath: string;
+  readonly run_id: string;
+  readonly ticket_instance_id: string;
+  readonly ticket_id: string;
+  readonly attempt_id: string;
+  readonly attempt_number: number;
+  readonly phase: string;
+  readonly phase_ordinal: number;
+  readonly role: string;
+  readonly contract_digest: string;
+  readonly capability_snapshot_digest: string;
+  /** Digest of the authenticated bundle before context injection; avoids a bundle/context hash cycle. */
+  readonly policy_bundle_digest: string;
+  readonly model_selection_digest: string;
+  readonly budget_digest: string;
+  readonly scope_digest: string;
+  readonly context_schema_version: string;
+  readonly oracle_version: string;
+  readonly resource_identity_version: string;
+  readonly budgets: TicketBudgets;
+  readonly timeout_ms: number;
+  readonly scope: readonly ExecutionScopeEntry[];
+}
+
+export interface CreateDurableExecutionContextInput {
+  readonly contextSchemaVersion: string;
+  readonly repositoryId: string;
+  readonly repoRealpath: string;
+  readonly gitCommonDirRealpath: string;
+  readonly objectFormat: "sha1" | "sha256";
+  readonly stateRootRealpath: string;
+  readonly resourceRootRealpath: string;
+  readonly worktreeRealpath: string;
+  readonly policyRootRealpath: string;
+  readonly bundleRootRealpath: string;
+  readonly runId: string;
+  readonly ticketInstanceId: string;
+  readonly ticketId: string;
+  readonly attemptId: string;
+  readonly attemptNumber: number;
+  readonly phase: string;
+  readonly phaseOrdinal: number;
+  readonly role: string;
+  readonly contractDigest: string;
+  readonly capabilitySnapshotDigest: string;
+  readonly policyBundleDigest: string;
+  readonly modelSelectionDigest: string;
+  readonly oracleVersion: string;
+  readonly resourceIdentityVersion: string;
+  readonly budgets: TicketBudgets;
+  readonly timeoutMs: number;
+  readonly scope: readonly TicketScopeEntry[];
+}
+
+export interface CanonicalDurableExecutionContext {
+  readonly context: DurableExecutionContext;
+  readonly canonicalContextJson: string;
+  readonly contextDigest: `sha256:${string}`;
+  readonly budgetDigest: `sha256:${string}`;
+  readonly scopeDigest: `sha256:${string}`;
+}
+
 function requireComponent(value: string, label: string): string {
   if (typeof value !== "string" || !ID_COMPONENT.test(value)) {
     throw new Error(`${label} must be a non-empty canonical identity token`);
@@ -168,6 +246,11 @@ function requireNonEmpty(value: string, label: string): string {
 
 function requireSha256(value: string, label: string): string {
   if (!SHA256.test(value)) throw new Error(`${label} must be lowercase SHA-256`);
+  return value;
+}
+
+function requirePrefixedDigest(value: string, label: string): string {
+  if (!TICKET_DIGEST.test(value)) throw new Error(`${label} must be a canonical sha256: digest`);
   return value;
 }
 
@@ -209,6 +292,81 @@ function freezeRecursively<T>(value: T): T {
     Object.freeze(value);
   }
   return value;
+}
+
+function digestCanonical(value: unknown): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(canonicalJson(value), "utf8").digest("hex")}`;
+}
+
+export function createDurableExecutionContext(
+  input: CreateDurableExecutionContextInput,
+): CanonicalDurableExecutionContext {
+  if (input.contextSchemaVersion !== DURABLE_EXECUTION_CONTEXT_SCHEMA_VERSION) {
+    throw new Error("durable execution context schema version is unsupported");
+  }
+  if (!Number.isSafeInteger(input.attemptNumber) || input.attemptNumber < 1) {
+    throw new Error("attemptNumber must be a positive safe integer");
+  }
+  if (!Number.isSafeInteger(input.phaseOrdinal) || input.phaseOrdinal < 0) {
+    throw new Error("phaseOrdinal must be a nonnegative safe integer");
+  }
+  if (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1) {
+    throw new Error("timeoutMs must be a positive safe integer");
+  }
+  const budgets: TicketBudgets = {
+    max_attempts: input.budgets.max_attempts,
+    max_review_cycles: input.budgets.max_review_cycles,
+    wall_clock_ms: input.budgets.wall_clock_ms,
+    remediation_limit: input.budgets.remediation_limit,
+  };
+  for (const [name, value] of Object.entries(budgets)) {
+    if (!Number.isSafeInteger(value) || value < 0 || (name === "max_attempts" || name === "wall_clock_ms") && value < 1) {
+      throw new Error(`budgets.${name} must be a valid nonnegative safe integer`);
+    }
+  }
+  const scope = copyScope(input.scope);
+  const budgetDigest = digestCanonical(budgets);
+  const scopeDigest = digestCanonical(scope);
+  const context: DurableExecutionContext = {
+    schema_version: input.contextSchemaVersion,
+    repository_id: requirePrefixedDigest(input.repositoryId, "repositoryId"),
+    repo_realpath: requireNonEmpty(input.repoRealpath, "repoRealpath"),
+    git_common_dir_realpath: requireNonEmpty(input.gitCommonDirRealpath, "gitCommonDirRealpath"),
+    object_format: input.objectFormat,
+    state_root_realpath: requireNonEmpty(input.stateRootRealpath, "stateRootRealpath"),
+    resource_root_realpath: requireNonEmpty(input.resourceRootRealpath, "resourceRootRealpath"),
+    worktree_realpath: requireNonEmpty(input.worktreeRealpath, "worktreeRealpath"),
+    policy_root_realpath: requireNonEmpty(input.policyRootRealpath, "policyRootRealpath"),
+    bundle_root_realpath: requireNonEmpty(input.bundleRootRealpath, "bundleRootRealpath"),
+    run_id: requireComponent(input.runId, "runId"),
+    ticket_instance_id: requireComponent(input.ticketInstanceId, "ticketInstanceId"),
+    ticket_id: requireComponent(input.ticketId, "ticketId"),
+    attempt_id: requireComponent(input.attemptId, "attemptId"),
+    attempt_number: input.attemptNumber,
+    phase: requireComponent(input.phase, "phase"),
+    phase_ordinal: input.phaseOrdinal,
+    role: requireComponent(input.role, "role"),
+    contract_digest: requirePrefixedDigest(input.contractDigest, "contractDigest"),
+    capability_snapshot_digest: requirePrefixedDigest(input.capabilitySnapshotDigest, "capabilitySnapshotDigest"),
+    policy_bundle_digest: requirePrefixedDigest(input.policyBundleDigest, "policyBundleDigest"),
+    model_selection_digest: requirePrefixedDigest(input.modelSelectionDigest, "modelSelectionDigest"),
+    budget_digest: budgetDigest,
+    scope_digest: scopeDigest,
+    context_schema_version: input.contextSchemaVersion,
+    oracle_version: requireNonEmpty(input.oracleVersion, "oracleVersion"),
+    resource_identity_version: requireNonEmpty(input.resourceIdentityVersion, "resourceIdentityVersion"),
+    budgets,
+    timeout_ms: input.timeoutMs,
+    scope,
+  };
+  const canonicalContextJson = canonicalJson(context);
+  return freezeRecursively({
+    context,
+    canonicalContextJson,
+    contextDigest: digestCanonical(context),
+    budgetDigest,
+    scopeDigest,
+  });
 }
 
 export function executionAttemptDigest(

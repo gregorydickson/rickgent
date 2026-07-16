@@ -234,28 +234,27 @@ function seedLineage(store: StateStore, label: string, sequence: number): Lineag
 
   const contextJson = JSON.stringify({ lineage: label, type: "context" });
   const contextDigest = digest(contextJson);
-  store.recordExecutionContext({
-    context_id: contextId,
-    context_digest: contextDigest,
-    attempt_id: attemptId,
-    phase: "implement",
-    phase_ordinal: 0,
-    role: "worker",
-    canonical_context_json: contextJson,
-    contract_digest: contractDigest,
-    capability_snapshot_digest: capabilityDigest,
-    policy_bundle_digest: digest(`policy:${label}`),
-    model_selection_digest: digest(`model:${label}`),
-    budget_digest: digest(`budget:${label}`),
-    scope_digest: digest(`scope:${label}`),
-    context_schema_version: "rickgent.context.v1",
-    oracle_version: "rickgent.oracle.v1",
-    created_at: FIXED_TIME,
-  });
-
   const phaseExecutionId = `phase-${label}`;
   const phaseDatabase = openRaw(store.location.databasePath);
   try {
+    insert(phaseDatabase, "execution_contexts", {
+      context_id: contextId,
+      context_digest: contextDigest,
+      attempt_id: attemptId,
+      phase: "implement",
+      phase_ordinal: 0,
+      role: "worker",
+      canonical_context_json: contextJson,
+      contract_digest: contractDigest,
+      capability_snapshot_digest: capabilityDigest,
+      policy_bundle_digest: digest(`policy:${label}`),
+      model_selection_digest: digest(`model:${label}`),
+      budget_digest: digest(`budget:${label}`),
+      scope_digest: digest(`scope:${label}`),
+      context_schema_version: "rickgent.context.v1",
+      oracle_version: "rickgent.oracle.v1",
+      created_at: FIXED_TIME,
+    });
     insert(phaseDatabase, "phase_executions", {
       phase_execution_id: phaseExecutionId,
       attempt_id: attemptId,
