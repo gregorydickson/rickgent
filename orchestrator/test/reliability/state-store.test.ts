@@ -30,9 +30,9 @@ import {
   StateStoreError,
   openStateStore,
   resolveStateLocation,
-  type StateRowInput,
   type StateStore,
 } from "../../src/state/store.js";
+import { TransitionAuthority } from "../../src/state/transitions.js";
 
 type SqlValue = null | string | number | bigint | Uint8Array;
 type SqlRow = Record<string, SqlValue>;
@@ -153,7 +153,7 @@ interface Lineage {
   readonly ticketInstanceId: string;
   readonly attemptId: string;
   readonly contextId: string;
-  readonly contextDigest: string;
+  readonly allocationOwnerDigest: string;
   readonly evidenceId: string;
   readonly evidenceDigest: string;
 }
@@ -169,6 +169,7 @@ function seedLineage(store: StateStore, label: string, sequence: number): Lineag
   const ticketInstanceId = `ticket-instance-${label}`;
   const attemptId = `attempt-${label}`;
   const contextId = `context-${label}`;
+  const allocationOwnerDigest = digest(`allocation:${label}`);
 
   store.recordRunManifest({
     manifest_digest: manifestDigest,
@@ -218,7 +219,7 @@ function seedLineage(store: StateStore, label: string, sequence: number): Lineag
       ticket_id: ticketId,
       attempt_number: 1,
       contract_digest: contractDigest,
-      allocation_owner_digest: digest(`allocation:${label}`),
+      allocation_owner_digest: allocationOwnerDigest,
       delivery_baseline_oid: oid(String(sequence)),
       context_schema_version: "rickgent.context.v1",
       oracle_version: "rickgent.oracle.v1",
@@ -289,23 +290,14 @@ function seedLineage(store: StateStore, label: string, sequence: number): Lineag
     created_at: FIXED_TIME,
   });
 
-  return { runId, ticketInstanceId, attemptId, contextId, contextDigest, evidenceId, evidenceDigest };
-}
-
-function transition(lineage: Lineage, id: string): StateRowInput {
   return {
-    transition_id: id,
-    run_id: null,
-    ticket_instance_id: null,
-    attempt_id: lineage.attemptId,
-    entity_sequence: 1,
-    from_state: "planned",
-    to_state: "implementing",
-    owner_service: "state-store-test",
-    owner_context_digest: lineage.contextDigest,
-    input_digest: digest(`transition-input:${id}`),
-    idempotency_key: `transition:${id}`,
-    created_at: FIXED_TIME,
+    runId,
+    ticketInstanceId,
+    attemptId,
+    contextId,
+    allocationOwnerDigest,
+    evidenceId,
+    evidenceDigest,
   };
 }
 
@@ -573,78 +565,52 @@ describe("durable state-store transaction and lineage guarantees", () => {
     const store = openStateStore({ repoPath: repo });
     try {
       const lineage = seedLineage(store, "rollback", 1);
-      const transitionId = "transition-rollback";
+      const authority = new TransitionAuthority(store);
       const error = expectStateError(
-        () => store.appendStateTransition(transition(lineage, transitionId), [
-          { transition_id: transitionId, ordinal: 0, purpose: "input", evidence_id: lineage.evidenceId },
-          { transition_id: transitionId, ordinal: 1, purpose: "input", evidence_id: lineage.evidenceId },
-        ]),
+        () => authority.activateRun({
+          runId: lineage.runId,
+          initialAttemptId: lineage.attemptId,
+          expectedVersion: 0,
+          ownerContextDigest: lineage.allocationOwnerDigest,
+          idempotencyKey: "transition:rollback",
+          evidence: [
+            { purpose: "input", evidenceId: lineage.evidenceId },
+            { purpose: "input", evidenceId: lineage.evidenceId },
+          ],
+        }),
         "RICKGENT_STATE_CONFLICT",
       );
       expect(error.failureClass).toBe("infrastructure");
-      expect(count(store.location.databasePath, "state_transitions", "WHERE transition_id = ?", transitionId)).toBe(0);
-      expect(count(store.location.databasePath, "transition_evidence_refs", "WHERE transition_id = ?", transitionId)).toBe(0);
+      expect(count(store.location.databasePath, "state_transitions", "WHERE run_id = ?", lineage.runId)).toBe(0);
+      expect(count(store.location.databasePath, "transition_evidence_refs")).toBe(0);
+      expect(queryOne(store.location.databasePath, "SELECT state, state_version FROM runs WHERE run_id = ?", lineage.runId))
+        .toEqual({ state: "planned", state_version: 0 });
       store.verifyIntegrity();
     } finally {
       store.close();
     }
   });
 
-  it("rejects transition and oracle evidence from a different canonical lineage", () => {
+  it("rejects transition evidence from a different canonical lineage and exposes no raw oracle writer", () => {
     const repo = makeRepo();
     const store = openStateStore({ repoPath: repo });
     try {
       const lineageA = seedLineage(store, "a", 1);
       const lineageB = seedLineage(store, "b", 2);
-      const transitionId = "transition-cross-lineage";
+      const authority = new TransitionAuthority(store);
       expectStateError(
-        () => store.appendStateTransition(transition(lineageA, transitionId), [
-          { transition_id: transitionId, ordinal: 0, purpose: "input", evidence_id: lineageB.evidenceId },
-        ]),
+        () => authority.activateRun({
+          runId: lineageA.runId,
+          initialAttemptId: lineageA.attemptId,
+          expectedVersion: 0,
+          ownerContextDigest: lineageA.allocationOwnerDigest,
+          idempotencyKey: "transition:cross-lineage",
+          evidence: [{ purpose: "input", evidenceId: lineageB.evidenceId }],
+        }),
         "RICKGENT_STATE_RESUME_INCOMPATIBLE",
       );
-      expect(count(store.location.databasePath, "state_transitions", "WHERE transition_id = ?", transitionId)).toBe(0);
-
-      const decisionId = "oracle-cross-lineage";
-      expectStateError(
-        () => store.persistOracleDecision({
-          oracle_decision_id: decisionId,
-          oracle_version: "rickgent.oracle.v1",
-          scope_kind: "attempt",
-          run_id: lineageA.runId,
-          ticket_instance_id: lineageA.ticketInstanceId,
-          attempt_id: lineageA.attemptId,
-          input_set_digest: digest("oracle-input-set"),
-          result: "accepted",
-          reasons_json: "[]",
-          output_digest: digest("oracle-output"),
-          idempotency_key: "oracle:cross-lineage",
-          created_at: FIXED_TIME,
-        }, [{
-          oracle_decision_id: decisionId,
-          run_id: lineageA.runId,
-          ticket_instance_id: lineageA.ticketInstanceId,
-          attempt_id: lineageA.attemptId,
-          ordinal: 0,
-          reference_kind: "evidence",
-          run_manifest_digest: null,
-          contract_digest: null,
-          context_id: null,
-          evidence_id: lineageB.evidenceId,
-          gate_result_id: null,
-          review_record_id: null,
-          commit_attribution_id: null,
-          cleanup_record_id: null,
-          dependency_digest: null,
-          resource_snapshot_evidence_id: null,
-          lease_snapshot_evidence_id: null,
-          process_receipt_id: null,
-          content_digest: lineageB.evidenceDigest,
-        }]),
-        "RICKGENT_STATE_RESUME_INCOMPATIBLE",
-      );
-      expect(count(store.location.databasePath, "oracle_decisions", "WHERE oracle_decision_id = ?", decisionId)).toBe(0);
-      expect(count(store.location.databasePath, "oracle_input_references", "WHERE oracle_decision_id = ?", decisionId)).toBe(0);
+      expect(count(store.location.databasePath, "state_transitions", "WHERE run_id = ?", lineageA.runId)).toBe(0);
+      expect((store as unknown as Record<string, unknown>).persistOracleDecision).toBeUndefined();
     } finally {
       store.close();
     }
