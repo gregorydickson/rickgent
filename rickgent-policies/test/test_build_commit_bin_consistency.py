@@ -1,164 +1,114 @@
-"""Build-commit binary source consistency (misc-hardening).
+"""Pinned Rickgent CLI provenance for the Python verdict bridge."""
 
-`_detect_build_commit()` and the TS↔Python parity check (`_assert_build_commit`)
-must resolve the rickgent binary via the SAME source — `_RICKGENT_BIN` (honoring
-the `RICKGENT_BIN` env override). The old code hard-coded the literal
-`"rickgent"` in `_detect_build_commit()` while `_assert_build_commit()` used
-`_RICKGENT_BIN`. Under a `RICKGENT_BIN` override these can disagree and cause a
-false build-commit-mismatch DENY across completion_evidence / convergence_gate /
-subtract_before_add.
+from __future__ import annotations
 
-These tests are written RED-FIRST: they fail against the old inconsistent code
-and pass after both paths use `_RICKGENT_BIN`.
-"""
-
+import hashlib
 import types
+from pathlib import Path
 
 import pytest
 
-import rickgent_policies
+import rickgent_policies.verdict as verdict_module
 
 
-# ── _detect_build_commit must use _RICKGENT_BIN, not literal "rickgent" ──────
-
-
-def test_detect_build_commit_uses_rickgent_bin(monkeypatch):
-    """_detect_build_commit resolves the binary via _RICKGENT_BIN.
-
-    Under a RICKGENT_BIN override, auto-detect must call the override binary,
-    not the literal `rickgent`. The old code hard-coded `"rickgent"`.
-    """
-    fake_bin = "/usr/local/bin/rickgent-fake"
-    monkeypatch.setattr(rickgent_policies, "_RICKGENT_BIN", fake_bin)
-    monkeypatch.setattr(rickgent_policies, "_BUILD_COMMIT_OVERRIDE", None)
-    monkeypatch.setattr(rickgent_policies, "BUILD_COMMIT", "dev")
-
-    calls = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append(list(cmd))
-        if cmd[0] == fake_bin:
-            return types.SimpleNamespace(
-                returncode=0, stdout="override-commit\n", stderr=""
-            )
-        # literal "rickgent" — the OLD (buggy) path
-        return types.SimpleNamespace(
-            returncode=0, stdout="literal-commit\n", stderr=""
-        )
-
-    monkeypatch.setattr(rickgent_policies.subprocess, "run", fake_run)
-
-    detected = rickgent_policies._detect_build_commit()
-
-    assert any(c[0] == fake_bin for c in calls), (
-        f"_detect_build_commit did not call _RICKGENT_BIN: calls={calls}"
-    )
-    assert detected == "override-commit", (
-        f"_detect_build_commit returned {detected!r}, expected 'override-commit' "
-        f"(the _RICKGENT_BIN override output)"
-    )
-
-
-# ── No false mismatch DENY under RICKGENT_BIN override ───────────────────────
-
-
-def test_no_false_mismatch_under_rickgent_bin_override(monkeypatch):
-    """RICKGENT_BIN override no longer produces a false build-commit-mismatch.
-
-    Both _detect_build_commit() and _assert_build_commit() resolve the binary
-    via _RICKGENT_BIN, so they query the same binary and agree. The old code
-    queried different binaries (literal `rickgent` vs `_RICKGENT_BIN`) and could
-    disagree, raising a false RuntimeError (DENY).
-    """
-    fake_bin = "/usr/local/bin/rickgent-fake"
-    monkeypatch.setattr(rickgent_policies, "_RICKGENT_BIN", fake_bin)
-    monkeypatch.setattr(rickgent_policies, "_BUILD_COMMIT_OVERRIDE", None)
-    monkeypatch.setattr(rickgent_policies, "BUILD_COMMIT", "dev")
-
-    def fake_run(cmd, **kwargs):
-        if cmd[0] == fake_bin:
-            return types.SimpleNamespace(
-                returncode=0, stdout="same-commit\n", stderr=""
-            )
-        # literal "rickgent" would return a DIFFERENT commit
-        return types.SimpleNamespace(
-            returncode=0, stdout="different-commit\n", stderr=""
-        )
-
-    monkeypatch.setattr(rickgent_policies.subprocess, "run", fake_run)
-
-    # Auto-detect sets BUILD_COMMIT from the (override) binary
-    rickgent_policies._detect_build_commit()
-
-    # Parity check must NOT raise — both used the same binary
-    rickgent_policies._assert_build_commit()
-
-
-def test_false_mismatch_deny_reproduces_against_old_code(monkeypatch):
-    """Demonstrates the OLD bug: literal `rickgent` vs `_RICKGENT_BIN` disagree.
-
-    This test forces the auto-detect to use the literal path (simulating the old
-    hard-coded `"rickgent"`) and shows the parity check then raises. After the
-    fix, _detect_build_commit uses _RICKGENT_BIN and this scenario cannot arise.
-    We assert the FIXED behavior: no raise.
-    """
-    fake_bin = "/usr/local/bin/rickgent-fake"
-    monkeypatch.setattr(rickgent_policies, "_RICKGENT_BIN", fake_bin)
-    monkeypatch.setattr(rickgent_policies, "_BUILD_COMMIT_OVERRIDE", None)
-    monkeypatch.setattr(rickgent_policies, "BUILD_COMMIT", "dev")
-
-    def fake_run(cmd, **kwargs):
-        # Both calls should go to fake_bin after the fix
-        if cmd[0] == fake_bin:
-            return types.SimpleNamespace(
-                returncode=0, stdout="commit-xyz\n", stderr=""
-            )
-        return types.SimpleNamespace(
-            returncode=0, stdout="commit-abc\n", stderr=""
-        )
-
-    monkeypatch.setattr(rickgent_policies.subprocess, "run", fake_run)
-
-    rickgent_policies._detect_build_commit()
-    # After fix: BUILD_COMMIT == "commit-xyz", assert queries fake_bin → "commit-xyz"
-    assert rickgent_policies.BUILD_COMMIT == "commit-xyz", (
-        f"BUILD_COMMIT={rickgent_policies.BUILD_COMMIT!r}, expected 'commit-xyz'"
-    )
-    rickgent_policies._assert_build_commit()  # must not raise
-
-
-# ── RICKGENT_BUILD_COMMIT override still takes precedence ────────────────────
-
-
-def test_build_commit_override_skips_detection(monkeypatch):
-    """RICKGENT_BUILD_COMMIT still takes precedence over auto-detect.
-
-    When _BUILD_COMMIT_OVERRIDE is set, _detect_build_commit returns it without
-    shelling out. _assert_build_commit still queries _RICKGENT_BIN for the TS
-    side and compares against the override.
-    """
+def _bind(monkeypatch: pytest.MonkeyPatch, path: Path, commit: str = "commit-001") -> Path:
+    node = path.parent / "node"
+    node.write_text("test node artifact\n")
+    node.chmod(0o700)
+    path.write_text("#!/bin/sh\nexit 0\n")
+    path.chmod(0o700)
+    monkeypatch.setattr(verdict_module, "_RICKGENT_NODE", str(node.resolve()))
     monkeypatch.setattr(
-        rickgent_policies, "_BUILD_COMMIT_OVERRIDE", "pinned-commit"
+        verdict_module,
+        "_RICKGENT_NODE_SHA256",
+        hashlib.sha256(node.read_bytes()).hexdigest(),
     )
-    monkeypatch.setattr(rickgent_policies, "BUILD_COMMIT", "pinned-commit")
+    monkeypatch.setattr(verdict_module, "_RICKGENT_BIN", str(path.resolve()))
     monkeypatch.setattr(
-        rickgent_policies, "_RICKGENT_BIN", "/usr/local/bin/rickgent-fake"
+        verdict_module,
+        "_RICKGENT_BIN_SHA256",
+        hashlib.sha256(path.read_bytes()).hexdigest(),
     )
+    monkeypatch.setattr(verdict_module, "BUILD_COMMIT", commit)
+    return node.resolve()
 
-    called = []
 
-    def fake_run(cmd, **kwargs):
-        called.append(list(cmd))
-        return types.SimpleNamespace(
-            returncode=0, stdout="pinned-commit\n", stderr=""
-        )
+def test_detect_build_commit_never_searches_path(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(verdict_module, "BUILD_COMMIT", "pinned-commit")
+    monkeypatch.setattr(
+        verdict_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("build identity must not be PATH-detected"),
+    )
+    assert verdict_module._detect_build_commit() == "pinned-commit"
 
-    monkeypatch.setattr(rickgent_policies.subprocess, "run", fake_run)
 
-    detected = rickgent_policies._detect_build_commit()
-    assert detected == "pinned-commit"
-    assert called == [], "_detect_build_commit shelled out despite override"
+def test_assert_build_commit_rehashes_exact_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    cli = tmp_path / "rickgent"
+    node = _bind(monkeypatch, cli)
+    calls: list[list[str]] = []
 
-    # Parity check still queries the TS binary
-    rickgent_policies._assert_build_commit()
-    assert len(called) == 1, f"expected one parity call, got {called}"
+    def run(command, **_kwargs):
+        calls.append(command)
+        return types.SimpleNamespace(returncode=0, stdout="commit-001\n", stderr="")
+
+    monkeypatch.setattr(verdict_module.subprocess, "run", run)
+    verdict_module._assert_build_commit()
+    assert calls == [[str(node), str(cli.resolve()), "--build-commit"]]
+
+    cli.write_text("tampered\n")
+    with pytest.raises(RuntimeError, match="digest mismatch"):
+        verdict_module._assert_build_commit()
+
+
+@pytest.mark.parametrize(
+    ("path", "digest", "commit"),
+    [("", "0" * 64, "commit"), ("/missing/rickgent", "bad", "commit"), ("/missing/rickgent", "0" * 64, "")],
+)
+def test_missing_provenance_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    digest: str,
+    commit: str,
+):
+    valid_cli = tmp_path / "valid-rickgent"
+    _bind(monkeypatch, valid_cli, commit)
+    monkeypatch.setattr(verdict_module, "_RICKGENT_BIN", path)
+    monkeypatch.setattr(verdict_module, "_RICKGENT_BIN_SHA256", digest)
+    monkeypatch.setattr(verdict_module, "BUILD_COMMIT", commit)
+    with pytest.raises(RuntimeError):
+        verdict_module._assert_build_commit()
+
+
+def test_verified_verdict_checks_commit_then_exact_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cli = tmp_path / "rickgent"
+    node = _bind(monkeypatch, cli)
+    calls: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        if command[2:] == ["--build-commit"]:
+            return types.SimpleNamespace(returncode=0, stdout="commit-001\n", stderr="")
+        return types.SimpleNamespace(returncode=0, stdout='{"passed":true}', stderr="")
+
+    monkeypatch.setattr(verdict_module.subprocess, "run", run)
+    assert verdict_module._verified_verdict("gate", {}) == {"passed": True}
+    assert calls == [
+        [str(node), str(cli.resolve()), "--build-commit"],
+        [str(node), str(cli.resolve()), "verdict", "gate", "--json"],
+    ]
+
+
+def test_assert_build_commit_rejects_tampered_node(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cli = tmp_path / "rickgent"
+    node = _bind(monkeypatch, cli)
+    Path(node).write_text("tampered node\n")
+    with pytest.raises(RuntimeError, match="Node digest mismatch"):
+        verdict_module._assert_build_commit()

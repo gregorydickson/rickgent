@@ -1,7 +1,7 @@
 // Deterministic fixture omnigent (architecture §4).
 //
 // Invoked exactly as the Dispatcher spawns the real binary:
-//   omnigent run <agentDir> -p <prompt>
+//   omnigent run <agentDir> --no-session -p <prompt>
 //
 // It ignores the prompt and instead performs fully-scripted, deterministic
 // side effects controlled by environment variables so a test can drive the
@@ -26,9 +26,16 @@
 //   FIXTURE_FOREIGN_ITEMS      foreign conversation_items count (default 3)
 //   FIXTURE_UNVERIFIABLE_PATHS comma-separated prompt paths that exit zero
 //                              without producing completion evidence
+//   FIXTURE_STUBBORN_RECORD    file prefix for a parent + descendant that
+//                              both ignore SIGTERM until the dispatcher kills
+//                              their complete process group
+//   FIXTURE_DETACHED_RECORD    additionally spawn a new-session descendant
+//                              that survives the outer CLI process group
+//   FIXTURE_DETACHED_MARKER    file the detached descendant writes only after
+//                              the outer CLI process has died
 
-import { execFileSync } from "child_process";
-import { writeFileSync, readFileSync, mkdirSync } from "fs";
+import { execFileSync, spawn as spawnProcess } from "child_process";
+import { appendFileSync, writeFileSync, readFileSync, mkdirSync } from "fs";
 import { dirname, join, isAbsolute } from "path";
 import { insertConversation } from "./chat-db.mjs";
 
@@ -89,6 +96,63 @@ function recordSpawn() {
   }));
 }
 
+function stubbornMode(record) {
+  const role = env("FIXTURE_STUBBORN_ROLE", "parent");
+  mkdirSync(dirname(record), { recursive: true });
+  process.on("SIGTERM", () => {
+    appendFileSync(`${record}.signals`, `${role}:SIGTERM\n`);
+  });
+  writeFileSync(`${record}.${role}.pid`, String(process.pid));
+
+  if (role === "detached") {
+    const outerPid = Number(env("FIXTURE_OUTER_PID"));
+    const marker = env("FIXTURE_DETACHED_MARKER");
+    let marked = false;
+    setInterval(() => {
+      if (marked || !marker || !Number.isSafeInteger(outerPid) || outerPid <= 0) return;
+      try {
+        process.kill(outerPid, 0);
+      } catch (error) {
+        if (error?.code !== "ESRCH") return;
+        writeFixtureFile(process.cwd(), marker, `detached descendant ${process.pid} survived outer ${outerPid}\n`);
+        marked = true;
+      }
+    }, 10);
+  }
+
+  if (role === "parent") {
+    spawnProcess(process.execPath, [process.argv[1]], {
+      stdio: "ignore",
+      env: {
+        ...process.env,
+        FIXTURE_SPAWN_RECORD: "",
+        FIXTURE_REQUIRE_NO_SESSION: "0",
+        FIXTURE_STUBBORN_ROLE: "descendant",
+      },
+    });
+    const detachedRecord = env("FIXTURE_DETACHED_RECORD");
+    if (detachedRecord) {
+      const detached = spawnProcess(process.execPath, [process.argv[1]], {
+        stdio: "ignore",
+        detached: true,
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          FIXTURE_SPAWN_RECORD: "",
+          FIXTURE_REQUIRE_NO_SESSION: "0",
+          FIXTURE_STUBBORN_RECORD: detachedRecord,
+          FIXTURE_STUBBORN_ROLE: "detached",
+          FIXTURE_OUTER_PID: String(process.pid),
+        },
+      });
+      detached.unref();
+    }
+  }
+
+  // Both processes intentionally keep the event loop live after SIGTERM.
+  setInterval(() => {}, 1_000);
+}
+
 function promptMode() {
   const prompt = promptArg();
   process.stdout.write(env("FIXTURE_STDOUT", "fixture worker transcript line") + "\n");
@@ -134,6 +198,15 @@ function promptMode() {
 
 function main() {
   recordSpawn();
+  if (env("FIXTURE_REQUIRE_NO_SESSION") === "1" && !process.argv.slice(2).includes("--no-session")) {
+    process.stderr.write("fixture requires authenticated direct --no-session dispatch\n");
+    process.exit(64);
+  }
+  const stubbornRecord = env("FIXTURE_STUBBORN_RECORD");
+  if (stubbornRecord) {
+    stubbornMode(stubbornRecord);
+    return;
+  }
   if (env("FIXTURE_MODE") === "prompt") {
     promptMode();
     return;

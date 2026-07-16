@@ -159,7 +159,7 @@ afterEach(() => {
 
 describe("canonical scope contract corpus", () => {
   it("is unique, versioned, and expectation-complete", () => {
-    expect(manifest.schema_version).toBe("rickgent-native-policy-corpus/v2");
+    expect(manifest.schema_version).toBe("rickgent-native-policy-corpus/v3");
     expect(manifest.scope_contract.schema_version).toBe("rickgent-canonical-scope-corpus/v1");
     expect(expected.scope_contract.schema_version).toBe(manifest.scope_contract.schema_version);
     expect(expected.scope_contract.required_observations).toEqual(["result", "change_kind"]);

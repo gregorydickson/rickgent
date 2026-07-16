@@ -1,5 +1,5 @@
 {
-  "schema_version": "rickgent-native-policy-corpus/v2",
+  "schema_version": "rickgent-native-policy-corpus/v3",
   "complete": true,
   "events": [
     "valid_request",
@@ -106,7 +106,6 @@
     "request_data_malformed",
     "target_name_mismatch",
     "arguments_malformed",
-    "endpoint_missing",
     "tool_unknown",
     "identity_missing",
     "identity_conflict",
@@ -474,6 +473,90 @@
       "reason_code",
       "denial_kind",
       "canonical_snapshot",
+      "tool_executed"
+    ]
+  },
+  "function_policy_contract": {
+    "schema_version": "rickgent-native-function-policy-corpus/v1",
+    "bundles": {
+      "manager": {
+        "path": "agents/rickgent",
+        "effective_tools": ["load_skill","sys_session_list","sys_session_get_history","sys_session_get_info","sys_session_send","sys_session_close","sys_list_models","sys_advise_models","sys_agent_get","sys_agent_download","sys_agent_list","sys_os_read","sys_os_write","sys_os_edit","sys_os_shell","rickgent_mark_done","rickgent_phase_advance","rickgent_build_gate","rickgent_prd_validate","sys_call_async","sys_read_inbox","sys_cancel_async","sys_cancel_task","list_comments","update_comment","sys_add_policy","sys_policy_registry","browser_navigate","browser_snapshot","browser_click","browser_type","browser_screenshot"]
+      },
+      "worker": {
+        "path": "agents/rickgent/agents/worker",
+        "effective_tools": ["load_skill","read_skill_file","sys_session_list","sys_session_get_history","sys_session_get_info","sys_agent_get","sys_agent_download","sys_agent_list","sys_os_read","sys_os_write","sys_os_edit","sys_os_shell","sys_call_async","sys_read_inbox","sys_cancel_async","sys_cancel_task","list_comments","update_comment","sys_add_policy","sys_policy_registry","browser_navigate","browser_snapshot","browser_click","browser_type","browser_screenshot"]
+      }
+    },
+    "attachments": [
+      {"name":"blast_radius","path":"omnigent.inner.nessie.policies.blast_radius","form":"factory","arguments":{"gate_pushes":true},"config":"none"},
+      {"name":"scope_fence","path":"rickgent_policies.scope_fence","form":"direct","arguments":null,"config":"attempt"},
+      {"name":"completion_evidence","path":"rickgent_policies.completion_evidence","form":"direct","arguments":null,"config":"attempt"},
+      {"name":"convergence_gate","path":"rickgent_policies.convergence_gate","form":"direct","arguments":null,"config":"attempt"},
+      {"name":"subtract_before_add","path":"rickgent_policies.subtract_before_add","form":"direct","arguments":null,"config":"attempt"},
+      {"name":"cross_vendor_review","path":"rickgent_policies.cross_vendor_review","form":"direct","arguments":null,"config":"attempt"},
+      {"name":"autonomous_pr_flow","path":"rickgent_policies.autonomous_pr_flow","form":"factory","arguments":{},"config":"attempt"}
+    ],
+    "individual_evaluators": [
+      "manager/blast_radius",
+      "manager/scope_fence",
+      "manager/completion_evidence",
+      "manager/convergence_gate",
+      "manager/subtract_before_add",
+      "manager/cross_vendor_review",
+      "manager/autonomous_pr_flow",
+      "worker/blast_radius",
+      "worker/scope_fence",
+      "worker/completion_evidence",
+      "worker/convergence_gate",
+      "worker/subtract_before_add",
+      "worker/cross_vendor_review",
+      "worker/autonomous_pr_flow"
+    ],
+    "bundle_evaluators": ["manager/bundle", "worker/bundle"],
+    "event_ids": [
+      "manager_session_send",
+      "manager_read_inbox",
+      "manager_session_list",
+      "manager_session_get_info",
+      "manager_session_close",
+      "manager_advise_models",
+      "manager_list_models",
+      "worker_read",
+      "worker_write",
+      "worker_edit",
+      "false_completion",
+      "completion_missing_commit",
+      "completion_missing_evidence",
+      "convergence_bypass",
+      "convergence_green",
+      "simplification_bypass",
+      "simplification_valid",
+      "review_equality",
+      "review_vendor_spoof",
+      "phase_advance_positive",
+      "protected_push",
+      "force_push",
+      "raw_shell_bypass",
+      "pr_before_push",
+      "delivery_push_call",
+      "delivery_push_result",
+      "delivery_failed_push_result",
+      "delivery_mismatched_push_result",
+      "delivery_pr_call"
+    ],
+    "sequence_ids": [],
+    "required_individual_assertions": [
+      "handler_result",
+      "native_result",
+      "reason_prefix",
+      "tool_executed"
+    ],
+    "required_bundle_assertions": [
+      "native_result",
+      "reason_prefix",
+      "deciding_policies",
+      "ask_state",
       "tool_executed"
     ]
   }

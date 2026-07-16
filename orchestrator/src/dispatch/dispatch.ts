@@ -3,7 +3,19 @@
 // `omnigent run` dispatch with timeout enforcement.
 
 import { spawn } from "child_process";
-import { writeFileSync, readFileSync, existsSync, mkdirSync, appendFileSync, rmSync } from "fs";
+import { randomUUID } from "crypto";
+import {
+  appendFileSync,
+  closeSync,
+  constants,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeSync,
+} from "fs";
 import { join } from "path";
 import {
   captureConversationIds,
@@ -21,7 +33,7 @@ import {
   type ImplementationCapturedReceipt,
 } from "../git/mutation-capture.js";
 import {
-  closePolicyBundleLease,
+  finalizePolicyBundle,
   materializePolicyBundle,
   verifyPolicyBundleForSpawn,
   type MaterializedWorkerBundle,
@@ -33,14 +45,15 @@ import type { RouterSelection } from "../lifecycle/routing.js";
 export type DispatchState =
   | "planned" | "spawned" | "db_session_observed" | "implementation_captured" | "completed"
   | "timed_out" | "killed" | "salvage_started" | "salvaged"
-  | "failed" | "retried" | "ignored_late";
+  | "failed" | "retried" | "ignored_late" | "cleanup_pending";
 
 export type DispatchTerminalReason =
   | "worker_failed"
   | "evidence_unverifiable"
   | "infrastructure_error"
   | "routing_denied"
-  | "breaker_deferred";
+  | "breaker_deferred"
+  | "ownership_unproven";
 
 export interface DispatchId {
   runId: string;
@@ -59,6 +72,12 @@ export interface DispatchEntry {
   exitCode: number | null;
   stdout: string | null;
   stderr: string | null;
+  /**
+   * False when dispatch had to force termination and therefore cannot prove
+   * that new-session descendants released their mutation authority. The
+   * attempt lease and owner-bound ticket lock remain active in that case.
+   */
+  ownershipReleased?: boolean;
   /** Machine-readable terminal classification; lifecycle aggregation never parses stderr. */
   terminalReason?: DispatchTerminalReason;
   /** Conversation id of the DB session created by this dispatch (B2 evidence). */
@@ -133,57 +152,96 @@ export class DispatchLedger {
   }
 }
 
-// A held lock is only stale once it outlives the worker it protects. The
-// default worker lifetime is ~1200s; the staleness deadline adds margin so a
-// legitimately-held lock is never stolen mid-run while a truly dead worker's
-// lock still gets reclaimed.
-const WORKER_LIFETIME_MS = 1_200_000;
-const LOCK_STALE_MARGIN_MS = 300_000;
-export const DEFAULT_LOCK_STALE_MS = WORKER_LIFETIME_MS + LOCK_STALE_MARGIN_MS;
-
 export class TicketLock {
+  private readonly owners = new Map<string, string>();
+
   constructor(private lockDir: string) {
     mkdirSync(lockDir, { recursive: true });
   }
 
-  acquire(ticketId: string, timeoutMs: number = DEFAULT_LOCK_STALE_MS): boolean {
-    const lockPath = join(this.lockDir, `${ticketId}.lock`);
-    if (existsSync(lockPath)) {
-      let content: string;
-      try {
-        content = readFileSync(lockPath, "utf-8");
-      } catch (err) {
-        // Only ENOENT means a concurrent release removed the lock between
-        // existsSync and read; the ticket is genuinely free, so take it. Any
-        // other read error (EACCES, EIO, ...) fails closed — we cannot prove
-        // the lock is free, so we do not grant ownership.
-        if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
-          writeFileSync(lockPath, String(Date.now()));
-          return true;
-        }
-        return false;
+  private createExclusive(lockPath: string, ticketId: string): boolean {
+    const token = randomUUID();
+    const bytes = Buffer.from(`${Date.now()}\n${token}\nactive\n`, "utf8");
+    let descriptor: number | null = null;
+    try {
+      descriptor = openSync(lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+      let offset = 0;
+      while (offset < bytes.length) {
+        offset += writeSync(descriptor, bytes, offset, bytes.length - offset);
       }
-      const lockTime = parseInt(content, 10);
-      // An empty/corrupt lock parses to NaN; treat it as stale so a garbage
-      // lock file is reclaimed instead of wedging the ticket forever.
-      if (Number.isNaN(lockTime) || Date.now() - lockTime > timeoutMs) {
-        writeFileSync(lockPath, String(Date.now()));
-        return true;
+      fsyncSync(descriptor);
+      closeSync(descriptor);
+      descriptor = null;
+      this.owners.set(ticketId, token);
+      return true;
+    } catch (error) {
+      if (descriptor !== null) {
+        try { closeSync(descriptor); } catch { /* best effort after failed create */ }
+        try { rmSync(lockPath, { force: true }); } catch { /* retained partial lock fails closed */ }
       }
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
       return false;
     }
-    writeFileSync(lockPath, String(Date.now()));
-    return true;
+  }
+
+  private observeExistingLock(lockPath: string): "present" | "missing" | "unreadable" {
+    try {
+      readFileSync(lockPath, "utf8");
+      return "present";
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unreadable";
+    }
+  }
+
+  acquire(ticketId: string): boolean {
+    const lockPath = join(this.lockDir, `${ticketId}.lock`);
+    if (this.createExclusive(lockPath, ticketId)) return true;
+
+    // Phase 2 has no owner-checked reconciler. Any extant record — active,
+    // cleanup-pending, malformed, empty, partial, or legacy — is therefore
+    // retained and blocks acquisition. Time-based reclamation can reopen a
+    // ticket while a detached descendant still has mutation authority.
+    const observed = this.observeExistingLock(lockPath);
+    if (observed === "missing") return this.createExclusive(lockPath, ticketId);
+    return false;
   }
 
   release(ticketId: string): void {
     const lockPath = join(this.lockDir, `${ticketId}.lock`);
-    if (existsSync(lockPath)) {
-      try {
-        // Delete the lock file so the ticket can be re-acquired.
-        // Without this, acquire() would always see a stale/active lock.
-        rmSync(lockPath, { force: true });
-      } catch { /* ignore */ }
+    const token = this.owners.get(ticketId);
+    if (token === undefined) return;
+    try {
+      const observedToken = readFileSync(lockPath, "utf8").split("\n")[1];
+      if (observedToken === token) rmSync(lockPath);
+    } catch { /* an unprovable owner never removes the lock */ }
+    this.owners.delete(ticketId);
+  }
+
+  markCleanupPending(ticketId: string): boolean {
+    const lockPath = join(this.lockDir, `${ticketId}.lock`);
+    const token = this.owners.get(ticketId);
+    if (token === undefined) return false;
+    let descriptor: number | null = null;
+    try {
+      const observedToken = readFileSync(lockPath, "utf8").split("\n")[1];
+      if (observedToken !== token) return false;
+      const bytes = Buffer.from(`${Date.now()}\n${token}\ncleanup_pending\n`, "utf8");
+      descriptor = openSync(
+        lockPath,
+        constants.O_WRONLY | constants.O_TRUNC | (constants.O_NOFOLLOW ?? 0),
+      );
+      let offset = 0;
+      while (offset < bytes.length) {
+        offset += writeSync(descriptor, bytes, offset, bytes.length - offset);
+      }
+      fsyncSync(descriptor);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      if (descriptor !== null) {
+        try { closeSync(descriptor); } catch { /* retained lock fails closed */ }
+      }
     }
   }
 }
@@ -193,6 +251,8 @@ export interface DispatchOptions {
   agentDir: string;
   prompt: string;
   timeout: number;
+  /** Grace between process-group SIGTERM and SIGKILL after timeout. */
+  terminationGraceMs?: number;
   maxConcurrent: number;
   /** Verified M1 mutation owner. No free-form mutation cwd is admitted. */
   workspace?: ReadyRunWorkspace;
@@ -221,6 +281,15 @@ export interface DispatchOptions {
   vendor?: string;
 }
 
+export const DEFAULT_TERMINATION_GRACE_MS = 5_000;
+const PROCESS_DEATH_POLL_MS = 10;
+
+export interface DispatcherDependencies {
+  readonly materializePolicyBundle?: typeof materializePolicyBundle;
+  readonly verifyPolicyBundleForSpawn?: typeof verifyPolicyBundleForSpawn;
+  readonly finalizePolicyBundle?: typeof finalizePolicyBundle;
+}
+
 export class Dispatcher {
   private active = 0;
 
@@ -228,6 +297,7 @@ export class Dispatcher {
     private ledger: DispatchLedger,
     private lock: TicketLock,
     private rickgentDir: string,
+    private dependencies: DispatcherDependencies = {},
   ) {}
 
   get activeCount(): number {
@@ -238,11 +308,20 @@ export class Dispatcher {
     if (opts.maxConcurrent !== 1) {
       throw new InputContractError("maxConcurrent must be exactly 1 for the sequential fixture profile");
     }
+    if (
+      opts.terminationGraceMs !== undefined
+      && (!Number.isSafeInteger(opts.terminationGraceMs) || opts.terminationGraceMs < 1)
+    ) {
+      throw new InputContractError("terminationGraceMs must be a positive safe integer");
+    }
     RUNTIME_CAPABILITY_GATE.require("autonomous_dispatch");
     const idStr = dispatchIdString(id);
 
     // Idempotency check — return recorded terminal state without re-spawning
     const existing = this.ledger.find(idStr);
+    if (existing?.state === "cleanup_pending") {
+      return existing;
+    }
     if (existing && this.ledger.isTerminal(idStr)) {
       return existing;
     }
@@ -287,6 +366,7 @@ export class Dispatcher {
       return failed;
     }
 
+    let releaseTicketLock = true;
     try {
       this.active++;
       // Isolate this dispatch's chat.db under a per-dispatchId subdir so a
@@ -315,12 +395,12 @@ export class Dispatcher {
         return failed;
       }
 
-      let materializedBundle: MaterializedWorkerBundle;
+      let materializedBundle: MaterializedWorkerBundle | null = null;
       try {
         if (!opts.ticket || !opts.selection) {
           throw new InputContractError("dispatch requires a normalized TicketContract and complete router selection");
         }
-        materializedBundle = materializePolicyBundle({
+        materializedBundle = (this.dependencies.materializePolicyBundle ?? materializePolicyBundle)({
           agentRoot: opts.agentDir,
           stateRoot: this.rickgentDir,
           dispatch: id,
@@ -337,16 +417,19 @@ export class Dispatcher {
         });
         const finalReadiness = runWorkspaceReadyForSpawn(opts.workspace);
         if (!finalReadiness.ready) {
-          closePolicyBundleLease(materializedBundle);
           throw new Error(`run workspace changed during policy materialization: ${finalReadiness.detail}`);
         }
-        verifyPolicyBundleForSpawn(materializedBundle);
+        (this.dependencies.verifyPolicyBundleForSpawn ?? verifyPolicyBundleForSpawn)(materializedBundle);
       } catch (error) {
+        const finalizationError = materializedBundle === null
+          ? null
+          : this.retainPolicyBundleAfterChildClose(materializedBundle);
         const failed: DispatchEntry = {
           dispatchId: idStr, state: "failed", pid: null,
           startedAt: null, completedAt: new Date().toISOString(),
           exitCode: null, stdout: null,
-          stderr: `worker materialization failed before spawn: ${error instanceof Error ? error.message : String(error)}`,
+          stderr: `worker materialization failed before spawn: ${error instanceof Error ? error.message : String(error)}`
+            + (finalizationError === null ? "" : `\n[dispatch] policy bundle finalization failed: ${finalizationError}`),
           terminalReason: "infrastructure_error",
           vendor: opts.selection?.vendor ?? opts.vendor ?? null,
         };
@@ -354,31 +437,43 @@ export class Dispatcher {
         return failed;
       }
 
-      const baselineConvIds = sessionDataDir
-        ? captureConversationIds(sessionDataDir)
-        : new Set<string>();
+      let baselineConvIds: Set<string>;
+      try {
+        baselineConvIds = sessionDataDir
+          ? captureConversationIds(sessionDataDir)
+          : new Set<string>();
+      } catch (error) {
+        const finalizationError = this.retainPolicyBundleAfterChildClose(materializedBundle);
+        const failed: DispatchEntry = {
+          dispatchId: idStr, state: "failed", pid: null,
+          startedAt: null, completedAt: new Date().toISOString(),
+          exitCode: null, stdout: null,
+          stderr: `dispatch evidence initialization failed before spawn: ${error instanceof Error ? error.message : String(error)}`
+            + (finalizationError === null ? "" : `\n[dispatch] policy bundle finalization failed: ${finalizationError}`),
+          terminalReason: "infrastructure_error",
+          vendor: opts.selection?.vendor ?? opts.vendor ?? null,
+        };
+        this.ledger.append(failed);
+        return failed;
+      }
 
-      // Capture the spawn timestamp once and reuse it for every ledger entry
-      // produced by this dispatch. The "spawned" entry is the source of truth
-      // for startedAt — completion entries must not overwrite it (W3).
+      // Capture the prospective spawn timestamp once and reuse it for every
+      // entry after the final verification succeeds.
       const startedAt = new Date().toISOString();
-      this.ledger.append({
-        dispatchId: idStr,
-        state: "spawned",
-        pid: null,
+      const entry = await this.runOneShot(
+        id,
+        idStr,
+        opts,
         startedAt,
-        completedAt: null,
-        exitCode: null,
-        stdout: null,
-        stderr: null,
-        vendor: opts.selection?.vendor ?? opts.vendor ?? null,
-      });
-
-      // Dispatch via omnigent run one-shot
-      return await this.runOneShot(id, idStr, opts, startedAt, baselineConvIds, sessionDataDir, materializedBundle);
+        baselineConvIds,
+        sessionDataDir,
+        materializedBundle,
+      );
+      releaseTicketLock = entry.ownershipReleased !== false;
+      return entry;
     } finally {
       this.active--;
-      this.lock.release(id.ticketId);
+      if (releaseTicketLock) this.lock.release(id.ticketId);
     }
   }
 
@@ -391,98 +486,245 @@ export class Dispatcher {
     sessionDataDir: string | null,
     materializedBundle: MaterializedWorkerBundle,
   ): Promise<DispatchEntry> {
+    // This verification is deliberately adjacent to spawn. Materialization
+    // and readiness checks can take time, so no earlier verification is a
+    // substitute for proving the exact bundle at the authority boundary.
+    try {
+      (this.dependencies.verifyPolicyBundleForSpawn ?? verifyPolicyBundleForSpawn)(materializedBundle);
+    } catch (error) {
+      const finalizationError = this.retainPolicyBundleAfterChildClose(materializedBundle);
+      const failed: DispatchEntry = {
+        dispatchId: idStr, state: "failed", pid: null,
+        startedAt: null, completedAt: new Date().toISOString(),
+        exitCode: null, stdout: null,
+        stderr: `worker verification failed immediately before spawn: ${error instanceof Error ? error.message : String(error)}`
+          + (finalizationError === null ? "" : `\n[dispatch] policy bundle finalization failed: ${finalizationError}`),
+        terminalReason: "infrastructure_error",
+        vendor: opts.selection?.vendor ?? opts.vendor ?? null,
+      };
+      this.ledger.append(failed);
+      return failed;
+    }
+
     return new Promise((resolve) => {
       // W3: do NOT pass `timeout` to spawn() — the manual timer below is the
       // single source of truth for timeout enforcement. Passing both creates a
       // race where Node's internal timeout and our timer can both fire and
       // produce conflicting ledger entries.
-      verifyPolicyBundleForSpawn(materializedBundle);
-      const child = spawn("omnigent", ["run", materializedBundle.bundleDir, "-p", opts.prompt], {
-        stdio: ["pipe", "pipe", "pipe"],
-        cwd: opts.workspace!.worktreeDir,
-        // OMNIGENT_DATA_DIR is pinned LAST to the per-dispatch isolated dir so
-        // neither the inherited env nor opts.env can redirect the worker back
-        // to a shared store — the worker writes its session where this dispatch
-        // exclusively observes it.
-        env: {
-          ...process.env,
-          ...(opts.env ?? {}),
-          ...materializedBundle.spawnEnvironment,
-          PWD: opts.workspace!.worktreeDir,
-          RICKGENT_TARGET_REPO: opts.workspace!.worktreeDir,
-          ...(sessionDataDir ? { OMNIGENT_DATA_DIR: sessionDataDir } : {}),
-        },
-      });
+      let child: ReturnType<typeof spawn>;
+      try {
+        const runtime = materializedBundle.trustedSpawnCommand;
+        child = spawn(runtime.executable, [
+          ...runtime.argvPrefix,
+          "run",
+          materializedBundle.bundleDir,
+          "--no-session",
+          "-p",
+          opts.prompt,
+        ], {
+          stdio: ["pipe", "pipe", "pipe"],
+          cwd: opts.workspace!.worktreeDir,
+          // A dedicated process group makes the dispatch own the worker's
+          // complete subprocess tree. Releasing a ticket after killing only
+          // the group leader would allow descendants to keep mutating the
+          // supposedly-finalized workspace.
+          detached: true,
+          // OMNIGENT_DATA_DIR is pinned LAST to the per-dispatch isolated dir so
+          // neither the inherited env nor opts.env can redirect the worker back
+          // to a shared store — the worker writes its session where this dispatch
+          // exclusively observes it.
+          env: {
+            ...process.env,
+            ...(opts.env ?? {}),
+            ...materializedBundle.spawnEnvironment,
+            PWD: opts.workspace!.worktreeDir,
+            RICKGENT_TARGET_REPO: opts.workspace!.worktreeDir,
+            ...(sessionDataDir ? { OMNIGENT_DATA_DIR: sessionDataDir } : {}),
+          },
+        });
+      } catch (error) {
+        const finalizationError = this.retainPolicyBundleAfterChildClose(materializedBundle);
+        const failed: DispatchEntry = {
+          dispatchId: idStr, state: "failed", pid: null,
+          startedAt, completedAt: new Date().toISOString(),
+          exitCode: null, stdout: null,
+          stderr: `[dispatch] spawn threw: ${error instanceof Error ? error.message : String(error)}`
+            + (finalizationError === null ? "" : `\n[dispatch] policy bundle finalization failed: ${finalizationError}`),
+          terminalReason: "infrastructure_error",
+          vendor: opts.selection?.vendor ?? opts.vendor ?? null,
+        };
+        this.ledger.append(failed);
+        resolve(failed);
+        return;
+      }
 
       let stdout = "";
       let stderr = "";
       let resolved = false;
+      let childClosed = false;
+      let closeCode: number | null = null;
+      let timedOut = false;
+      let spawnError: Error | null = null;
+      let spawnedEvidenceFailure: string | null = null;
+      let lingeringProcessGroup = false;
+      let terminationStarted = false;
+      const terminationErrors: string[] = [];
+      let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+      let graceTimer: ReturnType<typeof setTimeout> | null = null;
+      let processDeathPoll: ReturnType<typeof setTimeout> | null = null;
+      const pid = child.pid ?? null;
+
+      const appendDispatchError = (existing: string | null, detail: string): string =>
+        `${existing ?? ""}${existing ? "\n" : ""}[dispatch] ${detail}`;
 
       const finish = (entry: DispatchEntry): void => {
         if (resolved) return;
         resolved = true;
-        clearTimeout(timer);
-        this.ledger.append(entry);
-        resolve(entry);
+        if (timeoutTimer !== null) clearTimeout(timeoutTimer);
+        if (graceTimer !== null) clearTimeout(graceTimer);
+        if (processDeathPoll !== null) clearTimeout(processDeathPoll);
+        let completedEntry = entry;
+        if (entry.ownershipReleased === false && !this.lock.markCleanupPending(id.ticketId)) {
+          completedEntry = {
+            ...entry,
+            state: "cleanup_pending",
+            stderr: appendDispatchError(
+              entry.stderr,
+              "ticket lock cleanup-pending mark could not be proven; ownership remains retained",
+            ),
+            terminalReason: "ownership_unproven",
+          };
+        }
+        try {
+          this.ledger.append(completedEntry);
+          resolve(completedEntry);
+        } catch (error) {
+          // The child is already closed before finish is reachable. Ledger
+          // durability failure must change the returned result to
+          // infrastructure failure, but it must never strand this Promise.
+          resolve({
+            dispatchId: completedEntry.dispatchId,
+            state: completedEntry.ownershipReleased === false ? "cleanup_pending" : "failed",
+            pid: completedEntry.pid,
+            startedAt: completedEntry.startedAt,
+            completedAt: completedEntry.completedAt ?? new Date().toISOString(),
+            exitCode: completedEntry.exitCode,
+            stdout: completedEntry.stdout,
+            stderr: appendDispatchError(
+              completedEntry.stderr,
+              `terminal ledger append failed: ${error instanceof Error ? error.message : String(error)}`,
+            ),
+            terminalReason: completedEntry.ownershipReleased === false
+              ? "ownership_unproven"
+              : "infrastructure_error",
+            ...(completedEntry.conversationId === undefined
+              ? {}
+              : { conversationId: completedEntry.conversationId }),
+            ...(completedEntry.vendor === undefined ? {} : { vendor: completedEntry.vendor }),
+            ...(completedEntry.ownershipReleased === false ? { ownershipReleased: false } : {}),
+          });
+        }
       };
 
-      child.stdout?.on("data", (data: Buffer) => { stdout += data.toString(); });
-      child.stderr?.on("data", (data: Buffer) => { stderr += data.toString(); });
-
-      // Handle spawn errors (e.g. ENOENT when the binary is not on PATH).
-      // Without this, Node.js throws an unhandled 'error' event which can
-      // crash the worker thread under parallel test execution.
-      child.on("error", (err: Error) => {
-        try { closePolicyBundleLease(materializedBundle); } catch { /* retained for forensic cleanup */ }
-        finish({
-          dispatchId: idStr, state: "failed", pid: child.pid ?? null,
-          startedAt, completedAt: new Date().toISOString(),
-          exitCode: null, stdout,
-          stderr: stderr + `\n[dispatch] spawn error: ${err.message}`,
-          terminalReason: "infrastructure_error",
-          vendor: opts.selection?.vendor ?? opts.vendor ?? null,
-        });
-      });
-
-      const timer = setTimeout(() => {
-        child.kill("SIGTERM");
-        finish({
-          dispatchId: idStr, state: "timed_out", pid: child.pid ?? null,
-          startedAt, completedAt: new Date().toISOString(),
-          exitCode: null, stdout, stderr,
-          terminalReason: "worker_failed",
-          vendor: opts.selection?.vendor ?? opts.vendor ?? null,
-        });
-      }, opts.timeout);
-
-      child.on("close", (code) => {
-        let leaseCloseError: string | null = null;
+      const processGroupIsAlive = (): boolean => {
+        if (pid === null) return false;
         try {
-          closePolicyBundleLease(materializedBundle);
+          process.kill(-pid, 0);
+          return true;
         } catch (error) {
-          leaseCloseError = error instanceof Error ? error.message : String(error);
+          if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+          // EPERM and observation failures cannot prove death. Keep ownership
+          // until a later observation can do so.
+          return true;
         }
-        if (resolved) return;
-        const completedAt = new Date().toISOString();
-        const pid = child.pid ?? null;
+      };
 
-        if (leaseCloseError !== null) {
+      const signalProcessGroup = (signal: NodeJS.Signals): void => {
+        if (pid === null) return;
+        try {
+          process.kill(-pid, signal);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+          terminationErrors.push(
+            `${signal} failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      };
+
+      const completeAfterConfirmedDeath = (): void => {
+        if (resolved || !childClosed || processGroupIsAlive()) return;
+        const completedAt = new Date().toISOString();
+
+        // Forced termination proves only that the CLI process group is gone.
+        // Harnesses may create a new session, so retain the attempt lease and
+        // ticket lock until a later recovery owner can prove descendant death.
+        if (terminationStarted) {
+          if (spawnedEvidenceFailure !== null) {
+            finish({
+              dispatchId: idStr, state: "cleanup_pending", pid,
+              startedAt, completedAt, exitCode: closeCode, stdout,
+              stderr: appendDispatchError(
+                stderr,
+                [spawnedEvidenceFailure, ...terminationErrors].join("; "),
+              ),
+              terminalReason: "ownership_unproven",
+              ownershipReleased: false,
+              vendor: opts.selection?.vendor ?? opts.vendor ?? null,
+            });
+            return;
+          }
+          if (timedOut) {
+            finish({
+              dispatchId: idStr, state: "cleanup_pending", pid,
+              startedAt, completedAt, exitCode: closeCode, stdout,
+              stderr: terminationErrors.length === 0
+                ? stderr
+                : appendDispatchError(stderr, terminationErrors.join("; ")),
+              terminalReason: "ownership_unproven",
+              ownershipReleased: false,
+              vendor: opts.selection?.vendor ?? opts.vendor ?? null,
+            });
+            return;
+          }
+          const details = [
+            ...(spawnError === null ? [] : [`spawn error: ${spawnError.message}`]),
+            ...(lingeringProcessGroup ? ["worker process group outlived its leader and was terminated"] : []),
+            ...terminationErrors,
+          ];
           finish({
-            dispatchId: idStr, state: "failed", pid,
-            startedAt, completedAt, exitCode: code, stdout,
-            stderr: `${stderr}\n[dispatch] attempt lease could not be closed: ${leaseCloseError}`,
-            terminalReason: "infrastructure_error",
+            dispatchId: idStr, state: "cleanup_pending", pid,
+            startedAt, completedAt, exitCode: closeCode, stdout,
+            stderr: appendDispatchError(stderr, details.join("; ")),
+            terminalReason: "ownership_unproven",
+            ownershipReleased: false,
             vendor: opts.selection?.vendor ?? opts.vendor ?? null,
           });
           return;
         }
 
-        // Exit code alone is NOT completion. A non-zero exit fails immediately.
-        if (code !== 0) {
+        if (spawnError !== null || closeCode !== 0) {
+          const details = [
+            ...(spawnError === null ? [] : [`spawn error: ${spawnError.message}`]),
+            ...(closeCode === 0 ? [] : [`worker closed abnormally with exit code ${String(closeCode)}`]),
+          ];
+          finish({
+            dispatchId: idStr, state: "cleanup_pending", pid,
+            startedAt, completedAt, exitCode: closeCode, stdout,
+            stderr: appendDispatchError(stderr, details.join("; ")),
+            terminalReason: "ownership_unproven",
+            ownershipReleased: false,
+            vendor: opts.selection?.vendor ?? opts.vendor ?? null,
+          });
+          return;
+        }
+
+        const finalizationError = this.retainPolicyBundleAfterChildClose(materializedBundle);
+        if (finalizationError !== null) {
           finish({
             dispatchId: idStr, state: "failed", pid,
-            startedAt, completedAt, exitCode: code, stdout, stderr,
-            terminalReason: "worker_failed",
+            startedAt, completedAt, exitCode: closeCode, stdout,
+            stderr: `${stderr}\n[dispatch] policy bundle finalization failed: ${finalizationError}`,
+            terminalReason: "infrastructure_error",
             vendor: opts.selection?.vendor ?? opts.vendor ?? null,
           });
           return;
@@ -492,12 +734,27 @@ export class Dispatcher {
           ? observeDbSession(sessionDataDir, baselineConvIds)
           : { conversationId: null, transcriptCount: 0 };
         if (observation.conversationId !== null) {
-          this.ledger.append({
-            dispatchId: idStr, state: "db_session_observed", pid,
-            startedAt, completedAt: null, exitCode: code, stdout, stderr,
-            conversationId: observation.conversationId,
-            vendor: opts.selection?.vendor ?? opts.vendor ?? null,
-          });
+          try {
+            this.ledger.append({
+              dispatchId: idStr, state: "db_session_observed", pid,
+              startedAt, completedAt: null, exitCode: closeCode, stdout, stderr,
+              conversationId: observation.conversationId,
+              vendor: opts.selection?.vendor ?? opts.vendor ?? null,
+            });
+          } catch (error) {
+            finish({
+              dispatchId: idStr, state: "failed", pid,
+              startedAt, completedAt, exitCode: closeCode, stdout,
+              stderr: appendDispatchError(
+                stderr,
+                `DB-session ledger append failed: ${error instanceof Error ? error.message : String(error)}`,
+              ),
+              conversationId: observation.conversationId,
+              terminalReason: "infrastructure_error",
+              vendor: opts.selection?.vendor ?? opts.vendor ?? null,
+            });
+            return;
+          }
         }
         const captured = captureNonterminalMutation(
           id,
@@ -509,7 +766,7 @@ export class Dispatcher {
         if (captured.ok) {
           finish({
             dispatchId: idStr, state: "implementation_captured", pid,
-            startedAt, completedAt, exitCode: code, stdout, stderr,
+            startedAt, completedAt, exitCode: closeCode, stdout, stderr,
             conversationId: observation.conversationId,
             baselineSha: opts.workspace!.baselineSha,
             treeChanged: true,
@@ -521,13 +778,97 @@ export class Dispatcher {
         }
         finish({
           dispatchId: idStr, state: "failed", pid,
-          startedAt, completedAt, exitCode: code, stdout,
+          startedAt, completedAt, exitCode: closeCode, stdout,
           stderr: `${stderr}\n[dispatch] ${captured.detail}`,
           conversationId: observation.conversationId,
           terminalReason: "evidence_unverifiable",
           vendor: opts.selection?.vendor ?? opts.vendor ?? null,
         });
+      };
+
+      const pollForProcessGroupDeath = (): void => {
+        if (resolved || !childClosed) return;
+        if (!processGroupIsAlive()) {
+          completeAfterConfirmedDeath();
+          return;
+        }
+        processDeathPoll = setTimeout(pollForProcessGroupDeath, PROCESS_DEATH_POLL_MS);
+      };
+
+      const beginTermination = (): void => {
+        if (terminationStarted) return;
+        terminationStarted = true;
+        signalProcessGroup("SIGTERM");
+        graceTimer = setTimeout(() => {
+          if (processGroupIsAlive()) signalProcessGroup("SIGKILL");
+          pollForProcessGroupDeath();
+        }, opts.terminationGraceMs ?? DEFAULT_TERMINATION_GRACE_MS);
+      };
+
+      child.stdout?.on("data", (data: Buffer) => { stdout += data.toString(); });
+      child.stderr?.on("data", (data: Buffer) => { stderr += data.toString(); });
+
+      // Handle spawn errors (for example, a bound interpreter disappearing
+      // between the final provenance check and exec).
+      // Without this, Node.js throws an unhandled 'error' event which can
+      // crash the worker thread under parallel test execution.
+      child.on("error", (err: Error) => {
+        spawnError = err;
       });
+
+      child.on("close", (code) => {
+        if (resolved) return;
+        childClosed = true;
+        closeCode = code;
+        if (processGroupIsAlive()) {
+          if (!timedOut && spawnError === null) lingeringProcessGroup = true;
+          beginTermination();
+          pollForProcessGroupDeath();
+          return;
+        }
+        completeAfterConfirmedDeath();
+      });
+
+      // Install every supervision path before persisting spawned evidence. If
+      // that append fails, the child is still owned, terminated, and observed
+      // through confirmed CLI process-group death.
+      timeoutTimer = setTimeout(() => {
+        timedOut = true;
+        beginTermination();
+      }, opts.timeout);
+
+      try {
+        this.ledger.append({
+          dispatchId: idStr, state: "spawned", pid,
+          startedAt, completedAt: null, exitCode: null,
+          stdout: null, stderr: null,
+          vendor: opts.selection?.vendor ?? opts.vendor ?? null,
+        });
+      } catch (error) {
+        spawnedEvidenceFailure = `spawned ledger append failed: ${error instanceof Error ? error.message : String(error)}`;
+        beginTermination();
+      }
     });
+  }
+
+  /**
+   * Child death is the only cleanup fact dispatch can prove. Retaining the
+   * materialization closes its active lease without pretending the run
+   * workspace has already been cleaned, moved, or deleted by its owner.
+   */
+  private retainPolicyBundleAfterChildClose(materializedBundle: MaterializedWorkerBundle): string | null {
+    try {
+      const result = (this.dependencies.finalizePolicyBundle ?? finalizePolicyBundle)(materializedBundle, {
+        childClosed: true,
+        workspaceCleanupProven: false,
+        disposition: "retain",
+      });
+      if (!result.leaseClosed || result.disposition !== "retained") {
+        return `unexpected finalization proof: disposition=${result.disposition} leaseClosed=${result.leaseClosed}`;
+      }
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
   }
 }

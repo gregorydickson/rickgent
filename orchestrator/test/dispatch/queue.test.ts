@@ -176,6 +176,25 @@ describe("DispatchQueue backpressure (B3)", () => {
     expect(result.results.get(dispatchIdString(makeId("T3")))?.state).toBe("completed");
   });
 
+  it("stops before the next ticket when worker ownership is cleanup-pending", async () => {
+    const ids = ["T1", "T2", "T3"].map(makeId);
+    const queue = new DispatchQueue(ledger, 1);
+    for (const id of ids) queue.enqueue(id);
+
+    const invoked: string[] = [];
+    const result = await queue.drain(async (id) => {
+      invoked.push(id.ticketId);
+      return {
+        ...terminalEntry(dispatchIdString(id), "failed"),
+        ownershipReleased: false,
+      };
+    });
+
+    expect(invoked).toEqual(["T1"]);
+    expect(result.spawnOrder).toEqual([dispatchIdString(ids[0]!)]);
+    expect(result.results.size).toBe(1);
+  });
+
   it("enqueue records a durable 'planned' ledger entry for each ticket (resume-visible)", () => {
     const ids = ["T1", "T2", "T3"].map(makeId);
     const queue = new DispatchQueue(ledger, 1);

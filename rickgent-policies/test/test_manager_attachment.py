@@ -1,274 +1,122 @@
-"""B4 (manager) + C4 — policy ATTACHMENT to the manager bundle.
+"""Exact manager FunctionPolicy attachment contract."""
 
-The manager bundle (`agents/rickgent/config.yaml`) must attach the required
-policy set via its top-level `guardrails:` block (NOT `policy_modules`). The
-effective attached set is read from the omnigent static parser
-(`spec.guardrails.policies`), never from `POLICY_REGISTRY` (registration is not
-attachment). `convergence_gate` is advisory on per-phase advance; blocking is
-reserved for the build/full-PR gate.
+from __future__ import annotations
 
-Fulfills: VAL-ATTACH-001..010, 015, 018, 019, 020, 025, 026.
-"""
-
-import importlib
-import textwrap
+import json
+import shutil
 from pathlib import Path
 
 import pytest
-
+import yaml
+from omnigent.policies.function import FunctionPolicy
 from omnigent.spec.parser import parse
 from omnigent.spec.types import FunctionPolicySpec
+from omnigent.tools.base import ToolContext
+from omnigent.tools.manager import ToolManager
 
-import rickgent_policies
 from rickgent_policies import (
-    REQUIRED_POLICIES,
-    convergence_gate,
+    ATTACHED_POLICY_ROWS,
+    REQUIRED_POLICY_NAMES,
     effective_attached_policies,
+    validate_attached_policy_bundle,
 )
+
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 MANAGER_DIR = REPO_ROOT / "agents" / "rickgent"
+LIFECYCLE_TOOLS = {
+    "rickgent_mark_done": {"claimed_sha", "evidence"},
+    "rickgent_phase_advance": {"next_phase"},
+    "rickgent_build_gate": {"gate"},
+    "rickgent_prd_validate": {"prd"},
+}
 
 
-def _manager_spec():
-    return parse(MANAGER_DIR)
+def test_manager_attachment_is_exact_ordered_and_function_policy_compatible():
+    resolved = validate_attached_policy_bundle(MANAGER_DIR)
+    assert tuple(policy.spec.name for policy in resolved) == REQUIRED_POLICY_NAMES
+    assert len(resolved) == len(ATTACHED_POLICY_ROWS) == 7
+    assert all(isinstance(policy, FunctionPolicy) for policy in resolved)
 
 
-def _policy_by_name(spec, name):
-    for policy in spec.guardrails.policies or []:
-        if policy.name == name:
-            return policy
-    return None
-
-
-def _resolvable(dotted_path: str) -> bool:
-    module_path, _, attr = dotted_path.rpartition(".")
+def test_manager_lifecycle_tools_are_reachable_closed_and_non_authoritative():
+    manager = ToolManager(
+        parse(MANAGER_DIR, expand_env=False),
+        workdir=MANAGER_DIR,
+        sandbox_enabled=False,
+    )
     try:
-        module = importlib.import_module(module_path)
-    except Exception:
-        return False
-    return callable(getattr(module, attr, None))
+        schemas = {
+            row["function"]["name"]: row["function"]["parameters"]
+            for row in manager.get_tool_schemas()
+        }
+        assert LIFECYCLE_TOOLS.keys() <= set(manager.get_tool_names())
+        for name, properties in LIFECYCLE_TOOLS.items():
+            schema = schemas[name]
+            assert schema["additionalProperties"] is False
+            assert set(schema["properties"]) == properties
+            assert set(schema["required"]) == properties
+
+        result = manager.call_tool(
+            "rickgent_phase_advance",
+            json.dumps({"next_phase": "spec_conformance"}),
+            ToolContext(task_id="test", agent_id="manager"),
+        )
+        assert json.loads(result) == {
+            "received": True,
+            "authoritative": False,
+            "tool": "rickgent_phase_advance",
+            "message": "Receipt only; authoritative lifecycle state is unchanged.",
+        }
+    finally:
+        manager.shutdown()
 
 
-# ── VAL-ATTACH-001 ───────────────────────────────────────────────────────────
+def test_manager_rows_have_exact_paths_factory_shapes_and_config_posture():
+    spec = parse(MANAGER_DIR, expand_env=False)
+    policies = list(spec.guardrails.policies or [])
+    for policy, expected in zip(policies, ATTACHED_POLICY_ROWS, strict=True):
+        assert isinstance(policy, FunctionPolicySpec)
+        assert policy.name == expected.name
+        assert policy.function is not None
+        assert policy.function.path == expected.path
+        if expected.arguments is None:
+            assert policy.function.arguments is None
+        else:
+            assert dict(policy.function.arguments or {}) == dict(expected.arguments)
+            assert policy.function.arguments is not None
+        assert policy.config is None
 
 
-def test_manager_parses_with_nonempty_guardrails():
-    """VAL-ATTACH-001: parse succeeds; guardrails present with >= 7 policies."""
-    spec = _manager_spec()
-    assert spec is not None
-    assert spec.guardrails is not None, "manager bundle has no guardrails block"
-    assert spec.guardrails.policies is not None
-    assert len(spec.guardrails.policies) >= 7
-
-
-# ── VAL-ATTACH-002 ───────────────────────────────────────────────────────────
-
-
-def test_manager_effective_set_superset_of_required():
-    """VAL-ATTACH-002: effective attached set ⊇ REQUIRED_POLICIES."""
-    effective = effective_attached_policies(MANAGER_DIR)
-    missing = REQUIRED_POLICIES - effective
-    assert not missing, f"manager missing required attached policies: {sorted(missing)}"
-
-
-# ── VAL-ATTACH-003 ───────────────────────────────────────────────────────────
-
-
-def test_manager_attaches_blast_radius_gate_pushes_true():
-    """VAL-ATTACH-003: blast_radius attached with gate_pushes=True."""
-    spec = _manager_spec()
-    policy = _policy_by_name(spec, "blast_radius")
-    assert policy is not None, "blast_radius not attached"
-    assert isinstance(policy, FunctionPolicySpec)
-    args = (policy.function.arguments or {}) if policy.function else {}
-    config = policy.config or {}
-    gate_pushes = args.get("gate_pushes", config.get("gate_pushes"))
-    assert gate_pushes is True, f"blast_radius gate_pushes not True: {gate_pushes!r}"
-
-
-# ── VAL-ATTACH-004 ───────────────────────────────────────────────────────────
-
-
-def test_manager_attaches_scope_fence_resolvable_handler():
-    """VAL-ATTACH-004: scope_fence function-typed, handler resolves."""
-    spec = _manager_spec()
-    policy = _policy_by_name(spec, "scope_fence")
-    assert policy is not None
-    assert isinstance(policy, FunctionPolicySpec)
-    assert policy.function.path == "rickgent_policies.scope_fence"
-    assert _resolvable(policy.function.path)
-
-
-# ── VAL-ATTACH-005..009 ──────────────────────────────────────────────────────
+def _mutated(tmp_path: Path, mutate) -> Path:
+    target = tmp_path / "manager"
+    shutil.copytree(MANAGER_DIR, target)
+    path = target / "config.yaml"
+    document = yaml.safe_load(path.read_text())
+    mutate(document["guardrails"]["policies"])
+    path.write_text(yaml.safe_dump(document, sort_keys=False))
+    return target
 
 
 @pytest.mark.parametrize(
-    "name",
+    "mutation",
     [
-        "completion_evidence",
-        "convergence_gate",
-        "subtract_before_add",
-        "cross_vendor_review",
-        "autonomous_pr_flow",
+        lambda policies: policies.pop("scope_fence"),
+        lambda policies: policies.__setitem__("extra", policies["scope_fence"].copy()),
+        lambda policies: policies["scope_fence"]["function"].__setitem__("path", "rickgent_policies.select_model"),
+        lambda policies: policies["blast_radius"]["function"]["arguments"].__setitem__("gate_pushes", False),
+        lambda policies: policies["autonomous_pr_flow"]["function"].pop("arguments"),
+        lambda policies: policies["scope_fence"].__setitem__("config", {"phase": "implement"}),
     ],
+    ids=["missing", "extra", "wrong-path", "bad-builtin-args", "wrong-factory-shape", "template-config"],
 )
-def test_manager_attaches_rickgent_shim(name):
-    """VAL-ATTACH-005..009: each rickgent shim attached + resolvable handler."""
-    spec = _manager_spec()
-    policy = _policy_by_name(spec, name)
-    assert policy is not None, f"{name} not attached"
-    assert isinstance(policy, FunctionPolicySpec)
-    assert policy.function.path == f"rickgent_policies.{name}"
-    assert _resolvable(policy.function.path)
+def test_manager_rejects_every_attachment_incompatibility(tmp_path: Path, mutation):
+    with pytest.raises(ValueError):
+        validate_attached_policy_bundle(_mutated(tmp_path, mutation))
 
 
-# ── VAL-ATTACH-010 ───────────────────────────────────────────────────────────
-
-
-def test_every_attached_policy_function_typed_and_resolvable():
-    """VAL-ATTACH-010: all attached policies function-typed + resolvable."""
-    spec = _manager_spec()
-    for policy in spec.guardrails.policies or []:
-        assert isinstance(policy, FunctionPolicySpec), (
-            f"{policy.name} is not function-typed"
-        )
-        assert policy.function is not None and policy.function.path
-        assert _resolvable(policy.function.path), (
-            f"{policy.name} handler {policy.function.path} unresolvable"
-        )
-
-
-# ── VAL-ATTACH-025 ───────────────────────────────────────────────────────────
-
-
-def test_attachment_via_guardrails_not_policy_modules():
-    """VAL-ATTACH-025: attachment expressed via guardrails.policies."""
-    import yaml
-
-    spec = _manager_spec()
-    assert spec.guardrails is not None
-    assert spec.guardrails.policies, "guardrails.policies is empty"
-    raw = yaml.safe_load((MANAGER_DIR / "config.yaml").read_text())
-    assert "guardrails" in raw and raw["guardrails"].get("policies")
-    assert "policy_modules" not in raw, "attachment must not rely on policy_modules"
-
-
-# ── VAL-ATTACH-015 & VAL-ATTACH-026 ──────────────────────────────────────────
-
-
-def _write_bundle(tmp_path: Path, with_guardrails: bool) -> Path:
-    body = textwrap.dedent(
-        """
-        spec_version: 1
-        name: rickgent
-        instructions: inline test instructions
-        executor:
-          type: omnigent
-          config:
-            harness: claude
-        llm:
-          model: anthropic/claude-sonnet-4-20250514
-        """
-    ).strip()
-    if with_guardrails:
-        body += textwrap.dedent(
-            """
-
-            guardrails:
-              policies:
-                scope_fence:
-                  type: function
-                  function:
-                    path: rickgent_policies.scope_fence
-            """
-        )
-    bundle = tmp_path / "bundle"
-    bundle.mkdir(parents=True)
-    (bundle / "config.yaml").write_text(body + "\n")
-    return bundle
-
-
-def test_effective_reads_parser_not_registry(tmp_path):
-    """VAL-ATTACH-015: helper output tracks the bundle guardrails, not registry.
-
-    POLICY_REGISTRY is fully populated in both cases; the helper must return the
-    attached set for a bundle with guardrails and the empty set for one without.
-    """
-    assert len(rickgent_policies.POLICY_REGISTRY) == 6
-
-    attached = _write_bundle(tmp_path / "with", with_guardrails=True)
-    assert effective_attached_policies(attached) == {"scope_fence"}
-
-    unattached = _write_bundle(tmp_path / "without", with_guardrails=False)
-    assert effective_attached_policies(unattached) == set()
-
-
-def test_registration_is_not_attachment(tmp_path):
-    """VAL-ATTACH-026: full registration + empty attachment → empty effective set."""
-    from omnigent.policies.registry import load_registry, is_registered_handler
-
-    load_registry(extra_modules=["rickgent_policies"])
-    assert is_registered_handler("rickgent_policies.scope_fence")
-    assert is_registered_handler("rickgent_policies.autonomous_pr_flow")
-
-    unattached = _write_bundle(tmp_path, with_guardrails=False)
-    effective = effective_attached_policies(unattached)
-    assert effective == set(), "registration must not count as attachment"
-    assert not (REQUIRED_POLICIES <= effective)
-
-
-# ── VAL-ATTACH-018 / 019 / 020 — convergence_gate advisory vs blocking ────────
-
-_PHASE_ADVANCE = {"tool_name": "rickgent_phase_advance"}
-_BUILD_GATE = {"tool_name": "rickgent_build_gate"}
-
-
-def _failing_verdict(monkeypatch):
-    monkeypatch.setattr(
-        "rickgent_policies._rickgent_verdict",
-        lambda check, data: {"passed": False, "failures": ["metric x < y"]},
-    )
-
-
-@pytest.mark.parametrize("phase", ["implement", "spec_conformance"])
-def test_convergence_gate_advisory_on_phase_advance(phase, monkeypatch, caplog):
-    """VAL-ATTACH-018/019: a failing gate on per-phase advance never DENYs."""
-    _failing_verdict(monkeypatch)
-    config = {"phase": phase, "gate_input": {"phase": phase}}
-    with caplog.at_level("WARNING", logger="rickgent_policies"):
-        result = convergence_gate(_PHASE_ADVANCE, config)
-    assert result is None or result.get("result") != "DENY", (
-        f"convergence_gate blocked {phase} advance: {result!r}"
-    )
-    assert any("advisory" in rec.getMessage().lower() for rec in caplog.records), (
-        "advisory convergence verdict was not logged"
-    )
-
-
-def test_convergence_gate_advisory_missing_gate_input(monkeypatch):
-    """VAL-ATTACH-018: even missing gate_input is advisory on per-phase advance."""
-    result = convergence_gate(_PHASE_ADVANCE, {"phase": "implement"})
-    assert result is None or result.get("result") != "DENY"
-
-
-def test_convergence_gate_blocking_on_build_gate(monkeypatch):
-    """VAL-ATTACH-020: the build/full-PR gate can still DENY a failing verdict."""
-    _failing_verdict(monkeypatch)
-    config = {"phase": "build", "gate_input": {"phase": "build"}}
-    result = convergence_gate(_BUILD_GATE, config)
-    assert result is not None and result.get("result") == "DENY", (
-        f"build gate did not block failing verdict: {result!r}"
-    )
-    assert result.get("code") == "GATE_FAILED"
-
-
-def test_convergence_gate_build_gate_passes_when_green(monkeypatch):
-    """VAL-ATTACH-020: the build gate ALLOWs a passing verdict."""
-    monkeypatch.setattr(
-        "rickgent_policies._rickgent_verdict",
-        lambda check, data: {"passed": True},
-    )
-    config = {"phase": "build", "gate_input": {"phase": "build"}}
-    result = convergence_gate(_BUILD_GATE, config)
-    assert result is not None and result.get("result") == "ALLOW"
+def test_effective_projection_is_parser_observation_not_validation(tmp_path: Path):
+    partial = _mutated(tmp_path, lambda policies: policies.pop("scope_fence"))
+    assert "scope_fence" not in effective_attached_policies(partial)
+    with pytest.raises(ValueError):
+        validate_attached_policy_bundle(partial)

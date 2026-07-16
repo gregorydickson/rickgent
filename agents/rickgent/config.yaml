@@ -24,16 +24,20 @@ interaction:
     input: [text, image, file]
     output: [text]
 
+# ToolManager registers the concrete sys_os_* implementations from this
+# environment. Merely listing a sys_os_* name under tools.builtins is not a
+# registration contract.
+os_env:
+  type: caller_process
+  cwd: .
+  # Current source-mounted Omnigent cannot start its helper inside the default
+  # platform sandbox because that sandbox cannot import the mounted package.
+  # Tool policy is therefore the active M2 boundary; process isolation lands
+  # with the owned-resource/supervisor milestone.
+  sandbox:
+    type: none
+
 tools:
-  builtins:
-    - sys_session_send
-    - sys_read_inbox
-    - sys_session_list
-    - sys_session_get_info
-    - sys_session_close
-    - sys_os_shell
-    - sys_advise_models
-    - sys_list_models
   agents:
     - worker
 
@@ -46,8 +50,8 @@ guardrails:
   ask_timeout: 86400
   policies:
     # Omnigent builtin — bounds shell blast radius. gate_pushes=True keeps the
-    # ASK-class gate on push/merge/deploy; autonomous_pr_flow is the narrow
-    # own-feature-branch ALLOW exception layered on top.
+    # ASK-class approval gate on even an authenticated run-branch push. The
+    # autonomous policy adds correlation; its ALLOW does not cancel this ASK.
     blast_radius:
       type: function
       function:
@@ -78,6 +82,7 @@ guardrails:
       type: function
       function:
         path: rickgent_policies.autonomous_pr_flow
+        arguments: {}
 
 # Skills are auto-discovered from the skills/ directory.
 # Listed here for explicit reference and documentation.

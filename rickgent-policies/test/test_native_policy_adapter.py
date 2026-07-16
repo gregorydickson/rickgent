@@ -33,6 +33,7 @@ from rickgent_policies.policy_event import (
     PolicyAbstention,
     PolicyDenial,
     RequestedModelIdentity,
+    RuntimeProvenance,
     TicketScopeEntry,
     adapt_native_policy_event,
     make_policy_denial,
@@ -73,7 +74,8 @@ def _load_corpus() -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]
     return manifest, cases, expected
 
 
-MANIFEST, CASES, EXPECTED_DOCUMENT = _load_corpus()
+MANIFEST, ALL_CASES, EXPECTED_DOCUMENT = _load_corpus()
+CASES = [case for case in ALL_CASES if case["id"] in MANIFEST["events"]]
 
 
 class _EntriesMapping(Mapping[str, str]):
@@ -197,6 +199,21 @@ def _trusted_context() -> AuthenticatedAttemptContext:
             ),
         ),
         requested_identity=_identity(),
+        runtime_provenance=RuntimeProvenance(
+            schema_version="rickgent-runtime-provenance/v2",
+            omnigent_python_entrypoint="/runtime/venv/bin/python",
+            omnigent_python_realpath="/runtime/python",
+            omnigent_python_sha256="c" * 64,
+            omnigent_root_realpath="/runtime/omnigent",
+            omnigent_origin_realpath="/runtime/omnigent/omnigent/__init__.py",
+            rickgent_policies_origin_realpath="/runtime/policies/rickgent_policies/__init__.py",
+            rickgent_policies_sha256="d" * 64,
+            rickgent_node_realpath="/runtime/node",
+            rickgent_node_sha256="e" * 64,
+            rickgent_cli_realpath="/runtime/rickgent",
+            rickgent_cli_sha256="f" * 64,
+            rickgent_build_commit="commit-001",
+        ),
         nonce="nonce-001",
         lease_active=True,
         replayed=False,
@@ -255,7 +272,7 @@ def _validate_corpus(
     cases: list[Mapping[str, Any]],
     expected_document: Mapping[str, Any],
 ) -> None:
-    assert manifest["schema_version"] == "rickgent-native-policy-corpus/v2"
+    assert manifest["schema_version"] == "rickgent-native-policy-corpus/v3"
     assert manifest["complete"] is True
     assert manifest["expected_verdict_matrix"]["cartesian_complete"] is True
 
@@ -266,13 +283,14 @@ def _validate_corpus(
 
     case_ids = [case["id"] for case in cases]
     assert len(case_ids) == len(set(case_ids))
-    assert set(case_ids) == set(manifest_events)
+    assert set(manifest_events) <= set(case_ids)
     assert all(
         {"id", "event", "config_case", "auth_case", "execution_mode"}
         <= case.keys()
         for case in cases
     )
-    assert {case["execution_mode"] for case in cases} == {"native", "direct"}
+    adapter_cases = [case for case in cases if case["id"] in manifest_events]
+    assert {case["execution_mode"] for case in adapter_cases} == {"native", "direct"}
 
     assert set(manifest["native_phases"]) == set(NATIVE_PHASES)
     assert set(manifest["denial_kinds"]) == {kind.value for kind in DenialKind}
@@ -314,7 +332,7 @@ def _validate_corpus(
     assert all(isinstance(record["canonical_snapshot"], dict) for record in canonical)
     assert {
         record["canonical_snapshot"]["tool"] for record in canonical
-    } == set(manifest["structured_tools"])
+    } == set(manifest["structured_tools"]) | {"sys_os_shell"}
     assert all(
         record["canonical_snapshot"] is None
         for record in expectations

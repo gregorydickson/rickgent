@@ -7,6 +7,7 @@ All three surfaces (core API, CLI, Python subprocess) must return the same verdi
 import json
 import subprocess
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -20,9 +21,20 @@ CLI_CHECKS = {"completion", "salvage", "gate", "scope", "prd"}
 def _run_rickgent_verdict(check: str, input_data) -> dict:
     """Run `rickgent verdict <check> --json` with input on stdin."""
     input_str = input_data if isinstance(input_data, str) else json.dumps(input_data)
+    cli_path = os.environ.get("RICKGENT_CLI_REALPATH")
+    node_path = os.environ.get("RICKGENT_NODE_REALPATH") or shutil.which("node")
+    if cli_path:
+        if not node_path:
+            pytest.skip("bound Node interpreter not available")
+        argv = [node_path, cli_path, "verdict", check, "--json"]
+    else:
+        legacy_cli = shutil.which("rickgent")
+        if legacy_cli is None:
+            pytest.skip("rickgent CLI not available")
+        argv = [legacy_cli, "verdict", check, "--json"]
     try:
         proc = subprocess.run(
-            ["rickgent", "verdict", check, "--json"],
+            argv,
             input=input_str,
             capture_output=True,
             text=True,

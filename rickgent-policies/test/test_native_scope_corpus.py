@@ -193,7 +193,7 @@ def test_function_policy_import_is_bound_to_mounted_root():
 def test_scope_corpus_inventory_is_versioned_unique_and_complete():
     contract = MANIFEST["scope_contract"]
     expected = EXPECTED["scope_contract"]
-    assert MANIFEST["schema_version"] == "rickgent-native-policy-corpus/v2"
+    assert MANIFEST["schema_version"] == "rickgent-native-policy-corpus/v3"
     assert contract["schema_version"] == "rickgent-canonical-scope-corpus/v1"
     assert expected["schema_version"] == contract["schema_version"]
     cases = contract["cases"]
@@ -303,7 +303,7 @@ def test_every_raw_shell_spelling_denies_without_command_classification(
     )
     result = asyncio.run(policy.evaluate(_evaluation_context(event), {}))
     assert result.action is PolicyAction.DENY
-    assert result.reason.startswith("RICKGENT_POLICY_EVENT_MALFORMED:")
+    assert result.reason.startswith("RICKGENT_SCOPE_DENIED:")
 
 
 def test_agent_authority_copies_cannot_widen_scope(

@@ -94,7 +94,11 @@ export class DispatchQueue {
     }
   }
 
-  /** Drain every queued ticket in FIFO order through the single M1 slot. */
+  /**
+   * Drain queued tickets in FIFO order through the single M1 slot. Ownership-
+   * pending dispatches stop the drain: starting another worker while a prior
+   * mutation-capable descendant may live would violate ticket isolation.
+   */
   async drain(dispatchFn: DispatchFn, hooks?: DrainHooks): Promise<DrainResult> {
     const results = new Map<string, DispatchEntry>();
     const spawnOrder: string[] = [];
@@ -113,6 +117,7 @@ export class DispatchQueue {
       }
       results.set(idStr, entry);
       hooks?.onSettle?.(idStr, entry, 0);
+      if (entry.ownershipReleased === false) break;
     }
     return {
       results,

@@ -23,6 +23,7 @@ import {
   dispatchIdString,
   type DispatchEntry,
   type DispatchId,
+  type DispatcherDependencies,
 } from "../dispatch/dispatch.js";
 import { DispatchQueue } from "../dispatch/queue.js";
 import { Registry, type TicketState } from "./registry.js";
@@ -125,6 +126,8 @@ export interface InternalBuildDependencies {
   provisionRunWorkspace?: typeof provisionRunWorkspace;
   finalizeRunWorkspace?: typeof finalizeRunWorkspace;
   recordRun?: typeof recordRun;
+  /** Deterministic fixture materialization; production always uses the authenticated bundle. */
+  dispatcherDependencies?: DispatcherDependencies;
   /** Explicit fixture-only omissions; production entrypoints never set these. */
   skipPolicyAttachment?: boolean;
   skipConformance?: boolean;
@@ -451,10 +454,11 @@ async function executeBuild(
   const requestedRunId = opts.runId ?? `run-${Date.now()}`;
 
   // ── Policy attachment verification (B4 gate) ─────────────────────────────
-  // Before any dispatch, verify that the manager + worker bundles attach the
-  // full required policy set. This is the same check `rickgent doctor` runs,
-  // but wired into the build startup so a build cannot proceed with ungated
-  // policies. Test fixtures may replace the checker only by dependency injection.
+  // Before any dispatch, verify the manager + worker *templates* attach the
+  // full required policy set. This is structural compatibility only: the
+  // shipped manager template has no attempt authority and is not runnable as
+  // an authenticated policy bundle. Worker materialization performs the real
+  // configured startup smoke immediately before spawn.
   if (dependencies.skipPolicyAttachment) {
     report.push("build: policy attachment — skipped by explicit fixture dependency (blocking)");
     issues.push(runIssue({
@@ -472,8 +476,9 @@ async function executeBuild(
     const attachResult = (dependencies.verifyPolicyAttachment ?? verifyPolicyAttachment)(opts.agentDir, env);
     if (attachResult.ok) {
       report.push(
-        `build: policy attachment — manager: PASS, worker: PASS ` +
-          `(${attachResult.managerCount}/${attachResult.workerCount} policies)`,
+        `build: policy attachment templates — manager: PASS (structural only), ` +
+          `worker: PASS (${attachResult.managerCount}/${attachResult.workerCount} policies); ` +
+          "configured worker startup is verified per attempt",
       );
     } else {
       // Fail closed: missing policy attachment is a human gate (not a bypass).
@@ -538,6 +543,7 @@ async function executeBuild(
     }, issues);
   }
   const runWorkspace: ReadyRunWorkspace = provisioned.workspace;
+  let workerOwnershipUnreleased = false;
   report.push(
     `build: dedicated run workspace ready — ref=${runWorkspace.runRef} ` +
       `baseline=${runWorkspace.baselineSha.slice(0, 12)}`,
@@ -552,7 +558,12 @@ async function executeBuild(
   // ── Dispatch infra ───────────────────────────────────────────────────────
   const ledger = new DispatchLedger(dispatchLedgerPath(opts.rickgentDir));
   const lock = new TicketLock(join(opts.rickgentDir, "locks"));
-  const dispatcher = new Dispatcher(ledger, lock, opts.rickgentDir);
+  const dispatcher = new Dispatcher(
+    ledger,
+    lock,
+    opts.rickgentDir,
+    dependencies.dispatcherDependencies,
+  );
   const registry = new Registry(join(opts.rickgentDir, "registry.json"));
   const breaker: CircuitBreakerState = createBreakerState();
 
@@ -602,6 +613,21 @@ async function executeBuild(
 
   const dispatchFn = async (id: DispatchId): Promise<DispatchEntry> => {
     const ticket = ticketByDispatchId.get(dispatchIdString(id))!;
+
+    if (workerOwnershipUnreleased) {
+      report.push(`  ${ticket.id}: not spawned — prior worker ownership is cleanup-pending`);
+      return {
+        dispatchId: dispatchIdString(id),
+        state: "failed",
+        pid: null,
+        startedAt: null,
+        completedAt: new Date().toISOString(),
+        exitCode: null,
+        stdout: null,
+        stderr: "prior dispatch ownership remains cleanup-pending",
+        terminalReason: "infrastructure_error",
+      };
+    }
 
     if (!canExecute(breaker)) {
       recordSalvageDisposition(opts.rickgentDir, {
@@ -703,17 +729,30 @@ async function executeBuild(
       implementerVendorByTicket.set(ticket.id, selectedVendor);
     }
 
-    const entry = await dispatcher.dispatch(id, {
-      agentDir: opts.agentDir,
-      prompt: ticketPrompt(ticket),
-      timeout: opts.timeout ?? 60000,
-      maxConcurrent: cap,
-      workspace: runWorkspace,
-      dataDir: opts.dataDir,
-      ticket,
-      selection: routed.selection,
-      env,
-    });
+    let entry: DispatchEntry;
+    try {
+      entry = await dispatcher.dispatch(id, {
+        agentDir: opts.agentDir,
+        prompt: ticketPrompt(ticket),
+        timeout: opts.timeout ?? 60000,
+        maxConcurrent: cap,
+        workspace: runWorkspace,
+        dataDir: opts.dataDir,
+        ticket,
+        selection: routed.selection,
+        env,
+      });
+    } catch (error) {
+      workerOwnershipUnreleased = true;
+      throw error;
+    }
+    if (entry.ownershipReleased === false) {
+      workerOwnershipUnreleased = true;
+      report.push(
+        `  ${ticket.id}: worker ownership remains unproven — retaining ticket lock, ` +
+          "policy lease, and run workspace for later recovery",
+      );
+    }
 
     if (entry.state === "implementation_captured" && entry.captureReceipt) {
       if (registry.getTicketState(ticket.id)) {
@@ -835,6 +874,17 @@ async function executeBuild(
       class: "execution",
       detail: `${base.ticketsFailed} of ${base.ticketsPlanned} planned tickets failed`,
     }));
+  }
+  if (workerOwnershipUnreleased) {
+    issues.push(runIssue({
+      reason: "cleanup_failed",
+      class: "cleanup",
+      detail: "forced worker termination left descendant ownership cleanup-pending",
+      gate: "worker-ownership",
+    }));
+    throw new Error(
+      "worker ownership is cleanup-pending; later mutation-reading gates are suppressed",
+    );
   }
   const verifiedTickets = base.ticketsDone + base.ticketsRecovered;
 
@@ -976,7 +1026,12 @@ async function executeBuild(
     runWorkspace.baselineSha,
     env,
   );
-  const retainWorkspace = treeObservation.status !== "unchanged";
+  const retainWorkspace = workerOwnershipUnreleased || treeObservation.status !== "unchanged";
+  if (workerOwnershipUnreleased) {
+    report.push(
+      "build: run workspace retained because forced worker termination could not prove descendant ownership release",
+    );
+  }
   if (treeObservation.status === "unknown") {
     report.push(`build: run workspace observation unavailable — retaining: ${treeObservation.detail}`);
     issues.push(runIssue({
@@ -1200,10 +1255,9 @@ export async function runPipelineWithDependenciesForTesting(
 
 // ── Policy attachment verification (B4 gate) ────────────────────────────────
 //
-// Verifies that the manager + worker bundles attach the full required policy
-// set via the omnigent static parser. This is the same check `rickgent doctor`
-// runs, but wired into build startup so a build cannot proceed with ungated
-// policies. Fails CLOSED (non-zero exit + intervention) on a missing policy.
+// Verifies the exact manager + worker template attachment order, paths,
+// factory shape, config posture, and FunctionPolicy construction. It does not
+// claim either unmaterialized template has authenticated runtime authority.
 
 export interface PolicyAttachResult {
   ok: boolean;
@@ -1230,22 +1284,18 @@ export function verifyPolicyAttachment(agentDir: string, env: NodeJS.ProcessEnv)
 
   const py = [
     "import json, os, sys",
-    "from rickgent_policies import REQUIRED_POLICIES, effective_attached_policies",
+    "from rickgent_policies import validate_attached_policy_bundle",
     "bundles = {'manager': os.environ['RG_MGR'], 'worker': os.environ['RG_WKR']}",
     "counts = {}",
-    "missing = {}",
+    "errors = {}",
     "for label, d in bundles.items():",
     "    try:",
-    "        eff = effective_attached_policies(d)",
-    "        counts[label] = len(eff)",
+    "        resolved = validate_attached_policy_bundle(d)",
+    "        counts[label] = len(resolved)",
     "    except Exception as e:",
-    "        missing[label] = ['<parse-error: %s>' % e] + sorted(REQUIRED_POLICIES)",
+    "        errors[label] = str(e)",
     "        counts[label] = 0",
-    "        continue",
-    "    gap = sorted(REQUIRED_POLICIES - eff)",
-    "    if gap:",
-    "        missing[label] = gap",
-    "print(json.dumps({'missing': missing, 'counts': counts}))",
+    "print(json.dumps({'errors': errors, 'counts': counts}))",
   ].join("\n");
 
   try {
@@ -1256,21 +1306,21 @@ export function verifyPolicyAttachment(agentDir: string, env: NodeJS.ProcessEnv)
       env: { ...env, RG_MGR: managerDir, RG_WKR: workerDir },
     }).trim();
     const parsed = JSON.parse(stdout) as {
-      missing: Record<string, string[]>;
+      errors: Record<string, string>;
       counts: Record<string, number>;
     };
-    const labels = Object.keys(parsed.missing);
+    const labels = Object.keys(parsed.errors);
     const mgrCount = parsed.counts["manager"] ?? 0;
     const wkrCount = parsed.counts["worker"] ?? 0;
     if (labels.length > 0) {
       const detail = labels
-        .map((l) => `${l} missing [${(parsed.missing[l] ?? []).join(", ")}]`)
+        .map((l) => `${l}: ${parsed.errors[l] ?? "attachment validation failed"}`)
         .join("; ");
       return { ok: false, detail, managerCount: mgrCount, workerCount: wkrCount };
     }
     return {
       ok: true,
-      detail: "manager + worker bundles attach the full required policy set",
+      detail: "manager + worker templates have exact structural FunctionPolicy compatibility; configured worker startup is verified per attempt",
       managerCount: mgrCount,
       workerCount: wkrCount,
     };

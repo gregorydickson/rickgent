@@ -36,6 +36,7 @@ import {
 } from "../../src/policy/policy-bundle.js";
 
 const AGENT_ROOT = join(import.meta.dirname, "../../../agents/rickgent");
+const RICKGENT_CLI = realpathSync(join(import.meta.dirname, "../../dist/cli.js"));
 
 function sha256(value: Buffer | string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -140,6 +141,7 @@ function materialize(input: Fixture, overrides: Partial<Parameters<typeof materi
     leaseExpiresAtMs: Date.now() + 60_000,
     omnigentRoot: process.env.OMNIGENT_ROOT,
     omnigentPython: process.env.OMNIGENT_PYTHON,
+    rickgentCli: RICKGENT_CLI,
     ...overrides,
   });
 }
@@ -160,6 +162,7 @@ describe("M2 authenticated policy context", () => {
 
   beforeEach(() => {
     expect(process.env.OMNIGENT_ROOT).toBeTruthy();
+    expect(process.env.OMNIGENT_PYTHON).toBeTruthy();
     root = realpathSync(mkdtempSync(join(tmpdir(), "rickgent-policy-context-")));
     input = fixture(root);
   });
@@ -199,6 +202,21 @@ describe("M2 authenticated policy context", () => {
       },
     });
     expect(handle.context.declared_scope).toEqual(input.contract.scope);
+    expect(handle.runtimeProvenance).toMatchObject({
+      schema_version: "rickgent-runtime-provenance/v2",
+      omnigent_python_entrypoint: process.env.OMNIGENT_PYTHON,
+      omnigent_python_realpath: realpathSync(process.env.OMNIGENT_PYTHON!),
+      rickgent_node_realpath: realpathSync(process.execPath),
+    });
+    expect(handle.runtimeProvenance.omnigent_python_sha256).toBe(
+      sha256(readFileSync(handle.runtimeProvenance.omnigent_python_realpath)),
+    );
+    expect(handle.runtimeProvenance.rickgent_node_sha256).toBe(
+      sha256(readFileSync(handle.runtimeProvenance.rickgent_node_realpath)),
+    );
+    expect(handle.trustedSpawnCommand.executable).toBe(process.env.OMNIGENT_PYTHON);
+    expect(handle.spawnEnvironment.RICKGENT_OMNIGENT_PYTHON_ENTRYPOINT).toBe(process.env.OMNIGENT_PYTHON);
+    expect(handle.spawnEnvironment.RICKGENT_NODE_REALPATH).toBe(realpathSync(process.execPath));
     expect(deepFrozen(handle)).toBe(true);
     expect(pathInside(input.worktree, handle.attemptRoot)).toBe(false);
     expect(pathInside(AGENT_ROOT, handle.attemptRoot)).toBe(false);

@@ -156,35 +156,54 @@ describe("TicketLock", () => {
     expect(lock.acquire("T-2")).toBe(true);
   });
 
-  it("takes over a stale lock after timeout", () => {
-    expect(lock.acquire("T-1", 5000)).toBe(true);
-    // Wait past timeout
+  it("never reclaims an aged active lock without an explicit recovery owner", () => {
+    expect(lock.acquire("T-1")).toBe(true);
     const lockPath = join(dir, "T-1.lock");
-    const staleTime = String(Date.now() - 6000);
-    writeFileSync(lockPath, staleTime);
-    expect(lock.acquire("T-1", 5000)).toBe(true);
+    const lines = readFileSync(lockPath, "utf8").split("\n");
+    lines[0] = String(Date.now() - 10_000_000);
+    writeFileSync(lockPath, lines.join("\n"));
+    expect(new TicketLock(dir).acquire("T-1")).toBe(false);
   });
 
   it("release does not throw for unknown ticket", () => {
     expect(() => lock.release("T-unknown")).not.toThrow();
   });
 
-  // VAL-BUG-011 (A-BUG-4): an empty lock file parses to NaN and must be
-  // treated as stale, not wedged forever.
-  it("treats an empty lock file as stale and takes it", () => {
-    const lockPath = join(dir, "T-1.lock");
-    writeFileSync(lockPath, "");
+  it("release is owner-bound and cannot remove another instance's lock", () => {
     expect(lock.acquire("T-1")).toBe(true);
-    expect(readFileSync(lockPath, "utf-8")).not.toBe("");
+    const intruder = new TicketLock(dir);
+    intruder.release("T-1");
+    expect(existsSync(join(dir, "T-1.lock"))).toBe(true);
+    lock.release("T-1");
+    expect(existsSync(join(dir, "T-1.lock"))).toBe(false);
   });
 
-  // VAL-BUG-012 (A-BUG-4): a corrupt/non-numeric lock file parses to NaN and
-  // must be treated as stale.
-  it("treats a corrupt (non-numeric) lock file as stale and takes it", () => {
+  it("never reclaims a cleanup-pending lock by age", () => {
+    expect(lock.acquire("T-1")).toBe(true);
+    expect(lock.markCleanupPending("T-1")).toBe(true);
+    const lockPath = join(dir, "T-1.lock");
+    const lines = readFileSync(lockPath, "utf8").split("\n");
+    lines[0] = String(Date.now() - 10_000_000);
+    writeFileSync(lockPath, lines.join("\n"));
+    expect(new TicketLock(dir).acquire("T-1")).toBe(false);
+  });
+
+  // VAL-BUG-011 (A-BUG-4): an empty record can be a crash-truncated cleanup
+  // sentinel and must remain fail-closed until explicit recovery.
+  it("does not reclaim an empty lock file", () => {
+    const lockPath = join(dir, "T-1.lock");
+    writeFileSync(lockPath, "");
+    expect(lock.acquire("T-1")).toBe(false);
+    expect(readFileSync(lockPath, "utf-8")).toBe("");
+  });
+
+  // VAL-BUG-012 (A-BUG-4): partial/corrupt authority is retained rather than
+  // interpreted as absence.
+  it("does not reclaim a corrupt lock file", () => {
     const lockPath = join(dir, "T-1.lock");
     writeFileSync(lockPath, "not-a-number-garbage");
-    expect(lock.acquire("T-1")).toBe(true);
-    expect(Number.isNaN(parseInt(readFileSync(lockPath, "utf-8"), 10))).toBe(false);
+    expect(lock.acquire("T-1")).toBe(false);
+    expect(readFileSync(lockPath, "utf-8")).toBe("not-a-number-garbage");
   });
 
   // VAL-BUG-024 (A-BUG-9): a lock aged within a normal worker lifetime is not
@@ -199,12 +218,12 @@ describe("TicketLock", () => {
     expect(readFileSync(lockPath, "utf-8")).toBe(stamp);
   });
 
-  // VAL-BUG-026 (A-BUG-4 + A-BUG-9): the staleness policy distinguishes a
-  // NaN/corrupt lock (stealable) from a valid recent lock (not stealable).
-  it("steals a corrupt lock but not a valid recent lock, in one suite", () => {
+  // VAL-BUG-026 (A-BUG-4 + A-BUG-9): neither corrupt nor valid extant
+  // authority can be stolen without the later recovery protocol.
+  it("does not steal corrupt or valid extant locks", () => {
     const corruptPath = join(dir, "T-corrupt.lock");
     writeFileSync(corruptPath, "xyz");
-    expect(lock.acquire("T-corrupt")).toBe(true);
+    expect(lock.acquire("T-corrupt")).toBe(false);
 
     const livePath = join(dir, "T-live.lock");
     const liveStamp = String(Date.now() - 60_000);

@@ -13,6 +13,7 @@ import { canonicalJson, TICKET_CONTRACT_SCHEMA_VERSION, type TicketScopeEntry } 
 export const EXECUTION_CONTEXT_SCHEMA_VERSION = "rickgent-attempt-context/v1" as const;
 export const POLICY_ABI_VERSION = "omnigent-function-policy/current-v1" as const;
 export const IDENTITY_NORMALIZATION_VERSION = "rickgent-identity-normalization/v1" as const;
+export const RUNTIME_PROVENANCE_SCHEMA_VERSION = "rickgent-runtime-provenance/v2" as const;
 export const ATTEMPT_LEASE_SCHEMA_VERSION = "rickgent-attempt-lease/v1" as const;
 export const NONCE_CLAIM_SCHEMA_VERSION = "rickgent-attempt-nonce-claim/v1" as const;
 export const MAX_EXECUTION_CONTEXT_BYTES = 1_048_576;
@@ -73,6 +74,24 @@ export interface ExecutionScopeEntry {
   readonly from_path?: string;
 }
 
+export interface ExecutionRuntimeProvenance {
+  readonly schema_version: typeof RUNTIME_PROVENANCE_SCHEMA_VERSION;
+  /** Exact invocation path, including virtual-environment entrypoint semantics. */
+  readonly omnigent_python_entrypoint: string;
+  /** Canonical target reached by the authenticated Python entrypoint. */
+  readonly omnigent_python_realpath: string;
+  readonly omnigent_python_sha256: string;
+  readonly omnigent_root_realpath: string;
+  readonly omnigent_origin_realpath: string;
+  readonly rickgent_policies_origin_realpath: string;
+  readonly rickgent_policies_sha256: string;
+  readonly rickgent_node_realpath: string;
+  readonly rickgent_node_sha256: string;
+  readonly rickgent_cli_realpath: string;
+  readonly rickgent_cli_sha256: string;
+  readonly rickgent_build_commit: string;
+}
+
 export interface ExecutionContext {
   readonly schema_version: typeof EXECUTION_CONTEXT_SCHEMA_VERSION;
   readonly policy_abi_version: typeof POLICY_ABI_VERSION;
@@ -92,6 +111,7 @@ export interface ExecutionContext {
   readonly ticket_contract_digest: string;
   readonly declared_scope: readonly ExecutionScopeEntry[];
   readonly requested_identity: RequestedExecutionIdentity;
+  readonly runtime_provenance: ExecutionRuntimeProvenance;
   readonly requested_bundle_sha256: string;
   readonly requested_config_sha256: string;
   readonly attempt_digest: string;
@@ -117,6 +137,7 @@ export interface CreateExecutionContextInput {
   readonly requestedVendor: string;
   readonly requestedBundleSha256: string;
   readonly requestedConfigSha256: string;
+  readonly runtimeProvenance: ExecutionRuntimeProvenance;
   readonly ownerTokenSha256: string;
   readonly nonce: string;
   readonly nonceClaimPath: string;
@@ -210,6 +231,24 @@ export function createExecutionContext(input: CreateExecutionContextInput): Exec
   const provider = requireNonEmpty(input.requestedVendor, "requested vendor/provider");
   const harness = requireNonEmpty(input.requestedHarness, "requested harness");
   const model = requireNonEmpty(input.requestedModel, "requested model");
+  const runtimeProvenance: ExecutionRuntimeProvenance = {
+    schema_version: input.runtimeProvenance.schema_version,
+    omnigent_python_entrypoint: requireNonEmpty(input.runtimeProvenance.omnigent_python_entrypoint, "Omnigent Python entrypoint"),
+    omnigent_python_realpath: requireNonEmpty(input.runtimeProvenance.omnigent_python_realpath, "Omnigent Python realpath"),
+    omnigent_python_sha256: requireSha256(input.runtimeProvenance.omnigent_python_sha256, "Omnigent Python digest"),
+    omnigent_root_realpath: requireNonEmpty(input.runtimeProvenance.omnigent_root_realpath, "Omnigent root realpath"),
+    omnigent_origin_realpath: requireNonEmpty(input.runtimeProvenance.omnigent_origin_realpath, "Omnigent origin realpath"),
+    rickgent_policies_origin_realpath: requireNonEmpty(input.runtimeProvenance.rickgent_policies_origin_realpath, "Rickgent policies origin realpath"),
+    rickgent_policies_sha256: requireSha256(input.runtimeProvenance.rickgent_policies_sha256, "Rickgent policies digest"),
+    rickgent_node_realpath: requireNonEmpty(input.runtimeProvenance.rickgent_node_realpath, "Rickgent Node realpath"),
+    rickgent_node_sha256: requireSha256(input.runtimeProvenance.rickgent_node_sha256, "Rickgent Node digest"),
+    rickgent_cli_realpath: requireNonEmpty(input.runtimeProvenance.rickgent_cli_realpath, "Rickgent CLI realpath"),
+    rickgent_cli_sha256: requireSha256(input.runtimeProvenance.rickgent_cli_sha256, "Rickgent CLI digest"),
+    rickgent_build_commit: requireNonEmpty(input.runtimeProvenance.rickgent_build_commit, "Rickgent build commit"),
+  };
+  if (runtimeProvenance.schema_version !== RUNTIME_PROVENANCE_SCHEMA_VERSION) {
+    throw new Error("runtime provenance schema version is unsupported");
+  }
 
   const requestedIdentity: RequestedExecutionIdentity = {
     normalization_version: IDENTITY_NORMALIZATION_VERSION,
@@ -247,6 +286,7 @@ export function createExecutionContext(input: CreateExecutionContextInput): Exec
     ticket_contract_digest: input.ticketContractDigest,
     declared_scope: declaredScope,
     requested_identity: requestedIdentity,
+    runtime_provenance: runtimeProvenance,
     requested_bundle_sha256: requestedBundleSha256,
     requested_config_sha256: requestedConfigSha256,
   } as const;

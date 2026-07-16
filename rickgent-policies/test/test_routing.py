@@ -9,7 +9,7 @@ BEFORE dispatch.
 
 import inspect
 import pytest
-from rickgent_policies import select_model, cross_vendor_review
+from rickgent_policies import select_model
 
 
 # ── Fixture rosters ──────────────────────────────────────────────────────────
@@ -198,40 +198,6 @@ class TestCrossVendorReviewRouting:
         )
         assert result["result"] == "DENY"
         assert result["code"] == "NO_CANDIDATES"
-
-    def test_cross_vendor_review_policy_enforces_same_vendor_deny(self):
-        """The cross_vendor_review policy independently DENYs a same-vendor
-        review assignment (enforced by policy, not opt-in)."""
-        event = {"tool_name": "rickgent_phase_advance"}
-        config = {
-            "phase": "code_review",
-            "implementer_vendor": "anthropic",
-            "reviewer_vendor": "anthropic",
-        }
-        result = cross_vendor_review(event, config)
-        assert result["result"] == "DENY"
-        assert result["code"] == "CROSS_VENDOR_DENIED"
-
-    def test_router_and_policy_agree_on_different_vendor(self):
-        """The router selects a different vendor AND the policy ALLOWs it."""
-        routed = select_model(
-            MULTI_VENDOR_ROSTER,
-            role="code_review",
-            implementer_vendor="anthropic",
-        )
-        assert routed["result"] == "ALLOW"
-        reviewer_vendor = routed["selection"]["vendor"]
-        assert reviewer_vendor != "anthropic"
-
-        event = {"tool_name": "rickgent_phase_advance"}
-        config = {
-            "phase": "code_review",
-            "implementer_vendor": "anthropic",
-            "reviewer_vendor": reviewer_vendor,
-        }
-        policy_result = cross_vendor_review(event, config)
-        assert policy_result["result"] == "ALLOW"
-
 
 # ── VAL-ROUTE-003: Unpriced/over-budget model is denied/asked before dispatch
 
@@ -474,4 +440,3 @@ class TestTierSortTieBreak:
         assert result["result"] == "ALLOW"
         # Buggy: "aaa" (capable) selected. Fixed: "bbb" (cheap) selected.
         assert result["selection"]["vendor"] == "bbb"
-

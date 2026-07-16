@@ -18,11 +18,10 @@ through the real Dispatcher, absorbing failures without human interaction.
   `Dispatcher.dispatch`, which is only reachable through the completion oracle
   (`evaluateCompletion`, caller `dispatch.completion`). The build never assigns
   Done by any other path.
-- **`orchestrator/src/lifecycle/pr-flow.ts`** — the merge-gate PR flow. The narrow
-  `git push origin <feature>` and `gh pr create` are BOTH evaluated through the
-  single `autonomous_pr_flow` Python policy (invoked in-process via `python3`),
-  not a second TS copy of the whitelist. Any evaluation failure fails CLOSED to
-  DENY.
+- **`orchestrator/src/lifecycle/pr-flow.ts`** — a capability-only rejection
+  boundary in the current preview. The nonfunctional legacy prototype was
+  removed: it did not execute its advertised push or verify a remote/PR head.
+  Tickets t36/t37 own the future structured, receipt-backed delivery protocol.
 
 ## Gates and interventions
 

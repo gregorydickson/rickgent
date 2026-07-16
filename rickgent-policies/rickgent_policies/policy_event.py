@@ -11,6 +11,7 @@ The injected seam remains available for deterministic boundary tests.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import re
@@ -24,6 +25,7 @@ from typing import Any, Literal, Protocol, TypeAlias, runtime_checkable
 POLICY_ABI_VERSION = "omnigent-function-policy/current-v1"
 CONTEXT_SCHEMA_VERSION = "rickgent-attempt-context/v1"
 IDENTITY_NORMALIZATION_VERSION = "rickgent-identity-normalization/v1"
+RUNTIME_PROVENANCE_SCHEMA_VERSION = "rickgent-runtime-provenance/v2"
 TICKET_CONTRACT_SCHEMA_VERSION = "1.0.0"
 
 REQUIRED_CONFIG_KEYS = frozenset(
@@ -117,7 +119,6 @@ class DenialKind(str, Enum):
     REQUEST_DATA_MALFORMED = "request_data_malformed"
     TARGET_NAME_MISMATCH = "target_name_mismatch"
     ARGUMENTS_MALFORMED = "arguments_malformed"
-    ENDPOINT_MISSING = "endpoint_missing"
     TOOL_UNKNOWN = "tool_unknown"
     IDENTITY_MISSING = "identity_missing"
     IDENTITY_CONFLICT = "identity_conflict"
@@ -148,7 +149,6 @@ _KIND_TO_CODE: Mapping[DenialKind, DenialCode] = MappingProxyType(
         DenialKind.REQUEST_DATA_MALFORMED: DenialCode.EVENT_MALFORMED,
         DenialKind.TARGET_NAME_MISMATCH: DenialCode.EVENT_MALFORMED,
         DenialKind.ARGUMENTS_MALFORMED: DenialCode.EVENT_MALFORMED,
-        DenialKind.ENDPOINT_MISSING: DenialCode.EVENT_MALFORMED,
         DenialKind.TOOL_UNKNOWN: DenialCode.EVENT_MALFORMED,
         DenialKind.IDENTITY_MISSING: DenialCode.IDENTITY_MISSING,
         DenialKind.IDENTITY_CONFLICT: DenialCode.IDENTITY_CONFLICT,
@@ -216,6 +216,25 @@ class TicketScopeEntry:
 
 
 @dataclass(frozen=True)
+class RuntimeProvenance:
+    """Exact runtime artifacts authenticated for this attempt."""
+
+    schema_version: str
+    omnigent_python_entrypoint: str
+    omnigent_python_realpath: str
+    omnigent_python_sha256: str
+    omnigent_root_realpath: str
+    omnigent_origin_realpath: str
+    rickgent_policies_origin_realpath: str
+    rickgent_policies_sha256: str
+    rickgent_node_realpath: str
+    rickgent_node_sha256: str
+    rickgent_cli_realpath: str
+    rickgent_cli_sha256: str
+    rickgent_build_commit: str
+
+
+@dataclass(frozen=True)
 class AuthenticatedAttemptContext:
     """Immutable projection returned by a trusted context authenticator."""
 
@@ -243,6 +262,7 @@ class AuthenticatedAttemptContext:
     attempt_digest: str
     declared_scope: tuple[TicketScopeEntry, ...]
     requested_identity: RequestedModelIdentity | None
+    runtime_provenance: RuntimeProvenance
     nonce: str
     lease_active: bool
     replayed: bool
@@ -264,15 +284,35 @@ FrozenValue: TypeAlias = (
 
 
 @dataclass(frozen=True)
+class CanonicalShellResult:
+    """Closed observation decoded from one correlated shell result."""
+
+    stdout: str
+    stderr: str
+    exit_code: int | None
+    timed_out: bool
+    cwd: str
+
+
+@dataclass(frozen=True)
 class CanonicalPolicyEvent:
-    """Recognized native tool event plus authenticated attempt authority."""
+    """Recognized native tool event plus authenticated attempt authority.
+
+    ``kind`` is the closed applicability discriminator.  Policies consume this
+    projection and never inspect the untrusted native event a second time.
+    Filesystem endpoints and shell results are populated only for their
+    corresponding kinds.
+    """
 
     native_phase: Literal["tool_call", "tool_result"]
-    tool: Literal["sys_os_read", "sys_os_write", "sys_os_edit"]
-    action: Literal["read", "write", "edit", "rename", "link"]
+    kind: Literal["filesystem", "shell", "lifecycle", "unrelated"]
+    tool: str
+    action: str
     arguments: Mapping[str, FrozenValue]
-    source_endpoint: str
+    result: FrozenValue
+    source_endpoint: str | None
     destination_endpoint: str | None
+    shell_result: CanonicalShellResult | None
     dispatch_id: str
     run_id: str
     ticket_id: str
@@ -289,6 +329,7 @@ class CanonicalPolicyEvent:
     bundle_root_realpath: str
     declared_scope: tuple[TicketScopeEntry, ...]
     requested_identity: RequestedModelIdentity
+    runtime_provenance: RuntimeProvenance
     disposition: Literal["canonical"] = field(default="canonical", init=False)
 
 
@@ -305,13 +346,159 @@ class PolicyAbstention:
 PolicyEventResult: TypeAlias = CanonicalPolicyEvent | PolicyAbstention | PolicyDenial
 
 
-_TOOL_ACTIONS: Mapping[str, str] = MappingProxyType(
+FILESYSTEM_TOOL_ACTIONS: Mapping[str, str] = MappingProxyType(
     {
         "sys_os_read": "read",
         "sys_os_write": "write",
         "sys_os_edit": "edit",
     }
 )
+
+SHELL_TOOLS = frozenset({"sys_os_shell"})
+LIFECYCLE_TOOL_ACTIONS: Mapping[str, str] = MappingProxyType(
+    {
+        "rickgent_mark_done": "mark_done",
+        "rickgent_phase_advance": "phase_advance",
+        "rickgent_build_gate": "build_gate",
+        "rickgent_prd_validate": "prd_validate",
+    }
+)
+UNRELATED_NATIVE_TOOLS = frozenset(
+    {
+        "load_skill",
+        "read_skill_file",
+        "sys_session_get_history",
+        "sys_session_send",
+        "sys_read_inbox",
+        "sys_session_list",
+        "sys_session_get_info",
+        "sys_session_close",
+        "sys_advise_models",
+        "sys_list_models",
+        "sys_agent_get",
+        "sys_agent_download",
+        "sys_agent_list",
+        "sys_call_async",
+        "sys_cancel_async",
+        "sys_cancel_task",
+        "list_comments",
+        "update_comment",
+        "sys_add_policy",
+        "sys_policy_registry",
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+        "browser_screenshot",
+    }
+)
+KNOWN_NATIVE_TOOLS = frozenset(FILESYSTEM_TOOL_ACTIONS) | SHELL_TOOLS | frozenset(
+    LIFECYCLE_TOOL_ACTIONS
+) | UNRELATED_NATIVE_TOOLS
+
+
+def _exact_keys(value: Mapping[object, object], required: set[str]) -> bool:
+    return set(value) == required and all(isinstance(key, str) for key in value)
+
+
+def _strings(value: object) -> bool:
+    return isinstance(value, (list, tuple)) and all(
+        isinstance(item, str) for item in value
+    )
+
+
+def _closed_gate(value: object) -> bool:
+    if not isinstance(value, Mapping) or not _exact_keys(
+        value, {"current", "baseline", "scope", "findings"}
+    ):
+        return False
+    if not _strings(value["scope"]):
+        return False
+    for key in ("current", "baseline"):
+        rows = value[key]
+        if not isinstance(rows, (list, tuple)):
+            return False
+        for row in rows:
+            if not isinstance(row, Mapping) or not _exact_keys(
+                row, {"name", "passed", "output"}
+            ):
+                return False
+            if not isinstance(row["name"], str) or not isinstance(row["passed"], bool) or not isinstance(row["output"], str):
+                return False
+    findings = value["findings"]
+    if not isinstance(findings, (list, tuple)):
+        return False
+    for row in findings:
+        if not isinstance(row, Mapping) or not _exact_keys(
+            row, {"file", "line", "message", "check"}
+        ):
+            return False
+        if not isinstance(row["file"], str) or type(row["line"]) is not int or not isinstance(row["message"], str) or not isinstance(row["check"], str):
+            return False
+    return True
+
+
+def _closed_prd(value: object) -> bool:
+    if not isinstance(value, Mapping) or not _exact_keys(
+        value,
+        {"title", "description", "acceptanceCriteria", "simplificationReview"},
+    ):
+        return False
+    if not isinstance(value["title"], str) or not isinstance(value["description"], str):
+        return False
+    criteria = value["acceptanceCriteria"]
+    if not isinstance(criteria, (list, tuple)):
+        return False
+    for row in criteria:
+        if not isinstance(row, Mapping) or not _exact_keys(
+            row, {"description", "type", "verifyCommand", "scope"}
+        ):
+            return False
+        if not isinstance(row["description"], str) or not isinstance(row["type"], str) or not isinstance(row["verifyCommand"], str) or not _strings(row["scope"]):
+            return False
+    review = value["simplificationReview"]
+    return review is None or (
+        isinstance(review, Mapping)
+        and _exact_keys(review, {"reviewed", "notes"})
+        and isinstance(review["reviewed"], bool)
+        and isinstance(review["notes"], str)
+    )
+
+
+def _arguments_match_tool(tool: str, arguments: Mapping[object, object]) -> bool:
+    if tool == "sys_os_read":
+        if not set(arguments) <= {"path", "offset", "limit"} or "path" not in arguments:
+            return False
+        return isinstance(arguments["path"], str) and bool(arguments["path"]) and all(
+            type(arguments[key]) is int for key in ("offset", "limit") if key in arguments
+        )
+    if tool == "sys_os_write":
+        return _exact_keys(arguments, {"path", "content"}) and isinstance(arguments["path"], str) and bool(arguments["path"]) and isinstance(arguments["content"], str)
+    if tool == "sys_os_edit":
+        if not isinstance(arguments.get("path"), str) or not arguments.get("path"):
+            return False
+        if _exact_keys(arguments, {"path", "oldText", "newText"}):
+            return isinstance(arguments["oldText"], str) and isinstance(arguments["newText"], str)
+        if not _exact_keys(arguments, {"path", "edits"}) or not isinstance(arguments["edits"], (list, tuple)) or not arguments["edits"]:
+            return False
+        return all(
+            isinstance(row, Mapping)
+            and _exact_keys(row, {"oldText", "newText"})
+            and isinstance(row["oldText"], str)
+            and isinstance(row["newText"], str)
+            for row in arguments["edits"]
+        )
+    if tool == "sys_os_shell":
+        return set(arguments) in ({"command"}, {"command", "timeout"}) and isinstance(arguments.get("command"), str) and bool(arguments["command"].strip()) and ("timeout" not in arguments or type(arguments["timeout"]) is int)
+    if tool == "rickgent_mark_done":
+        return _exact_keys(arguments, {"claimed_sha", "evidence"}) and isinstance(arguments["claimed_sha"], str) and _strings(arguments["evidence"])
+    if tool == "rickgent_phase_advance":
+        return _exact_keys(arguments, {"next_phase"}) and isinstance(arguments["next_phase"], str) and bool(arguments["next_phase"])
+    if tool == "rickgent_build_gate":
+        return _exact_keys(arguments, {"gate"}) and _closed_gate(arguments["gate"])
+    if tool == "rickgent_prd_validate":
+        return _exact_keys(arguments, {"prd"}) and _closed_prd(arguments["prd"])
+    return True
 
 
 def adapt_native_policy_event(
@@ -708,7 +895,7 @@ def _adapt_authenticated_event(
             DenialKind.TARGET_NAME_MISMATCH,
             "native tool event target must be a non-empty tool name",
         )
-    if target not in _TOOL_ACTIONS:
+    if target not in KNOWN_NATIVE_TOOLS:
         return make_policy_denial(
             DenialKind.TOOL_UNKNOWN,
             f"native governed tool {target!r} is not supported",
@@ -721,6 +908,7 @@ def _adapt_authenticated_event(
             f"native {phase} data must be a mapping",
         )
 
+    result: FrozenValue = None
     if phase == "tool_call":
         name = data.get("name")
         arguments = data.get("arguments")
@@ -754,6 +942,11 @@ def _adapt_authenticated_event(
             DenialKind.ARGUMENTS_MALFORMED,
             "native tool arguments must be an already-parsed mapping",
         )
+    if not _arguments_match_tool(target, arguments):
+        return make_policy_denial(
+            DenialKind.ARGUMENTS_MALFORMED,
+            f"{target} arguments do not match its closed native schema",
+        )
 
     try:
         frozen_arguments = _freeze_mapping(arguments)
@@ -763,22 +956,62 @@ def _adapt_authenticated_event(
             "native tool arguments are not an immutable JSON-shaped mapping",
         )
 
-    source_endpoint = frozen_arguments.get("path")
-    if not isinstance(source_endpoint, str) or not source_endpoint:
-        return make_policy_denial(
-            DenialKind.ENDPOINT_MISSING,
-            "structured tool arguments.path must be a non-empty string",
-        )
+    if phase == "tool_result":
+        try:
+            result = _freeze_value(data["result"], set())
+        except (TypeError, ValueError, RecursionError):
+            return make_policy_denial(
+                DenialKind.PHASE_DATA_MALFORMED,
+                "native tool result is not an immutable JSON-shaped value",
+            )
+
+    if target in FILESYSTEM_TOOL_ACTIONS:
+        kind: Literal["filesystem", "shell", "lifecycle", "unrelated"] = "filesystem"
+        action = FILESYSTEM_TOOL_ACTIONS[target]
+        source_endpoint = frozen_arguments["path"]
+        assert isinstance(source_endpoint, str)  # closed tool schema above
+        shell_result = None
+    elif target in SHELL_TOOLS:
+        kind = "shell"
+        action = "shell"
+        source_endpoint = None
+        command = frozen_arguments.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return make_policy_denial(
+                DenialKind.ARGUMENTS_MALFORMED,
+                "sys_os_shell arguments.command must be a non-empty string",
+            )
+        shell_result = None
+        if phase == "tool_result":
+            shell_result = _decode_shell_result(result)
+            if shell_result is None:
+                return make_policy_denial(
+                    DenialKind.PHASE_DATA_MALFORMED,
+                    "sys_os_shell result is not a canonical shell observation",
+                )
+    elif target in LIFECYCLE_TOOL_ACTIONS:
+        kind = "lifecycle"
+        action = LIFECYCLE_TOOL_ACTIONS[target]
+        source_endpoint = None
+        shell_result = None
+    else:
+        kind = "unrelated"
+        action = "unrelated"
+        source_endpoint = None
+        shell_result = None
 
     identity = trusted.requested_identity
     assert identity is not None  # validated before native event parsing
     return CanonicalPolicyEvent(
         native_phase=phase,
+        kind=kind,
         tool=target,
-        action=_TOOL_ACTIONS[target],
+        action=action,
         arguments=frozen_arguments,
+        result=result,
         source_endpoint=source_endpoint,
         destination_endpoint=None,
+        shell_result=shell_result,
         dispatch_id=trusted.dispatch_id,
         run_id=trusted.run_id,
         ticket_id=trusted.ticket_id,
@@ -795,7 +1028,39 @@ def _adapt_authenticated_event(
         bundle_root_realpath=trusted.bundle_root_realpath,
         declared_scope=trusted.declared_scope,
         requested_identity=identity,
+        runtime_provenance=trusted.runtime_provenance,
     )
+
+
+def _decode_shell_result(value: FrozenValue) -> CanonicalShellResult | None:
+    """Decode the one native shell-result shape without accepting aliases."""
+
+    decoded: object = value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            return None
+    if not isinstance(decoded, Mapping):
+        return None
+    stdout = decoded.get("stdout")
+    stderr = decoded.get("stderr")
+    exit_code = decoded.get("exit_code")
+    timed_out = decoded.get("timed_out")
+    cwd = decoded.get("cwd")
+    if (
+        not isinstance(stdout, str)
+        or not isinstance(stderr, str)
+        or (
+            exit_code is not None
+            and (not isinstance(exit_code, int) or isinstance(exit_code, bool))
+        )
+        or not isinstance(timed_out, bool)
+        or not isinstance(cwd, str)
+        or not cwd
+    ):
+        return None
+    return CanonicalShellResult(stdout, stderr, exit_code, timed_out, cwd)
 
 
 def _freeze_mapping(value: Mapping[object, object]) -> Mapping[str, FrozenValue]:
@@ -873,21 +1138,29 @@ def _valid_scope_entry(entry: object) -> bool:
 
 __all__ = [
     "AuthenticatedAttemptContext",
+    "CanonicalShellResult",
     "CanonicalPolicyEvent",
     "ContextAuthenticator",
     "CONTEXT_SCHEMA_VERSION",
     "DenialCode",
     "DenialKind",
     "IDENTITY_NORMALIZATION_VERSION",
+    "FILESYSTEM_TOOL_ACTIONS",
+    "KNOWN_NATIVE_TOOLS",
+    "LIFECYCLE_TOOL_ACTIONS",
     "NATIVE_PHASES",
     "POLICY_ABI_VERSION",
     "PolicyAbstention",
     "PolicyDenial",
     "PolicyEventResult",
     "REQUIRED_CONFIG_KEYS",
+    "RUNTIME_PROVENANCE_SCHEMA_VERSION",
     "RequestedModelIdentity",
+    "RuntimeProvenance",
+    "SHELL_TOOLS",
     "TICKET_CONTRACT_SCHEMA_VERSION",
     "TicketScopeEntry",
+    "UNRELATED_NATIVE_TOOLS",
     "adapt_native_policy_event",
     "make_policy_denial",
     "normalize_harness_identity",

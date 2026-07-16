@@ -8,10 +8,13 @@ FunctionPolicy config, and private files beneath the trusted state root.
 from __future__ import annotations
 
 import hashlib
+import importlib
+import inspect
 import json
 import os
 import re
 import stat
+import sys
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -23,11 +26,13 @@ from .policy_event import (
     CONTEXT_SCHEMA_VERSION,
     IDENTITY_NORMALIZATION_VERSION,
     POLICY_ABI_VERSION,
+    RUNTIME_PROVENANCE_SCHEMA_VERSION,
     TICKET_CONTRACT_SCHEMA_VERSION,
     AuthenticatedAttemptContext,
     DenialKind,
     PolicyDenial,
     RequestedModelIdentity,
+    RuntimeProvenance,
     TicketScopeEntry,
     make_policy_denial,
     normalize_harness_identity,
@@ -62,12 +67,25 @@ TRUSTED_SPAWN_ENVIRONMENT_KEYS = frozenset(
         "RICKGENT_REQUESTED_CONFIG_SHA256",
         "RICKGENT_INVOKED_BUNDLE_SHA256",
         "RICKGENT_INVOKED_CONFIG_SHA256",
+        "RICKGENT_OMNIGENT_PYTHON_ENTRYPOINT",
+        "RICKGENT_OMNIGENT_PYTHON_REALPATH",
+        "RICKGENT_OMNIGENT_PYTHON_SHA256",
+        "RICKGENT_OMNIGENT_ROOT_REALPATH",
+        "RICKGENT_OMNIGENT_ORIGIN_REALPATH",
+        "RICKGENT_POLICIES_ORIGIN_REALPATH",
+        "RICKGENT_POLICIES_SHA256",
+        "RICKGENT_NODE_REALPATH",
+        "RICKGENT_NODE_SHA256",
+        "RICKGENT_CLI_REALPATH",
+        "RICKGENT_CLI_SHA256",
+        "RICKGENT_BUILD_COMMIT",
     }
 )
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _TICKET_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ID_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+_RUNTIME_DIGEST_CACHE: dict[str, tuple[tuple[int, int, int, int, int], str]] = {}
 _CONTEXT_KEYS = frozenset(
     {
         "schema_version",
@@ -88,6 +106,7 @@ _CONTEXT_KEYS = frozenset(
         "ticket_contract_digest",
         "declared_scope",
         "requested_identity",
+        "runtime_provenance",
         "requested_bundle_sha256",
         "requested_config_sha256",
         "attempt_digest",
@@ -96,6 +115,23 @@ _CONTEXT_KEYS = frozenset(
         "nonce_claim_path",
         "lease_path",
         "receipt_path",
+    }
+)
+_RUNTIME_PROVENANCE_KEYS = frozenset(
+    {
+        "schema_version",
+        "omnigent_python_entrypoint",
+        "omnigent_python_realpath",
+        "omnigent_python_sha256",
+        "omnigent_root_realpath",
+        "omnigent_origin_realpath",
+        "rickgent_policies_origin_realpath",
+        "rickgent_policies_sha256",
+        "rickgent_node_realpath",
+        "rickgent_node_sha256",
+        "rickgent_cli_realpath",
+        "rickgent_cli_sha256",
+        "rickgent_build_commit",
     }
 )
 _ATTEMPT_DIGEST_EXCLUDED_KEYS = frozenset(
@@ -249,6 +285,18 @@ def _canonical_absolute(path: object, label: str, *, must_exist: bool = True) ->
     return path
 
 
+def _normalized_executable_entrypoint(path: object, label: str) -> str:
+    """Validate an exact invocation path without erasing virtualenv semantics."""
+
+    if not isinstance(path, str) or not path or not os.path.isabs(path):
+        _deny(DenialKind.CONTEXT_REFERENCE_UNTRUSTED, f"{label} is not absolute")
+    if os.path.normpath(path) != path:
+        _deny(DenialKind.CONTEXT_REFERENCE_UNTRUSTED, f"{label} is not normalized")
+    if not os.path.exists(path) or not os.access(path, os.X_OK):
+        _deny(DenialKind.CONTEXT_REFERENCE_UNTRUSTED, f"{label} is unavailable")
+    return path
+
+
 def _read_private_file(
     path: str,
     *,
@@ -323,6 +371,117 @@ def _read_private_file(
         os.close(descriptor)
 
 
+def _stable_regular_file_bytes(path: str, label: str) -> bytes:
+    """Read one canonical public runtime artifact without following a link."""
+
+    canonical = _canonical_absolute(path, label)
+    descriptor = os.open(canonical, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            _deny(DenialKind.CONTEXT_REFERENCE_UNTRUSTED, f"{label} is not a regular file")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 65_536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            _deny(DenialKind.AUTHENTICATION_FAILED, f"{label} changed while it was read")
+        return b"".join(chunks)
+    except _AuthenticationError:
+        raise
+    except (FileNotFoundError, PermissionError, OSError):
+        _deny(DenialKind.CONTEXT_REFERENCE_UNTRUSTED, f"{label} could not be opened securely")
+    finally:
+        os.close(descriptor)
+
+
+def _stable_regular_file_sha256(path: str, label: str) -> str:
+    """Authenticate a runtime artifact, reusing a digest only while its inode is unchanged."""
+
+    canonical = _canonical_absolute(path, label)
+    descriptor = os.open(canonical, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            _deny(DenialKind.CONTEXT_REFERENCE_UNTRUSTED, f"{label} is not a regular file")
+        fingerprint = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        cached = _RUNTIME_DIGEST_CACHE.get(canonical)
+        if cached is not None and cached[0] == fingerprint:
+            return cached[1]
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(descriptor, 65_536)
+            if not chunk:
+                break
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+        observed = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if observed != fingerprint:
+            _deny(DenialKind.AUTHENTICATION_FAILED, f"{label} changed while it was read")
+        value = digest.hexdigest()
+        _RUNTIME_DIGEST_CACHE[canonical] = (fingerprint, value)
+        return value
+    except _AuthenticationError:
+        raise
+    except (FileNotFoundError, PermissionError, OSError):
+        _deny(DenialKind.CONTEXT_REFERENCE_UNTRUSTED, f"{label} could not be opened securely")
+    finally:
+        os.close(descriptor)
+
+
+def _policy_package_sha256(origin_value: str) -> str:
+    origin = _canonical_absolute(origin_value, "Rickgent policies origin")
+    origin_path = Path(origin)
+    package_root = origin_path.parent
+    if origin_path.name != "__init__.py" or package_root.name != "rickgent_policies":
+        _deny(DenialKind.AUTHENTICATION_FAILED, "Rickgent policies origin is not the package __init__.py")
+    records: list[str] = []
+    for directory, names, files in os.walk(package_root, followlinks=False):
+        directory_path = Path(directory)
+        for name in tuple(names):
+            child = directory_path / name
+            if child.is_symlink():
+                _deny(DenialKind.AUTHENTICATION_FAILED, "Rickgent policy package contains a symlink")
+        names[:] = sorted(name for name in names if name != "__pycache__")
+        for name in sorted(files):
+            source = directory_path / name
+            if source.is_symlink():
+                _deny(DenialKind.AUTHENTICATION_FAILED, "Rickgent policy package contains a symlink")
+            if source.suffix != ".py":
+                continue
+            raw = _stable_regular_file_bytes(str(source.resolve(strict=True)), "Rickgent policy source")
+            relative = source.relative_to(package_root).as_posix()
+            records.append(f"f\0{relative}\0{len(raw)}\0{_sha256(raw)}\n")
+    if not records:
+        _deny(DenialKind.AUTHENTICATION_FAILED, "Rickgent policy package contains no Python source")
+    return _sha256("rickgent-policies-source-v1\n" + "".join(sorted(records)))
+
+
 @dataclass(frozen=True)
 class TrustedSpawnBindings:
     state_root: str
@@ -347,6 +506,18 @@ class TrustedSpawnBindings:
     requested_config_sha256: str
     invoked_bundle_sha256: str
     invoked_config_sha256: str
+    omnigent_python_entrypoint: str
+    omnigent_python_realpath: str
+    omnigent_python_sha256: str
+    omnigent_root_realpath: str
+    omnigent_origin_realpath: str
+    rickgent_policies_origin_realpath: str
+    rickgent_policies_sha256: str
+    rickgent_node_realpath: str
+    rickgent_node_sha256: str
+    rickgent_cli_realpath: str
+    rickgent_cli_sha256: str
+    rickgent_build_commit: str
 
     @classmethod
     def from_environment(cls, environment: Mapping[str, str]) -> "TrustedSpawnBindings":
@@ -389,7 +560,98 @@ class TrustedSpawnBindings:
             requested_config_sha256=values["RICKGENT_REQUESTED_CONFIG_SHA256"],
             invoked_bundle_sha256=values["RICKGENT_INVOKED_BUNDLE_SHA256"],
             invoked_config_sha256=values["RICKGENT_INVOKED_CONFIG_SHA256"],
+            omnigent_python_entrypoint=values["RICKGENT_OMNIGENT_PYTHON_ENTRYPOINT"],
+            omnigent_python_realpath=values["RICKGENT_OMNIGENT_PYTHON_REALPATH"],
+            omnigent_python_sha256=values["RICKGENT_OMNIGENT_PYTHON_SHA256"],
+            omnigent_root_realpath=values["RICKGENT_OMNIGENT_ROOT_REALPATH"],
+            omnigent_origin_realpath=values["RICKGENT_OMNIGENT_ORIGIN_REALPATH"],
+            rickgent_policies_origin_realpath=values["RICKGENT_POLICIES_ORIGIN_REALPATH"],
+            rickgent_policies_sha256=values["RICKGENT_POLICIES_SHA256"],
+            rickgent_node_realpath=values["RICKGENT_NODE_REALPATH"],
+            rickgent_node_sha256=values["RICKGENT_NODE_SHA256"],
+            rickgent_cli_realpath=values["RICKGENT_CLI_REALPATH"],
+            rickgent_cli_sha256=values["RICKGENT_CLI_SHA256"],
+            rickgent_build_commit=values["RICKGENT_BUILD_COMMIT"],
         )
+
+
+def _verify_runtime_bindings(bindings: TrustedSpawnBindings) -> RuntimeProvenance:
+    python_entrypoint = _normalized_executable_entrypoint(
+        bindings.omnigent_python_entrypoint, "Omnigent Python entrypoint"
+    )
+    python = _canonical_absolute(bindings.omnigent_python_realpath, "Omnigent Python interpreter")
+    root = _canonical_absolute(bindings.omnigent_root_realpath, "Omnigent root")
+    omnigent_origin = _canonical_absolute(bindings.omnigent_origin_realpath, "Omnigent origin")
+    policy_origin = _canonical_absolute(bindings.rickgent_policies_origin_realpath, "Rickgent policies origin")
+    node = _canonical_absolute(bindings.rickgent_node_realpath, "Rickgent Node interpreter")
+    cli = _canonical_absolute(bindings.rickgent_cli_realpath, "Rickgent CLI")
+    if os.path.realpath(python_entrypoint) != python:
+        _deny(DenialKind.AUTHENTICATION_FAILED, "Python entrypoint target conflicts with runtime provenance")
+    if os.path.normpath(sys.executable) != python_entrypoint:
+        _deny(DenialKind.AUTHENTICATION_FAILED, "active Python entrypoint conflicts with runtime provenance")
+    if os.path.realpath(sys.executable) != python:
+        _deny(DenialKind.AUTHENTICATION_FAILED, "active Python interpreter conflicts with runtime provenance")
+    if not _path_inside(root, omnigent_origin):
+        _deny(DenialKind.CONTEXT_REFERENCE_UNTRUSTED, "Omnigent origin escapes its authenticated root")
+    if any(
+        not _is_sha256(digest)
+        for digest in (
+            bindings.omnigent_python_sha256,
+            bindings.rickgent_policies_sha256,
+            bindings.rickgent_node_sha256,
+            bindings.rickgent_cli_sha256,
+        )
+    ):
+        _deny(DenialKind.AUTHENTICATION_FAILED, "runtime provenance digest is malformed")
+    if (
+        not bindings.rickgent_build_commit
+        or bindings.rickgent_build_commit != bindings.rickgent_build_commit.strip()
+        or any(character.isspace() for character in bindings.rickgent_build_commit)
+    ):
+        _deny(DenialKind.AUTHENTICATION_FAILED, "Rickgent build commit is malformed")
+
+    omnigent = importlib.import_module("omnigent")
+    policies = importlib.import_module("rickgent_policies")
+    observed_omnigent = os.path.realpath(inspect.getfile(omnigent))
+    observed_policies = os.path.realpath(inspect.getfile(policies))
+    if observed_omnigent != omnigent_origin:
+        _deny(DenialKind.AUTHENTICATION_FAILED, "active Omnigent origin conflicts with runtime provenance")
+    if observed_policies != policy_origin:
+        _deny(DenialKind.AUTHENTICATION_FAILED, "active Rickgent policy origin conflicts with runtime provenance")
+    if _policy_package_sha256(policy_origin) != bindings.rickgent_policies_sha256:
+        _deny(DenialKind.AUTHENTICATION_FAILED, "Rickgent policy package digest changed")
+    if _stable_regular_file_sha256(python, "Omnigent Python interpreter") != bindings.omnigent_python_sha256:
+        _deny(DenialKind.AUTHENTICATION_FAILED, "Omnigent Python interpreter digest changed")
+    if _stable_regular_file_sha256(node, "Rickgent Node interpreter") != bindings.rickgent_node_sha256:
+        _deny(DenialKind.AUTHENTICATION_FAILED, "Rickgent Node interpreter digest changed")
+    if _stable_regular_file_sha256(cli, "Rickgent CLI") != bindings.rickgent_cli_sha256:
+        _deny(DenialKind.AUTHENTICATION_FAILED, "Rickgent CLI digest changed")
+    return RuntimeProvenance(
+        schema_version=RUNTIME_PROVENANCE_SCHEMA_VERSION,
+        omnigent_python_entrypoint=python_entrypoint,
+        omnigent_python_realpath=python,
+        omnigent_python_sha256=bindings.omnigent_python_sha256,
+        omnigent_root_realpath=root,
+        omnigent_origin_realpath=omnigent_origin,
+        rickgent_policies_origin_realpath=policy_origin,
+        rickgent_policies_sha256=bindings.rickgent_policies_sha256,
+        rickgent_node_realpath=node,
+        rickgent_node_sha256=bindings.rickgent_node_sha256,
+        rickgent_cli_realpath=cli,
+        rickgent_cli_sha256=bindings.rickgent_cli_sha256,
+        rickgent_build_commit=bindings.rickgent_build_commit,
+    )
+
+
+def verify_runtime_provenance_environment(
+    environment: Mapping[str, str] | None = None,
+) -> RuntimeProvenance:
+    """Fail closed unless the active process is the exact bound runtime."""
+
+    bindings = TrustedSpawnBindings.from_environment(
+        os.environ if environment is None else environment
+    )
+    return _verify_runtime_bindings(bindings)
 
 
 class FilesystemContextAuthenticator:
@@ -443,6 +705,7 @@ class FilesystemContextAuthenticator:
             _deny(DenialKind.CONTEXT_REFERENCE_UNTRUSTED, "policy or bundle root escapes trusted state")
         if _path_inside(worktree, state_root) or _path_inside(worktree, bundle_root):
             _deny(DenialKind.CONTEXT_REFERENCE_UNTRUSTED, "trusted policy state overlaps the target worktree")
+        runtime = _verify_runtime_bindings(bindings)
 
         dispatch_id = _dispatch_id(
             bindings.run_id,
@@ -521,6 +784,9 @@ class FilesystemContextAuthenticator:
         ):
             _deny(DenialKind.CONTEXT_ABI_UNSUPPORTED, "attempt context uses an unsupported schema")
         _validate_context_scalars(context)
+        context_runtime = _runtime_provenance(context["runtime_provenance"])
+        if context_runtime != runtime:
+            _deny(DenialKind.AUTHENTICATION_FAILED, "attempt runtime provenance conflicts with trusted spawn binding")
         if context["dispatch_id"] != dispatch_id:
             _deny(DenialKind.DISPATCH_REPLAY, "attempt context belongs to another dispatch")
         expected_context_values = {
@@ -638,6 +904,7 @@ class FilesystemContextAuthenticator:
             attempt_digest=context["attempt_digest"],
             declared_scope=scope,
             requested_identity=identity,
+            runtime_provenance=runtime,
             nonce=context["nonce"],
             lease_active=True,
             replayed=False,
@@ -744,6 +1011,42 @@ def _requested_identity(value: object) -> RequestedModelIdentity:
     return RequestedModelIdentity(**identity)
 
 
+def _runtime_provenance(value: object) -> RuntimeProvenance:
+    runtime = _exact_mapping(value, _RUNTIME_PROVENANCE_KEYS, "runtime provenance")
+    if runtime["schema_version"] != RUNTIME_PROVENANCE_SCHEMA_VERSION:
+        _deny(DenialKind.CONTEXT_ABI_UNSUPPORTED, "runtime provenance schema is unsupported")
+    for key in _RUNTIME_PROVENANCE_KEYS:
+        if not isinstance(runtime[key], str) or not runtime[key]:
+            _deny(DenialKind.AUTHENTICATION_FAILED, f"runtime provenance {key} is malformed")
+    for key in (
+        "omnigent_python_sha256",
+        "rickgent_policies_sha256",
+        "rickgent_node_sha256",
+        "rickgent_cli_sha256",
+    ):
+        if not _is_sha256(runtime[key]):
+            _deny(DenialKind.AUTHENTICATION_FAILED, f"runtime provenance {key} is malformed")
+    _normalized_executable_entrypoint(
+        runtime["omnigent_python_entrypoint"],
+        "runtime provenance omnigent_python_entrypoint",
+    )
+    for key in (
+        "omnigent_python_realpath",
+        "omnigent_root_realpath",
+        "omnigent_origin_realpath",
+        "rickgent_policies_origin_realpath",
+        "rickgent_node_realpath",
+        "rickgent_cli_realpath",
+    ):
+        _canonical_absolute(runtime[key], f"runtime provenance {key}")
+    if os.path.realpath(runtime["omnigent_python_entrypoint"]) != runtime["omnigent_python_realpath"]:
+        _deny(DenialKind.AUTHENTICATION_FAILED, "runtime provenance Python entrypoint target conflicts")
+    commit = runtime["rickgent_build_commit"]
+    if commit != commit.strip() or any(character.isspace() for character in commit):
+        _deny(DenialKind.AUTHENTICATION_FAILED, "runtime provenance build commit is malformed")
+    return RuntimeProvenance(**runtime)
+
+
 def _validate_active_lease(
     lease: Mapping[str, Any],
     claim: Mapping[str, Any],
@@ -798,4 +1101,5 @@ __all__ = [
     "TRUSTED_SPAWN_ENVIRONMENT_KEYS",
     "TrustedSpawnBindings",
     "authenticator_from_environment",
+    "verify_runtime_provenance_environment",
 ]

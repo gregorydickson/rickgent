@@ -27,7 +27,7 @@ SCOPE_DENIAL_CODE = "RICKGENT_SCOPE_DENIED"
 CANONICAL_FILESYSTEM_TOOLS = frozenset(
     {"sys_os_read", "sys_os_write", "sys_os_edit"}
 )
-RAW_SHELL_TOOLS = frozenset({"sys_os_shell", "Bash", "bash", "Shell", "shell"})
+RAW_SHELL_TOOLS = frozenset({"sys_os_shell"})
 
 ScopeChangeKind = Literal["create", "modify", "delete", "rename"]
 ScopeOperationKind = Literal["read", "create", "modify", "delete", "rename", "link"]
@@ -388,6 +388,8 @@ def evaluate_scope(
 
 def _native_operation(event: CanonicalPolicyEvent) -> ScopeOperation | ScopeDecision:
     path = event.source_endpoint
+    if not isinstance(path, str):
+        return _deny("canonical filesystem endpoint is missing")
     if event.action == "read":
         return ScopeOperation("read", False, path=path)
     if event.action == "write":
@@ -407,7 +409,7 @@ def _native_operation(event: CanonicalPolicyEvent) -> ScopeOperation | ScopeDeci
 def evaluate_canonical_event(event: CanonicalPolicyEvent) -> ScopeDecision:
     """Project an authenticated canonical native event into scope semantics."""
 
-    if event.native_phase != "tool_call":
+    if event.kind != "filesystem" or event.native_phase != "tool_call":
         return ScopeDecision("ABSTAIN")
     operation = _native_operation(event)
     if isinstance(operation, ScopeDecision):
@@ -454,6 +456,10 @@ def scope_fence(event: object, config: object) -> dict[str, str] | None:
                 "code": outcome.code.value,
             }
         if isinstance(outcome, PolicyAbstention):
+            return None
+        if outcome.kind == "shell":
+            return _policy_mapping(_deny("raw shell is outside structured scope authority"))
+        if outcome.kind != "filesystem":
             return None
         return _policy_mapping(evaluate_canonical_event(outcome))
     except Exception:

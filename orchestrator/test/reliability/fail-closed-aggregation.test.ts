@@ -184,7 +184,7 @@ describe("fail-closed run aggregation", () => {
     expect(exitCodeForRunOutcome(outcome)).toBe(7);
   });
 
-  it("zero-ticket and all-failed subprocess runs exit as execution failures", () => {
+  it("zero-ticket fails execution and abnormal all-failed retains ownership as cleanup failure", () => {
     const zero = runFixture(d, "build", writePrd(d, []));
     expect(zero.status).toBe(5);
     expect(zero.stdout).toContain("zero_ticket");
@@ -193,8 +193,9 @@ describe("fail-closed run aggregation", () => {
     const allFailed = runFixture(d, "build", writePrd(d, ["src/a.ts"]), {
       FIXTURE_FAIL_PATHS: "src/a.ts",
     });
-    expect(allFailed.status).toBe(5);
+    expect(allFailed.status).toBe(7);
     expect(allFailed.stdout).toContain("zero_completion");
+    expect(allFailed.stdout).toContain("cleanup_failed");
   });
 
   it("one capture cannot mask another planned ticket failure", () => {

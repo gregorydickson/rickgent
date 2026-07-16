@@ -5,14 +5,20 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import inspect
 import json
 import os
+import shutil
+import subprocess
+import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
 import pytest
+import omnigent
+import rickgent_policies
 
 from omnigent.policies.function import FunctionPolicy
 from omnigent.policies.types import EvaluationContext
@@ -22,11 +28,13 @@ from rickgent_policies.context import (
     ATTEMPT_LEASE_SCHEMA_VERSION,
     NONCE_CLAIM_SCHEMA_VERSION,
     FilesystemContextAuthenticator,
+    _policy_package_sha256,
 )
 from rickgent_policies.policy_event import (
     CONTEXT_SCHEMA_VERSION,
     IDENTITY_NORMALIZATION_VERSION,
     POLICY_ABI_VERSION,
+    RUNTIME_PROVENANCE_SCHEMA_VERSION,
     TICKET_CONTRACT_SCHEMA_VERSION,
     CanonicalPolicyEvent,
     DenialKind,
@@ -61,7 +69,7 @@ def _private_file(path: Path, value: bytes | dict[str, Any]) -> None:
 
 
 class AttemptFixture:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, phase: str = "implement") -> None:
         self.target_repo = root / "repo"
         self.worktree = root / "worktree"
         self.state = root / "state"
@@ -70,7 +78,7 @@ class AttemptFixture:
 
         self.run_id = "run-001"
         self.ticket_id = "t09"
-        self.phase = "implement"
+        self.phase = phase
         self.attempt = 1
         self.role = "worker"
         self.dispatch_id = f"{self.run_id}/{self.ticket_id}/{self.phase}/{self.attempt}/{self.role}"
@@ -81,6 +89,47 @@ class AttemptFixture:
         self.requested_config_sha = "c" * 64
         self.invoked_bundle_sha = "d" * 64
         self.invoked_config_sha = "e" * 64
+        self.omnigent_python_entrypoint = os.path.normpath(sys.executable)
+        assert os.path.isabs(self.omnigent_python_entrypoint)
+        self.omnigent_python = str(Path(self.omnigent_python_entrypoint).resolve())
+        self.omnigent_python_sha = _sha(Path(self.omnigent_python).read_bytes())
+        self.omnigent_origin = str(Path(inspect.getfile(omnigent)).resolve())
+        self.omnigent_root = str(
+            Path(os.environ.get("OMNIGENT_ROOT", Path(self.omnigent_origin).parent.parent)).resolve()
+        )
+        self.policy_origin = str(Path(inspect.getfile(rickgent_policies)).resolve())
+        cli_candidate = os.environ.get("RICKGENT_CLI_REALPATH") or os.environ.get("RICKGENT_BIN")
+        if cli_candidate is None:
+            cli_candidate = str(Path(__file__).parents[2] / "orchestrator" / "dist" / "cli.js")
+        self.rickgent_cli = str(Path(cli_candidate).resolve(strict=True))
+        self.rickgent_cli_sha = _sha(Path(self.rickgent_cli).read_bytes())
+        node_candidate = os.environ.get("RICKGENT_NODE_REALPATH") or shutil.which("node")
+        assert node_candidate is not None
+        self.rickgent_node = str(Path(node_candidate).resolve(strict=True))
+        self.rickgent_node_sha = _sha(Path(self.rickgent_node).read_bytes())
+        self.rickgent_build_commit = subprocess.run(
+            [self.rickgent_node, self.rickgent_cli, "--build-commit"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        ).stdout.strip()
+        assert self.rickgent_build_commit
+        self.runtime_provenance = {
+            "schema_version": RUNTIME_PROVENANCE_SCHEMA_VERSION,
+            "omnigent_python_entrypoint": self.omnigent_python_entrypoint,
+            "omnigent_python_realpath": self.omnigent_python,
+            "omnigent_python_sha256": self.omnigent_python_sha,
+            "omnigent_root_realpath": self.omnigent_root,
+            "omnigent_origin_realpath": self.omnigent_origin,
+            "rickgent_policies_origin_realpath": self.policy_origin,
+            "rickgent_policies_sha256": _policy_package_sha256(self.policy_origin),
+            "rickgent_node_realpath": self.rickgent_node,
+            "rickgent_node_sha256": self.rickgent_node_sha,
+            "rickgent_cli_realpath": self.rickgent_cli,
+            "rickgent_cli_sha256": self.rickgent_cli_sha,
+            "rickgent_build_commit": self.rickgent_build_commit,
+        }
 
         attempts = self.state / "policy-attempts"
         claims = self.state / "policy-nonce-claims"
@@ -148,6 +197,7 @@ class AttemptFixture:
                 },
             ],
             "requested_identity": identity,
+            "runtime_provenance": self.runtime_provenance,
             "requested_bundle_sha256": self.requested_bundle_sha,
             "requested_config_sha256": self.requested_config_sha,
         }
@@ -230,6 +280,18 @@ class AttemptFixture:
             "RICKGENT_REQUESTED_CONFIG_SHA256": self.requested_config_sha,
             "RICKGENT_INVOKED_BUNDLE_SHA256": self.invoked_bundle_sha,
             "RICKGENT_INVOKED_CONFIG_SHA256": self.invoked_config_sha,
+            "RICKGENT_OMNIGENT_PYTHON_ENTRYPOINT": self.omnigent_python_entrypoint,
+            "RICKGENT_OMNIGENT_PYTHON_REALPATH": self.omnigent_python,
+            "RICKGENT_OMNIGENT_PYTHON_SHA256": self.omnigent_python_sha,
+            "RICKGENT_OMNIGENT_ROOT_REALPATH": self.omnigent_root,
+            "RICKGENT_OMNIGENT_ORIGIN_REALPATH": self.omnigent_origin,
+            "RICKGENT_POLICIES_ORIGIN_REALPATH": self.policy_origin,
+            "RICKGENT_POLICIES_SHA256": self.runtime_provenance["rickgent_policies_sha256"],
+            "RICKGENT_NODE_REALPATH": self.rickgent_node,
+            "RICKGENT_NODE_SHA256": self.rickgent_node_sha,
+            "RICKGENT_CLI_REALPATH": self.rickgent_cli,
+            "RICKGENT_CLI_SHA256": self.rickgent_cli_sha,
+            "RICKGENT_BUILD_COMMIT": self.rickgent_build_commit,
         }
 
     def rewrite_context_and_bind(self) -> None:
@@ -324,6 +386,9 @@ def test_valid_context_is_lossless_immutable_and_repeatable(attempt: AttemptFixt
     assert action is second_action is PolicyAction.ALLOW
     assert calls == second_calls == 1
     assert _snapshot(first) == _snapshot(second)
+    assert first.runtime_provenance.omnigent_python_entrypoint == os.path.normpath(sys.executable)
+    assert first.runtime_provenance.omnigent_python_realpath == os.path.realpath(sys.executable)
+    assert first.runtime_provenance.rickgent_node_realpath == attempt.rickgent_node
     assert first.declared_scope[0].from_path == "src/old.ts"
     assert first.declared_scope[1].directory is True
     with pytest.raises((AttributeError, TypeError)):
@@ -382,6 +447,14 @@ def _wrong_owner(fixture: AttemptFixture) -> None:
     fixture.environment["RICKGENT_CONTEXT_OWNER_TOKEN"] = "wrong-owner"
 
 
+def _wrong_python_digest(fixture: AttemptFixture) -> None:
+    fixture.environment["RICKGENT_OMNIGENT_PYTHON_SHA256"] = "0" * 64
+
+
+def _wrong_node_digest(fixture: AttemptFixture) -> None:
+    fixture.environment["RICKGENT_NODE_SHA256"] = "0" * 64
+
+
 def _stale_attempt(fixture: AttemptFixture) -> None:
     fixture.environment["RICKGENT_ATTEMPT"] = "2"
 
@@ -434,6 +507,8 @@ def _unknown_context_field(fixture: AttemptFixture) -> None:
         (_missing_reference, DenialKind.CONTEXT_REFERENCE_UNTRUSTED),
         (_wrong_digest, DenialKind.CONTEXT_DIGEST_MISMATCH),
         (_wrong_owner, DenialKind.OWNER_TOKEN_MISMATCH),
+        (_wrong_python_digest, DenialKind.AUTHENTICATION_FAILED),
+        (_wrong_node_digest, DenialKind.AUTHENTICATION_FAILED),
         (_stale_attempt, DenialKind.DISPATCH_REPLAY),
         (_unsupported_context, DenialKind.CONTEXT_ABI_UNSUPPORTED),
         (_closed_lease, DenialKind.LEASE_CLOSED),

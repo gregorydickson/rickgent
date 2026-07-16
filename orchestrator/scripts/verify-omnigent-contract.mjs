@@ -185,10 +185,14 @@ function main() {
     if (!existsSync(path)) fail(`${name} does not exist: ${path}`);
   }
   const root = realpathSync(args.root);
-  const python = realpathSync(args.python);
+  // Preserve the selected entrypoint exactly. Resolving a virtualenv's
+  // `bin/python` symlink before spawn discards its pyvenv.cfg/site-packages
+  // semantics even though the target executable bytes are identical.
+  const pythonEntrypoint = resolve(args.python);
+  const pythonTarget = realpathSync(pythonEntrypoint);
   const contractPath = realpathSync(args.contract);
   if (!statSync(root).isDirectory()) fail("--root must be a directory");
-  if (!statSync(python).isFile()) fail("--python must resolve to a file");
+  if (!statSync(pythonTarget).isFile()) fail("--python must resolve to a file");
   if (!existsSync(resolve(root, "omnigent/policies/function.py"))) {
     fail("mounted root does not contain omnigent/policies/function.py");
   }
@@ -204,7 +208,7 @@ function main() {
   const probePath = safeRepoPath(contract.supported_compatibility_probe.python_probe, "python_probe");
   if (!existsSync(probePath)) fail(`Python probe does not exist: ${probePath}`);
   const completed = spawnSync(
-    python,
+    pythonEntrypoint,
     ["-I", probePath, "--root", root, "--contract", contractPath],
     {
       cwd: process.cwd(),

@@ -14,6 +14,8 @@ vi.mock("fs", async (importOriginal) => {
     default: actual,
     readFileSync: (path: unknown, ...args: unknown[]) => {
       if (ctrl.simulateLockEnoent && typeof path === "string" && path.endsWith(".lock")) {
+        ctrl.simulateLockEnoent = false;
+        actual.rmSync(path, { force: true });
         const err = new Error(`ENOENT: no such file or directory, open '${path}'`) as NodeJS.ErrnoException;
         err.code = "ENOENT";
         throw err;
@@ -48,8 +50,9 @@ describe("TicketLock concurrent-release race (VAL-BUG-013)", () => {
     writeFileSync(join(dir, "T-1.lock"), String(Date.now()));
     ctrl.simulateLockEnoent = true;
     // The read races with a concurrent release — acquire must handle it, not throw.
-    expect(() => lock.acquire("T-1")).not.toThrow();
     expect(lock.acquire("T-1")).toBe(true);
+    // The first call owns the replacement. A second acquire cannot steal it.
+    expect(lock.acquire("T-1")).toBe(false);
   });
 
   it("dispatch() does not reject when a concurrent release removes the lock during acquire", async () => {

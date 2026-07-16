@@ -294,10 +294,10 @@ const TS_INCIDENT_CLASSES = [
     testFile: "test/dispatch/dispatch.test.ts",
     testCase: "returns recorded terminal state without re-spawning",
     sourceFile: "src/dispatch/dispatch.ts",
-    guardMarker: "// Idempotency check — return recorded terminal state without re-spawning",
+    guardMarker: "if (existing && this.ledger.isTerminal(idStr)) {",
     mutate: (s) => s.replace(
-      "return existing;",
-      'return { ...existing, state: "planned" }; /* mutation: terminal replay corrupted */'
+      "if (existing && this.ledger.isTerminal(idStr)) {\n      return existing;\n    }",
+      'if (existing && this.ledger.isTerminal(idStr)) {\n      return { ...existing, state: "planned" }; /* mutation: terminal replay corrupted */\n    }'
     ),
   },
   {
@@ -339,24 +339,26 @@ const TS_INCIDENT_CLASSES = [
 const PY_INCIDENT_CLASSES = [
   {
     id: "drill-false-completion",
-    testFile: "test/test_drills.py",
-    testCase: "test_denies_done_without_commit",
-    sourceFile: "rickgent_policies/__init__.py",
-    guardMarker: 'if verdict_type != "COMMITTED":',
+    testFile: "test/test_native_function_policy_corpus.py",
+    testCase: "test_every_policy_event_and_bundle_verdict",
+    testSelector: "test_every_policy_event_and_bundle_verdict and false_completion",
+    sourceFile: "rickgent_policies/completion.py",
+    guardMarker: 'return _deny("protected completion receipt is empty")',
     mutate: (s) => s.replace(
-      'if verdict_type != "COMMITTED":',
-      'if False:  # mutation: completion guard removed'
+      'return _deny("protected completion receipt is empty")',
+      'return None  # mutation: completion with an empty protected receipt allowed'
     ),
   },
   {
     id: "drill-same-vendor",
-    testFile: "test/test_drills.py",
-    testCase: "test_denies_same_vendor",
-    sourceFile: "rickgent_policies/__init__.py",
-    guardMarker: "if implementer == reviewer:",
+    testFile: "test/test_native_function_policy_corpus.py",
+    testCase: "test_every_policy_event_and_bundle_verdict",
+    testSelector: "test_every_policy_event_and_bundle_verdict and review_equality",
+    sourceFile: "rickgent_policies/review.py",
+    guardMarker: 'return _deny("protected implementer/reviewer identity pair is unavailable")',
     mutate: (s) => s.replace(
-      "if implementer == reviewer:",
-      "if False: # mutation: same-vendor guard removed"
+      'return _deny("protected implementer/reviewer identity pair is unavailable")',
+      'return None  # mutation: unverified reviewer identity allowed'
     ),
   },
   {
@@ -450,6 +452,7 @@ function generateManifest() {
       id: cls.id,
       test: cls.testFile,
       testCase: cls.testCase,
+      ...(cls.testSelector ? { testSelector: cls.testSelector } : {}),
       source: cls.sourceFile,
       fileExists,
       testCaseExists,
@@ -544,6 +547,7 @@ function runMutationCheck(incidentClassId) {
   const copyFilter = (source) => !["node_modules", "dist", ".git", ".pytest_cache", "__pycache__"].includes(basename(source));
   cpSync(ORCH_DIR, disposableOrchestrator, { recursive: true, filter: copyFilter });
   cpSync(POLICIES_DIR, disposablePolicies, { recursive: true, filter: copyFilter });
+  cpSync(join(REPO_ROOT, "agents", "rickgent"), join(disposableRoot, "agents", "rickgent"), { recursive: true, filter: copyFilter });
   cpSync(join(REPO_ROOT, "conformance"), join(disposableRoot, "conformance"), { recursive: true, filter: copyFilter });
   symlinkSync(realpathSync(join(ORCH_DIR, "node_modules")), join(disposableOrchestrator, "node_modules"), "dir");
 
@@ -557,7 +561,7 @@ function runMutationCheck(incidentClassId) {
       if (isPython) {
         return spawnSync(
           "python3",
-          ["-m", "pytest", cls.testFile, "-k", cls.testCase, "-x", "--no-header", "-q"],
+          ["-m", "pytest", cls.testFile, "-k", cls.testSelector ?? cls.testCase, "-x", "--no-header", "-q"],
           {
             cwd: disposablePolicies,
             encoding: "utf-8",

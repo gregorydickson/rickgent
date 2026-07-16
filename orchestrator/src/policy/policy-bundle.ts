@@ -1,6 +1,7 @@
 import { execFileSync } from "child_process";
 import { createHash, randomBytes } from "crypto";
 import {
+  accessSync,
   chmodSync,
   closeSync,
   constants,
@@ -21,18 +22,21 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
 import { parse, stringify } from "yaml";
 import { canonicalJson, TICKET_CONTRACT_SCHEMA_VERSION, ticketOwnedPaths, type TicketContract } from "../contracts/ticket-contract.js";
+import { BUILD_COMMIT } from "../build-commit.js";
 import type { ReadyRunWorkspace } from "../git/run-workspace.js";
 import type { RouterSelection } from "../lifecycle/routing.js";
 import {
   ATTEMPT_LEASE_SCHEMA_VERSION,
   NONCE_CLAIM_SCHEMA_VERSION,
   POLICY_ABI_VERSION,
+  RUNTIME_PROVENANCE_SCHEMA_VERSION,
   canonicalDispatchId,
   createExecutionContext,
   materializeExecutionContext,
   verifyMaterializedExecutionContext,
   type ExecutionContext,
   type ExecutionDispatchId,
+  type ExecutionRuntimeProvenance,
   type MaterializedExecutionContext,
 } from "../context/execution-context.js";
 
@@ -48,6 +52,16 @@ export const POLICY_CONFIG_KEYS = Object.freeze([
 
 export type PolicyConfigKey = typeof POLICY_CONFIG_KEYS[number];
 export type PolicyReferenceConfig = Readonly<Record<PolicyConfigKey, string>>;
+
+export const REQUIRED_POLICY_ATTACHMENTS = Object.freeze([
+  Object.freeze({ name: "blast_radius", path: "omnigent.inner.nessie.policies.blast_radius", arguments: Object.freeze({ gate_pushes: true }), rickgent: false }),
+  Object.freeze({ name: "scope_fence", path: "rickgent_policies.scope_fence", arguments: null, rickgent: true }),
+  Object.freeze({ name: "completion_evidence", path: "rickgent_policies.completion_evidence", arguments: null, rickgent: true }),
+  Object.freeze({ name: "convergence_gate", path: "rickgent_policies.convergence_gate", arguments: null, rickgent: true }),
+  Object.freeze({ name: "subtract_before_add", path: "rickgent_policies.subtract_before_add", arguments: null, rickgent: true }),
+  Object.freeze({ name: "cross_vendor_review", path: "rickgent_policies.cross_vendor_review", arguments: null, rickgent: true }),
+  Object.freeze({ name: "autonomous_pr_flow", path: "rickgent_policies.autonomous_pr_flow", arguments: Object.freeze({}), rickgent: true }),
+] as const);
 
 export const TRUSTED_SPAWN_ENVIRONMENT_KEYS = Object.freeze([
   "RICKGENT_STATE_ROOT",
@@ -72,7 +86,25 @@ export const TRUSTED_SPAWN_ENVIRONMENT_KEYS = Object.freeze([
   "RICKGENT_REQUESTED_CONFIG_SHA256",
   "RICKGENT_INVOKED_BUNDLE_SHA256",
   "RICKGENT_INVOKED_CONFIG_SHA256",
+  "RICKGENT_OMNIGENT_PYTHON_ENTRYPOINT",
+  "RICKGENT_OMNIGENT_PYTHON_REALPATH",
+  "RICKGENT_OMNIGENT_PYTHON_SHA256",
+  "RICKGENT_OMNIGENT_ROOT_REALPATH",
+  "RICKGENT_OMNIGENT_ORIGIN_REALPATH",
+  "RICKGENT_POLICIES_ORIGIN_REALPATH",
+  "RICKGENT_POLICIES_SHA256",
+  "RICKGENT_NODE_REALPATH",
+  "RICKGENT_NODE_SHA256",
+  "RICKGENT_CLI_REALPATH",
+  "RICKGENT_CLI_SHA256",
+  "RICKGENT_BUILD_COMMIT",
 ] as const);
+
+export interface TrustedSpawnCommand {
+  readonly executable: string;
+  /** Append `run`, bundle path, prompt arguments after this isolated prefix. */
+  readonly argvPrefix: readonly string[];
+}
 
 export interface PolicyBundleMaterializationOptions {
   readonly agentRoot: string;
@@ -84,6 +116,10 @@ export interface PolicyBundleMaterializationOptions {
   readonly leaseExpiresAtMs?: number;
   readonly omnigentRoot?: string;
   readonly omnigentPython?: string;
+  /** Absolute path or symlink to the exact Node interpreter used for the CLI. */
+  readonly nodeExecutable?: string;
+  /** Absolute path or symlink to the exact Rickgent CLI artifact. */
+  readonly rickgentCli?: string;
 }
 
 export interface PolicyBundleHandle {
@@ -113,6 +149,8 @@ export interface PolicyBundleHandle {
   readonly receiptPath: string;
   readonly leaseExpiresAtMs: number;
   readonly policyConfig: PolicyReferenceConfig;
+  readonly runtimeProvenance: ExecutionRuntimeProvenance;
+  readonly trustedSpawnCommand: TrustedSpawnCommand;
   readonly spawnEnvironment: Readonly<Record<typeof TRUSTED_SPAWN_ENVIRONMENT_KEYS[number], string>>;
   readonly declaredPaths: readonly string[];
 }
@@ -246,6 +284,67 @@ function mapping(value: unknown, label: string): JsonMap {
   return value as JsonMap;
 }
 
+function exactKeys(value: JsonMap, expected: readonly string[], label: string): void {
+  const actual = Object.keys(value);
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new Error(`${label} keys/order mismatch: expected [${expected.join(", ")}], observed [${actual.join(", ")}]`);
+  }
+}
+
+function validatePolicyReferenceConfig(value: unknown, label: string): PolicyReferenceConfig {
+  const config = mapping(value, label);
+  const keys = Object.keys(config);
+  if (keys.length !== POLICY_CONFIG_KEYS.length || keys.some((key) => !POLICY_CONFIG_KEYS.includes(key as PolicyConfigKey))) {
+    throw new Error(`${label} must contain exactly the seven attempt-reference keys`);
+  }
+  for (const key of POLICY_CONFIG_KEYS) {
+    if (typeof config[key] !== "string" || config[key] === "") {
+      throw new Error(`${label}.${key} must be a non-empty string`);
+    }
+  }
+  if (config["rickgent_policy_abi"] !== POLICY_ABI_VERSION) {
+    throw new Error(`${label} uses an unsupported policy ABI`);
+  }
+  return config as unknown as PolicyReferenceConfig;
+}
+
+export function validatePolicyAttachmentObject(
+  value: JsonMap,
+  expectedConfig?: PolicyReferenceConfig,
+): void {
+  const guardrails = mapping(value["guardrails"], "worker guardrails");
+  const policies = mapping(guardrails["policies"], "worker guardrail policies");
+  exactKeys(policies, REQUIRED_POLICY_ATTACHMENTS.map((row) => row.name), "worker guardrail policies");
+  for (const expected of REQUIRED_POLICY_ATTACHMENTS) {
+    const policy = mapping(policies[expected.name], `worker policy ${expected.name}`);
+    const policyKeys = expected.rickgent && expectedConfig !== undefined
+      ? ["type", "function", "config"]
+      : ["type", "function"];
+    exactKeys(policy, policyKeys, `worker policy ${expected.name}`);
+    if (policy["type"] !== "function") throw new Error(`worker policy ${expected.name} must be function-typed`);
+    const fn = mapping(policy["function"], `worker policy ${expected.name}.function`);
+    const functionKeys = expected.arguments === null ? ["path"] : ["path", "arguments"];
+    exactKeys(fn, functionKeys, `worker policy ${expected.name}.function`);
+    if (fn["path"] !== expected.path) throw new Error(`worker policy ${expected.name} has incompatible function path`);
+    if (expected.arguments !== null && canonicalJson(fn["arguments"]) !== canonicalJson(expected.arguments)) {
+      throw new Error(`worker policy ${expected.name} has incompatible factory arguments`);
+    }
+    if (expected.rickgent) {
+      if (expectedConfig === undefined && policy["config"] !== undefined) {
+        throw new Error(`worker template policy ${expected.name} must not carry attempt config`);
+      }
+      if (expectedConfig !== undefined) {
+        const observed = validatePolicyReferenceConfig(policy["config"], `worker policy ${expected.name}.config`);
+        if (canonicalJson(observed) !== canonicalJson(expectedConfig)) {
+          throw new Error(`worker policy ${expected.name} lacks exact attempt config`);
+        }
+      }
+    } else if (policy["config"] !== undefined) {
+      throw new Error("blast_radius must not receive Rickgent attempt config");
+    }
+  }
+}
+
 function validateWorkerConfigObject(value: unknown): JsonMap {
   const config = mapping(value, "worker config");
   if (config["name"] !== "worker") throw new Error("worker config name must be exactly 'worker'");
@@ -259,17 +358,21 @@ function validateWorkerConfigObject(value: unknown): JsonMap {
   if (!/(?:do not|never)[^\n.]{0,120}\b(?:commit|terminal|completion)\b/i.test(instructions)) {
     throw new Error("worker instructions must explicitly forbid commit or terminal completion claims");
   }
-  const tools = mapping(config["tools"], "worker tools");
-  const builtins = tools["builtins"];
-  const expected = ["sys_os_read", "sys_os_write", "sys_os_edit"];
+  const osEnv = mapping(config["os_env"], "worker os_env");
+  const sandbox = mapping(osEnv["sandbox"], "worker os_env sandbox");
   if (
-    !Array.isArray(builtins) ||
-    builtins.length !== expected.length ||
-    builtins.some((tool) => typeof tool !== "string" || !expected.includes(tool)) ||
-    expected.some((tool) => !builtins.includes(tool))
+    osEnv["type"] !== "caller_process"
+    || osEnv["cwd"] !== "."
+    || sandbox["type"] !== "none"
+    || Object.keys(sandbox).length !== 1
   ) {
-    throw new Error("worker config must expose only structured read/write/edit builtins");
+    throw new Error("worker config must use the exact source-mounted caller_process os_env contract");
   }
+  const tools = mapping(config["tools"], "worker tools");
+  if (Object.keys(tools).length !== 0) {
+    throw new Error("worker tools must be registered only through os_env; static builtin declarations are not runtime authority");
+  }
+  validatePolicyAttachmentObject(config);
   return config;
 }
 
@@ -386,8 +489,167 @@ function sha256(value: Buffer | string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function stableRegularFile(candidate: string, label: string): { readonly path: string; readonly bytes: Buffer } {
+  if (!isAbsolute(candidate) || resolve(candidate) !== candidate) {
+    throw new Error(`${label} must be an absolute normalized path`);
+  }
+  // The selected entrypoint may intentionally be a symlink. Bind its resolved
+  // target so later comparisons cannot disagree about the same artifact.
+  const path = realpathSync(candidate);
+  const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const before = fstatSync(descriptor);
+    if (!before.isFile()) throw new Error(`${label} is not a regular file`);
+    const bytes = readFileSync(descriptor);
+    const after = fstatSync(descriptor);
+    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
+      throw new Error(`${label} changed while it was read`);
+    }
+    return Object.freeze({ path, bytes });
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function stableExecutableEntrypoint(
+  candidate: string,
+  label: string,
+): { readonly entrypoint: string; readonly target: { readonly path: string; readonly bytes: Buffer } } {
+  if (!isAbsolute(candidate) || resolve(candidate) !== candidate) {
+    throw new Error(`${label} entrypoint must be an absolute normalized path`);
+  }
+  // Do not replace this invocation path with its realpath. Python virtual
+  // environments intentionally use a symlinked executable path to discover
+  // pyvenv.cfg and construct their package search path.
+  accessSync(candidate, constants.X_OK);
+  return Object.freeze({ entrypoint: candidate, target: stableRegularFile(candidate, `${label} target`) });
+}
+
+function policyPackageSha256(originValue: string): string {
+  const origin = realpathSync(originValue);
+  const packageRoot = dirname(origin);
+  if (basename(origin) !== "__init__.py" || basename(packageRoot) !== "rickgent_policies") {
+    throw new Error("Rickgent policies origin is not the package __init__.py");
+  }
+  const records: string[] = [];
+  const visit = (directory: string, prefix: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const path = join(directory, entry.name);
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const info = lstatSync(path);
+      if (info.isSymbolicLink()) throw new Error(`Rickgent policy package contains symlink: ${path}`);
+      if (info.isDirectory()) {
+        if (entry.name !== "__pycache__") visit(path, rel);
+      } else if (info.isFile() && entry.name.endsWith(".py")) {
+        const source = stableRegularFile(path, "Rickgent policy source").bytes;
+        records.push(`f\0${rel}\0${source.length}\0${sha256(source)}\n`);
+      }
+    }
+  };
+  visit(packageRoot, "");
+  if (records.length === 0) throw new Error("Rickgent policy package contains no Python source");
+  return sha256(`rickgent-policies-source-v1\n${records.join("")}`);
+}
+
+interface RuntimeProbe {
+  readonly python_entrypoint: string;
+  readonly python_target_realpath: string;
+  readonly omnigent_origin: string;
+  readonly policy_origin: string;
+}
+
+const TRUSTED_OMNIGENT_LAUNCHER = [
+  "import runpy,sys",
+  "omnigent_root=sys.argv.pop(1)",
+  "policy_import_root=sys.argv.pop(1)",
+  "sys.path[:0]=[omnigent_root,policy_import_root]",
+  "from rickgent_policies.context import verify_runtime_provenance_environment",
+  "verify_runtime_provenance_environment()",
+  "runpy.run_module('omnigent',run_name='__main__')",
+].join(";");
+
+function probeRuntime(
+  rootValue: string | undefined,
+  pythonValue: string | undefined,
+  cliValue: string | undefined,
+  nodeValue: string | undefined,
+): { readonly provenance: ExecutionRuntimeProvenance; readonly policyImportRoot: string } {
+  if (!rootValue) throw new Error("OMNIGENT_ROOT is required for authenticated policy execution");
+  if (!pythonValue) throw new Error("OMNIGENT_PYTHON must select an absolute interpreter for authenticated policy execution");
+  if (!cliValue) throw new Error("an absolute Rickgent CLI path is required for authenticated policy execution");
+  if (!nodeValue) throw new Error("an absolute Node interpreter path is required for authenticated policy execution");
+  const root = realpathSync(rootValue);
+  const pythonExecutable = stableExecutableEntrypoint(pythonValue, "Omnigent Python interpreter");
+  const pythonFile = pythonExecutable.target;
+  const nodeFile = stableRegularFile(nodeValue, "Rickgent Node interpreter");
+  accessSync(nodeFile.path, constants.X_OK);
+  const cliFile = stableRegularFile(cliValue, "Rickgent CLI");
+
+  const script = [
+    "import inspect,json,sys",
+    "from pathlib import Path",
+    "root=Path(sys.argv[1]).resolve(strict=True)",
+    "sys.path.insert(0,str(root))",
+    "import omnigent,rickgent_policies",
+    "print(json.dumps({'python_entrypoint':sys.executable,'python_target_realpath':str(Path(sys.executable).resolve(strict=True)),'omnigent_origin':str(Path(inspect.getfile(omnigent)).resolve(strict=True)),'policy_origin':str(Path(inspect.getfile(rickgent_policies)).resolve(strict=True))},sort_keys=True))",
+  ].join(";");
+  let parsed: RuntimeProbe;
+  try {
+    parsed = JSON.parse(execFileSync(pythonExecutable.entrypoint, ["-I", "-c", script, root], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+      env: process.env,
+    })) as RuntimeProbe;
+  } catch (error) {
+    throw new Error(`runtime provenance probe failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const observedPythonEntrypoint = parsed.python_entrypoint;
+  const observedPython = realpathSync(parsed.python_target_realpath);
+  const omnigentOrigin = realpathSync(parsed.omnigent_origin);
+  const policyOrigin = realpathSync(parsed.policy_origin);
+  if (observedPythonEntrypoint !== pythonExecutable.entrypoint) {
+    throw new Error("runtime provenance probe used a different Python entrypoint");
+  }
+  if (observedPython !== pythonFile.path) throw new Error("runtime provenance probe used a different Python target");
+  if (!pathInside(root, omnigentOrigin)) throw new Error("runtime provenance probe imported shadow Omnigent code");
+
+  let cliCommit: string;
+  try {
+    cliCommit = execFileSync(nodeFile.path, [cliFile.path, "--build-commit"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 10_000,
+      env: process.env,
+    }).trim();
+  } catch (error) {
+    throw new Error(`Rickgent CLI build provenance failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!cliCommit || cliCommit !== cliCommit.trim() || /\s/.test(cliCommit)) {
+    throw new Error("Rickgent CLI returned an empty or malformed build commit");
+  }
+  if (cliCommit !== BUILD_COMMIT) throw new Error("Rickgent CLI build commit does not match the orchestrator build");
+
+  const provenance: ExecutionRuntimeProvenance = Object.freeze({
+    schema_version: RUNTIME_PROVENANCE_SCHEMA_VERSION,
+    omnigent_python_entrypoint: pythonExecutable.entrypoint,
+    omnigent_python_realpath: pythonFile.path,
+    omnigent_python_sha256: sha256(pythonFile.bytes),
+    omnigent_root_realpath: root,
+    omnigent_origin_realpath: omnigentOrigin,
+    rickgent_policies_origin_realpath: policyOrigin,
+    rickgent_policies_sha256: policyPackageSha256(policyOrigin),
+    rickgent_node_realpath: nodeFile.path,
+    rickgent_node_sha256: sha256(nodeFile.bytes),
+    rickgent_cli_realpath: cliFile.path,
+    rickgent_cli_sha256: sha256(cliFile.bytes),
+    rickgent_build_commit: cliCommit,
+  });
+  return Object.freeze({ provenance, policyImportRoot: dirname(dirname(policyOrigin)) });
+}
+
 function renderYaml(value: JsonMap): Buffer {
-  return Buffer.from(stringify(value, { lineWidth: 0, sortMapEntries: true }), "utf8");
+  return Buffer.from(stringify(value, { lineWidth: 0, sortMapEntries: false }), "utf8");
 }
 
 export function policyBundleSha256(bundleDir: string): string {
@@ -417,66 +679,56 @@ export function policyBundleSha256(bundleDir: string): string {
 }
 
 function injectPolicyConfig(worker: JsonMap, policyConfig: PolicyReferenceConfig): void {
-  const guardrails = mapping(worker["guardrails"], "worker guardrails");
-  const policies = mapping(guardrails["policies"], "worker guardrail policies");
-  let attached = 0;
-  for (const [name, rawPolicy] of Object.entries(policies)) {
-    const policy = mapping(rawPolicy, `worker policy ${name}`);
-    const fn = mapping(policy["function"], `worker policy ${name}.function`);
-    const functionPath = fn["path"];
-    if (typeof functionPath !== "string") throw new Error(`worker policy ${name} has no function path`);
-    if (!functionPath.startsWith("rickgent_policies.")) continue;
-    if (policy["config"] !== undefined) throw new Error(`worker policy ${name} already carries runtime config`);
+  validatePolicyAttachmentObject(worker);
+  const policies = mapping(mapping(worker["guardrails"], "worker guardrails")["policies"], "worker guardrail policies");
+  for (const expected of REQUIRED_POLICY_ATTACHMENTS) {
+    if (!expected.rickgent) continue;
+    const policy = mapping(policies[expected.name], `worker policy ${expected.name}`);
     policy["config"] = { ...policyConfig };
-    attached++;
   }
-  if (attached === 0) throw new Error("worker bundle has no attached Rickgent function policy");
+  validatePolicyAttachmentObject(worker, policyConfig);
 }
 
 function proveRealOmnigentPolicyConfig(
   bundleDir: string,
   expected: PolicyReferenceConfig,
-  rootValue: string | undefined,
-  pythonValue: string | undefined,
+  smokeEnvironment: Readonly<Record<string, string>>,
+  runtime: ExecutionRuntimeProvenance,
+  policyImportRoot: string,
 ): void {
-  if (!rootValue) throw new Error("OMNIGENT_ROOT is required to authenticate the rendered worker bundle");
-  const root = realpathSync(rootValue);
-  const python = pythonValue || "python3";
   const script = [
     "import inspect,json,sys",
     "from pathlib import Path",
     "root=Path(sys.argv[1]).resolve(strict=True)",
-    "sys.path.insert(0,str(root))",
-    "import omnigent",
-    "from omnigent.spec.parser import parse",
+    "policy_root=Path(sys.argv[2]).resolve(strict=True)",
+    "sys.path[:0]=[str(root),str(policy_root)]",
+    "import omnigent,rickgent_policies",
+    "from rickgent_policies.context import verify_runtime_provenance_environment",
+    "verify_runtime_provenance_environment()",
     "origin=Path(inspect.getfile(omnigent)).resolve(strict=True)",
-    "spec=parse(Path(sys.argv[2]),expand_env=False)",
-    "rows=[{'name':p.name,'path':p.function.path,'config':p.config} for p in spec.guardrails.policies]",
-    "print(json.dumps({'origin':str(origin),'rows':rows},sort_keys=True))",
+    "policy_origin=Path(inspect.getfile(rickgent_policies)).resolve(strict=True)",
+    "expected=json.loads(sys.argv[4])",
+    "policies=rickgent_policies.validate_attached_policy_bundle(Path(sys.argv[3]),expected_config=expected,smoke=True)",
+    "print(json.dumps({'origin':str(origin),'policy_origin':str(policy_origin),'names':[p.spec.name for p in policies]},sort_keys=True))",
   ].join(";");
-  let parsed: { readonly origin: string; readonly rows: readonly { readonly name: string; readonly path: string; readonly config: unknown }[] };
+  let parsed: { readonly origin: string; readonly policy_origin: string; readonly names: readonly string[] };
   try {
-    const output = execFileSync(python, ["-I", "-c", script, root, bundleDir], {
+    const output = execFileSync(runtime.omnigent_python_entrypoint, ["-I", "-c", script, runtime.omnigent_root_realpath, policyImportRoot, bundleDir, JSON.stringify(expected)], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 30_000,
+      env: { ...process.env, ...smokeEnvironment },
     });
     parsed = JSON.parse(output) as typeof parsed;
   } catch (error) {
-    throw new Error(`rendered worker failed real Omnigent parsing: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`rendered worker failed real Omnigent FunctionPolicy startup: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (!pathInside(root, realpathSync(parsed.origin))) throw new Error("rendered worker was parsed by a shadow Omnigent import");
-  const rickgent = parsed.rows.filter((row) => row.path.startsWith("rickgent_policies."));
-  if (rickgent.length === 0) throw new Error("real Omnigent parser found no Rickgent FunctionPolicy specs");
-  for (const row of rickgent) {
-    if (canonicalJson(row.config) !== canonicalJson(expected)) {
-      throw new Error(`real Omnigent parser observed wrong config for policy ${row.name}`);
-    }
-  }
-  for (const row of parsed.rows.filter((candidate) => !candidate.path.startsWith("rickgent_policies."))) {
-    if (row.config !== null && row.config !== undefined) {
-      throw new Error(`non-Rickgent policy ${row.name} received trusted context config`);
-    }
+  if (realpathSync(parsed.origin) !== runtime.omnigent_origin_realpath) throw new Error("rendered worker was parsed by a different Omnigent origin");
+  if (realpathSync(parsed.policy_origin) !== runtime.rickgent_policies_origin_realpath) throw new Error("rendered worker was parsed by a different Rickgent policy origin");
+  if (policyPackageSha256(parsed.policy_origin) !== runtime.rickgent_policies_sha256) throw new Error("Rickgent policy package changed before startup");
+  const expectedNames = REQUIRED_POLICY_ATTACHMENTS.map((row) => row.name);
+  if (canonicalJson(parsed.names) !== canonicalJson(expectedNames)) {
+    throw new Error("real Omnigent FunctionPolicy startup observed the wrong attachment inventory");
   }
 }
 
@@ -539,6 +791,12 @@ export function materializePolicyBundle(options: PolicyBundleMaterializationOpti
 
     const requestedConfigSha256 = sha256(privateFileBytes(configPath, "requested worker config"));
     const requestedBundleSha256 = policyBundleSha256(bundleDir);
+    const runtime = probeRuntime(
+      options.omnigentRoot ?? process.env.OMNIGENT_ROOT,
+      options.omnigentPython ?? process.env.OMNIGENT_PYTHON,
+      options.rickgentCli ?? process.env.RICKGENT_CLI_REALPATH ?? process.env.RICKGENT_BIN,
+      options.nodeExecutable ?? process.execPath,
+    );
     const ownerToken = randomBytes(32).toString("hex");
     const ownerTokenSha256 = sha256(ownerToken);
     const nonce = randomBytes(32).toString("hex");
@@ -566,6 +824,7 @@ export function materializePolicyBundle(options: PolicyBundleMaterializationOpti
       requestedVendor: options.selection.vendor,
       requestedBundleSha256,
       requestedConfigSha256,
+      runtimeProvenance: runtime.provenance,
       ownerTokenSha256,
       nonce,
       nonceClaimPath,
@@ -617,13 +876,6 @@ export function materializePolicyBundle(options: PolicyBundleMaterializationOpti
     });
     injectPolicyConfig(worker, policyConfig);
     rewritePrivateFile(configPath, renderYaml(worker));
-    proveRealOmnigentPolicyConfig(
-      bundleDir,
-      policyConfig,
-      options.omnigentRoot ?? process.env.OMNIGENT_ROOT,
-      options.omnigentPython ?? process.env.OMNIGENT_PYTHON,
-    );
-
     const invokedConfigSha256 = sha256(privateFileBytes(configPath, "invoked worker config"));
     const invokedBundleSha256 = policyBundleSha256(bundleDir);
     const spawnEnvironment = deepFreeze({
@@ -649,7 +901,26 @@ export function materializePolicyBundle(options: PolicyBundleMaterializationOpti
       RICKGENT_REQUESTED_CONFIG_SHA256: requestedConfigSha256,
       RICKGENT_INVOKED_BUNDLE_SHA256: invokedBundleSha256,
       RICKGENT_INVOKED_CONFIG_SHA256: invokedConfigSha256,
+      RICKGENT_OMNIGENT_PYTHON_ENTRYPOINT: runtime.provenance.omnigent_python_entrypoint,
+      RICKGENT_OMNIGENT_PYTHON_REALPATH: runtime.provenance.omnigent_python_realpath,
+      RICKGENT_OMNIGENT_PYTHON_SHA256: runtime.provenance.omnigent_python_sha256,
+      RICKGENT_OMNIGENT_ROOT_REALPATH: runtime.provenance.omnigent_root_realpath,
+      RICKGENT_OMNIGENT_ORIGIN_REALPATH: runtime.provenance.omnigent_origin_realpath,
+      RICKGENT_POLICIES_ORIGIN_REALPATH: runtime.provenance.rickgent_policies_origin_realpath,
+      RICKGENT_POLICIES_SHA256: runtime.provenance.rickgent_policies_sha256,
+      RICKGENT_NODE_REALPATH: runtime.provenance.rickgent_node_realpath,
+      RICKGENT_NODE_SHA256: runtime.provenance.rickgent_node_sha256,
+      RICKGENT_CLI_REALPATH: runtime.provenance.rickgent_cli_realpath,
+      RICKGENT_CLI_SHA256: runtime.provenance.rickgent_cli_sha256,
+      RICKGENT_BUILD_COMMIT: runtime.provenance.rickgent_build_commit,
     });
+    proveRealOmnigentPolicyConfig(
+      bundleDir,
+      policyConfig,
+      spawnEnvironment,
+      runtime.provenance,
+      runtime.policyImportRoot,
+    );
     const handle: PolicyBundleHandle = deepFreeze({
       kind: "materialized_authenticated_policy_bundle" as const,
       templateDir: template.templateDir,
@@ -676,6 +947,17 @@ export function materializePolicyBundle(options: PolicyBundleMaterializationOpti
       receiptPath,
       leaseExpiresAtMs,
       policyConfig,
+      runtimeProvenance: runtime.provenance,
+      trustedSpawnCommand: deepFreeze({
+        executable: runtime.provenance.omnigent_python_entrypoint,
+        argvPrefix: [
+          "-I",
+          "-c",
+          TRUSTED_OMNIGENT_LAUNCHER,
+          runtime.provenance.omnigent_root_realpath,
+          runtime.policyImportRoot,
+        ],
+      }),
       spawnEnvironment,
       declaredPaths: Object.freeze(ticketOwnedPaths(options.ticket)),
     });
@@ -699,6 +981,24 @@ function verifyPolicyBundle(handle: PolicyBundleHandle, requireUnexpiredLease: b
     byteLength: handle.contextByteLength,
   };
   verifyMaterializedExecutionContext(materializedContext);
+  const observedRuntime = probeRuntime(
+    handle.runtimeProvenance.omnigent_root_realpath,
+    handle.runtimeProvenance.omnigent_python_entrypoint,
+    handle.runtimeProvenance.rickgent_cli_realpath,
+    handle.runtimeProvenance.rickgent_node_realpath,
+  ).provenance;
+  verifyExactDocument(observedRuntime, handle.runtimeProvenance, "runtime provenance");
+  if (
+    handle.trustedSpawnCommand.executable !== handle.runtimeProvenance.omnigent_python_entrypoint
+    || handle.trustedSpawnCommand.argvPrefix[0] !== "-I"
+    || handle.trustedSpawnCommand.argvPrefix[1] !== "-c"
+    || handle.trustedSpawnCommand.argvPrefix[2] !== TRUSTED_OMNIGENT_LAUNCHER
+    || handle.trustedSpawnCommand.argvPrefix[3] !== handle.runtimeProvenance.omnigent_root_realpath
+    || handle.trustedSpawnCommand.argvPrefix[4] !== dirname(dirname(handle.runtimeProvenance.rickgent_policies_origin_realpath))
+    || handle.trustedSpawnCommand.argvPrefix.length !== 5
+  ) {
+    throw new Error("trusted Omnigent spawn command changed after publication");
+  }
   if (sha256(handle.ownerToken) !== handle.ownerTokenSha256) throw new Error("attempt owner token no longer matches its digest");
 
   const expectedClaim: NonceClaimDocument = {

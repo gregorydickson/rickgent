@@ -4,7 +4,8 @@
 import { BUILD_COMMIT } from "../build-commit.js";
 import { RELEASE_CHANNEL, RELEASE_LABEL } from "../capabilities/registry.js";
 import { execFileSync } from "child_process";
-import { existsSync } from "fs";
+import { createHash } from "crypto";
+import { existsSync, readFileSync, realpathSync } from "fs";
 import { join } from "path";
 import { fileURLToPath } from "url";
 
@@ -15,8 +16,18 @@ export interface DoctorResult {
 
 export async function runDoctorCheck(): Promise<DoctorResult> {
   const checks: { name: string; pass: boolean; detail: string }[] = [];
-  const cliEntrypoint = fileURLToPath(new URL("../../dist/cli.js", import.meta.url));
-  const pythonEnv = { ...process.env, RICKGENT_BIN: cliEntrypoint };
+  const cliEntrypoint = realpathSync(fileURLToPath(new URL("../../dist/cli.js", import.meta.url)));
+  const cliSha256 = createHash("sha256").update(readFileSync(cliEntrypoint)).digest("hex");
+  const nodeEntrypoint = realpathSync(process.execPath);
+  const nodeSha256 = createHash("sha256").update(readFileSync(nodeEntrypoint)).digest("hex");
+  const pythonEnv = {
+    ...process.env,
+    RICKGENT_NODE_REALPATH: nodeEntrypoint,
+    RICKGENT_NODE_SHA256: nodeSha256,
+    RICKGENT_CLI_REALPATH: cliEntrypoint,
+    RICKGENT_CLI_SHA256: cliSha256,
+    RICKGENT_BUILD_COMMIT: BUILD_COMMIT,
+  };
   // Source checkouts default to their bundled agents. Packed installations
   // discover external bundles through the same explicit variables consumed by
   // the configured-attachment audit below.
@@ -144,28 +155,21 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
   }
   checks.push({ name: "build_commit_match", pass: shimOk, detail: shimDetail });
 
-  // 8. policy ATTACHMENT audit (B4/C4). Registration is not attachment: the
-  // effective set is read from `spec.guardrails.policies` via the omnigent
-  // parser. The health audit returns non-zero when either
-  // bundle's effective attached set is a strict subset of REQUIRED_POLICIES.
+  // 8. Exact source-template attachment and FunctionPolicy compatibility.
   let attachOk = false;
   let attachDetail = "";
   try {
     const py = [
       "import json, os",
-      "from rickgent_policies import REQUIRED_POLICIES, effective_attached_policies",
+      "from rickgent_policies import validate_attached_policy_bundle",
       "bundles = {'manager': os.environ['RG_MGR'], 'worker': os.environ['RG_WKR']}",
-      "missing = {}",
+      "errors = {}",
       "for label, d in bundles.items():",
       "    try:",
-      "        eff = effective_attached_policies(d)",
+      "        validate_attached_policy_bundle(d)",
       "    except Exception as e:",
-      "        missing[label] = ['<parse-error: %s>' % e] + sorted(REQUIRED_POLICIES)",
-      "        continue",
-      "    gap = sorted(REQUIRED_POLICIES - eff)",
-      "    if gap:",
-      "        missing[label] = gap",
-      "print(json.dumps(missing))",
+      "        errors[label] = str(e)",
+      "print(json.dumps(errors))",
     ].join("\n");
     const raw = execFileSync("python3", ["-"], {
       encoding: "utf-8",
@@ -174,12 +178,12 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...pythonEnv, RG_MGR: managerDir, RG_WKR: workerDir },
     }).trim();
-    const missing = JSON.parse(raw) as Record<string, string[]>;
-    const labels = Object.keys(missing);
+    const errors = JSON.parse(raw) as Record<string, string>;
+    const labels = Object.keys(errors);
     attachOk = labels.length === 0;
     attachDetail = attachOk
-      ? "configured manager + worker bundles attach the full required policy set (attachment audit only)"
-      : labels.map((l) => `${l} missing [${(missing[l] ?? []).join(", ")}]`).join("; ");
+      ? "configured manager + worker bundles have exact attachment and FunctionPolicy compatibility"
+      : labels.map((l) => `${l}: ${errors[l] ?? "attachment validation failed"}`).join("; ");
   } catch (e) {
     attachDetail = `policy attachment audit failed: ${e instanceof Error ? e.message : String(e)}`;
   }

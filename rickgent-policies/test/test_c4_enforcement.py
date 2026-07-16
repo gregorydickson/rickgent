@@ -17,6 +17,7 @@ mutated bundle), never asserted against a mock's return.
 Fulfills: VAL-ATTACH-021, VAL-ATTACH-022, VAL-ATTACH-023, VAL-ATTACH-024.
 """
 
+import hashlib
 import shutil
 import types
 from pathlib import Path
@@ -24,13 +25,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-import rickgent_policies
+import rickgent_policies.verdict as verdict_module
 from rickgent_policies import (
     REQUIRED_POLICIES,
-    completion_evidence,
-    convergence_gate,
     effective_attached_policies,
-    subtract_before_add,
 )
 
 REPO_ROOT = Path(__file__).parent.parent.parent
@@ -50,146 +48,72 @@ def _fake_run(stdout, returncode=0):
     return run
 
 
+def _pin_cli(monkeypatch, tmp_path: Path) -> Path:
+    node = (tmp_path / "node").resolve()
+    node.write_text("immutable test Node\n")
+    node.chmod(0o700)
+    cli = (tmp_path / "rickgent-cli.js").resolve()
+    cli.write_text("// immutable test CLI\n")
+    monkeypatch.setattr(verdict_module, "_RICKGENT_NODE", str(node))
+    monkeypatch.setattr(
+        verdict_module,
+        "_RICKGENT_NODE_SHA256",
+        hashlib.sha256(node.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(verdict_module, "_RICKGENT_BIN", str(cli))
+    monkeypatch.setattr(
+        verdict_module,
+        "_RICKGENT_BIN_SHA256",
+        hashlib.sha256(cli.read_bytes()).hexdigest(),
+    )
+    return cli
+
+
 # ── VAL-ATTACH-022: _assert_build_commit fails closed on mismatch ────────────
 
 
-def test_assert_build_commit_raises_on_mismatch(monkeypatch):
+def test_assert_build_commit_raises_on_mismatch(monkeypatch, tmp_path):
     """VAL-ATTACH-022: a TS↔Python build-commit mismatch raises (fail closed)."""
-    monkeypatch.setattr(rickgent_policies, "BUILD_COMMIT", "py-aaaaaaaaaaaa")
+    _pin_cli(monkeypatch, tmp_path)
+    monkeypatch.setattr(verdict_module, "BUILD_COMMIT", "py-aaaaaaaaaaaa")
     monkeypatch.setattr(
-        rickgent_policies.subprocess, "run", _fake_run("ts-bbbbbbbbbbbb\n")
+        verdict_module.subprocess, "run", _fake_run("ts-bbbbbbbbbbbb\n")
     )
     with pytest.raises(RuntimeError):
-        rickgent_policies._assert_build_commit()
+        verdict_module._assert_build_commit()
 
 
-def test_assert_build_commit_raises_on_nonzero_exit(monkeypatch):
+def test_assert_build_commit_raises_on_nonzero_exit(monkeypatch, tmp_path):
     """VAL-ATTACH-022: a failing `rickgent --build-commit` fails closed."""
-    monkeypatch.setattr(rickgent_policies, "BUILD_COMMIT", "same-commit")
+    _pin_cli(monkeypatch, tmp_path)
+    monkeypatch.setattr(verdict_module, "BUILD_COMMIT", "same-commit")
     monkeypatch.setattr(
-        rickgent_policies.subprocess, "run", _fake_run("", returncode=2)
+        verdict_module.subprocess, "run", _fake_run("", returncode=2)
     )
     with pytest.raises(RuntimeError):
-        rickgent_policies._assert_build_commit()
+        verdict_module._assert_build_commit()
 
 
-def test_assert_build_commit_ok_on_match(monkeypatch):
+def test_assert_build_commit_ok_on_match(monkeypatch, tmp_path):
     """VAL-ATTACH-022 (negative): matching commits do not raise."""
-    monkeypatch.setattr(rickgent_policies, "BUILD_COMMIT", "same-commit")
+    _pin_cli(monkeypatch, tmp_path)
+    monkeypatch.setattr(verdict_module, "BUILD_COMMIT", "same-commit")
     monkeypatch.setattr(
-        rickgent_policies.subprocess, "run", _fake_run("same-commit\n")
+        verdict_module.subprocess, "run", _fake_run("same-commit\n")
     )
-    rickgent_policies._assert_build_commit()  # must not raise
+    verdict_module._assert_build_commit()  # must not raise
 
 
-def test_assert_build_commit_tolerates_missing_cli(monkeypatch):
-    """VAL-ATTACH-022: a not-yet-installed rickgent CLI does not crash import.
+def test_assert_build_commit_rejects_missing_pinned_cli(monkeypatch, tmp_path):
+    """VAL-ATTACH-022: an unavailable pinned CLI fails closed before verdicts."""
 
-    The build-commit guard cannot verify parity if the TS CLI is absent; that
-    is tolerated (the downstream `_rickgent_verdict` fails closed to DENY on a
-    missing binary). Only a *mismatch* fails closed here.
-    """
-
-    def boom(*args, **kwargs):
-        raise FileNotFoundError("rickgent")
-
-    monkeypatch.setattr(rickgent_policies.subprocess, "run", boom)
-    rickgent_policies._assert_build_commit()  # must not raise
-
-
-# ── VAL-ATTACH-021: guard runs before the first verdict-dependent call ───────
-
-_VERDICT_POLICY_CASES = [
-    (
-        "completion_evidence",
-        completion_evidence,
-        {"tool_name": "rickgent_phase_advance"},
-        {
-            "claimed_sha": "abc",
-            "baseline_sha": "def",
-            "sha_exists": True,
-            "tree_changed": True,
-            "gate_green": True,
-        },
-        {"verdict": "COMMITTED"},
-    ),
-    (
-        "convergence_gate",
-        convergence_gate,
-        {"tool_name": "rickgent_build_gate"},
-        {"phase": "build", "gate_input": {"phase": "build"}},
-        {"passed": True},
-    ),
-    (
-        "subtract_before_add",
-        subtract_before_add,
-        {"tool_name": "rickgent_prd_validate"},
-        {"prd": {"title": "x"}},
-        {"valid": True},
-    ),
-]
-
-
-@pytest.mark.parametrize(
-    "name,policy,event,config,verdict",
-    _VERDICT_POLICY_CASES,
-    ids=[c[0] for c in _VERDICT_POLICY_CASES],
-)
-def test_build_commit_asserted_before_first_verdict(
-    name, policy, event, config, verdict, monkeypatch
-):
-    """VAL-ATTACH-021: `_assert_build_commit` fires strictly before `_rickgent_verdict`.
-
-    Instruments both functions with a shared call log and drives the real
-    policy entrypoint; the build-commit parity guard must be logged before the
-    verdict-CLI call for every verdict-dependent policy.
-    """
-    calls = []
-
-    monkeypatch.setattr(
-        rickgent_policies, "_assert_build_commit", lambda: calls.append("assert")
-    )
-
-    def logged_verdict(check, data):
-        calls.append("verdict")
-        return verdict
-
-    monkeypatch.setattr(rickgent_policies, "_rickgent_verdict", logged_verdict)
-
-    policy(event, config)
-
-    assert "assert" in calls, f"{name}: build-commit guard never ran"
-    assert "verdict" in calls, f"{name}: verdict CLI never ran"
-    assert calls.index("assert") < calls.index("verdict"), (
-        f"{name}: build-commit guard ran AFTER the verdict call: {calls}"
-    )
-
-
-@pytest.mark.parametrize(
-    "name,policy,event,config,verdict",
-    _VERDICT_POLICY_CASES,
-    ids=[c[0] for c in _VERDICT_POLICY_CASES],
-)
-def test_verdict_policy_fails_closed_on_build_mismatch(
-    name, policy, event, config, verdict, monkeypatch
-):
-    """VAL-ATTACH-021/022: a build-commit mismatch DENYs at the policy entrypoint.
-
-    Verifies behavior: the verdict itself WOULD pass (mocked), so the DENY can
-    only come from the wired build-parity guard failing closed. convergence_gate
-    is exercised on its blocking build gate so a DENY is observable.
-    """
-    monkeypatch.setattr(rickgent_policies, "_rickgent_verdict", lambda c, d: verdict)
-    monkeypatch.setattr(rickgent_policies, "BUILD_COMMIT", "py-aaaaaaaaaaaa")
-    monkeypatch.setattr(
-        rickgent_policies.subprocess, "run", _fake_run("ts-bbbbbbbbbbbb\n")
-    )
-
-    result = policy(event, config)
-
-    assert result is not None and result.get("result") == "DENY", (
-        f"{name}: build-commit mismatch did not fail closed: {result!r}"
-    )
+    missing = (tmp_path / "missing-rickgent-cli.js").resolve()
+    _pin_cli(monkeypatch, tmp_path)
+    monkeypatch.setattr(verdict_module, "_RICKGENT_BIN", str(missing))
+    monkeypatch.setattr(verdict_module, "_RICKGENT_BIN_SHA256", "a" * 64)
+    monkeypatch.setattr(verdict_module, "BUILD_COMMIT", "same-commit")
+    with pytest.raises(RuntimeError, match="could not be opened securely"):
+        verdict_module._assert_build_commit()
 
 
 # ── VAL-ATTACH-023 / 024: C4 attachment enforcement is non-tautological ──────

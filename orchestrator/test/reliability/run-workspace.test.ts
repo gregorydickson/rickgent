@@ -17,6 +17,7 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import { join, relative } from "path";
+import { parse } from "yaml";
 import { exitCodeForRunOutcome } from "../../src/cli.js";
 import { finalizeRunWorkspace, provisionRunWorkspace } from "../../src/git/run-workspace.js";
 import { validateWorkerTemplate } from "../../src/dispatch/worker-materialization.js";
@@ -197,8 +198,12 @@ describe("M1 sequential run workspace", () => {
     expect(spawned.bundle).toContain("agents/rickgent/agents/worker");
     expect(spawned.bundle).not.toBe(AGENT_ROOT);
     expect(spawned.config).toContain("name: worker");
-    expect(spawned.config).not.toContain("sys_os_shell");
-    expect(spawned.config).not.toMatch(/sys_os_shell|ensure[^\n]*commit|must[^\n]*commit/i);
+    const workerConfig = parse(spawned.config) as {
+      tools?: Record<string, unknown>;
+      instructions?: string;
+    };
+    expect(workerConfig.tools).toEqual({});
+    expect(workerConfig.instructions ?? "").not.toMatch(/ensure[^\n]*commit|must[^\n]*commit/i);
     expect(git(spawned.cwd, ["status", "--porcelain", "--untracked-files=all"])).toContain("src/feature.ts");
     expect(result.workspaceCleanup?.disposition).toBe("retained");
   });

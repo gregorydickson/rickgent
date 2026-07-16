@@ -249,13 +249,16 @@ describe("B1 build loop", () => {
     const out = runCli(["build", prd, "--repo", d.repo, "--agent", d.agentDir], d, {
       FIXTURE_FAIL_PATHS: "src/a.ts,src/b.ts",
     });
-    expect(out.status).toBe(5);
+    // A scripted nonzero child cannot prove detached-descendant release. The
+    // conservative M2 bridge retains ownership and gives cleanup precedence.
+    expect(out.status).toBe(7);
     const s = summary(out.stdout);
     expect(Number(s.planned)).toBe(2);
     expect(Number(s.done)).toBe(0);
     expect(Number(s.failed)).toBe(2);
     expect(Number(s.captured) + Number(s.done) + Number(s.failed) + Number(s.recovered)).toBe(Number(s.planned));
     expect(out.stdout).toContain("zero_completion");
+    expect(out.stdout).toContain("cleanup_failed");
   });
 
   // VAL-BUILD-008

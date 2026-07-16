@@ -29,16 +29,19 @@ interaction:
     input: [text]
     output: [text]
 
-tools:
-  # A-SEC-3 decision (architecture §6.2 option a): the worker drops the ad-hoc
-  # raw-shell write capability. All writes route through structured
-  # read/write/edit tools whose concrete target the attached `scope_fence`
-  # can positively resolve and scope-check; an unresolved shell write would
-  # otherwise DENY (fail closed). `sys_os_read` is read-only and stays.
-  builtins:
-    - sys_os_read
-    - sys_os_write
-    - sys_os_edit
+# This is the canonical registration path for the concrete filesystem tools.
+# Omnigent registers the four sys_os_* implementations as one capability set;
+# scope_fence makes sys_os_shell unconditionally unusable for this worker.
+os_env:
+  type: caller_process
+  cwd: .
+  # See manager config: source-mounted helper bootstrap is incompatible with
+  # Omnigent's default sandbox. scope_fence is the active fail-closed boundary
+  # in M2; owned process/workspace sandboxing is a later trust-spine milestone.
+  sandbox:
+    type: none
+
+tools: {}
 
 # Policy ATTACHMENT (B4/C4). The worker executes scoped structured writes, so it
 # carries the required policy set — attached here via the
@@ -48,8 +51,8 @@ tools:
 guardrails:
   ask_timeout: 86400
   policies:
-    # Omnigent builtin retained for defense in depth. The worker has no raw
-    # shell tool and its instructions forbid Git mutation or delivery.
+    # Omnigent builtin retained for defense in depth. The worker cannot use
+    # raw shell because scope_fence denies it before dispatch.
     blast_radius:
       type: function
       function:
@@ -80,3 +83,4 @@ guardrails:
       type: function
       function:
         path: rickgent_policies.autonomous_pr_flow
+        arguments: {}
