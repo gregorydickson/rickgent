@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawnSync, execFileSync } from "child_process";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, appendFileSync } from "fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, readFileSync, writeFileSync, existsSync, appendFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -223,7 +223,7 @@ describe("B9 metrics — contained build profile", () => {
   let d: { root: string; repo: string; dataDir: string; rickgentDir: string; agentDir: string };
 
   beforeEach(() => {
-    const root = mkdtempSync(join(tmpdir(), "rickgent-metrics-build-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "rickgent-metrics-build-")));
     const repo = join(root, "repo");
     initGitRepo(repo);
     const dataDir = join(root, "data");

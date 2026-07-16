@@ -255,7 +255,7 @@ def _validate_corpus(
     cases: list[Mapping[str, Any]],
     expected_document: Mapping[str, Any],
 ) -> None:
-    assert manifest["schema_version"] == "rickgent-native-policy-corpus/v1"
+    assert manifest["schema_version"] == "rickgent-native-policy-corpus/v2"
     assert manifest["complete"] is True
     assert manifest["expected_verdict_matrix"]["cartesian_complete"] is True
 

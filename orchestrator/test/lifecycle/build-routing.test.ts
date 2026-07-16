@@ -69,7 +69,7 @@ interface Dirs {
 }
 
 function setupDirs(): Dirs {
-  const root = mkdtempSync(join(tmpdir(), "rickgent-route-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "rickgent-route-")));
   const repo = join(root, "repo");
   initGitRepo(repo);
   const dataDir = join(root, "data");

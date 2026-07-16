@@ -51,7 +51,7 @@ describe("fixture mutation capture is explicitly nonterminal", () => {
   let data: string;
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), "rickgent-capture-test-"));
+    root = realpathSync(mkdtempSync(join(tmpdir(), "rickgent-capture-test-")));
     repo = join(root, "repo");
     state = join(root, "state");
     data = join(root, "data");

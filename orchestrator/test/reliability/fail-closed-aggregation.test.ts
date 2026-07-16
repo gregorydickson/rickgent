@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "fs";
@@ -47,7 +48,7 @@ function git(repo: string, args: string[]): string {
 }
 
 function setupDirs(): Dirs {
-  const root = mkdtempSync(join(tmpdir(), "rickgent-fail-closed-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "rickgent-fail-closed-")));
   const repo = join(root, "repo");
   const dataDir = join(root, "data");
   const rickgentDir = join(root, ".rickgent");

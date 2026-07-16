@@ -211,13 +211,13 @@ const TS_INCIDENT_CLASSES = [
   // ── Scope (src/core/scope.ts) ──
   {
     id: "scope-traversal",
-    testFile: "test/core/scope.test.ts",
-    testCase: "denies path traversal attempts",
+    testFile: "test/core/scope-resolved.test.ts",
+    testCase: "denies traversal even when it normalizes into declared scope",
     sourceFile: "src/core/scope.ts",
-    guardMarker: 'if (part === "..") {',
+    guardMarker: 'if (components.some((part) => part === "" || part === "." || part === "..")) {',
     mutate: (s) => s.replace(
-      'if (part === "..") {',
-      'if (false && part === "..") { /* mutation: traversal guard removed */'
+      'if (components.some((part) => part === "" || part === "." || part === "..")) {',
+      'if (false && components.some((part) => part === "" || part === "." || part === "..")) { /* mutation: traversal guard removed */'
     ),
   },
   {
@@ -361,13 +361,13 @@ const PY_INCIDENT_CLASSES = [
   },
   {
     id: "drill-shim-exception",
-    testFile: "test/test_drills.py",
-    testCase: "test_exception_produces_deny",
-    sourceFile: "rickgent_policies/__init__.py",
-    guardMarker: 'f"scope fence: policy shim error: {e}"',
+    testFile: "test/test_native_scope_corpus.py",
+    testCase: "test_scope_fence_fails_closed_on_unexpected_exception",
+    sourceFile: "rickgent_policies/scope.py",
+    guardMarker: 'reason": f"{SCOPE_DENIAL_CODE}: scope policy failed safely"',
     mutate: (s) => s.replace(
-      /except Exception as e:\s*\n\s*return \{\s*\n\s*"result": "DENY",\s*\n\s*"reason": f"scope fence: policy shim error: \{e\}",\s*\n\s*"code": "POLICY_SHIM_ERROR",\s*\n\s*\}/,
-      'except Exception as e:\n            raise  # mutation: shim exception guard removed'
+      'reason": f"{SCOPE_DENIAL_CODE}: scope policy failed safely"',
+      'reason": "mutation: scope policy exception allowed"'
     ),
   },
 ];

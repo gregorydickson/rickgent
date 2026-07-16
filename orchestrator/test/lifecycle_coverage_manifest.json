@@ -154,8 +154,8 @@
     },
     {
       "id": "scope-traversal",
-      "test": "test/core/scope.test.ts",
-      "testCase": "denies path traversal attempts",
+      "test": "test/core/scope-resolved.test.ts",
+      "testCase": "denies traversal even when it normalizes into declared scope",
       "source": "src/core/scope.ts",
       "fileExists": true,
       "testCaseExists": true,
@@ -284,9 +284,9 @@
     },
     {
       "id": "drill-shim-exception",
-      "test": "test/test_drills.py",
-      "testCase": "test_exception_produces_deny",
-      "source": "rickgent_policies/__init__.py",
+      "test": "test/test_native_scope_corpus.py",
+      "testCase": "test_scope_fence_fails_closed_on_unexpected_exception",
+      "source": "rickgent_policies/scope.py",
       "fileExists": true,
       "testCaseExists": true,
       "guardExists": true,

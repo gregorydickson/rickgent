@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawnSync, execFileSync } from "child_process";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from "fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, readFileSync, writeFileSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -60,7 +60,7 @@ interface Dirs {
 }
 
 function setupDirs(): Dirs {
-  const root = mkdtempSync(join(tmpdir(), "rickgent-build-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "rickgent-build-")));
   const repo = join(root, "repo");
   initGitRepo(repo);
   const dataDir = join(root, "data");

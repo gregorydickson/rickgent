@@ -1,5 +1,21 @@
 {
-  "schema_version": "rickgent-native-policy-verdicts/v1",
+  "schema_version": "rickgent-native-policy-verdicts/v2",
+  "scope_contract": {
+    "schema_version": "rickgent-canonical-scope-corpus/v1",
+    "manifest_case_count": 38,
+    "required_observations": ["result", "change_kind"],
+    "native_expectations": [
+      {"event_id":"scope_valid_read_call","handler_result":"ALLOW","native_result":"ALLOW","reason_code":null,"tool_executed":true},
+      {"event_id":"scope_unrelated_read_call","handler_result":"ABSTAIN","native_result":"ALLOW","reason_code":null,"tool_executed":true},
+      {"event_id":"scope_create_write_call","handler_result":"ALLOW","native_result":"ALLOW","reason_code":null,"tool_executed":true},
+      {"event_id":"scope_modify_write_call","handler_result":"ALLOW","native_result":"ALLOW","reason_code":null,"tool_executed":true},
+      {"event_id":"scope_valid_edit_call","handler_result":"ALLOW","native_result":"ALLOW","reason_code":null,"tool_executed":true},
+      {"event_id":"scope_absolute_write_call","handler_result":"DENY","native_result":"DENY","reason_code":"RICKGENT_SCOPE_DENIED","tool_executed":false},
+      {"event_id":"scope_raw_shell_readonly","handler_result":"DENY","native_result":"DENY","reason_code":"RICKGENT_POLICY_EVENT_MALFORMED","tool_executed":false},
+      {"event_id":"scope_raw_shell_mutating","handler_result":"DENY","native_result":"DENY","reason_code":"RICKGENT_POLICY_EVENT_MALFORMED","tool_executed":false},
+      {"event_id":"scope_unknown_tool","handler_result":"DENY","native_result":"DENY","reason_code":"RICKGENT_POLICY_EVENT_MALFORMED","tool_executed":false}
+    ]
+  },
   "canonical_authority": {
     "dispatch_id": "dispatch-001",
     "run_id": "run-001",
@@ -99,6 +115,15 @@
     {"policy_id":"canonical-native-adapter","event_id":"identity_profile_unavailable","adapter_result":"deny","native_result":"DENY","reason_code":"RICKGENT_IDENTITY_PROFILE_UNAVAILABLE","denial_kind":"identity_profile_unavailable","canonical_snapshot":null,"tool_executed":false},
     {"policy_id":"canonical-native-adapter","event_id":"context_path_binding_conflict","adapter_result":"deny","native_result":"DENY","reason_code":"RICKGENT_CONTEXT_INTEGRITY_FAILED","denial_kind":"authentication_failed","canonical_snapshot":null,"tool_executed":false},
     {"policy_id":"canonical-native-adapter","event_id":"lease_path_binding_conflict","adapter_result":"deny","native_result":"DENY","reason_code":"RICKGENT_CONTEXT_INTEGRITY_FAILED","denial_kind":"authentication_failed","canonical_snapshot":null,"tool_executed":false},
-    {"policy_id":"canonical-native-adapter","event_id":"receipt_path_binding_conflict","adapter_result":"deny","native_result":"DENY","reason_code":"RICKGENT_CONTEXT_INTEGRITY_FAILED","denial_kind":"authentication_failed","canonical_snapshot":null,"tool_executed":false}
+    {"policy_id":"canonical-native-adapter","event_id":"receipt_path_binding_conflict","adapter_result":"deny","native_result":"DENY","reason_code":"RICKGENT_CONTEXT_INTEGRITY_FAILED","denial_kind":"authentication_failed","canonical_snapshot":null,"tool_executed":false},
+    {"policy_id":"canonical-native-adapter","event_id":"scope_valid_read_call","adapter_result":"canonical","native_result":"ALLOW","reason_code":null,"denial_kind":null,"canonical_snapshot":{"native_phase":"tool_call","tool":"sys_os_read","action":"read","arguments":{"path":"owned/input.txt"},"source_endpoint":"owned/input.txt","destination_endpoint":null},"tool_executed":true},
+    {"policy_id":"canonical-native-adapter","event_id":"scope_unrelated_read_call","adapter_result":"canonical","native_result":"ALLOW","reason_code":null,"denial_kind":null,"canonical_snapshot":{"native_phase":"tool_call","tool":"sys_os_read","action":"read","arguments":{"path":"other/input.txt"},"source_endpoint":"other/input.txt","destination_endpoint":null},"tool_executed":true},
+    {"policy_id":"canonical-native-adapter","event_id":"scope_create_write_call","adapter_result":"canonical","native_result":"ALLOW","reason_code":null,"denial_kind":null,"canonical_snapshot":{"native_phase":"tool_call","tool":"sys_os_write","action":"write","arguments":{"path":"owned/new.txt","content":"new"},"source_endpoint":"owned/new.txt","destination_endpoint":null},"tool_executed":true},
+    {"policy_id":"canonical-native-adapter","event_id":"scope_modify_write_call","adapter_result":"canonical","native_result":"ALLOW","reason_code":null,"denial_kind":null,"canonical_snapshot":{"native_phase":"tool_call","tool":"sys_os_write","action":"write","arguments":{"path":"owned/existing.txt","content":"changed"},"source_endpoint":"owned/existing.txt","destination_endpoint":null},"tool_executed":true},
+    {"policy_id":"canonical-native-adapter","event_id":"scope_valid_edit_call","adapter_result":"canonical","native_result":"ALLOW","reason_code":null,"denial_kind":null,"canonical_snapshot":{"native_phase":"tool_call","tool":"sys_os_edit","action":"edit","arguments":{"path":"owned/existing.txt","edits":[{"old":"old","new":"new"}]},"source_endpoint":"owned/existing.txt","destination_endpoint":null},"tool_executed":true},
+    {"policy_id":"canonical-native-adapter","event_id":"scope_absolute_write_call","adapter_result":"canonical","native_result":"ALLOW","reason_code":null,"denial_kind":null,"canonical_snapshot":{"native_phase":"tool_call","tool":"sys_os_write","action":"write","arguments":{"path":"/tmp/escape.txt","content":"bad"},"source_endpoint":"/tmp/escape.txt","destination_endpoint":null},"tool_executed":true},
+    {"policy_id":"canonical-native-adapter","event_id":"scope_raw_shell_readonly","adapter_result":"deny","native_result":"DENY","reason_code":"RICKGENT_POLICY_EVENT_MALFORMED","denial_kind":"tool_unknown","canonical_snapshot":null,"tool_executed":false},
+    {"policy_id":"canonical-native-adapter","event_id":"scope_raw_shell_mutating","adapter_result":"deny","native_result":"DENY","reason_code":"RICKGENT_POLICY_EVENT_MALFORMED","denial_kind":"tool_unknown","canonical_snapshot":null,"tool_executed":false},
+    {"policy_id":"canonical-native-adapter","event_id":"scope_unknown_tool","adapter_result":"deny","native_result":"DENY","reason_code":"RICKGENT_POLICY_EVENT_MALFORMED","denial_kind":"tool_unknown","canonical_snapshot":null,"tool_executed":false}
   ]
 }

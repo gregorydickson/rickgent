@@ -1,5 +1,5 @@
 {
-  "schema_version": "rickgent-native-policy-corpus/v1",
+  "schema_version": "rickgent-native-policy-corpus/v2",
   "complete": true,
   "events": [
     "valid_request",
@@ -61,7 +61,16 @@
     "identity_profile_unavailable",
     "context_path_binding_conflict",
     "lease_path_binding_conflict",
-    "receipt_path_binding_conflict"
+    "receipt_path_binding_conflict",
+    "scope_valid_read_call",
+    "scope_unrelated_read_call",
+    "scope_create_write_call",
+    "scope_modify_write_call",
+    "scope_valid_edit_call",
+    "scope_absolute_write_call",
+    "scope_raw_shell_readonly",
+    "scope_raw_shell_mutating",
+    "scope_unknown_tool"
   ],
   "policies": [
     "canonical-native-adapter"
@@ -120,8 +129,341 @@
     "requested-identity",
     "immutable-canonical-event",
     "denial-prevents-execution",
-    "agent-authority-injection-ignored"
+    "agent-authority-injection-ignored",
+    "canonical-root-containment",
+    "declared-path-realpath-containment",
+    "operation-endpoint-realpath-containment",
+    "reserved-root-exclusion",
+    "change-kind-parity",
+    "raw-shell-and-unknown-tool-denial"
   ],
+  "scope_contract": {
+    "schema_version": "rickgent-canonical-scope-corpus/v1",
+    "path_semantics": "portable-root-relative-nearest-existing-parent",
+    "native_event_ids": [
+      "scope_valid_read_call",
+      "scope_unrelated_read_call",
+      "scope_create_write_call",
+      "scope_modify_write_call",
+      "scope_valid_edit_call",
+      "scope_absolute_write_call",
+      "scope_raw_shell_readonly",
+      "scope_raw_shell_mutating",
+      "scope_unknown_tool"
+    ],
+    "cases": [
+      {
+        "id": "scope-read-in-file",
+        "setup": {"dirs":["owned"],"files":["owned/input.txt"]},
+        "declared_scope": [{"path":"owned/input.txt","change_kind":"modify","directory":false}],
+        "operation": {"kind":"read","path":"owned/input.txt","directory":false},
+        "expected_result": "ALLOW",
+        "expected_change_kind": null
+      },
+      {
+        "id": "scope-read-unrelated-abstains",
+        "setup": {"dirs":["owned","other"],"files":["owned/file.txt","other/input.txt"]},
+        "declared_scope": [{"path":"owned","change_kind":"modify","directory":true}],
+        "operation": {"kind":"read","path":"other/input.txt","directory":false},
+        "expected_result": "ABSTAIN",
+        "expected_change_kind": null
+      },
+      {
+        "id": "scope-create-in-directory",
+        "setup": {"dirs":["owned"]},
+        "declared_scope": [{"path":"owned","change_kind":"create","directory":true}],
+        "operation": {"kind":"create","path":"owned/new.txt","directory":false},
+        "expected_result": "ALLOW",
+        "expected_change_kind": "create"
+      },
+      {
+        "id": "scope-modify-in-directory",
+        "setup": {"dirs":["owned"],"files":["owned/existing.txt"]},
+        "declared_scope": [{"path":"owned","change_kind":"modify","directory":true}],
+        "operation": {"kind":"modify","path":"owned/existing.txt","directory":false},
+        "expected_result": "ALLOW",
+        "expected_change_kind": "modify"
+      },
+      {
+        "id": "scope-delete-exact-file",
+        "setup": {"dirs":["owned"],"files":["owned/delete.txt"]},
+        "declared_scope": [{"path":"owned/delete.txt","change_kind":"delete","directory":false}],
+        "operation": {"kind":"delete","path":"owned/delete.txt","directory":false},
+        "expected_result": "ALLOW",
+        "expected_change_kind": "delete"
+      },
+      {
+        "id": "scope-rename-both-in",
+        "setup": {"dirs":["owned"],"files":["owned/old.txt"]},
+        "declared_scope": [{"path":"owned/new.txt","from_path":"owned/old.txt","change_kind":"rename","directory":false}],
+        "operation": {"kind":"rename","source_path":"owned/old.txt","destination_path":"owned/new.txt","directory":false},
+        "expected_result": "ALLOW",
+        "expected_change_kind": "rename"
+      },
+      {
+        "id": "scope-link-both-contained",
+        "setup": {"dirs":["owned"],"files":["owned/source.txt"]},
+        "declared_scope": [{"path":"owned/new-link.txt","change_kind":"create","directory":false}],
+        "operation": {"kind":"link","source_path":"owned/source.txt","destination_path":"owned/new-link.txt","directory":false},
+        "expected_result": "ALLOW",
+        "expected_change_kind": "create"
+      },
+      {
+        "id": "scope-create-wrong-kind",
+        "setup": {"dirs":["owned"]},
+        "declared_scope": [{"path":"owned","change_kind":"modify","directory":true}],
+        "operation": {"kind":"create","path":"owned/new.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": "create"
+      },
+      {
+        "id": "scope-modify-wrong-kind",
+        "setup": {"dirs":["owned"],"files":["owned/file.txt"]},
+        "declared_scope": [{"path":"owned","change_kind":"create","directory":true}],
+        "operation": {"kind":"modify","path":"owned/file.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": "modify"
+      },
+      {
+        "id": "scope-delete-wrong-kind",
+        "setup": {"dirs":["owned"],"files":["owned/file.txt"]},
+        "declared_scope": [{"path":"owned","change_kind":"modify","directory":true}],
+        "operation": {"kind":"delete","path":"owned/file.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": "delete"
+      },
+      {
+        "id": "scope-rename-wrong-source",
+        "setup": {"dirs":["owned"],"files":["owned/old.txt"]},
+        "declared_scope": [{"path":"owned/new.txt","from_path":"owned/different.txt","change_kind":"rename","directory":false}],
+        "operation": {"kind":"rename","source_path":"owned/old.txt","destination_path":"owned/new.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": "rename"
+      },
+      {
+        "id": "scope-absolute-target",
+        "setup": {"dirs":["owned"]},
+        "declared_scope": [{"path":"owned","change_kind":"create","directory":true}],
+        "operation": {"kind":"create","path":"/tmp/escape.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": "create"
+      },
+      {
+        "id": "scope-windows-absolute-target",
+        "setup": {"dirs":["owned"]},
+        "declared_scope": [{"path":"owned","change_kind":"create","directory":true}],
+        "operation": {"kind":"create","path":"C:\\escape.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": "create"
+      },
+      {
+        "id": "scope-traversal-target",
+        "setup": {"dirs":["owned"]},
+        "declared_scope": [{"path":"owned","change_kind":"create","directory":true}],
+        "operation": {"kind":"create","path":"owned/../escape.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": "create"
+      },
+      {
+        "id": "scope-absolute-declaration",
+        "setup": {"dirs":["owned"]},
+        "declared_scope": [{"path":"/tmp","change_kind":"create","directory":true}],
+        "operation": {"kind":"create","path":"owned/new.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": null
+      },
+      {
+        "id": "scope-traversal-declaration",
+        "setup": {"dirs":["owned"]},
+        "declared_scope": [{"path":"owned/../escape","change_kind":"create","directory":true}],
+        "operation": {"kind":"create","path":"owned/new.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": null
+      },
+      {
+        "id": "scope-authorized-root-outside-worktree",
+        "authorized_root": "$OUTSIDE",
+        "setup": {"dirs":["owned"]},
+        "declared_scope": [{"path":"owned","change_kind":"create","directory":true}],
+        "operation": {"kind":"create","path":"owned/new.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": null
+      },
+      {
+        "id": "scope-authorized-root-noncanonical-symlink",
+        "authorized_root": "$WORKTREE_LINK",
+        "setup": {"dirs":["owned"]},
+        "declared_scope": [{"path":"owned","change_kind":"create","directory":true}],
+        "operation": {"kind":"create","path":"owned/new.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": null
+      },
+      {
+        "id": "scope-authorized-subroot-contained",
+        "authorized_root": "$WORKTREE/subroot",
+        "setup": {"dirs":["subroot/owned"]},
+        "declared_scope": [{"path":"owned","change_kind":"create","directory":true}],
+        "operation": {"kind":"create","path":"owned/new.txt","directory":false},
+        "expected_result": "ALLOW",
+        "expected_change_kind": "create"
+      },
+      {
+        "id": "scope-declared-symlink-escape",
+        "setup": {"dirs":["owned"],"symlinks":[{"link":"owned/escape","target":"$OUTSIDE"}]},
+        "declared_scope": [{"path":"owned/escape","change_kind":"modify","directory":true}],
+        "operation": {"kind":"modify","path":"owned/escape/secret.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": null
+      },
+      {
+        "id": "scope-target-symlink-escape",
+        "setup": {"dirs":["owned"],"files":["$OUTSIDE/secret.txt"],"symlinks":[{"link":"owned/escape","target":"$OUTSIDE"}]},
+        "declared_scope": [{"path":"owned","change_kind":"modify","directory":true}],
+        "operation": {"kind":"modify","path":"owned/escape/secret.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": "modify"
+      },
+      {
+        "id": "scope-target-symlink-safe",
+        "setup": {"dirs":["owned/real"],"files":["owned/real/file.txt"],"symlinks":[{"link":"owned/link","target":"real"}]},
+        "declared_scope": [{"path":"owned","change_kind":"modify","directory":true}],
+        "operation": {"kind":"modify","path":"owned/link/file.txt","directory":false},
+        "expected_result": "ALLOW",
+        "expected_change_kind": "modify"
+      },
+      {
+        "id": "scope-missing-child-under-escaping-symlink",
+        "setup": {"dirs":["owned"],"symlinks":[{"link":"owned/escape","target":"$OUTSIDE"}]},
+        "declared_scope": [{"path":"owned","change_kind":"create","directory":true}],
+        "operation": {"kind":"create","path":"owned/escape/new.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": "create"
+      },
+      {
+        "id": "scope-missing-child-under-safe-symlink",
+        "setup": {"dirs":["owned/real"],"symlinks":[{"link":"owned/link","target":"real"}]},
+        "declared_scope": [{"path":"owned","change_kind":"create","directory":true}],
+        "operation": {"kind":"create","path":"owned/link/new.txt","directory":false},
+        "expected_result": "ALLOW",
+        "expected_change_kind": "create"
+      },
+      {
+        "id": "scope-broken-target-symlink",
+        "setup": {"dirs":["owned"],"symlinks":[{"link":"owned/broken","target":"missing-target"}]},
+        "declared_scope": [{"path":"owned","change_kind":"create","directory":true}],
+        "operation": {"kind":"create","path":"owned/broken/new.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": "create"
+      },
+      {
+        "id": "scope-file-declaration-not-prefix",
+        "setup": {"dirs":["owned/file"],"files":["owned/file/child.txt"]},
+        "declared_scope": [{"path":"owned/file","change_kind":"modify","directory":false}],
+        "operation": {"kind":"modify","path":"owned/file/child.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": "modify"
+      },
+      {
+        "id": "scope-directory-declaration-is-prefix",
+        "setup": {"dirs":["owned/sub"],"files":["owned/sub/file.txt"]},
+        "declared_scope": [{"path":"owned","change_kind":"modify","directory":true}],
+        "operation": {"kind":"modify","path":"owned/sub/file.txt","directory":false},
+        "expected_result": "ALLOW",
+        "expected_change_kind": "modify"
+      },
+      {
+        "id": "scope-rename-destination-escape",
+        "setup": {"dirs":["owned"],"files":["owned/old.txt"],"symlinks":[{"link":"owned/escape","target":"$OUTSIDE"}]},
+        "declared_scope": [{"path":"owned","from_path":"owned","change_kind":"rename","directory":true}],
+        "operation": {"kind":"rename","source_path":"owned/old.txt","destination_path":"owned/escape/new.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": "rename"
+      },
+      {
+        "id": "scope-rename-source-escape",
+        "setup": {"dirs":["owned"],"files":["$OUTSIDE/old.txt"],"symlinks":[{"link":"owned/escape","target":"$OUTSIDE"}]},
+        "declared_scope": [{"path":"owned/new.txt","from_path":"owned/escape/old.txt","change_kind":"rename","directory":false}],
+        "operation": {"kind":"rename","source_path":"owned/escape/old.txt","destination_path":"owned/new.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": null
+      },
+      {
+        "id": "scope-link-source-escape",
+        "setup": {"dirs":["owned"],"files":["$OUTSIDE/source.txt"],"symlinks":[{"link":"owned/external","target":"$OUTSIDE"}]},
+        "declared_scope": [{"path":"owned/new.txt","change_kind":"create","directory":false}],
+        "operation": {"kind":"link","source_path":"owned/external/source.txt","destination_path":"owned/new.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": "create"
+      },
+      {
+        "id": "scope-link-destination-escape",
+        "setup": {"dirs":["owned"],"files":["owned/source.txt"],"symlinks":[{"link":"owned/external","target":"$OUTSIDE"}]},
+        "declared_scope": [{"path":"owned","change_kind":"create","directory":true}],
+        "operation": {"kind":"link","source_path":"owned/source.txt","destination_path":"owned/external/new.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": "create"
+      },
+      {
+        "id": "scope-git-declaration-denied",
+        "setup": {"dirs":[".git"]},
+        "declared_scope": [{"path":".git","change_kind":"modify","directory":true}],
+        "operation": {"kind":"modify","path":".git/config","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": null
+      },
+      {
+        "id": "scope-git-endpoint-denied",
+        "setup": {"dirs":[".git","owned"],"files":[".git/config"]},
+        "declared_scope": [{"path":"owned","change_kind":"modify","directory":true}],
+        "operation": {"kind":"modify","path":".git/config","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": "modify"
+      },
+      {
+        "id": "scope-state-root-declaration-denied",
+        "reserved_roots": ["$WORKTREE/protected/state","$POLICY","$BUNDLE"],
+        "setup": {"dirs":["protected/state"],"files":["protected/state/data.txt"]},
+        "declared_scope": [{"path":"protected","change_kind":"modify","directory":true}],
+        "operation": {"kind":"modify","path":"protected/state/data.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": null
+      },
+      {
+        "id": "scope-policy-root-declaration-denied",
+        "reserved_roots": ["$STATE","$WORKTREE/protected/policy","$BUNDLE"],
+        "setup": {"dirs":["protected/policy"],"files":["protected/policy/context.json"]},
+        "declared_scope": [{"path":"protected/policy/context.json","change_kind":"modify","directory":false}],
+        "operation": {"kind":"modify","path":"protected/policy/context.json","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": null
+      },
+      {
+        "id": "scope-bundle-root-declaration-denied",
+        "reserved_roots": ["$STATE","$POLICY","$WORKTREE/protected/bundle"],
+        "setup": {"dirs":["protected/bundle"],"files":["protected/bundle/config.yaml"]},
+        "declared_scope": [{"path":"protected/bundle","change_kind":"modify","directory":true}],
+        "operation": {"kind":"modify","path":"protected/bundle/config.yaml","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": null
+      },
+      {
+        "id": "scope-empty-declaration-denied",
+        "setup": {"dirs":["owned"]},
+        "declared_scope": [{"path":"","change_kind":"create","directory":true}],
+        "operation": {"kind":"create","path":"owned/new.txt","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": null
+      },
+      {
+        "id": "scope-empty-operation-endpoint-denied",
+        "setup": {"dirs":["owned"]},
+        "declared_scope": [{"path":"owned","change_kind":"create","directory":true}],
+        "operation": {"kind":"create","path":"","directory":false},
+        "expected_result": "DENY",
+        "expected_change_kind": "create"
+      }
+    ]
+  },
   "expected_verdict_matrix": {
     "rows": "policies",
     "columns": "events",

@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync } from "child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -18,9 +18,42 @@ import {
   provisionRunWorkspace,
   type ReadyRunWorkspace,
 } from "../../src/git/run-workspace.js";
+import { sealTicketContracts } from "../../src/contracts/ticket-contract.js";
 
 const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
 const AGENT_ROOT = join(import.meta.dirname, "../../../agents/rickgent");
+const TICKET = sealTicketContracts([{
+  schema_version: "1.0.0",
+  id: "t01",
+  title: "Fixture mutation",
+  description: "Create one fixture file.",
+  depends_on: [],
+  scope: [{ path: "src/feature.ts", change_kind: "create", directory: false }],
+  interfaces: [],
+  acceptance_criteria: [{
+    id: "AC-FIXTURE",
+    description: "The fixture file exists.",
+    interface_ids: [],
+    verification_ids: ["VER-FIXTURE"],
+  }],
+  verifications: [{
+    id: "VER-FIXTURE",
+    executable: "test",
+    args: ["-f", "src/feature.ts"],
+    cwd_class: "repository_root",
+    env_allowlist: ["PATH"],
+    timeout_ms: 30_000,
+    network: "deny",
+    writable_outputs: [],
+    expected_exit_codes: [0],
+  }],
+  budgets: {
+    max_attempts: 1,
+    max_review_cycles: 1,
+    wall_clock_ms: 60_000,
+    remediation_limit: 1,
+  },
+}])[0]!;
 
 function git(repo: string, args: string[]): string {
   return execFileSync("git", ["-C", repo, ...args], { encoding: "utf-8" }).trim();
@@ -56,7 +89,7 @@ describe("M1 capture-only dispatch evidence", () => {
   };
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), "rickgent-dispatch-evidence-"));
+    root = realpathSync(mkdtempSync(join(tmpdir(), "rickgent-dispatch-evidence-")));
     repo = join(root, "repo");
     initRepo(repo);
     const provisioned = provisionRunWorkspace({ targetRepo: repo, runId: id.runId });
@@ -66,7 +99,7 @@ describe("M1 capture-only dispatch evidence", () => {
     dispatcher = new Dispatcher(
       new DispatchLedger(ledgerPath),
       new TicketLock(join(root, "locks")),
-      root,
+      join(root, "state"),
     );
   });
 
@@ -82,6 +115,8 @@ describe("M1 capture-only dispatch evidence", () => {
       timeout: 20_000,
       maxConcurrent: 1,
       workspace,
+      ticket: TICKET,
+      selection: { harness: "codex", model: "fixture", vendor: "openai" },
       materializationRoot: join(root, "materialized"),
       dataDir: join(root, "data"),
       declaredPaths: ["src/feature.ts"],
@@ -101,7 +136,7 @@ describe("M1 capture-only dispatch evidence", () => {
   it("emits db observation then implementation_captured, never completed", async () => {
     const callerHead = git(repo, ["rev-parse", "HEAD"]);
     const entry = await dispatch();
-    expect(entry.state).toBe("implementation_captured");
+    expect(entry.state, entry.stderr ?? undefined).toBe("implementation_captured");
     expect(entry.captureReceipt).toMatchObject({ kind: "implementation_captured_nonterminal" });
     expect(states(ledgerPath)).toEqual(["spawned", "db_session_observed", "implementation_captured"]);
     expect(states(ledgerPath)).not.toContain("completed");
@@ -123,7 +158,7 @@ describe("M1 capture-only dispatch evidence", () => {
     const isolated = new Dispatcher(
       isolatedLedger,
       new TicketLock(join(root, "isolated-locks")),
-      root,
+      join(root, "isolated-state"),
     );
     await expect(isolated.dispatch(id, {
       agentDir: AGENT_ROOT,

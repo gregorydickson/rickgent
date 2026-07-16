@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawnSync, execFileSync } from "child_process";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from "fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, readFileSync, writeFileSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -87,7 +87,7 @@ interface Dirs {
 }
 
 function setupDirs(): Dirs {
-  const root = mkdtempSync(join(tmpdir(), "rickgent-e2e-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "rickgent-e2e-")));
   const repo = join(root, "repo");
   initGitRepo(repo);
   const dataDir = join(root, "data");
@@ -230,14 +230,14 @@ describe("M6 E2E — full gated pipeline (VAL-E2E-001..004)", () => {
     // Use a fresh .rickgent dir + data dir for run 2 (no ledger/registry residue).
     const rickgentDir2 = join(d.root, ".rickgent-2");
     const dataDir2 = join(d.root, "data-2");
-    mkdirSync(rickgentDir2, { recursive: true });
+    mkdirSync(rickgentDir2, { recursive: true, mode: 0o700 });
     mkdirSync(dataDir2, { recursive: true });
     const ghLog2 = join(d.root, "gh-2.log");
     const d2: Dirs = { ...d, rickgentDir: rickgentDir2, dataDir: dataDir2, ghLog: ghLog2 };
 
     // ── Run 2 ──────────────────────────────────────────────────────────
     const out2 = runCli(["build", PRD_MIN, "--repo", d.repo, "--agent", AGENT_DIR], d2);
-    expect(out2.status).toBe(5);
+    expect(out2.status, `${out2.stdout}\n${out2.stderr}`).toBe(5);
     const s2 = summary(out2.stdout);
     expect(Number(s2.interventions)).toBe(0);
     expect(s2.outcome).toBe("failed");

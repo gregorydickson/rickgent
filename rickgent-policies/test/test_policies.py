@@ -3,91 +3,11 @@
 import json
 import pytest
 from rickgent_policies import (
-    scope_fence,
     completion_evidence,
     cross_vendor_review,
     autonomous_pr_flow,
     convergence_gate,
 )
-
-
-class TestScopeFence:
-    def test_allows_write_in_scope(self):
-        event = {"tool_name": "Write", "path": "src/auth/login.py"}
-        config = {"ticket_id": "T1", "declared_paths": ["src/auth/"]}
-        result = scope_fence(event, config)
-        assert result["result"] == "ALLOW"
-
-    def test_denies_write_outside_scope(self):
-        event = {"tool_name": "Write", "path": "src/billing/invoice.py"}
-        config = {"ticket_id": "T1", "declared_paths": ["src/auth/"]}
-        result = scope_fence(event, config)
-        assert result["result"] == "DENY"
-
-    def test_denies_path_traversal(self):
-        event = {"tool_name": "Write", "path": "src/auth/../billing/invoice.py"}
-        config = {"ticket_id": "T1", "declared_paths": ["src/auth/"]}
-        result = scope_fence(event, config)
-        assert result["result"] == "DENY"
-
-    def test_allows_non_write(self):
-        event = {"tool_name": "Read", "path": "src/billing/invoice.py"}
-        config = {"ticket_id": "T1", "declared_paths": ["src/auth/"]}
-        result = scope_fence(event, config)
-        assert result["result"] == "ALLOW"
-
-    def test_denies_missing_ticket_id(self):
-        event = {"tool_name": "Write", "path": "src/auth/login.py"}
-        config = {}
-        result = scope_fence(event, config)
-        assert result["result"] == "DENY"
-
-    def test_denies_unresolvable_target(self):
-        event = {"tool_name": "Write", "path": ""}
-        config = {"ticket_id": "T1", "declared_paths": ["src/auth/"]}
-        result = scope_fence(event, config)
-        assert result["result"] == "DENY"
-
-    def test_fails_closed_on_exception(self):
-        event = None  # will cause AttributeError
-        config = {"ticket_id": "T1", "declared_paths": ["src/auth/"]}
-        result = scope_fence(event, config)
-        assert result["result"] == "DENY"
-        assert result["code"] == "POLICY_SHIM_ERROR"
-
-    # C4: expanded shell-write detection. Shell write commands are now
-    # detected and proceed to the path check; without a path field on the
-    # event they DENY as unresolvable (previously they ALLOWed by falling
-    # through the narrow substring list).
-    def test_detects_sed_inplace_write(self):
-        event = {"tool_name": "Bash", "arguments": {"command": "sed -i 's/foo/bar/' file.py"}}
-        config = {"ticket_id": "T1", "declared_paths": ["src/auth/"]}
-        result = scope_fence(event, config)
-        assert result["result"] == "DENY"
-
-    def test_detects_touch_write(self):
-        event = {"tool_name": "Bash", "arguments": {"command": "touch new.py"}}
-        config = {"ticket_id": "T1", "declared_paths": ["src/auth/"]}
-        result = scope_fence(event, config)
-        assert result["result"] == "DENY"
-
-    def test_detects_redirect_write(self):
-        event = {"tool_name": "Bash", "arguments": {"command": "echo data > /etc/passwd"}}
-        config = {"ticket_id": "T1", "declared_paths": ["src/auth/"]}
-        result = scope_fence(event, config)
-        assert result["result"] == "DENY"
-
-    def test_detects_append_redirect_write(self):
-        event = {"tool_name": "Bash", "arguments": {"command": "echo data >> /etc/passwd"}}
-        config = {"ticket_id": "T1", "declared_paths": ["src/auth/"]}
-        result = scope_fence(event, config)
-        assert result["result"] == "DENY"
-
-    def test_allows_non_write_shell_command(self):
-        event = {"tool_name": "Bash", "arguments": {"command": "ls -la src/auth/"}}
-        config = {"ticket_id": "T1", "declared_paths": ["src/auth/"]}
-        result = scope_fence(event, config)
-        assert result["result"] == "ALLOW"
 
 
 class TestCrossVendorReview:

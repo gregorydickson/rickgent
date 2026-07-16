@@ -45,7 +45,11 @@ describe("packed capability boundary", () => {
     const packedJson = execFileSync(
       "npm",
       ["pack", "--json", "--pack-destination", root],
-      { cwd: orchestratorRoot, encoding: "utf-8" },
+      {
+        cwd: orchestratorRoot,
+        encoding: "utf-8",
+        env: { ...process.env, npm_config_cache: join(root, ".npm-cache") },
+      },
     );
     const packed = JSON.parse(packedJson) as Array<{ filename: string }>;
     const archive = join(root, packed[0]!.filename);

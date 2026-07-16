@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from "fs";
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, symlinkSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { checkScope, checkScopeResolved } from "../../src/core/scope.js";
@@ -12,7 +12,7 @@ describe("scope fence — symlink / rename resolution (checkScopeResolved)", () 
   let root: string;
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), "rickgent-scope-"));
+    root = realpathSync(mkdtempSync(join(tmpdir(), "rickgent-scope-")));
   });
 
   afterEach(() => {
@@ -130,6 +130,17 @@ describe("scope fence — symlink / rename resolution (checkScopeResolved)", () 
       root,
       declaredPaths: ["declared"],
       targetPath: "declared/../outside/invoice.py",
+      isWrite: true,
+    });
+    expect(verdict.result).toBe("DENY");
+  });
+
+  it("denies traversal even when it normalizes into declared scope", () => {
+    mkdirSync(join(root, "declared"), { recursive: true });
+    const verdict = checkScopeResolved({
+      root,
+      declaredPaths: ["declared"],
+      targetPath: "outside/../declared/new.py",
       isWrite: true,
     });
     expect(verdict.result).toBe("DENY");

@@ -27,6 +27,7 @@ import {
   rmSync,
   writeFileSync,
   readFileSync,
+  realpathSync,
   existsSync,
   chmodSync,
   readdirSync,
@@ -36,6 +37,7 @@ import { join } from "path";
 
 const CLI_JS = join(import.meta.dirname, "../fixtures/fixture-cli.mjs");
 const FIXTURE_BIN = join(import.meta.dirname, "../fixtures/omnigent-fixture");
+const AGENT_ROOT = join(import.meta.dirname, "../../../agents/rickgent");
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -238,16 +240,15 @@ interface Ctx {
 }
 
 function setup(): Ctx {
-  const root = mkdtempSync(join(tmpdir(), "m5-int-"));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "m5-int-")));
   const repo = join(root, "repo");
-  const agentDir = join(root, "agent");
+  const agentDir = AGENT_ROOT;
   const binDir = join(root, "bin");
   const rickgentDir = join(root, "rickgent");
   const dataDir = join(root, "data");
   mkdirSync(repo, { recursive: true });
-  mkdirSync(agentDir, { recursive: true });
   mkdirSync(binDir, { recursive: true });
-  mkdirSync(rickgentDir, { recursive: true });
+  mkdirSync(rickgentDir, { recursive: true, mode: 0o700 });
   mkdirSync(dataDir, { recursive: true });
   const stubPath = join(binDir, "omnigent");
   writeFileSync(stubPath, UNIVERSAL_STUB);
@@ -641,7 +642,7 @@ describe("M5 Integration — all commands work with fixture omnigent (VAL-INTEGR
     writeFileSync(prdPath, VALID_PRD);
     // Delivery flags remain absent; M1 may only capture nonterminal fixture work.
     const r = runFixture(ctx, ["build", prdPath, "--repo", ctx.repo, "--agent", ctx.agentDir]);
-    expect(r.status).toBe(5);
+    expect(r.status, `${r.stdout}\n${r.stderr}`).toBe(5);
     expect(r.stdout).toContain("captured=1 done=0");
     expect(r.stderr).not.toMatch(/omnigent not found|spawn.*fail/i);
     // Build should produce a registry and dispatch ledger

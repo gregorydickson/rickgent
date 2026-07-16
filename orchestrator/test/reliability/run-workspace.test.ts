@@ -19,7 +19,7 @@ import { tmpdir } from "os";
 import { join, relative } from "path";
 import { exitCodeForRunOutcome } from "../../src/cli.js";
 import { finalizeRunWorkspace, provisionRunWorkspace } from "../../src/git/run-workspace.js";
-import { materializeWorkerBundle } from "../../src/dispatch/worker-materialization.js";
+import { validateWorkerTemplate } from "../../src/dispatch/worker-materialization.js";
 import { FIXTURE_BUILD_DEPENDENCIES, runFixtureBuild } from "../helpers/capabilities.js";
 
 const filesystemFaults = vi.hoisted(() => ({
@@ -138,7 +138,7 @@ describe("M1 sequential run workspace", () => {
   let repo: string;
 
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), "rickgent-run-workspace-test-"));
+    root = realpathSync(mkdtempSync(join(tmpdir(), "rickgent-run-workspace-test-")));
     repo = join(root, "repo");
     initRepository(repo);
   });
@@ -648,13 +648,7 @@ describe("M1 sequential run workspace", () => {
       "Commit changes after editing, but do not mutate Git refs or run Git mutation",
     );
     writeFileSync(configPath, config);
-    expect(() => materializeWorkerBundle(agentRoot, join(root, "materialized"), {
-      runId: "run",
-      ticketId: "t01",
-      phase: "implement",
-      attempt: 1,
-      role: "worker",
-    })).toThrow("request Git mutation or a commit");
+    expect(() => validateWorkerTemplate(agentRoot)).toThrow("request Git mutation or a commit");
     expect(readdirSync(root)).not.toContain("materialized");
   });
 
