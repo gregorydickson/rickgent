@@ -861,7 +861,7 @@ function validateLegacyCapabilitiesAndErrors(contract) {
   equal(legacy.post_cutover_authoritative_writer, "SQLite only", "STATE_CONTRACT_LEGACY_INVALID", "post-cutover writer");
 
   const capabilities = array(contract.capability_reservations, "STATE_CONTRACT_CAPABILITY_INVALID", "capability_reservations");
-  const expectedNames = ["durable_sqlite_state", "run_attempt_allocation", "oracle_and_promotion", "caller_cutover_and_resume_retry", "recovery_and_reconciliation", "attempt_resources", "automatic_delivery"];
+  const expectedNames = ["durable_sqlite_state", "run_attempt_allocation", "oracle_and_promotion", "caller_cutover_and_internal_selectors", "public_resume_retry_and_reconciliation", "attempt_resources", "automatic_delivery"];
   equal(capabilities.map((entry) => entry.name), expectedNames, "STATE_CONTRACT_CAPABILITY_INVALID", "capability reservations");
   unique(capabilities.map((entry) => entry.name), "STATE_CONTRACT_CAPABILITY_INVALID", "capability reservations");
   for (const entry of capabilities) {

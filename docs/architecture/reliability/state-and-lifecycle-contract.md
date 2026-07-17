@@ -322,6 +322,8 @@ separate diagnostic view but cannot contribute terminal or delivery truth.
 
 This contract reserves later rows and APIs without pretending they exist.
 t13 implements durable SQLite and migrations, t14 allocation, t15 oracle and
-promotion, t16 caller cutover/resume/retry, and t17 recovery/reconciliation.
+promotion, t16 caller cutover selectors, and t17 the bounded common-transaction
+crash and retry-identity proof. Full recovery/reconciliation remains reserved
+for t29 after the operational lifecycle services exist.
 Attempt resources and automatic delivery remain later work. Until adoption,
 all are disabled and `reserved_contract_only`.

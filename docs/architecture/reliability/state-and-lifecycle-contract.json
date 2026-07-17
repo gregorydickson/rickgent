@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "contract_id": "rickgent-state-and-lifecycle-v1",
   "decision_status": "frozen_decision_only",
-  "decision_digest": "sha256:2f91768577623a1be79d698765a6e41eac5066fcb811ffce2950485515d18a1c",
+  "decision_digest": "sha256:2460b26960e9f35995103febfe8e270bf288489c00ab241c0487380b2ad5c42d",
   "parent_authority": {
     "contract_id": "rickgent-trust-spine-v1",
     "path": "docs/architecture/reliability/trust-spine-contract.json"
@@ -728,8 +728,8 @@
     {"name": "durable_sqlite_state", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "t13"},
     {"name": "run_attempt_allocation", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "t14"},
     {"name": "oracle_and_promotion", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "t15"},
-    {"name": "caller_cutover_and_resume_retry", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "t16"},
-    {"name": "recovery_and_reconciliation", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "t17"},
+    {"name": "caller_cutover_and_internal_selectors", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "t16"},
+    {"name": "public_resume_retry_and_reconciliation", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "t29"},
     {"name": "attempt_resources", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "t18_or_later"},
     {"name": "automatic_delivery", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "post_milestone_3"}
   ],

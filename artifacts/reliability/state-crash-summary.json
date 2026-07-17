@@ -1,0 +1,40 @@
+{
+  "schema_version": "rickgent.state-crash-summary.v2",
+  "corpus_id": "t17-state-crash-v1",
+  "status": "complete",
+  "generated_at": "2026-07-16T00:00:00.000Z",
+  "manifest_digest": "sha256:90d8ca0d7875078970b8c7c6f0bf5207ad3cedc2475c01cf29478aaea1def1ac",
+  "fault_points_digest": "sha256:ed35ba9097263e02fc8c8dbed79d44c7d529d081d1363819686b4d92934b9ab2",
+  "inventory_point_count": 35,
+  "common_wrapper_crash_cases": 2,
+  "direct_retry_crash_cases": 2,
+  "synchronized_retry_races": 1,
+  "proof_scope": "common_sqlite_commit_boundary_and_internal_retry_identity",
+  "deferred_full_recovery_ticket": "t29",
+  "harness_digest": "sha256:c8753cc87cb90905f5dd94406d40ef4caaa85fcfe4fc938114c97ad3eb2dc408",
+  "test_digest": "sha256:4962d4e28bc675d25d216410c74ae1b01002f05ab83822004a39d4455953957d",
+  "assertions": [
+    "inventory_exact",
+    "same_canonical_database_path",
+    "state_readable",
+    "integrity_clean",
+    "old_or_new_committed_state",
+    "immutable_prior_evidence",
+    "expected_sigkill_observed",
+    "precommit_rolls_back",
+    "postcommit_survives_without_return",
+    "new_attempt_before_retry_side_effects",
+    "retry_response_loss_selects_planned_attempt",
+    "one_retry_allocator_wins",
+    "busy_is_not_success",
+    "no_replay",
+    "no_manufactured_terminal",
+    "public_resume_remains_disabled"
+  ],
+  "proof_corpus": [
+    "orchestrator/test/fixtures/crash-matrix/manifest.json",
+    "orchestrator/test/fixtures/crash-matrix/fault-points.json",
+    "orchestrator/test/fixtures/crash-matrix/child.mjs",
+    "orchestrator/test/reliability/state-crash-corpus.test.ts"
+  ]
+}

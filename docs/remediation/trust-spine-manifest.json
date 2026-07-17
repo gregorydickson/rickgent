@@ -680,18 +680,18 @@
     },
     {
       "id": "t17",
-      "title": "Prove structured restart and retry across the full state crash corpus",
-      "description": "Milestone 3 recovery proof. Build a subprocess fault harness that kills before/after every state transaction and retry boundary defined by the corpus. Restart from the same canonical state directory and assert readability, uniqueness, old-or-new state, explicit cleanup-pending work, new attempts on retry, and no replay/manufactured terminal result. This proves internal recovery primitives but does not yet enable public resume.",
+      "title": "Prove the common SQLite crash boundary and retry identity",
+      "description": "Milestone 3 bounded recovery proof. Inventory every current Store transaction, using an exact frozen contract mapping only where one exists and an explicit null for implementation-only operations, and bind it to a stable semantic test ID. Deterministically SIGKILL the shared BEGIN IMMEDIATE wrapper immediately before COMMIT and immediately after COMMIT but before the Store method returns. Restart the same canonical state directory and prove old-or-new visibility, immutable prior evidence, and no manufactured terminal result. Exercise retry allocation directly at both checkpoints and under a synchronized allocator race. Operation-specific side-effect recovery and lifecycle-oracle parity remain gated to t18-t21 and t29; public resume stays unavailable.",
       "acceptance_criteria": [
-        "The corpus covers run creation, contract insert, attempt allocation, lease acquisition, phase start/finish, spawn, commit, every gate, oracle, cleanup, promotion, delivery intent, remote observation, PR observation, and terminal commit on both sides of commit acknowledgement.",
-        "Every fault restarts to exactly one authoritative old-or-new state with an integrity-clean database and immutable prior evidence.",
-        "Retry always creates one new attempt before spawn and cannot overwrite or reuse failed/timed-out terminal dispatch identity.",
-        "Two recovery processes cannot both own or advance the same attempt; busy/infrastructure failures are not counted as caught faults.",
-        "The harness inventory fails when any required fault point or assertion is absent."
+        "A fixed per-ID inventory maps every frozen contract transaction and every current Store transaction operation to its boundary, exact-or-null contract mapping, implementation operation, proof level, stable semantic test ID, and exact deferred recovery ticket; changing or removing any field fails the corpus.",
+        "The shared BEGIN IMMEDIATE wrapper is killed at a synchronous pre-COMMIT checkpoint and a synchronous post-COMMIT/pre-return checkpoint; restart exposes exactly the old or new image in the same integrity-clean canonical database with immutable prior evidence.",
+        "Retry allocation is faulted directly at both checkpoints: pre-COMMIT restart has only the failed prior attempt, while post-COMMIT restart has exactly one new planned attempt and no context, lease, resource, or process receipt.",
+        "Two retry allocators start from one barrier and produce one committed next attempt plus one typed lifecycle loser; BUSY or uncoded infrastructure failure is never counted as success.",
+        "The checked summary is digest-bound to the exact manifest, inventory, child fault injector, and executable test; resume/reconciliation remain publicly unavailable. Full operation-specific and external-side-effect crash parity is owned by t29."
       ],
       "verification": [
         "cd orchestrator && pnpm exec vitest run test/reliability/state-crash-corpus.test.ts --no-file-parallelism",
-        "node -e \"const f=require('fs');const x=JSON.parse(f.readFileSync('orchestrator/test/fixtures/crash-matrix/manifest.json'));if(!x.complete||x.fault_points.length<20||!x.assertions.includes('no_manufactured_terminal'))process.exit(1)\"",
+        "node -e \"const f=require('fs');const x=JSON.parse(f.readFileSync('orchestrator/test/fixtures/crash-matrix/manifest.json'));if(x.schema_version!=='rickgent.state-crash-manifest.v2'||!x.complete||x.proof_scope!=='common_sqlite_commit_boundary_and_internal_retry_identity'||x.fault_points.length!==35||new Set(x.fault_points).size!==35||x.deferred_recovery?.operation_specific_recovery_and_oracle_parity!=='t29'||x.public_capability?.resume_retry!=='unavailable'||!x.assertions.includes('no_manufactured_terminal'))process.exit(1)\"",
         "cd orchestrator && pnpm typecheck",
         "cd orchestrator && pnpm test"
       ],
@@ -699,11 +699,14 @@
         "orchestrator/test/reliability/state-crash-corpus.test.ts",
         "orchestrator/test/fixtures/crash-matrix/manifest.json",
         "orchestrator/test/fixtures/crash-matrix/fault-points.json",
+        "orchestrator/test/fixtures/crash-matrix/child.mjs",
         "artifacts/reliability/state-crash-summary.json"
       ],
       "proof_corpus": [
         "orchestrator/test/fixtures/crash-matrix/manifest.json",
-        "orchestrator/test/fixtures/crash-matrix/fault-points.json"
+        "orchestrator/test/fixtures/crash-matrix/fault-points.json",
+        "orchestrator/test/fixtures/crash-matrix/child.mjs",
+        "orchestrator/test/reliability/state-crash-corpus.test.ts"
       ],
       "priority": "P0",
       "status": "Todo",
@@ -1059,6 +1062,7 @@
       "acceptance_criteria": [
         "`resume --run <id>` resolves the canonical repository state, validates contract/context/oracle versions, resumes cleanup or the next safe phase, and does not require caller CWD state.",
         "Failed/interrupted attempts are never respawned with the same attempt number; completed side effects are idempotently observed from receipts.",
+        "A retry allocation committed before response loss but never activated is recovered as an explicit no-side-effect cleanup image, transitioned to a clean terminal state, and followed by a newly committed higher-numbered attempt before any spawn; recovery never activates the orphaned planned attempt or blindly replays allocation.",
         "Crashes before/after commit, receipt, every gate, oracle, promotion, cleanup, push, and PR observation resume without stale terminal replay or duplicate side effects.",
         "Structured reconciliation uses the shared oracle and transactionally persisted run-attributed receipts; Git subjects and cross-run ticket IDs are ignored.",
         "The public capability registry changes only after the exact activation proof is green and continues to reject incompatible/stale state."

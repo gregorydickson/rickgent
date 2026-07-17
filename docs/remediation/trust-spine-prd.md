@@ -309,13 +309,21 @@ Requested, invoked, and independently observed canonical identity match; missing
 
 Timeout remains cleanup-pending until every descendant is dead, artifacts are bounded/captured, failed work is absent from the delivery ref, and the owner releases its lease.
 
-### AC-INV-08 Transactional restart safety
+### AC-INV-08 Transactional restart safety (composite)
 
 - **Type:** test
 - **Scope:** `orchestrator/src/state`, `orchestrator/test/reliability`
 - **Verify Command:** `cd orchestrator && pnpm exec vitest run test/reliability/state-crash-corpus.test.ts test/reliability/recovery-parity.test.ts`
 
-Run, attempt, phase, lease, receipt, oracle, cleanup, and delivery transitions are unique/durable; crash/restart yields old-or-new state and never replays or manufactures terminal work.
+This criterion is satisfied only when both `AC-INV-08A` and `AC-INV-08B` pass; a ticket contributing evidence to one subcriterion does not independently complete the composite.
+
+#### AC-INV-08A Common transactional durability
+
+The canonical SQLite store has one bounded transaction wrapper; crash at its real pre-COMMIT and post-COMMIT/pre-return checkpoints yields only the old or new image with immutable prior evidence. Retry allocation commits one unique planned identity before any currently represented durable downstream row, and competing allocators produce one typed winner.
+
+#### AC-INV-08B Full lifecycle recovery parity
+
+After the lease, process, Git, cleanup, lifecycle, oracle, and delivery services exist, run, attempt, phase, lease, receipt, oracle, cleanup, and delivery crash images recover without replay, duplicate side effects, or manufactured terminal work.
 
 ### AC-PROGRAM-01 Installed vertical slice
 
@@ -347,9 +355,9 @@ Exit: the complete native policy corpus passes against the `t00` external contra
 
 ### Milestone 3 — Establish execution identity and durable state
 
-Tickets `t12`–`t17` decide/store the full state/resource/promotion model, allocate immutable run/ticket/attempt contexts, enforce transitions, remove split authority, and prove internal restart/retry over the complete crash corpus.
+Tickets `t12`–`t17` decide/store the full state/resource/promotion model, allocate immutable run/ticket/attempt contexts, enforce transitions, remove split authority, and prove the shared SQLite crash boundary plus internal retry identity. Full operation-specific recovery parity remains in `t29`, after resource, process, Git, cleanup, lifecycle, and oracle services exist.
 
-Exit: ordinary builds never reuse runs, retries allocate before spawn, state is canonical-repo keyed, legacy data cannot terminalize, and crash/restart is unique and durable. Public resume remains gated until M5 recovery/oracle parity.
+Exit: ordinary builds never reuse runs, retry allocation commits before any currently represented durable downstream row, state is canonical-repo keyed, legacy data cannot terminalize, and the common commit boundary exposes only the old or new durable image. Ordering against real workspace, process, Git, salvage, and cleanup side effects remains owned by `t18`–`t21` and integrated recovery parity by `t29`; public resume remains gated.
 
 ### Milestone 4 — Isolate Git and supervise process ownership
 
@@ -446,32 +454,32 @@ The exact acceptance criteria and commands are in `refinement_manifest.json`; th
 ### Ticket 12: Decide state schema, promotion, lifecycle, and terminal semantics
 - **Description:** Record the transactional resource model and fast-forward delivery protocol before SQLite callers land.
 - **Declared Paths:** `docs/architecture/reliability/state-and-lifecycle-contract.md`, `orchestrator/src/state/schema.ts`
-- **Acceptance Criteria:** `AC-INV-02`, `AC-INV-08`
+- **Acceptance Criteria:** `AC-INV-02`, `AC-INV-08A`
 
 ### Ticket 13: Implement the versioned transactional SQLite store
 - **Description:** Add numbered migrations, safe repository-derived location, constraints, durability, and corruption/future-schema failure.
 - **Declared Paths:** `orchestrator/src/state`, `orchestrator/test/reliability/state-store.test.ts`
-- **Acceptance Criteria:** `AC-INV-08`
+- **Acceptance Criteria:** `AC-INV-08A`
 
 ### Ticket 14: Allocate immutable runs, tickets, attempts, and contexts
 - **Description:** New builds allocate new runs; retries allocate unique attempts before spawn; immutable snapshots carry contract/capability identity.
 - **Declared Paths:** `orchestrator/src/context`, `orchestrator/src/state`, `orchestrator/test/reliability/identity-allocation.test.ts`
-- **Acceptance Criteria:** `AC-INV-01`, `AC-INV-08`
+- **Acceptance Criteria:** `AC-INV-01`, `AC-INV-08A`
 
 ### Ticket 15: Persist legal phase, receipt, evidence, and terminalization transitions
 - **Description:** Enforce compare-and-set transitions and expose one oracle-backed terminalization API.
 - **Declared Paths:** `orchestrator/src/state/transitions.ts`, `orchestrator/test/reliability/transition-authority.test.ts`
-- **Acceptance Criteria:** `AC-INV-02`, `AC-INV-08`
+- **Acceptance Criteria:** `AC-INV-02`, `AC-INV-08A`
 
 ### Ticket 16: Cut over registry and ledger callers and quarantine legacy state
 - **Description:** Remove JSON/JSONL terminal authority and commit-subject completion without dual-write ambiguity.
 - **Declared Paths:** `orchestrator/src/lifecycle/registry.ts`, `orchestrator/src/lifecycle/reconcile.ts`, `orchestrator/src/dispatch/dispatch.ts`
-- **Acceptance Criteria:** `AC-INV-02`, `AC-INV-08`
+- **Acceptance Criteria:** `AC-INV-02`, `AC-INV-08A`
 
-### Ticket 17: Prove structured restart and retry across the state crash corpus
-- **Description:** Fault every transaction boundary and prove idempotent internal recovery with no terminal replay.
+### Ticket 17: Prove the common SQLite crash boundary and retry identity
+- **Description:** Inventory every Store transaction with an exact-or-null contract mapping and stable semantic test ID, fault the one shared commit boundary before COMMIT and after COMMIT/before return, and directly prove retry allocation response-loss and race behavior. Defer full operation-specific recovery parity to `t29`.
 - **Declared Paths:** `orchestrator/test/reliability/state-crash-corpus.test.ts`, `orchestrator/test/fixtures/crash-matrix`
-- **Acceptance Criteria:** `AC-INV-08`
+- **Acceptance Criteria:** contributes `AC-INV-08A`; does not complete composite `AC-INV-08`
 
 ### Ticket 18: Implement owner-checked leases and attempt resource allocation
 - **Description:** Transactionally bind worktree/ref/index/baseline/resources to one owner and reject stale/wrong-owner release.
@@ -506,7 +514,7 @@ The exact acceptance criteria and commands are in `refinement_manifest.json`; th
 ### Ticket 24: Implement the persisted lifecycle transition table
 - **Description:** Replace the boolean scaffold with the one normative phase/remediation model.
 - **Declared Paths:** `orchestrator/src/lifecycle/phase.ts`, `orchestrator/src/lifecycle/engine.ts`, `orchestrator/test/reliability/lifecycle-transitions.test.ts`
-- **Acceptance Criteria:** `AC-INV-02`, `AC-INV-08`
+- **Acceptance Criteria:** `AC-INV-02`, contributes `AC-INV-08B`
 
 ### Ticket 25: Propagate the full ticket contract through every phase
 - **Description:** Preserve ACs, interfaces, scope, dependencies, digest, and budgets in prompts and receipts.
@@ -529,9 +537,9 @@ The exact acceptance criteria and commands are in `refinement_manifest.json`; th
 - **Acceptance Criteria:** `AC-INV-02`, `AC-INV-03`, `AC-INV-05`, `AC-INV-07`
 
 ### Ticket 29: Make resume and structured reconciliation use lifecycle/oracle parity
-- **Description:** Recover explicit runs from persisted receipts, allocate retries safely, and keep commit prose non-authoritative.
+- **Description:** Recover explicit runs from persisted receipts, resolve a response-lost planned retry through typed no-side-effect cleanup before allocating a higher-numbered attempt, and keep commit prose non-authoritative.
 - **Declared Paths:** `orchestrator/src/lifecycle/recovery.ts`, `orchestrator/src/lifecycle/reconcile.ts`, `orchestrator/test/reliability/recovery-parity.test.ts`
-- **Acceptance Criteria:** `AC-INV-02`, `AC-INV-08`
+- **Acceptance Criteria:** `AC-INV-02`, completes `AC-INV-08B` and composite `AC-INV-08`
 
 ### Ticket 30: Remove duplicate lifecycle and terminal shortcuts
 - **Description:** Delete the implementation-only path and audit production imports/callers for one terminal predicate.
@@ -576,7 +584,7 @@ The exact acceptance criteria and commands are in `refinement_manifest.json`; th
 ### Ticket 38: Pass the protected real installed vertical slice
 - **Description:** Against real compatible Omnigent/model/hosted remote, interrupt/resume one state directory and verify native policy, owned commit, review, gates, push, and PR OID.
 - **Declared Paths:** `orchestrator/test/reliability/installed-vertical-slice.test.ts`, `.github/workflows/release-trust-spine.yml`
-- **Acceptance Criteria:** `AC-INV-01`, `AC-INV-02`, `AC-INV-03`, `AC-INV-04`, `AC-INV-05`, `AC-INV-06`, `AC-INV-07`, `AC-INV-08`, `AC-PROGRAM-01`
+- **Acceptance Criteria:** `AC-INV-01`, `AC-INV-02`, `AC-INV-03`, `AC-INV-04`, `AC-INV-05`, `AC-INV-06`, `AC-INV-07`, `AC-INV-08A`, `AC-INV-08B`, `AC-INV-08`, `AC-PROGRAM-01`
 
 ### Ticket 39: Restore only proven capabilities and release claims
 - **Description:** Make runtime, help, doctor, README, and changelog reflect exact passed proof corpora; leave all unproven capabilities unavailable.

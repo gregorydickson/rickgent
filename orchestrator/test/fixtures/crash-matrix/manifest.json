@@ -1,0 +1,89 @@
+{
+  "schema_version": "rickgent.state-crash-manifest.v2",
+  "corpus_id": "t17-state-crash-v1",
+  "complete": true,
+  "proof_scope": "common_sqlite_commit_boundary_and_internal_retry_identity",
+  "inventory_kind": "transaction_projection_not_operation_specific_crash_case",
+  "proof_model": "Phase 17 deterministically kills the one shared BEGIN IMMEDIATE transaction wrapper immediately before COMMIT and immediately after COMMIT but before the Store method returns. The inventory maps every current Store operation to an exact frozen contract transaction where one exists, otherwise explicitly records a null implementation-only mapping, and binds each point to a stable semantic test ID. Retry allocation is exercised directly at both crash checkpoints and under a synchronized allocator race. Operation-specific external-side-effect recovery remains gated to its declared later ticket, with full recovery parity in t29.",
+  "fault_sides": [
+    "before_commit",
+    "after_commit_before_return"
+  ],
+  "assertions": [
+    "inventory_exact",
+    "same_canonical_database_path",
+    "state_readable",
+    "integrity_clean",
+    "old_or_new_committed_state",
+    "immutable_prior_evidence",
+    "expected_sigkill_observed",
+    "precommit_rolls_back",
+    "postcommit_survives_without_return",
+    "new_attempt_before_retry_side_effects",
+    "retry_response_loss_selects_planned_attempt",
+    "one_retry_allocator_wins",
+    "busy_is_not_success",
+    "no_replay",
+    "no_manufactured_terminal",
+    "public_resume_remains_disabled"
+  ],
+  "fault_points": [
+    "open_and_migrate",
+    "run_creation",
+    "contract_insert",
+    "initial_attempt_allocation",
+    "resume_selection",
+    "retry_selection",
+    "retry_attempt_allocation",
+    "execution_context_insert",
+    "immutable_evidence_insert",
+    "lease_acquisition",
+    "lease_heartbeat",
+    "lease_cleanup_begin",
+    "lease_release",
+    "resource_reservation",
+    "resource_activation",
+    "resource_quarantine",
+    "resource_release",
+    "phase_start",
+    "phase_finish",
+    "spawn_receipt",
+    "review_record",
+    "remediation_record",
+    "required_gate_result",
+    "commit_attribution",
+    "cleanup_record",
+    "oracle_decision",
+    "promotion_intent",
+    "promotion_observation",
+    "promotion_finalization",
+    "delivery_intent",
+    "remote_observation",
+    "pr_observation",
+    "terminal_commit_delivered",
+    "terminal_commit_failed",
+    "legacy_inventory"
+  ],
+  "direct_crash_points": [
+    "immutable_evidence_insert",
+    "retry_attempt_allocation"
+  ],
+  "semantic_proof_suites": [
+    "orchestrator/test/reliability/state-store.test.ts",
+    "orchestrator/test/reliability/identity-allocation.test.ts",
+    "orchestrator/test/reliability/transition-authority.test.ts",
+    "orchestrator/test/reliability/oracle-store-integration.test.ts",
+    "orchestrator/test/reliability/legacy-state-quarantine.test.ts"
+  ],
+  "deferred_recovery": {
+    "operational_lease_and_resource_ownership": "t18",
+    "process_group_spawn_and_death": "t19",
+    "external_git_commit_recovery": "t20",
+    "salvage_and_cleanup_side_effects": "t21",
+    "operation_specific_recovery_and_oracle_parity": "t29"
+  },
+  "public_capability": {
+    "resume_retry": "unavailable",
+    "reconciliation": "unavailable"
+  }
+}

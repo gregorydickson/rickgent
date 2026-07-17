@@ -384,8 +384,8 @@ export const CAPABILITY_RESERVATIONS = deepFreeze([
   { name: "durable_sqlite_state", status: "reserved_contract_only", enabled: false, implementation_ticket: "t13" },
   { name: "run_attempt_allocation", status: "reserved_contract_only", enabled: false, implementation_ticket: "t14" },
   { name: "oracle_and_promotion", status: "reserved_contract_only", enabled: false, implementation_ticket: "t15" },
-  { name: "caller_cutover_and_resume_retry", status: "reserved_contract_only", enabled: false, implementation_ticket: "t16" },
-  { name: "recovery_and_reconciliation", status: "reserved_contract_only", enabled: false, implementation_ticket: "t17" },
+  { name: "caller_cutover_and_internal_selectors", status: "reserved_contract_only", enabled: false, implementation_ticket: "t16" },
+  { name: "public_resume_retry_and_reconciliation", status: "reserved_contract_only", enabled: false, implementation_ticket: "t29" },
   { name: "attempt_resources", status: "reserved_contract_only", enabled: false, implementation_ticket: "t18_or_later" },
   { name: "automatic_delivery", status: "reserved_contract_only", enabled: false, implementation_ticket: "post_milestone_3" },
 ] as const);
