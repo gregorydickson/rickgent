@@ -23,6 +23,8 @@ import {
 } from "../capabilities/registry.js";
 import { normalizeTicketContracts } from "../contracts/ticket-contract.js";
 import {
+  ATTEMPT_OWNERSHIP_STATE_SCHEMA_OBJECTS,
+  ATTEMPT_OWNERSHIP_STATE_SQLITE_SCHEMA_CHECKSUM,
   INITIAL_STATE_SCHEMA_OBJECTS,
   INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM,
   LATEST_STATE_SCHEMA_OBJECTS,
@@ -69,6 +71,10 @@ import {
   type AttemptWorkspacePlan,
 } from "../git/attempt-workspace.js";
 import {
+  ProcessSupervisorCommand,
+  isAuthorizedProcessSupervisorCommand,
+} from "../process/supervisor.js";
+import {
   DeliveryCommand,
   LifecycleRecordCommand,
   PromotionCommit,
@@ -87,7 +93,6 @@ import {
   type DeliveryIntentRequest,
   type GateResultRecordRequest,
   type PersistedTransitionEvidenceReference,
-  type ProcessReceiptRecordRequest,
   type PrObservationRequest,
   type PromotionResult,
   type RemediationRecordRequest,
@@ -837,6 +842,8 @@ function sqliteSchemaChecksum(db: DatabaseSync): `sha256:${string}` {
 function validateReleasedSchema(db: DatabaseSync, databasePath: string, version: number): void {
   const expectedChecksum = version === 1
     ? INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM
+    : version === 2
+      ? ATTEMPT_OWNERSHIP_STATE_SQLITE_SCHEMA_CHECKSUM
     : version === LATEST_STATE_SCHEMA_VERSION
       ? LATEST_STATE_SQLITE_SCHEMA_CHECKSUM
       : undefined;
@@ -853,7 +860,11 @@ function validateReleasedSchema(db: DatabaseSync, databasePath: string, version:
   }
   const tables = db.prepare("PRAGMA table_list").all() as Array<Record<string, SqlValue>>;
   const strict = new Map(tables.map((row) => [row.name, row.strict]));
-  const schemaObjects = version === 1 ? INITIAL_STATE_SCHEMA_OBJECTS : LATEST_STATE_SCHEMA_OBJECTS;
+  const schemaObjects = version === 1
+    ? INITIAL_STATE_SCHEMA_OBJECTS
+    : version === 2
+      ? ATTEMPT_OWNERSHIP_STATE_SCHEMA_OBJECTS
+      : LATEST_STATE_SCHEMA_OBJECTS;
   for (const table of schemaObjects.tables) {
     if (strict.get(table) !== 1) throw typedError("RICKGENT_STATE_CORRUPT", `released table is missing or not STRICT: ${table}`, databasePath);
   }
@@ -1591,6 +1602,24 @@ export class StateStore {
           return this.#recoverStaleAttemptOwnership(command, canonicalInput, inputDigest);
       }
     });
+  }
+
+  /** @internal Accepts only runtime-unforgeable launch commands minted by ProcessSupervisor. */
+  commitAuthorizedProcessLaunch(command: ProcessSupervisorCommand): StateRecord {
+    if (!isAuthorizedProcessSupervisorCommand(command)) {
+      throw new TypeError("process launch command was not minted by ProcessSupervisor");
+    }
+    if (command.command.kind !== "launch") throw new TypeError("process launch commit requires a launch command");
+    return this.#immediate("process_supervisor_launch", () => this.#commitProcessLaunch(command));
+  }
+
+  /** @internal Accepts only runtime-unforgeable terminal commands minted by ProcessSupervisor. */
+  commitAuthorizedProcessTerminal(command: ProcessSupervisorCommand): StateRecord {
+    if (!isAuthorizedProcessSupervisorCommand(command)) {
+      throw new TypeError("process terminal command was not minted by ProcessSupervisor");
+    }
+    if (command.command.kind !== "terminal") throw new TypeError("process terminal commit requires a terminal command");
+    return this.#immediate("process_supervisor_terminal", () => this.#commitProcessTerminal(command));
   }
 
   /** @internal Accepts only the runtime-unforgeable plan minted by TransitionAuthority. */
@@ -2548,7 +2577,6 @@ export class StateStore {
   commitAuthorizedLifecycleRecord(command: LifecycleRecordCommand): StateRecord {
     if (!isAuthorizedLifecycleRecordCommand(command)) throw new TypeError("lifecycle record command was not minted by LifecycleRecordAuthority");
     switch (command.command.kind) {
-      case "process_receipt": return this.#recordProcessReceipt(command.command.request);
       case "review_record": return this.#recordReview(command.command.request);
       case "remediation_record": return this.#recordRemediation(command.command.request);
       case "gate_result": return this.#recordGateResult(command.command.request);
@@ -2566,7 +2594,7 @@ export class StateStore {
   }
 
   #insertExactLifecycleRow(
-    table: "process_receipts" | "review_records" | "remediation_records" | "gate_results" | "commit_attributions" | "cleanup_records",
+    table: "review_records" | "remediation_records" | "gate_results" | "commit_attributions" | "cleanup_records",
     row: MutableStateRecord,
     identityColumns: readonly string[],
   ): StateRecord {
@@ -2580,7 +2608,7 @@ export class StateStore {
   }
 
   #replayExactLifecycleRow(
-    table: "process_receipts" | "review_records" | "remediation_records" | "gate_results" | "commit_attributions" | "cleanup_records",
+    table: "review_records" | "remediation_records" | "gate_results" | "commit_attributions" | "cleanup_records",
     row: MutableStateRecord,
     identityColumns: readonly string[],
   ): StateRecord | undefined {
@@ -2596,50 +2624,6 @@ export class StateStore {
       [contextId, attemptId, contextDigest, phase, role],
       `${label} replay owner context differs from the immutable record lineage`,
     );
-  }
-
-  #recordProcessReceipt(request: ProcessReceiptRecordRequest): StateRecord {
-    const row = this.#validatedColumns("process_receipts", normalizeRow({
-      process_receipt_id: request.processReceiptId,
-      phase_execution_id: request.phaseExecutionId,
-      context_id: request.contextId,
-      lease_id: request.leaseId,
-      lease_generation: request.leaseGeneration,
-      pid: request.pid,
-      pgid: request.pgid,
-      boot_identity: request.bootIdentity,
-      process_start_identity: request.processStartIdentity,
-      argv_digest: request.argvDigest,
-      environment_digest: request.environmentDigest,
-      launch_evidence_id: request.launchEvidenceId,
-      exit_evidence_id: request.exitEvidenceId,
-      termination_evidence_id: request.terminationEvidenceId,
-      group_death_evidence_id: request.groupDeathEvidenceId,
-      stdout_evidence_id: request.stdoutEvidenceId,
-      stderr_evidence_id: request.stderrEvidenceId,
-      created_at: request.createdAt,
-    }));
-    this.#requireCompleteRow("process_receipts", row);
-    return this.#immediate("persist_process_receipt", () => {
-      const replay = this.#replayExactLifecycleRow("process_receipts", row, ["phase_execution_id"]);
-      if (replay !== undefined) {
-        this.#requireReplayContext(request.contextId, request.attemptId, request.ownerContextDigest, "implement", "worker", "process receipt");
-        return replay;
-      }
-      this.#requireTransitionGuard(`
-        SELECT 1 FROM phase_executions x JOIN execution_contexts c ON c.context_id = x.context_id
-        JOIN leases l ON l.lease_id = ? AND l.attempt_id = x.attempt_id AND l.generation = ?
-        JOIN attempts a ON a.attempt_id = x.attempt_id AND a.state = 'implementing'
-        WHERE x.phase_execution_id = ? AND x.attempt_id = ? AND x.context_id = ? AND c.context_digest = ?
-          AND c.phase = 'implement' AND c.role = 'worker' AND x.phase = c.phase AND x.role = c.role
-      `, [request.leaseId, request.leaseGeneration, request.phaseExecutionId, request.attemptId, request.contextId, request.ownerContextDigest], "process receipt phase, lease, or owner lineage differs");
-      for (const [id, label] of [
-        [request.launchEvidenceId, "launch"], [request.exitEvidenceId, "exit"],
-        [request.terminationEvidenceId, "termination"], [request.groupDeathEvidenceId, "group death"],
-        [request.stdoutEvidenceId, "stdout"], [request.stderrEvidenceId, "stderr"],
-      ] as const) if (id !== null) this.#requireOwnedEvidence(id, request.attemptId, "AttemptLifecycleService", label);
-      return this.#insertExactLifecycleRow("process_receipts", row, ["phase_execution_id"]);
-    });
   }
 
   #recordReview(request: ReviewRecordRequest): StateRecord {
@@ -4338,6 +4322,432 @@ export class StateStore {
     return db;
   }
 
+  #assertProcessIdentity(value: unknown, label: string): asserts value is string {
+    if (typeof value !== "string" || value === "" || value !== value.trim()) throw new TypeError(`${label} is invalid`);
+  }
+
+  #assertProcessDigest(value: unknown, label: string): asserts value is `sha256:${string}` {
+    if (typeof value !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value)) throw new TypeError(`${label} is invalid`);
+  }
+
+  #assertProcessTimestamp(value: unknown, label: string): asserts value is string {
+    if (typeof value !== "string" || value.length < 20 || !value.endsWith("Z") || Number.isNaN(Date.parse(value))) {
+      throw new TypeError(`${label} must be a UTC timestamp`);
+    }
+  }
+
+  #processEvidenceRow(input: {
+    readonly evidenceId: string;
+    readonly attemptId: string;
+    readonly phaseExecutionId: string;
+    readonly contextId: string;
+    readonly scope: string;
+    readonly schemaVersion: string;
+    readonly payloadJson: string;
+    readonly idempotencyKey: string;
+    readonly createdAt: string;
+  }): MutableStateRecord {
+    return {
+      evidence_id: input.evidenceId,
+      attempt_id: input.attemptId,
+      phase_execution_id: input.phaseExecutionId,
+      context_id: input.contextId,
+      producer_service: "ProcessSupervisor",
+      scope: input.scope,
+      schema_version: input.schemaVersion,
+      content_digest: sha256Text(input.payloadJson),
+      inline_payload_json: input.payloadJson,
+      external_path: null,
+      external_digest: null,
+      external_size: null,
+      idempotency_key: input.idempotencyKey,
+      created_at: input.createdAt,
+    };
+  }
+
+  #requireExactProcessEvidence(expected: MutableStateRecord): void {
+    const stored = this.#requireDatabase().prepare("SELECT * FROM evidence WHERE evidence_id = ?")
+      .get(expected.evidence_id ?? null) as MutableStateRecord | undefined;
+    if (stored === undefined || !this.#sameRecord(stored, expected)) {
+      throw typedError(
+        "RICKGENT_STATE_IDEMPOTENCY_CONFLICT",
+        "ProcessSupervisor evidence identity was replayed with different immutable input",
+        this.location.databasePath,
+      );
+    }
+  }
+
+  #commitProcessLaunch(command: ProcessSupervisorCommand): StateRecord {
+    const operation = command.command;
+    if (operation.kind !== "launch") throw new TypeError("process launch commit requires a launch command");
+    const request = operation.request;
+    for (const [label, value] of [
+      ["launch id", request.launchId], ["process receipt id", request.processReceiptId],
+      ["repository id", request.repositoryId], ["attempt id", request.attemptId],
+      ["ownership id", request.ownershipId], ["phase execution id", request.phaseExecutionId],
+      ["execution context id", request.contextId], ["platform", request.platform],
+      ["boot identity", request.bootIdentity], ["process start identity", request.processStartIdentity],
+      ["stdout path", request.stdoutPath], ["stderr path", request.stderrPath],
+      ["launch evidence id", request.launchEvidenceId],
+    ] as const) this.#assertProcessIdentity(value, label);
+    for (const [label, value] of [
+      ["ownership context digest", request.ownershipContextDigest],
+      ["execution context digest", request.executionContextDigest],
+      ["spawn authorization digest", request.spawnAuthorizationDigest],
+      ["argv digest", request.argvDigest], ["environment digest", request.environmentDigest],
+    ] as const) this.#assertProcessDigest(value, label);
+    this.#assertProcessTimestamp(request.createdAt, "process launch time");
+    if (!Number.isSafeInteger(request.ownerGeneration) || request.ownerGeneration < 1) throw new TypeError("process owner generation is invalid");
+    if (!Number.isSafeInteger(request.pid) || request.pid < 1 || !Number.isSafeInteger(request.pgid) || request.pgid < 1) {
+      throw new TypeError("process PID and PGID must be positive safe integers");
+    }
+    if (
+      !Number.isSafeInteger(request.outputLimitBytes) || request.outputLimitBytes < 1 ||
+      !Number.isSafeInteger(request.tailLimitBytes) || request.tailLimitBytes < 1 ||
+      request.tailLimitBytes > request.outputLimitBytes
+    ) throw new TypeError("process output limits are invalid");
+    const expectedResourceKeys = ["process_group", "stdout", "stderr"] as const;
+    if (
+      request.expectedResourceVersions === null || typeof request.expectedResourceVersions !== "object" ||
+      Object.keys(request.expectedResourceVersions).sort().join("\0") !== [...expectedResourceKeys].sort().join("\0") ||
+      expectedResourceKeys.some((slot) => !Number.isSafeInteger(request.expectedResourceVersions[slot]) || request.expectedResourceVersions[slot] < 0)
+    ) throw new TypeError("process resource expected versions are invalid");
+    if (request.repositoryId !== this.location.repositoryId) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "process launch belongs to another repository", this.location.databasePath);
+    }
+
+    const expectedLaunchPayload = {
+      schema_version: "rickgent.process-launch.v1",
+      launch_id: request.launchId,
+      process_receipt_id: request.processReceiptId,
+      repository_id: request.repositoryId,
+      attempt_id: request.attemptId,
+      ownership_id: request.ownershipId,
+      owner_generation: request.ownerGeneration,
+      ownership_context_digest: request.ownershipContextDigest,
+      phase_execution_id: request.phaseExecutionId,
+      context_id: request.contextId,
+      execution_context_digest: request.executionContextDigest,
+      spawn_authorization_digest: request.spawnAuthorizationDigest,
+      pid: request.pid,
+      pgid: request.pgid,
+      platform: request.platform,
+      boot_identity: request.bootIdentity,
+      process_start_identity: request.processStartIdentity,
+      argv_digest: request.argvDigest,
+      environment_digest: request.environmentDigest,
+      stdout_path: request.stdoutPath,
+      stderr_path: request.stderrPath,
+      output_limit_bytes: request.outputLimitBytes,
+      tail_limit_bytes: request.tailLimitBytes,
+      created_at: request.createdAt,
+    };
+    const launchPayloadJson = canonicalJson(request.launchEvidencePayload);
+    if (launchPayloadJson !== canonicalJson(expectedLaunchPayload)) throw new TypeError("process launch evidence payload is not the exact launch projection");
+    const evidenceRow = this.#processEvidenceRow({
+      evidenceId: request.launchEvidenceId,
+      attemptId: request.attemptId,
+      phaseExecutionId: request.phaseExecutionId,
+      contextId: request.contextId,
+      scope: `attempt:${request.attemptId}:process-launch:${request.launchId}`,
+      schemaVersion: "rickgent.process-launch.v1",
+      payloadJson: launchPayloadJson,
+      idempotencyKey: request.launchId,
+      createdAt: request.createdAt,
+    });
+    const launchRow: MutableStateRecord = {
+      launch_id: request.launchId,
+      process_receipt_id: request.processReceiptId,
+      repository_id: request.repositoryId,
+      attempt_id: request.attemptId,
+      ownership_id: request.ownershipId,
+      owner_generation: request.ownerGeneration,
+      ownership_context_digest: request.ownershipContextDigest,
+      phase_execution_id: request.phaseExecutionId,
+      context_id: request.contextId,
+      execution_context_digest: request.executionContextDigest,
+      spawn_authorization_digest: request.spawnAuthorizationDigest,
+      pid: request.pid,
+      pgid: request.pgid,
+      platform: request.platform,
+      boot_identity: request.bootIdentity,
+      process_start_identity: request.processStartIdentity,
+      argv_digest: request.argvDigest,
+      environment_digest: request.environmentDigest,
+      stdout_path: request.stdoutPath,
+      stderr_path: request.stderrPath,
+      output_limit_bytes: request.outputLimitBytes,
+      tail_limit_bytes: request.tailLimitBytes,
+      process_group_expected_version: request.expectedResourceVersions.process_group,
+      stdout_expected_version: request.expectedResourceVersions.stdout,
+      stderr_expected_version: request.expectedResourceVersions.stderr,
+      launch_evidence_id: request.launchEvidenceId,
+      created_at: request.createdAt,
+    };
+    const replay = this.#requireDatabase().prepare(`
+      SELECT * FROM attempt_process_launches
+      WHERE launch_id = ? OR process_receipt_id = ? OR phase_execution_id = ?
+      LIMIT 1
+    `).get(request.launchId, request.processReceiptId, request.phaseExecutionId) as MutableStateRecord | undefined;
+    if (replay !== undefined) {
+      if (!this.#sameRecord(replay, launchRow)) {
+        throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "process launch identity has different immutable input", this.location.databasePath);
+      }
+      this.#requireExactProcessEvidence(evidenceRow);
+      return frozenRow(replay);
+    }
+
+    const ownership = this.#requireDatabase().prepare(`
+      SELECT * FROM attempt_ownership_leases
+      WHERE ownership_id = ? AND attempt_id = ? AND generation = ?
+    `).get(request.ownershipId, request.attemptId, request.ownerGeneration) as MutableStateRecord | undefined;
+    if (
+      ownership === undefined || ownership.state !== "live" || ownership.recovered_from_ownership_id !== null ||
+      ownership.context_digest !== request.ownershipContextDigest || new Date(String(ownership.expires_at)).getTime() <= Date.now()
+    ) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "process launch requires current live unexpired ownership", this.location.databasePath);
+    }
+    const phase = this.#requireDatabase().prepare(`
+      SELECT x.attempt_id, x.context_id, c.context_digest, r.repository_id
+      FROM phase_executions x
+      JOIN execution_contexts c ON c.context_id = x.context_id AND c.attempt_id = x.attempt_id
+      JOIN attempts a ON a.attempt_id = x.attempt_id
+      JOIN runs r ON r.run_id = a.run_id
+      WHERE x.phase_execution_id = ?
+    `).get(request.phaseExecutionId) as MutableStateRecord | undefined;
+    if (
+      phase === undefined || phase.attempt_id !== request.attemptId || phase.context_id !== request.contextId ||
+      phase.context_digest !== request.executionContextDigest || phase.repository_id !== request.repositoryId
+    ) throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "process launch phase/context lineage is not exact", this.location.databasePath);
+
+    const expectedIdentity = new Map<string, string>([
+      ["process_group", `process-group:${request.attemptId}`],
+      ["stdout", request.stdoutPath],
+      ["stderr", request.stderrPath],
+    ]);
+    for (const slot of expectedResourceKeys) {
+      const resource = this.#requireDatabase().prepare(`
+        SELECT * FROM attempt_resource_claims WHERE attempt_id = ? AND slot = ?
+      `).get(request.attemptId, slot) as MutableStateRecord | undefined;
+      const expectedVersion = request.expectedResourceVersions[slot];
+      if (
+        resource === undefined || resource.kind !== slot || resource.current_ownership_id !== request.ownershipId ||
+        resource.owner_generation !== request.ownerGeneration || resource.state_version !== expectedVersion ||
+        resource.canonical_identity !== expectedIdentity.get(slot) || !["reserved", "allocated"].includes(String(resource.state))
+      ) throw typedError("RICKGENT_STATE_OWNER_MISMATCH", `process ${slot} claim does not match its launch preimage`, this.location.databasePath);
+      let state = String(resource.state);
+      let version = expectedVersion;
+      if (state === "reserved") {
+        const allocated = this.#requireDatabase().prepare(`
+          UPDATE attempt_resource_claims SET state = 'allocated', state_version = state_version + 1
+          WHERE resource_claim_id = ? AND current_ownership_id = ? AND owner_generation = ? AND state = 'reserved' AND state_version = ?
+        `).run(String(resource.resource_claim_id), request.ownershipId, request.ownerGeneration, version);
+        if (allocated.changes !== 1) throw typedError("RICKGENT_STATE_CONFLICT", `process ${slot} allocation lost its CAS race`, this.location.databasePath);
+        state = "allocated";
+        version += 1;
+      }
+      const activated = this.#requireDatabase().prepare(`
+        UPDATE attempt_resource_claims SET state = 'active', state_version = state_version + 1
+        WHERE resource_claim_id = ? AND current_ownership_id = ? AND owner_generation = ? AND state = ? AND state_version = ?
+      `).run(String(resource.resource_claim_id), request.ownershipId, request.ownerGeneration, state, version);
+      if (activated.changes !== 1) throw typedError("RICKGENT_STATE_CONFLICT", `process ${slot} activation lost its CAS race`, this.location.databasePath);
+    }
+    this.#validateRecordSemantics("evidence", evidenceRow);
+    this.#insert("evidence", evidenceRow);
+    this.#insert("attempt_process_launches", launchRow);
+    return frozenRow(launchRow);
+  }
+
+  #commitProcessTerminal(command: ProcessSupervisorCommand): StateRecord {
+    const operation = command.command;
+    if (operation.kind !== "terminal") throw new TypeError("process terminal commit requires a terminal command");
+    const request = operation.request;
+    this.#assertProcessIdentity(request.launchId, "launch id");
+    this.#assertProcessIdentity(request.processReceiptId, "process receipt id");
+    this.#assertProcessIdentity(request.outcome, "process outcome");
+    this.#assertProcessDigest(request.resultDigest, "process terminal result digest");
+    this.#assertProcessTimestamp(request.createdAt, "process terminal time");
+    if (request.exitCode !== null && (!Number.isSafeInteger(request.exitCode) || request.exitCode < 0 || request.exitCode > 255)) {
+      throw new TypeError("process exit code is invalid");
+    }
+    if (request.signal !== null) this.#assertProcessIdentity(request.signal, "process terminal signal");
+    if (typeof request.timedOut !== "boolean" || typeof request.groupDead !== "boolean" || typeof request.descendantsConfirmedDead !== "boolean") {
+      throw new TypeError("process terminal booleans are invalid");
+    }
+    if (request.descendantsConfirmedDead && !request.groupDead) throw new TypeError("descendant death requires group death");
+    if (!Array.isArray(request.observations) || request.observations.length < 1) throw new TypeError("process terminal requires observations");
+
+    const launch = this.#requireDatabase().prepare(`
+      SELECT * FROM attempt_process_launches WHERE launch_id = ? AND process_receipt_id = ?
+    `).get(request.launchId, request.processReceiptId) as MutableStateRecord | undefined;
+    if (launch === undefined) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "process terminal does not resolve to an exact durable launch", this.location.databasePath);
+    }
+    const observationRows: MutableStateRecord[] = [];
+    const evidenceRows: MutableStateRecord[] = [];
+    const observationRefs: Array<Record<string, unknown>> = [];
+    const observationIds = new Set<string>();
+    const evidenceIds = new Set<string>();
+    const launchMs = Date.parse(String(launch.created_at));
+    const terminalMs = Date.parse(request.createdAt);
+    for (let index = 0; index < request.observations.length; index += 1) {
+      const observation = request.observations[index]!;
+      this.#assertProcessIdentity(observation.observationId, "process observation id");
+      this.#assertProcessIdentity(observation.kind, "process observation kind");
+      this.#assertProcessIdentity(observation.evidenceId, "process observation evidence id");
+      this.#assertProcessIdentity(observation.schemaVersion, "process observation schema version");
+      this.#assertProcessTimestamp(observation.createdAt, "process observation time");
+      if (observation.sequence !== index + 1) throw new TypeError("process observations must be ordered contiguously from one");
+      if (observationIds.has(observation.observationId) || evidenceIds.has(observation.evidenceId)) {
+        throw new TypeError("process observation and evidence identities must be unique");
+      }
+      observationIds.add(observation.observationId);
+      evidenceIds.add(observation.evidenceId);
+      const observedMs = Date.parse(observation.createdAt);
+      if (observedMs < launchMs || observedMs > terminalMs) throw new TypeError("process observation time is outside its launch/terminal interval");
+      const payloadJson = canonicalJson(observation.payload);
+      const parsedPayload = this.#parseJsonObject(payloadJson, "process observation payload");
+      if (parsedPayload.schema_version !== observation.schemaVersion) throw new TypeError("process observation schema differs from its payload");
+      if (observation.kind === "group_death") {
+        const proofBasis = parsedPayload.proof_basis;
+        const trackedIdentitiesConfirmedDead = parsedPayload.tracked_identities_confirmed_dead;
+        if (proofBasis !== "sampled_tracked_identities" && proofBasis !== "authoritative_containment") {
+          throw new TypeError("process group-death proof basis is invalid");
+        }
+        if (typeof trackedIdentitiesConfirmedDead !== "boolean") {
+          throw new TypeError("process group-death tracked identity status is invalid");
+        }
+        if (request.descendantsConfirmedDead && (
+          proofBasis !== "authoritative_containment" || trackedIdentitiesConfirmedDead !== true
+        )) {
+          throw new TypeError("descendant death requires authoritative containment and tracked identity death");
+        }
+        const expectedDeath = {
+          schema_version: "rickgent.process-group-death.v1",
+          launch_id: String(launch.launch_id),
+          process_receipt_id: String(launch.process_receipt_id),
+          attempt_id: String(launch.attempt_id),
+          ownership_id: String(launch.ownership_id),
+          owner_generation: Number(launch.owner_generation),
+          ownership_context_digest: String(launch.ownership_context_digest),
+          phase_execution_id: String(launch.phase_execution_id),
+          context_id: String(launch.context_id),
+          execution_context_digest: String(launch.execution_context_digest),
+          pid: Number(launch.pid),
+          pgid: Number(launch.pgid),
+          platform: String(launch.platform),
+          boot_identity: String(launch.boot_identity),
+          process_start_identity: String(launch.process_start_identity),
+          group_dead: true,
+          proof_basis: proofBasis,
+          tracked_identities_confirmed_dead: trackedIdentitiesConfirmedDead,
+          descendants_confirmed_dead: request.descendantsConfirmedDead,
+          death_observed_at: observation.createdAt,
+        };
+        if (observation.schemaVersion !== "rickgent.process-group-death.v1" || payloadJson !== canonicalJson(expectedDeath)) {
+          throw new TypeError("process group-death observation is not the exact launch-bound proof");
+        }
+      }
+      const payloadDigest = sha256Text(payloadJson);
+      const evidenceRow = this.#processEvidenceRow({
+        evidenceId: observation.evidenceId,
+        attemptId: String(launch.attempt_id),
+        phaseExecutionId: String(launch.phase_execution_id),
+        contextId: String(launch.context_id),
+        scope: `attempt:${String(launch.attempt_id)}:process:${request.launchId}:${observation.kind}`,
+        schemaVersion: observation.schemaVersion,
+        payloadJson,
+        idempotencyKey: observation.observationId,
+        createdAt: observation.createdAt,
+      });
+      const observationRow: MutableStateRecord = {
+        observation_id: observation.observationId,
+        launch_id: request.launchId,
+        attempt_id: String(launch.attempt_id),
+        sequence: observation.sequence,
+        kind: observation.kind,
+        evidence_id: observation.evidenceId,
+        schema_version: observation.schemaVersion,
+        payload_digest: payloadDigest,
+        created_at: observation.createdAt,
+      };
+      evidenceRows.push(evidenceRow);
+      observationRows.push(observationRow);
+      observationRefs.push({
+        observation_id: observation.observationId,
+        sequence: observation.sequence,
+        kind: observation.kind,
+        evidence_id: observation.evidenceId,
+        schema_version: observation.schemaVersion,
+        payload_digest: payloadDigest,
+        created_at: observation.createdAt,
+      });
+    }
+    const hasGroupDeath = observationRows.some((row) => row.kind === "group_death");
+    if (hasGroupDeath !== request.groupDead) {
+      throw new TypeError("process terminal death flags differ from the immutable observation chain");
+    }
+    const resultPayload = {
+      schema_version: "rickgent.process-terminal.v1",
+      launch_id: request.launchId,
+      process_receipt_id: request.processReceiptId,
+      outcome: request.outcome,
+      exit_code: request.exitCode,
+      signal: request.signal,
+      timed_out: request.timedOut,
+      group_dead: request.groupDead,
+      descendants_confirmed_dead: request.descendantsConfirmedDead,
+      observation_refs: observationRefs,
+      created_at: request.createdAt,
+    };
+    if (sha256Text(canonicalJson(resultPayload)) !== request.resultDigest) throw new TypeError("process terminal result digest is not exact");
+    const terminalRow: MutableStateRecord = {
+      process_receipt_id: request.processReceiptId,
+      launch_id: request.launchId,
+      attempt_id: String(launch.attempt_id),
+      outcome: request.outcome,
+      exit_code: request.exitCode,
+      signal: request.signal,
+      timed_out: request.timedOut ? 1 : 0,
+      group_dead: request.groupDead ? 1 : 0,
+      descendants_confirmed_dead: request.descendantsConfirmedDead ? 1 : 0,
+      observation_count: observationRows.length,
+      result_digest: request.resultDigest,
+      created_at: request.createdAt,
+    };
+    const replay = this.#requireDatabase().prepare(`
+      SELECT * FROM attempt_process_terminal_receipts WHERE process_receipt_id = ? OR launch_id = ? LIMIT 1
+    `).get(request.processReceiptId, request.launchId) as MutableStateRecord | undefined;
+    if (replay !== undefined) {
+      if (!this.#sameRecord(replay, terminalRow)) {
+        throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "process terminal identity has different immutable input", this.location.databasePath);
+      }
+      const storedObservations = this.#requireDatabase().prepare(`
+        SELECT * FROM attempt_process_observations WHERE launch_id = ? ORDER BY sequence
+      `).all(request.launchId) as MutableStateRecord[];
+      if (
+        storedObservations.length !== observationRows.length ||
+        storedObservations.some((stored, index) => !this.#sameRecord(stored, observationRows[index]!))
+      ) throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "process terminal observation replay differs", this.location.databasePath);
+      for (const evidenceRow of evidenceRows) this.#requireExactProcessEvidence(evidenceRow);
+      return frozenRow(replay);
+    }
+    const partial = this.#requireDatabase().prepare(
+      "SELECT 1 FROM attempt_process_observations WHERE launch_id = ? LIMIT 1",
+    ).get(request.launchId);
+    if (partial !== undefined) {
+      throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "process launch has an unsealed observation chain", this.location.databasePath);
+    }
+    for (let index = 0; index < observationRows.length; index += 1) {
+      const evidenceRow = evidenceRows[index]!;
+      this.#validateRecordSemantics("evidence", evidenceRow);
+      this.#insert("evidence", evidenceRow);
+      this.#insert("attempt_process_observations", observationRows[index]!);
+    }
+    this.#insert("attempt_process_terminal_receipts", terminalRow);
+    return frozenRow(terminalRow);
+  }
+
   #canonicalOwnershipCommand(command: AttemptOwnershipCommand): string {
     const payload = command.payload;
     if (payload.attemptId === "" || payload.idempotencyKey === "" || payload.idempotencyKey !== payload.idempotencyKey.trim()) {
@@ -4706,62 +5116,92 @@ export class StateStore {
     if (new Date(String(old.expires_at)).getTime() > nowMs) {
       throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "fresh ownership cannot be recovered", this.location.databasePath);
     }
-    const evidence = this.#requireDatabase().prepare(`
-      SELECT attempt_id, phase_execution_id, context_id, producer_service, schema_version,
-             content_digest, inline_payload_json
-      FROM evidence WHERE evidence_id = ?
+    const chain = this.#requireDatabase().prepare(`
+      SELECT l.*, o.observation_id AS death_observation_id, o.sequence AS death_sequence,
+             o.kind AS death_kind, o.evidence_id AS death_evidence_id,
+             o.schema_version AS death_schema_version, o.payload_digest AS death_payload_digest,
+             o.created_at AS death_created_at,
+             e.attempt_id AS evidence_attempt_id, e.phase_execution_id AS evidence_phase_execution_id,
+             e.context_id AS evidence_context_id, e.producer_service AS evidence_producer_service,
+             e.schema_version AS evidence_schema_version, e.content_digest AS evidence_content_digest,
+             e.inline_payload_json AS evidence_payload_json,
+             t.outcome AS terminal_outcome, t.exit_code AS terminal_exit_code,
+             t.signal AS terminal_signal, t.timed_out AS terminal_timed_out,
+             t.group_dead AS terminal_group_dead,
+             t.descendants_confirmed_dead AS terminal_descendants_confirmed_dead,
+             t.observation_count AS terminal_observation_count,
+             t.result_digest AS terminal_result_digest, t.created_at AS terminal_created_at
+      FROM attempt_process_observations o
+      JOIN attempt_process_launches l ON l.launch_id = o.launch_id AND l.attempt_id = o.attempt_id
+      JOIN evidence e ON e.evidence_id = o.evidence_id AND e.attempt_id = o.attempt_id
+      JOIN attempt_process_terminal_receipts t
+        ON t.launch_id = l.launch_id AND t.process_receipt_id = l.process_receipt_id AND t.attempt_id = l.attempt_id
+      WHERE o.evidence_id = ? AND o.kind = 'group_death'
     `).get(payload.deathEvidenceId) as MutableStateRecord | undefined;
-    if (
-      evidence === undefined || evidence.attempt_id !== payload.attemptId ||
-      evidence.producer_service !== "ProcessSupervisor" ||
-      evidence.schema_version !== "rickgent.process-group-death.v1" ||
-      evidence.inline_payload_json === null
-    ) {
-      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "stale recovery lacks exact immutable process-death evidence", this.location.databasePath);
+    if (chain === undefined || chain.evidence_payload_json === null) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "stale recovery lacks an exact durable process terminal/death chain", this.location.databasePath);
     }
-    const death = this.#parseJsonObject(String(evidence.inline_payload_json), "process death evidence");
-    const receipt = typeof death.process_receipt_id === "string" && death.process_receipt_id !== ""
-      ? this.#requireDatabase().prepare(`
-          SELECT p.*, x.attempt_id AS phase_attempt_id, x.context_id AS phase_context_id,
-                 c.context_digest AS phase_context_digest,
-                 l.attempt_id AS lease_attempt_id, l.generation AS durable_lease_generation,
-                 l.owner_token_digest AS durable_owner_token_digest,
-                 l.owner_context_id AS durable_owner_context_id
-          FROM process_receipts p
-          JOIN phase_executions x ON x.phase_execution_id = p.phase_execution_id
-          JOIN execution_contexts c ON c.context_id = p.context_id
-          JOIN leases l ON l.lease_id = p.lease_id AND l.generation = p.lease_generation
-          WHERE p.process_receipt_id = ?
-        `).get(death.process_receipt_id) as MutableStateRecord | undefined
-      : undefined;
-    const observedAt = typeof death.death_observed_at === "string" ? Date.parse(death.death_observed_at) : Number.NaN;
+    const death = this.#parseJsonObject(String(chain.evidence_payload_json), "process death evidence");
+    const expectedDeath = {
+      schema_version: "rickgent.process-group-death.v1",
+      launch_id: String(chain.launch_id),
+      process_receipt_id: String(chain.process_receipt_id),
+      attempt_id: String(chain.attempt_id),
+      ownership_id: String(chain.ownership_id),
+      owner_generation: Number(chain.owner_generation),
+      ownership_context_digest: String(chain.ownership_context_digest),
+      phase_execution_id: String(chain.phase_execution_id),
+      context_id: String(chain.context_id),
+      execution_context_digest: String(chain.execution_context_digest),
+      pid: Number(chain.pid),
+      pgid: Number(chain.pgid),
+      platform: String(chain.platform),
+      boot_identity: String(chain.boot_identity),
+      process_start_identity: String(chain.process_start_identity),
+      group_dead: true,
+      proof_basis: "authoritative_containment",
+      tracked_identities_confirmed_dead: true,
+      descendants_confirmed_dead: true,
+      death_observed_at: String(chain.death_created_at),
+    };
+    const observations = this.#requireDatabase().prepare(`
+      SELECT observation_id, sequence, kind, evidence_id, schema_version, payload_digest, created_at
+      FROM attempt_process_observations WHERE launch_id = ? ORDER BY sequence
+    `).all(String(chain.launch_id)) as MutableStateRecord[];
+    const terminalPayload = {
+      schema_version: "rickgent.process-terminal.v1",
+      launch_id: String(chain.launch_id),
+      process_receipt_id: String(chain.process_receipt_id),
+      outcome: String(chain.terminal_outcome),
+      exit_code: chain.terminal_exit_code,
+      signal: chain.terminal_signal,
+      timed_out: chain.terminal_timed_out === 1,
+      group_dead: chain.terminal_group_dead === 1,
+      descendants_confirmed_dead: chain.terminal_descendants_confirmed_dead === 1,
+      observation_refs: observations,
+      created_at: String(chain.terminal_created_at),
+    };
+    const observedAt = Date.parse(String(chain.death_created_at));
     if (
-      evidence.content_digest !== sha256Text(canonicalJson(death)) ||
-      death.attempt_id !== payload.attemptId || death.ownership_id !== old.ownership_id ||
-      death.generation !== old.generation || death.lease_generation !== old.generation ||
-      death.context_digest !== old.context_digest || death.group_dead !== true ||
-      typeof death.process_receipt_id !== "string" || death.process_receipt_id === "" ||
-      !Number.isSafeInteger(death.pid) || Number(death.pid) < 1 ||
-      !Number.isSafeInteger(death.pgid) || Number(death.pgid) < 1 ||
-      typeof death.platform_boot_identity !== "string" || death.platform_boot_identity === "" ||
-      typeof death.process_start_identity !== "string" || death.process_start_identity === "" ||
-      typeof death.phase_execution_id !== "string" || death.phase_execution_id === "" ||
-      receipt === undefined || receipt.phase_attempt_id !== payload.attemptId ||
-      receipt.phase_execution_id !== death.phase_execution_id ||
-      receipt.phase_context_id !== receipt.context_id || evidence.context_id !== receipt.context_id ||
-      evidence.phase_execution_id !== receipt.phase_execution_id ||
-      receipt.phase_context_digest !== old.context_digest ||
-      receipt.lease_attempt_id !== payload.attemptId ||
-      receipt.durable_lease_generation !== old.generation || receipt.lease_generation !== old.generation ||
-      receipt.durable_owner_token_digest !== old.owner_token_digest ||
-      receipt.durable_owner_context_id !== receipt.context_id ||
-      receipt.pid !== death.pid || receipt.pgid !== death.pgid ||
-      receipt.boot_identity !== death.platform_boot_identity ||
-      receipt.process_start_identity !== death.process_start_identity ||
-      receipt.group_death_evidence_id !== payload.deathEvidenceId ||
+      canonicalJson(death) !== canonicalJson(expectedDeath) ||
+      chain.attempt_id !== payload.attemptId || chain.ownership_id !== old.ownership_id ||
+      chain.owner_generation !== old.generation || chain.ownership_context_digest !== old.context_digest ||
+      chain.repository_id !== this.location.repositoryId ||
+      chain.evidence_attempt_id !== chain.attempt_id ||
+      chain.evidence_phase_execution_id !== chain.phase_execution_id ||
+      chain.evidence_context_id !== chain.context_id ||
+      chain.evidence_producer_service !== "ProcessSupervisor" ||
+      chain.evidence_schema_version !== "rickgent.process-group-death.v1" ||
+      chain.death_schema_version !== "rickgent.process-group-death.v1" ||
+      chain.evidence_content_digest !== sha256Text(canonicalJson(death)) ||
+      chain.death_payload_digest !== chain.evidence_content_digest ||
+      chain.terminal_group_dead !== 1 || chain.terminal_descendants_confirmed_dead !== 1 ||
+      chain.terminal_observation_count !== observations.length ||
+      observations.some((observation, index) => observation.sequence !== index + 1) ||
+      chain.terminal_result_digest !== sha256Text(canonicalJson(terminalPayload)) ||
       !Number.isFinite(observedAt) || observedAt < new Date(String(old.heartbeat_at)).getTime() || observedAt > nowMs
     ) {
-      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "process-death evidence does not prove the expired owner dead", this.location.databasePath);
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "process-death chain does not prove the expired owner dead", this.location.databasePath);
     }
     const generation = Number(old.generation) + 1;
     const ownershipId = this.#ownershipIdentity(payload.attemptId, generation, payload.ownerTokenDigest);

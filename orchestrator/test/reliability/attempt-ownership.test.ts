@@ -236,47 +236,90 @@ function appendDeathEvidence(
   suffix = String(ownership.generation),
   observedAt = new Date().toISOString(),
   linkProcessReceipt = true,
+  descendantsConfirmedDead = true,
 ): string {
   const contextId = `context-death-${fixture.attemptId}-${suffix}`;
   const phaseId = `phase-death-${fixture.attemptId}-${suffix}`;
+  const launchId = `launch-${fixture.attemptId}-${suffix}`;
   const launchEvidenceId = `evidence-launch-${fixture.attemptId}-${suffix}`;
   const evidenceId = `evidence-death-${fixture.attemptId}-${suffix}`;
-  const leaseId = `lease-death-${fixture.attemptId}-${suffix}`;
+  const observationId = `observation-death-${fixture.attemptId}-${suffix}`;
   const processReceiptId = `process-receipt-${fixture.attemptId}-${suffix}`;
   const phaseOrdinal = ++deathEvidenceOrdinal;
   const pid = 4100 + ownership.generation;
   const pgid = 4100 + ownership.generation;
-  const payload = canonicalJson({
+  const contextJson = canonicalJson({
+    schema_version: "rickgent.execution-context/v1",
+    attempt_id: fixture.attemptId,
+    phase: "cleanup",
+    phase_ordinal: phaseOrdinal,
+    role: "cleanup",
+  });
+  const executionContextDigest = digest(contextJson);
+  const launchPayloadObject = {
+    schema_version: "rickgent.process-launch.v1",
+    launch_id: launchId,
+    process_receipt_id: processReceiptId,
+    repository_id: fixture.store.location.repositoryId,
     attempt_id: fixture.attemptId,
     ownership_id: ownership.ownershipId,
-    generation: ownership.generation,
-    lease_generation: ownership.generation,
-    context_digest: ownership.contextDigest,
-    process_receipt_id: processReceiptId,
+    owner_generation: ownership.generation,
+    ownership_context_digest: ownership.contextDigest,
+    phase_execution_id: phaseId,
+    context_id: contextId,
+    execution_context_digest: executionContextDigest,
+    spawn_authorization_digest: digest(`spawn:${suffix}`),
     pid,
     pgid,
-    platform_boot_identity: "boot-test-identity",
+    platform: process.platform,
+    boot_identity: "boot-test-identity",
     process_start_identity: `start-${suffix}`,
+    argv_digest: digest(`argv:${suffix}`),
+    environment_digest: digest(`environment:${suffix}`),
+    stdout_path: `/tmp/${fixture.attemptId}-${suffix}.stdout`,
+    stderr_path: `/tmp/${fixture.attemptId}-${suffix}.stderr`,
+    output_limit_bytes: 1024,
+    tail_limit_bytes: 128,
+    created_at: observedAt,
+  };
+  const launchPayload = canonicalJson(launchPayloadObject);
+  const deathPayloadObject = {
+    schema_version: "rickgent.process-group-death.v1",
+    launch_id: launchId,
+    process_receipt_id: processReceiptId,
+    attempt_id: fixture.attemptId,
+    ownership_id: ownership.ownershipId,
+    owner_generation: ownership.generation,
+    ownership_context_digest: ownership.contextDigest,
     phase_execution_id: phaseId,
-    death_observed_at: observedAt,
+    context_id: contextId,
+    execution_context_digest: executionContextDigest,
+    pid,
+    pgid,
+    platform: process.platform,
+    boot_identity: "boot-test-identity",
+    process_start_identity: `start-${suffix}`,
     group_dead: true,
-  });
+    proof_basis: descendantsConfirmedDead ? "authoritative_containment" : "sampled_tracked_identities",
+    tracked_identities_confirmed_dead: descendantsConfirmedDead,
+    descendants_confirmed_dead: descendantsConfirmedDead,
+    death_observed_at: observedAt,
+  };
+  const payload = canonicalJson(deathPayloadObject);
   const database = new DatabaseSync(fixture.store.location.databasePath);
   try {
     database.exec("PRAGMA foreign_keys = ON");
     const ownershipRow = database.prepare(`
-      SELECT owner_token_digest, canonical_context_json
-      FROM attempt_ownership_leases WHERE ownership_id = ? AND attempt_id = ?
+      SELECT ownership_id FROM attempt_ownership_leases WHERE ownership_id = ? AND attempt_id = ?
     `).get(ownership.ownershipId, fixture.attemptId) as SqlRow | undefined;
     if (ownershipRow === undefined) throw new Error("ownership fixture row is missing");
-    const contextJson = String(ownershipRow.canonical_context_json);
     insert(database, "execution_contexts", {
       context_id: contextId,
-      context_digest: ownership.contextDigest,
+      context_digest: executionContextDigest,
       attempt_id: fixture.attemptId,
-      phase: "implement",
+      phase: "cleanup",
       phase_ordinal: phaseOrdinal,
-      role: "worker",
+      role: "cleanup",
       canonical_context_json: contextJson,
       contract_digest: fixture.contractDigest,
       capability_snapshot_digest: fixture.capabilityDigest,
@@ -284,7 +327,7 @@ function appendDeathEvidence(
       model_selection_digest: digest("model"),
       budget_digest: digest("budget"),
       scope_digest: digest("scope"),
-      context_schema_version: "rickgent.attempt-ownership/v1",
+      context_schema_version: "rickgent.execution-context/v1",
       oracle_version: "rickgent.oracle.v1",
       created_at: new Date().toISOString(),
     });
@@ -292,22 +335,11 @@ function appendDeathEvidence(
       phase_execution_id: phaseId,
       attempt_id: fixture.attemptId,
       context_id: contextId,
-      phase: "implement",
+      phase: "cleanup",
       phase_ordinal: phaseOrdinal,
-      role: "worker",
+      role: "cleanup",
       identity_digest: digest(`phase:${fixture.attemptId}:${suffix}`),
       created_at: new Date().toISOString(),
-    });
-    const launchPayload = canonicalJson({
-      attempt_id: fixture.attemptId,
-      ownership_id: ownership.ownershipId,
-      generation: ownership.generation,
-      phase_execution_id: phaseId,
-      process_receipt_id: processReceiptId,
-      pid,
-      pgid,
-      platform_boot_identity: "boot-test-identity",
-      process_start_identity: `start-${suffix}`,
     });
     insert(database, "evidence", {
       evidence_id: launchEvidenceId,
@@ -323,22 +355,37 @@ function appendDeathEvidence(
       external_digest: null,
       external_size: null,
       idempotency_key: `launch:${ownership.ownershipId}:${suffix}`,
-      created_at: new Date().toISOString(),
+      created_at: observedAt,
     });
     if (linkProcessReceipt) {
-      insert(database, "leases", {
-        lease_id: leaseId,
+      insert(database, "attempt_process_launches", {
+        launch_id: launchId,
+        process_receipt_id: processReceiptId,
+        repository_id: fixture.store.location.repositoryId,
         attempt_id: fixture.attemptId,
-        generation: ownership.generation,
-        owner_token_digest: ownershipRow.owner_token_digest,
-        owner_context_id: contextId,
-        heartbeat_at: ownership.heartbeatAt,
-        expires_at: new Date(Date.parse(ownership.heartbeatAt) + 60_000).toISOString(),
-        state: "quarantined",
-        state_version: 0,
-        acquisition_evidence_id: launchEvidenceId,
-        release_evidence_id: null,
-        created_at: new Date().toISOString(),
+        ownership_id: ownership.ownershipId,
+        owner_generation: ownership.generation,
+        ownership_context_digest: ownership.contextDigest,
+        phase_execution_id: phaseId,
+        context_id: contextId,
+        execution_context_digest: executionContextDigest,
+        spawn_authorization_digest: launchPayloadObject.spawn_authorization_digest,
+        pid,
+        pgid,
+        platform: process.platform,
+        boot_identity: "boot-test-identity",
+        process_start_identity: `start-${suffix}`,
+        argv_digest: launchPayloadObject.argv_digest,
+        environment_digest: launchPayloadObject.environment_digest,
+        stdout_path: launchPayloadObject.stdout_path,
+        stderr_path: launchPayloadObject.stderr_path,
+        output_limit_bytes: 1024,
+        tail_limit_bytes: 128,
+        process_group_expected_version: 0,
+        stdout_expected_version: 0,
+        stderr_expected_version: 0,
+        launch_evidence_id: launchEvidenceId,
+        created_at: observedAt,
       });
     }
     insert(database, "evidence", {
@@ -355,28 +402,55 @@ function appendDeathEvidence(
       external_digest: null,
       external_size: null,
       idempotency_key: `death:${ownership.ownershipId}:${suffix}`,
-      created_at: new Date().toISOString(),
+      created_at: observedAt,
     });
     if (linkProcessReceipt) {
-      insert(database, "process_receipts", {
+      const payloadDigest = digest(payload);
+      insert(database, "attempt_process_observations", {
+        observation_id: observationId,
+        launch_id: launchId,
+        attempt_id: fixture.attemptId,
+        sequence: 1,
+        kind: "group_death",
+        evidence_id: evidenceId,
+        schema_version: "rickgent.process-group-death.v1",
+        payload_digest: payloadDigest,
+        created_at: observedAt,
+      });
+      const terminalPayload = canonicalJson({
+        schema_version: "rickgent.process-terminal.v1",
+        launch_id: launchId,
         process_receipt_id: processReceiptId,
-        phase_execution_id: phaseId,
-        context_id: contextId,
-        lease_id: leaseId,
-        lease_generation: ownership.generation,
-        pid,
-        pgid,
-        boot_identity: "boot-test-identity",
-        process_start_identity: `start-${suffix}`,
-        argv_digest: digest(`argv:${suffix}`),
-        environment_digest: digest(`environment:${suffix}`),
-        launch_evidence_id: launchEvidenceId,
-        exit_evidence_id: null,
-        termination_evidence_id: null,
-        group_death_evidence_id: evidenceId,
-        stdout_evidence_id: null,
-        stderr_evidence_id: null,
-        created_at: new Date().toISOString(),
+        outcome: "exited",
+        exit_code: 0,
+        signal: null,
+        timed_out: false,
+        group_dead: true,
+        descendants_confirmed_dead: descendantsConfirmedDead,
+        observation_refs: [{
+          observation_id: observationId,
+          sequence: 1,
+          kind: "group_death",
+          evidence_id: evidenceId,
+          schema_version: "rickgent.process-group-death.v1",
+          payload_digest: payloadDigest,
+          created_at: observedAt,
+        }],
+        created_at: observedAt,
+      });
+      insert(database, "attempt_process_terminal_receipts", {
+        process_receipt_id: processReceiptId,
+        launch_id: launchId,
+        attempt_id: fixture.attemptId,
+        outcome: "exited",
+        exit_code: 0,
+        signal: null,
+        timed_out: 0,
+        group_dead: 1,
+        descendants_confirmed_dead: descendantsConfirmedDead ? 1 : 0,
+        observation_count: 1,
+        result_digest: digest(terminalPayload),
+        created_at: observedAt,
       });
     }
   } finally {
@@ -737,6 +811,44 @@ describe("owner-checked attempt ownership", () => {
         expiredOwnershipId: original.ownership.ownershipId,
         deathEvidenceId,
         idempotencyKey: "recovery:stale-observation",
+      })), "RICKGENT_STATE_OWNER_MISMATCH");
+    } finally {
+      fixture.store.close();
+    }
+  });
+
+  it("persists partial group-death truth but refuses stale recovery until descendant death is confirmed", () => {
+    const fixture = seed("recovery-partial-death");
+    try {
+      const authority = new LeaseAuthority(fixture.store);
+      const original = authority.acquire(authority.prepareAcquisition({
+        attemptId: fixture.attemptId,
+        idempotencyKey: "acquire",
+        ttlMs: 1_000,
+      }));
+      const database = new DatabaseSync(fixture.store.location.databasePath);
+      try {
+        database.prepare(`
+          UPDATE attempt_ownership_leases
+          SET heartbeat_at = ?, expires_at = ?, state_version = state_version + 1
+          WHERE ownership_id = ?
+        `).run("2020-01-01T00:00:00.000Z", "2020-01-01T00:01:00.000Z", original.ownership.ownershipId);
+      } finally {
+        database.close();
+      }
+      const deathEvidenceId = appendDeathEvidence(fixture, {
+        ...original.ownership,
+        heartbeatAt: "2020-01-01T00:00:00.000Z",
+      }, "partial-death", new Date().toISOString(), true, false);
+      expect(all(
+        fixture.store.location.databasePath,
+        "SELECT group_dead, descendants_confirmed_dead FROM attempt_process_terminal_receipts",
+      )).toEqual([{ group_dead: 1, descendants_confirmed_dead: 0 }]);
+      expectCode(() => authority.recoverStale(authority.prepareStaleRecovery({
+        attemptId: fixture.attemptId,
+        expiredOwnershipId: original.ownership.ownershipId,
+        deathEvidenceId,
+        idempotencyKey: "recovery:partial-death",
       })), "RICKGENT_STATE_OWNER_MISMATCH");
     } finally {
       fixture.store.close();

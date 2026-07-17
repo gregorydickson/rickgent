@@ -48,9 +48,21 @@ export const ATTEMPT_OWNERSHIP_MIGRATION = deepFreeze({
   status: "implemented",
 } as const);
 
+/** Additive executable migration metadata; the frozen v1 decision catalog is unchanged. */
+export const PROCESS_SUPERVISION_MIGRATION = deepFreeze({
+  version: 3,
+  number: "003",
+  name: "003_durable_process_supervision",
+  sql_owner_ticket: "t19",
+  released_checksum: "sha256:c94e5b62aa8dae64740685c13159f2d19610909729c789e6638deb59855ff8ce",
+  sqlite_schema_checksum: "sha256:c208339c0350aae8bd1ee3784da4e4ffc559b41e9c6079530a89da53c08753e3",
+  status: "implemented",
+} as const);
+
 export const STATE_MIGRATIONS = deepFreeze([
   INITIAL_STATE_MIGRATION,
   ATTEMPT_OWNERSHIP_MIGRATION,
+  PROCESS_SUPERVISION_MIGRATION,
 ] as const);
 
 export const STATE_TABLES = deepFreeze([
@@ -129,9 +141,25 @@ export const ATTEMPT_OWNERSHIP_STATE_TABLES = deepFreeze([
   "attempt_ownership_operations",
 ] as const);
 
+/** Additive v3 ProcessSupervisor authority tables. */
+export const PROCESS_SUPERVISION_STATE_TABLES = deepFreeze([
+  "attempt_process_launches",
+  "attempt_process_observations",
+  "attempt_process_terminal_receipts",
+] as const);
+
+export const PROCESS_SUPERVISION_APPEND_ONLY_STATE_TABLES = PROCESS_SUPERVISION_STATE_TABLES;
+
 export const ALL_STATE_TABLES = deepFreeze([
   ...STATE_TABLES,
   ...ATTEMPT_OWNERSHIP_STATE_TABLES,
+  ...PROCESS_SUPERVISION_STATE_TABLES,
+] as const);
+
+export const ALL_APPEND_ONLY_STATE_TABLES = deepFreeze([
+  ...APPEND_ONLY_STATE_TABLES,
+  "attempt_ownership_operations",
+  ...PROCESS_SUPERVISION_APPEND_ONLY_STATE_TABLES,
 ] as const);
 
 export const SQLITE_PRAGMAS = deepFreeze([
@@ -152,6 +180,8 @@ export const STATE_TRANSACTION_NAMES = deepFreeze([
   "transition_entity_cas",
   "acquire_lease",
   "heartbeat_lease",
+  "process_supervisor_launch",
+  "process_supervisor_terminal",
   "begin_lease_cleanup",
   "release_lease",
   "reserve_resource",

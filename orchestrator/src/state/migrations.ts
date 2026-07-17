@@ -907,6 +907,164 @@ CREATE TRIGGER attempt_ownership_operations_no_delete BEFORE DELETE ON attempt_o
 BEGIN SELECT RAISE(ABORT, 'attempt ownership operations are append-only'); END;
 `;
 
+/*
+ * Migration 003 is the durable ProcessSupervisor substrate. It deliberately
+ * does not extend the released v1 process_receipts table: that table is tied
+ * to the legacy leases aggregate and cannot represent a launch-first,
+ * append-only lifecycle. The new launch is the immutable pre-exec identity,
+ * observations are its ordered evidence chain, and one terminal receipt seals
+ * the chain. Ownership and execution-context digests remain separate facts.
+ */
+const PROCESS_SUPERVISION_SQL = `
+CREATE TABLE attempt_process_launches (
+  launch_id TEXT PRIMARY KEY ${ID("launch_id")},
+  process_receipt_id TEXT NOT NULL ${ID("process_receipt_id")},
+  repository_id TEXT NOT NULL ${ID("repository_id")},
+  attempt_id TEXT NOT NULL ${ID("attempt_id")},
+  ownership_id TEXT NOT NULL ${ID("ownership_id")},
+  owner_generation INTEGER NOT NULL CHECK (owner_generation > 0),
+  ownership_context_digest TEXT NOT NULL ${DIGEST("ownership_context_digest")},
+  phase_execution_id TEXT NOT NULL ${ID("phase_execution_id")},
+  context_id TEXT NOT NULL ${ID("context_id")},
+  execution_context_digest TEXT NOT NULL ${DIGEST("execution_context_digest")},
+  spawn_authorization_digest TEXT NOT NULL ${DIGEST("spawn_authorization_digest")},
+  pid INTEGER NOT NULL CHECK (pid > 0),
+  pgid INTEGER NOT NULL CHECK (pgid > 0),
+  platform TEXT NOT NULL ${ID("platform")},
+  boot_identity TEXT NOT NULL ${ID("boot_identity")},
+  process_start_identity TEXT NOT NULL ${ID("process_start_identity")},
+  argv_digest TEXT NOT NULL ${DIGEST("argv_digest")},
+  environment_digest TEXT NOT NULL ${DIGEST("environment_digest")},
+  stdout_path TEXT NOT NULL ${ID("stdout_path")},
+  stderr_path TEXT NOT NULL ${ID("stderr_path")},
+  output_limit_bytes INTEGER NOT NULL CHECK (output_limit_bytes > 0),
+  tail_limit_bytes INTEGER NOT NULL CHECK (tail_limit_bytes > 0 AND tail_limit_bytes <= output_limit_bytes),
+  process_group_expected_version INTEGER NOT NULL CHECK (process_group_expected_version >= 0),
+  stdout_expected_version INTEGER NOT NULL CHECK (stdout_expected_version >= 0),
+  stderr_expected_version INTEGER NOT NULL CHECK (stderr_expected_version >= 0),
+  launch_evidence_id TEXT NOT NULL ${ID("launch_evidence_id")},
+  created_at TEXT NOT NULL ${UTC("created_at")},
+  FOREIGN KEY (repository_id) REFERENCES repositories(repository_id) ON DELETE RESTRICT,
+  FOREIGN KEY (attempt_id) REFERENCES attempts(attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (ownership_id, attempt_id, owner_generation)
+    REFERENCES attempt_ownership_leases(ownership_id, attempt_id, generation) ON DELETE RESTRICT,
+  FOREIGN KEY (phase_execution_id, attempt_id)
+    REFERENCES phase_executions(phase_execution_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (context_id, attempt_id)
+    REFERENCES execution_contexts(context_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (phase_execution_id, context_id)
+    REFERENCES phase_executions(phase_execution_id, context_id) ON DELETE RESTRICT,
+  FOREIGN KEY (launch_evidence_id, attempt_id)
+    REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT
+) STRICT;
+CREATE UNIQUE INDEX attempt_process_launches_receipt_uq
+  ON attempt_process_launches(process_receipt_id);
+CREATE UNIQUE INDEX attempt_process_launches_phase_uq
+  ON attempt_process_launches(phase_execution_id);
+CREATE UNIQUE INDEX attempt_process_launches_identity_attempt_uq
+  ON attempt_process_launches(launch_id, attempt_id);
+CREATE UNIQUE INDEX attempt_process_launches_receipt_chain_uq
+  ON attempt_process_launches(process_receipt_id, launch_id, attempt_id);
+
+CREATE TABLE attempt_process_observations (
+  observation_id TEXT PRIMARY KEY ${ID("observation_id")},
+  launch_id TEXT NOT NULL ${ID("launch_id")},
+  attempt_id TEXT NOT NULL ${ID("attempt_id")},
+  sequence INTEGER NOT NULL CHECK (sequence > 0),
+  kind TEXT NOT NULL ${ID("kind")},
+  evidence_id TEXT NOT NULL ${ID("evidence_id")},
+  schema_version TEXT NOT NULL ${ID("schema_version")},
+  payload_digest TEXT NOT NULL ${DIGEST("payload_digest")},
+  created_at TEXT NOT NULL ${UTC("created_at")},
+  FOREIGN KEY (launch_id, attempt_id)
+    REFERENCES attempt_process_launches(launch_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (evidence_id, attempt_id)
+    REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  CHECK (kind <> 'group_death' OR schema_version = 'rickgent.process-group-death.v1')
+) STRICT;
+CREATE UNIQUE INDEX attempt_process_observations_sequence_uq
+  ON attempt_process_observations(launch_id, sequence);
+CREATE UNIQUE INDEX attempt_process_observations_evidence_uq
+  ON attempt_process_observations(evidence_id);
+CREATE UNIQUE INDEX attempt_process_observations_identity_launch_uq
+  ON attempt_process_observations(observation_id, launch_id);
+
+CREATE TABLE attempt_process_terminal_receipts (
+  process_receipt_id TEXT PRIMARY KEY ${ID("process_receipt_id")},
+  launch_id TEXT NOT NULL ${ID("launch_id")},
+  attempt_id TEXT NOT NULL ${ID("attempt_id")},
+  outcome TEXT NOT NULL ${ID("outcome")},
+  exit_code INTEGER,
+  signal TEXT,
+  timed_out INTEGER NOT NULL CHECK (timed_out IN (0,1)),
+  group_dead INTEGER NOT NULL CHECK (group_dead IN (0,1)),
+  descendants_confirmed_dead INTEGER NOT NULL CHECK (descendants_confirmed_dead IN (0,1)),
+  observation_count INTEGER NOT NULL CHECK (observation_count > 0),
+  result_digest TEXT NOT NULL ${DIGEST("result_digest")},
+  created_at TEXT NOT NULL ${UTC("created_at")},
+  FOREIGN KEY (process_receipt_id, launch_id, attempt_id)
+    REFERENCES attempt_process_launches(process_receipt_id, launch_id, attempt_id) ON DELETE RESTRICT,
+  CHECK (exit_code IS NULL OR exit_code >= 0),
+  CHECK (signal IS NULL OR length(signal) > 0),
+  CHECK (descendants_confirmed_dead <= group_dead)
+) STRICT;
+CREATE UNIQUE INDEX attempt_process_terminal_receipts_launch_uq
+  ON attempt_process_terminal_receipts(launch_id);
+
+CREATE TRIGGER attempt_process_launches_evidence_lineage BEFORE INSERT ON attempt_process_launches
+WHEN NOT EXISTS (
+  SELECT 1 FROM evidence e
+  WHERE e.evidence_id = NEW.launch_evidence_id
+    AND e.attempt_id = NEW.attempt_id
+    AND e.phase_execution_id = NEW.phase_execution_id
+    AND e.context_id = NEW.context_id
+    AND e.producer_service = 'ProcessSupervisor'
+    AND e.schema_version = 'rickgent.process-launch.v1'
+)
+BEGIN SELECT RAISE(ABORT, 'process launch evidence lineage is invalid'); END;
+
+CREATE TRIGGER attempt_process_observations_evidence_lineage BEFORE INSERT ON attempt_process_observations
+WHEN NOT EXISTS (
+  SELECT 1
+  FROM evidence e
+  JOIN attempt_process_launches l ON l.launch_id = NEW.launch_id
+  WHERE e.evidence_id = NEW.evidence_id
+    AND e.attempt_id = NEW.attempt_id
+    AND e.phase_execution_id = l.phase_execution_id
+    AND e.context_id = l.context_id
+    AND e.producer_service = 'ProcessSupervisor'
+    AND e.schema_version = NEW.schema_version
+    AND e.content_digest = NEW.payload_digest
+)
+BEGIN SELECT RAISE(ABORT, 'process observation evidence lineage is invalid'); END;
+
+CREATE TRIGGER attempt_process_terminal_receipts_complete_chain BEFORE INSERT ON attempt_process_terminal_receipts
+WHEN NOT EXISTS (
+  SELECT 1 FROM attempt_process_observations o
+  WHERE o.launch_id = NEW.launch_id
+  GROUP BY o.launch_id
+  HAVING COUNT(*) = NEW.observation_count
+     AND MIN(o.sequence) = 1
+     AND MAX(o.sequence) = NEW.observation_count
+)
+BEGIN SELECT RAISE(ABORT, 'process terminal receipt requires a contiguous observation chain'); END;
+
+CREATE TRIGGER attempt_process_terminal_receipts_death_claim BEFORE INSERT ON attempt_process_terminal_receipts
+WHEN NEW.group_dead = 1 AND NOT EXISTS (
+  SELECT 1 FROM attempt_process_observations o
+  WHERE o.launch_id = NEW.launch_id AND o.kind = 'group_death'
+)
+BEGIN SELECT RAISE(ABORT, 'process terminal death claim lacks group-death evidence'); END;
+
+CREATE TRIGGER attempt_process_observations_no_after_terminal BEFORE INSERT ON attempt_process_observations
+WHEN EXISTS (SELECT 1 FROM attempt_process_terminal_receipts t WHERE t.launch_id = NEW.launch_id)
+BEGIN SELECT RAISE(ABORT, 'process observation chain is terminal'); END;
+
+${appendOnlyTriggers("attempt_process_launches")}
+${appendOnlyTriggers("attempt_process_observations")}
+${appendOnlyTriggers("attempt_process_terminal_receipts")}
+`;
+
 function releasedObjectNames(sql: string, kind: "TABLE" | "INDEX" | "TRIGGER"): readonly string[] {
   const names = [...sql.matchAll(new RegExp(`CREATE (?:UNIQUE )?${kind} ([a-z0-9_]+)`, "g"))]
     .map((match) => match[1])
@@ -920,7 +1078,14 @@ export const INITIAL_STATE_SCHEMA_OBJECTS = Object.freeze({
   triggers: releasedObjectNames(INITIAL_SQL, "TRIGGER"),
 });
 
-const LATEST_SQL = `${INITIAL_SQL}${ATTEMPT_OWNERSHIP_SQL}`;
+const ATTEMPT_OWNERSHIP_STATE_SQL = `${INITIAL_SQL}${ATTEMPT_OWNERSHIP_SQL}`;
+const LATEST_SQL = `${ATTEMPT_OWNERSHIP_STATE_SQL}${PROCESS_SUPERVISION_SQL}`;
+
+export const ATTEMPT_OWNERSHIP_STATE_SCHEMA_OBJECTS = Object.freeze({
+  tables: releasedObjectNames(ATTEMPT_OWNERSHIP_STATE_SQL, "TABLE"),
+  indexes: releasedObjectNames(ATTEMPT_OWNERSHIP_STATE_SQL, "INDEX"),
+  triggers: releasedObjectNames(ATTEMPT_OWNERSHIP_STATE_SQL, "TRIGGER"),
+});
 
 export const LATEST_STATE_SCHEMA_OBJECTS = Object.freeze({
   tables: releasedObjectNames(LATEST_SQL, "TABLE"),
@@ -947,8 +1112,14 @@ export const INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM =
 export const ATTEMPT_OWNERSHIP_MIGRATION_CHECKSUM =
   "sha256:8dc1be6f92fbe281149b651c89fd1b2e8d7b4f3464c2f85a2113aa851123473d" as const;
 
-export const LATEST_STATE_SQLITE_SCHEMA_CHECKSUM =
+export const ATTEMPT_OWNERSHIP_STATE_SQLITE_SCHEMA_CHECKSUM =
   "sha256:eb83ea80db2cc06eb46ffe135994fe79cf4f53146b5f71ac8a876b46f6224bbc" as const;
+
+export const PROCESS_SUPERVISION_MIGRATION_CHECKSUM =
+  "sha256:c94e5b62aa8dae64740685c13159f2d19610909729c789e6638deb59855ff8ce" as const;
+
+export const LATEST_STATE_SQLITE_SCHEMA_CHECKSUM =
+  "sha256:c208339c0350aae8bd1ee3784da4e4ffc559b41e9c6079530a89da53c08753e3" as const;
 
 export const STATE_MIGRATIONS: readonly StateMigration[] = Object.freeze([
   Object.freeze({
@@ -964,6 +1135,13 @@ export const STATE_MIGRATIONS: readonly StateMigration[] = Object.freeze([
     name: "002_attempt_ownership_primitive",
     sql: ATTEMPT_OWNERSHIP_SQL,
     checksum: ATTEMPT_OWNERSHIP_MIGRATION_CHECKSUM,
+  }),
+  Object.freeze({
+    version: 3,
+    number: "003",
+    name: "003_durable_process_supervision",
+    sql: PROCESS_SUPERVISION_SQL,
+    checksum: PROCESS_SUPERVISION_MIGRATION_CHECKSUM,
   }),
 ]);
 

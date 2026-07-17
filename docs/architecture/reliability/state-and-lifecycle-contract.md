@@ -1,12 +1,12 @@
 # State and lifecycle contract
 
 Status: frozen v1 contract with additive migrations implemented through
-`002_attempt_ownership_primitive` (`rickgent-state-and-lifecycle-v1`, schema
+`003_durable_process_supervision` (`rickgent-state-and-lifecycle-v1`, schema
 `1.0.0`). The normative, closed machine contract is
 [`state-and-lifecycle-contract.json`](./state-and-lifecycle-contract.json).
-The Phase 18 attempt-ownership primitive is implemented internally but is not
-a production dispatch capability: Phase 22 owns caller cutover and Phase 19
-owns real process-death evidence production. Resume, retry, automatic
+The Phase 18 attempt-ownership and Phase 19 process-supervision primitives are
+implemented internally but are not a production dispatch capability: Phase 22
+owns caller cutover and Phase 21 owns physical cleanup/release proof. Resume, retry, automatic
 reconciliation, and delivery remain unavailable.
 
 ## Repository identity and state root
@@ -87,11 +87,18 @@ and resulting latest `sqlite_schema` checksum
 `sha256:eb83ea80db2cc06eb46ffe135994fe79cf4f53146b5f71ac8a876b46f6224bbc`.
 It adds the pre-side-effect ownership aggregate without editing or rebuilding
 the released v1 lease tables.
+Migration `003_durable_process_supervision` is implemented by t19 with
+immutable SQL checksum
+`sha256:c94e5b62aa8dae64740685c13159f2d19610909729c789e6638deb59855ff8ce`
+and resulting latest `sqlite_schema` checksum
+`sha256:c208339c0350aae8bd1ee3784da4e4ffc559b41e9c6079530a89da53c08753e3`.
+It adds launch-first process identity, ordered observations, and one terminal
+seal without mutating the frozen v1 process-receipt table.
 `schema_migrations` records the immutable version, unique name,
 exact-definition SHA-256, and application time. Its rows and
 `PRAGMA user_version` must agree. Released migrations never change; later
-versions append `003`, `004`, and so on. This release activates only the
-internal attempt-ownership/resource primitive. Reserved allocation, oracle,
+versions append `004`, `005`, and so on. This release activates only the
+internal attempt-ownership/resource and process-supervision primitives. Reserved allocation, oracle,
 promotion, production cutover, public recovery, and delivery remain inactive.
 
 Creation and each migration are atomic. Before use, open checks
@@ -142,6 +149,12 @@ Migration 002 adds three more `STRICT` tables:
 31. `attempt_ownership_leases`
 32. `attempt_resource_claims`
 33. `attempt_ownership_operations`
+
+Migration 003 adds three append-only `STRICT` tables:
+
+34. `attempt_process_launches`
+35. `attempt_process_observations`
+36. `attempt_process_terminal_receipts`
 
 These tables separate pre-materialization ownership from runnable execution
 contexts. Acquisition inserts one live ownership generation and all eleven fixed
@@ -203,15 +216,27 @@ absent until t21 can supply validated physical-disposition proofs. Partial uniqu
 only one `live|cleanup_pending` ownership generation per attempt. Stale cleanup
 requires expiry and exact immutable process-group death evidence, quarantines
 the old owner, and transfers claims only into cleanup under a new
-recovery-only generation. Phase 19 remains responsible for producing real
-process-death evidence with process receipt, PID/PGID, boot/start, phase,
-context, and post-heartbeat observation identity. The consumer verifies the
-evidence content digest and its exact durable process-receipt, execution-context,
-and lease lineage rather than trusting payload identifiers. A crashed recovery cleanup
+recovery-only generation. Phase 19 now produces real process-group and sampled
+tracked-identity death evidence through a runtime-unforgeable supervisor
+command. The immutable launch binds
+PID/PGID, platform boot/start identity, ownership generation and ownership
+context separately from phase/execution-context identity before target exec.
+Ordered observations bind bounded stdout/stderr receipts, exit, escalation,
+group death, and infrastructure failure to one launch; one terminal receipt
+seals their exact IDs, schemas, content digests, ordering, and result digest.
+Group death, death of every sampled exact PID/start identity, and authoritative
+all-descendant death remain separate facts. The default POSIX adapter records
+`sampled_tracked_identities` and never upgrades a process-table sampling gap
+into proof that no descendant escaped. Only t22's validated
+`authoritative_containment` backend may set all-descendant death, and only that
+fact together with group death can authorize stale cleanup recovery. The
+consumer verifies the evidence content
+digest and its exact durable launch, terminal, execution-context, and ownership
+lineage rather than trusting payload identifiers. A crashed recovery cleanup
 generation can itself be recovered under the same exact rule.
 The generic evidence appender rejects the reserved `ProcessSupervisor`
-producer label; t19 must add a runtime-authorized producer rather than turning
-that label into caller-controlled authority.
+producer label; the supervisor's symbol-gated Store path is the only current
+producer, and the generic v1 lifecycle process-receipt writer is disabled.
 
 The released-v1 mutable `leases` and `attempt_resources` rows are never direct
 oracle inputs. When present, their lease acquisition and CAS history is represented by immutable
@@ -374,6 +399,8 @@ t13 implements durable SQLite and migrations, t14 allocation, t15 oracle and
 promotion, t16 caller cutover selectors, and t17 the bounded common-transaction
 crash and retry-identity proof. Full recovery/reconciliation remains reserved
 for t29 after the operational lifecycle services exist. The t18
-attempt-resource primitive is implemented but disabled for production;
-t19–t23 and t29 own its remaining evidence, cleanup, integration, stress, and
-reconciliation boundaries. Automatic delivery remains reserved.
+attempt-resource and t19 process-supervision primitives are implemented but
+disabled for production. t19's sampled tracker is diagnostic and cleanup-safe,
+not release authority; t22 must supply authoritative macOS/Linux containment
+before cutover. t20–t23 and t29 own attribution, cleanup, integration, stress,
+and reconciliation boundaries. Automatic delivery remains reserved.

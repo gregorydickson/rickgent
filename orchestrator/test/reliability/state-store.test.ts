@@ -436,7 +436,7 @@ describe("durable state-store bootstrap and preservation", () => {
     }
   });
 
-  it("upgrades a released v1 database to the byte-identical v2 schema without rebuilding v1 tables", () => {
+  it("upgrades a released v1 database to the byte-identical latest schema without rebuilding v1 tables", () => {
     const repo = makeRepo("v1-upgrade");
     const location = resolveStateLocation(repo);
     const preservedManifestJson = JSON.stringify({ schema_version: "rickgent.v1-preserved/v1" });
@@ -469,8 +469,8 @@ describe("durable state-store bootstrap and preservation", () => {
 
     const store = openStateStore({ repoPath: repo });
     try {
-      expect(store.schemaVersion).toBe(2);
-      expect(count(location.databasePath, "schema_migrations")).toBe(2);
+      expect(store.schemaVersion).toBe(LATEST_STATE_SCHEMA_VERSION);
+      expect(count(location.databasePath, "schema_migrations")).toBe(STATE_MIGRATIONS.length);
       expect(queryOne(location.databasePath, "SELECT canonical_manifest_json FROM run_manifests WHERE manifest_digest = ?", preservedManifestDigest))
         .toEqual({ canonical_manifest_json: preservedManifestJson });
       const upgraded = openRaw(location.databasePath, true);
@@ -480,6 +480,77 @@ describe("durable state-store bootstrap and preservation", () => {
       } finally {
         upgraded.close();
       }
+    } finally {
+      store.close();
+    }
+  });
+
+  it("upgrades the released v2 ownership schema through additive migration 003 and preserves v2 rows", () => {
+    const repo = makeRepo("v2-upgrade");
+    const location = resolveStateLocation(repo);
+    const preservedManifestJson = JSON.stringify({ schema_version: "rickgent.v2-preserved/v1" });
+    const preservedManifestDigest = digest(preservedManifestJson);
+    mkdirSync(location.stateDirectory, { mode: 0o700 });
+    mkdirSync(location.resourceDirectory, { mode: 0o700 });
+    const database = new DatabaseSync(location.databasePath, {
+      enableForeignKeyConstraints: true,
+      timeout: 1_000,
+    });
+    try {
+      database.exec("PRAGMA journal_mode = WAL");
+      for (const migration of STATE_MIGRATIONS.slice(0, 2)) {
+        database.exec(migration.sql);
+        database.prepare("INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)")
+          .run(migration.version, migration.name, migration.checksum, FIXED_TIME);
+      }
+      insert(database, "run_manifests", {
+        manifest_digest: preservedManifestDigest,
+        schema_version: "rickgent.v2-preserved/v1",
+        canonical_manifest_json: preservedManifestJson,
+        capability_snapshot_digest: digest("v2-capability"),
+        context_schema_version: "rickgent.execution-context/v1",
+        oracle_version: "rickgent.oracle.v1",
+        created_at: FIXED_TIME,
+      });
+      database.exec("PRAGMA user_version = 2");
+    } finally {
+      database.close();
+    }
+    chmodSync(location.databasePath, 0o600);
+
+    const store = openStateStore({ repoPath: repo });
+    try {
+      expect(store.schemaVersion).toBe(3);
+      expect(queryOne(location.databasePath, "SELECT canonical_manifest_json FROM run_manifests WHERE manifest_digest = ?", preservedManifestDigest))
+        .toEqual({ canonical_manifest_json: preservedManifestJson });
+      const upgraded = openRaw(location.databasePath, true);
+      try {
+        const strict = upgraded.prepare("PRAGMA table_list").all() as Array<{ name: string; strict: number }>;
+        for (const table of ["attempt_process_launches", "attempt_process_observations", "attempt_process_terminal_receipts"]) {
+          expect(strict.find((entry) => entry.name === table)?.strict).toBe(1);
+          expect(upgraded.prepare("SELECT name FROM sqlite_schema WHERE type = 'trigger' AND name = ?").get(`${table}_no_update`)).toBeDefined();
+          expect(upgraded.prepare("SELECT name FROM sqlite_schema WHERE type = 'trigger' AND name = ?").get(`${table}_no_delete`)).toBeDefined();
+        }
+        const launchForeignKeys = upgraded.prepare("PRAGMA foreign_key_list(attempt_process_launches)").all() as Array<{ table: string }>;
+        expect(launchForeignKeys.some((foreignKey) => foreignKey.table === "attempt_ownership_leases")).toBe(true);
+        expect(launchForeignKeys.some((foreignKey) => foreignKey.table === "leases")).toBe(false);
+        expect(upgraded.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      } finally {
+        upgraded.close();
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+  it("rejects process truth that was not minted by ProcessSupervisor", () => {
+    const store = openStateStore({ repoPath: makeRepo("process-authority") });
+    try {
+      expect(() => store.commitAuthorizedProcessLaunch({} as never)).toThrow(/not minted by ProcessSupervisor/);
+      expect(() => store.commitAuthorizedProcessTerminal({} as never)).toThrow(/not minted by ProcessSupervisor/);
+      expect(count(store.location.databasePath, "attempt_process_launches")).toBe(0);
+      expect(count(store.location.databasePath, "attempt_process_observations")).toBe(0);
+      expect(count(store.location.databasePath, "attempt_process_terminal_receipts")).toBe(0);
     } finally {
       store.close();
     }

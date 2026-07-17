@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "contract_id": "rickgent-state-and-lifecycle-v1",
   "decision_status": "frozen_decision_only",
-  "decision_digest": "sha256:5d4924597465410459346f8244849dbb3cfba1ef0f83c02c9466997e3bb76331",
+  "decision_digest": "sha256:bd358e547129cd841119d802d9157a25d6f367dbc7ea7f5bf31cdab723cae19e",
   "parent_authority": {
     "contract_id": "rickgent-trust-spine-v1",
     "path": "docs/architecture/reliability/trust-spine-contract.json"
@@ -10,8 +10,8 @@
   "activation_boundary": {
     "decision_artifacts_enable_capabilities": false,
     "implementation_status": "partial_internal_primitives",
-    "adoption_requires_tickets": ["t13", "t14", "t15", "t16", "t17", "t18"],
-    "production_ownership_activation_requires_tickets": ["t19", "t20", "t21", "t22", "t23", "t29"],
+    "adoption_requires_tickets": ["t13", "t14", "t15", "t16", "t17", "t18", "t19"],
+    "production_ownership_activation_requires_tickets": ["t20", "t21", "t22", "t23", "t29"],
     "forbidden_in_this_ticket": [
       "switch_production_caller",
       "spawn_attempt_process",
@@ -137,9 +137,18 @@
       "released_checksum": "sha256:8dc1be6f92fbe281149b651c89fd1b2e8d7b4f3464c2f85a2113aa851123473d",
       "sqlite_schema_checksum": "sha256:eb83ea80db2cc06eb46ffe135994fe79cf4f53146b5f71ac8a876b46f6224bbc",
         "status": "implemented"
+      },
+      {
+        "version": 3,
+        "number": "003",
+        "name": "003_durable_process_supervision",
+        "sql_owner_ticket": "t19",
+        "released_checksum": "sha256:c94e5b62aa8dae64740685c13159f2d19610909729c789e6638deb59855ff8ce",
+        "sqlite_schema_checksum": "sha256:c208339c0350aae8bd1ee3784da4e4ffc559b41e9c6079530a89da53c08753e3",
+        "status": "implemented"
       }
     ],
-    "future_policy": "append 002, 003, and later; never edit a released name, definition, or checksum"
+    "future_policy": "append 004 and later; never edit a released name, definition, or checksum"
   },
   "entity_model": {
     "all_tables_strict": true,
@@ -496,6 +505,8 @@
       {"name": "transition_entity_cas", "begin": "BEGIN IMMEDIATE", "owner": "TransitionService", "cas": true, "owner_check": true},
       {"name": "acquire_lease", "begin": "BEGIN IMMEDIATE", "owner": "LeaseService", "cas": true, "owner_check": true},
       {"name": "heartbeat_lease", "begin": "BEGIN IMMEDIATE", "owner": "LeaseService", "cas": true, "owner_check": true},
+      {"name": "process_supervisor_launch", "begin": "BEGIN IMMEDIATE", "owner": "ProcessSupervisor", "cas": true, "owner_check": true},
+      {"name": "process_supervisor_terminal", "begin": "BEGIN IMMEDIATE", "owner": "ProcessSupervisor", "cas": false, "owner_check": true},
       {"name": "begin_lease_cleanup", "begin": "BEGIN IMMEDIATE", "owner": "LeaseService", "cas": true, "owner_check": true},
       {"name": "release_lease", "begin": "BEGIN IMMEDIATE", "owner": "LeaseService", "cas": true, "owner_check": true},
       {"name": "reserve_resource", "begin": "BEGIN IMMEDIATE", "owner": "ResourceService", "cas": true, "owner_check": true},
@@ -630,10 +641,11 @@
     }
   },
   "resource_identity": {
-    "status": "internal_primitive_implemented",
-    "ownership_tables": ["attempt_ownership_leases", "attempt_resource_claims", "attempt_ownership_operations"],
+    "status": "process_supervisor_primitive_implemented",
+    "ownership_tables": ["attempt_ownership_leases", "attempt_resource_claims", "attempt_ownership_operations", "attempt_process_launches", "attempt_process_observations", "attempt_process_terminal_receipts"],
     "production_cutover_ticket": "t22",
     "process_death_evidence_producer_ticket": "t19",
+    "all_descendant_death_authority_ticket": "t22",
     "terminal_disposition_producer_ticket": "t21",
     "kinds": ["delivery_ref", "attempt_ref", "worktree", "isolated_index", "policy_context", "policy_bundle", "process_group", "stdout", "stderr", "verification_output", "salvage_archive"],
     "delivery_ref_template": "refs/rickgent/runs/<run-id>/delivery",
@@ -643,10 +655,25 @@
     "private_attempt_directory_mode": "0700",
     "fixed_slot_names": true,
     "reserve_before_side_effect": true,
-    "process_identity_fields": ["pid", "pgid", "platform_boot_identity", "process_start_identity", "phase_execution_id", "context_digest", "lease_generation"],
+    "process_identity_fields": ["pid", "pgid", "platform", "boot_identity", "process_start_identity", "phase_execution_id", "context_id", "ownership_id", "owner_generation"],
     "pid_alone_is_ownership_proof": false,
+    "process_death_proof_bases": {
+      "sampled_tracked_identities": {
+        "producer_ticket": "t19",
+        "proves": ["process-group death", "death of every sampled exact PID/start identity"],
+        "does_not_prove": "absence or death of descendants that escaped between process-table samples",
+        "all_descendant_death": false,
+        "lease_release_authority": false
+      },
+      "authoritative_containment": {
+        "producer_ticket": "t22",
+        "proves": ["authoritative containment membership", "death of every contained process"],
+        "all_descendant_death": true,
+        "lease_release_authority": true
+      }
+    },
     "owner_mutation_checks": ["owner_token_digest", "lease_generation", "owner_context", "resource_state", "resource_version"],
-    "stale_recovery_requires": ["expired heartbeat", "digest-valid immutable recovery evidence", "durably joined process receipt identity", "exact receipt PID and PGID", "exact receipt platform boot identity", "exact receipt process start identity", "exact receipt phase execution identity", "exact receipt lease generation and owner token digest", "exact receipt execution-context digest", "death observation at or after the latest heartbeat", "proven old process-group death", "transition to cleanup before new generation ownership"],
+    "stale_recovery_requires": ["expired heartbeat", "digest-valid immutable recovery evidence", "durably joined process receipt identity", "exact receipt PID and PGID", "exact receipt platform boot identity", "exact receipt process start identity", "exact receipt phase execution identity", "exact receipt lease generation and owner token digest", "exact receipt execution-context digest", "death observation at or after the latest heartbeat", "authoritative_containment proof basis", "proven old process-group death", "proven death of every contained descendant", "transition to cleanup before new generation ownership"],
     "ownership_table_contract": {
       "attempt_ownership_leases": {
         "identity": ["ownership_id", "attempt_id", "generation", "owner_token_digest", "context_digest", "recovered_from_ownership_id"],
@@ -665,9 +692,25 @@
         "idempotency_scope": ["attempt_id", "idempotency_key"],
         "replay": "validate sealed result digest and return committed and current images separately"
       },
+      "attempt_process_launches": {
+        "mode": "append_only",
+        "authority": "runtime-unforgeable ProcessSupervisor command after POSIX identity observation and before target exec",
+        "lineage": ["repository_id", "attempt_id", "ownership_id", "owner_generation", "ownership_context_digest", "phase_execution_id", "context_id", "execution_context_digest"],
+        "resource_activation": ["process_group", "stdout", "stderr"]
+      },
+      "attempt_process_observations": {
+        "mode": "append_only",
+        "ordering": "contiguous sequence per launch",
+        "evidence": "each observation has exact Store-owned ProcessSupervisor evidence"
+      },
+      "attempt_process_terminal_receipts": {
+        "mode": "append_only",
+        "seal": "one receipt per launch over the exact ordered observation references and result digest",
+        "death_semantics": "process-group death, sampled tracked-identity death, and authoritative all-descendant death are separate facts; stale recovery requires process-group death plus authoritative containment proof of every descendant dead"
+      },
       "resource_mutation_authority": "workspace allocation and activation require runtime-unforgeable kind-specific observation receipts; the ready workspace is runtime-unforgeable and exact-plan-bound; readiness uses read-only Git/index observations between entry and final current-owner fences, rechecks the selected common directory and exact worktree administrative identity, returns current cleanup authority on failure, and mints an exact ref/worktree/gitdir/index plus generation/version/expiry-bound spawn observation for t22 consumption; terminal release/quarantine APIs remain absent until t21 proof authorities exist",
-      "process_death_producer_authority": "generic evidence append rejects the ProcessSupervisor label; t19 must add a runtime-authorized producer",
-      "legacy_v1_tables": "leases and attempt_resources remain immutable-schema compatibility inputs and are not the t18 production writer path"
+      "process_death_producer_authority": "generic evidence append rejects the ProcessSupervisor label; only the runtime supervisor can atomically persist exact launch-bound evidence and terminal observations; its default sampled POSIX adapter cannot mint all-descendant release authority",
+      "legacy_v1_tables": "leases, attempt_resources, and process_receipts remain immutable-schema compatibility inputs and are not the current ownership or process-supervision writer path"
     }
   },
   "oracle": {

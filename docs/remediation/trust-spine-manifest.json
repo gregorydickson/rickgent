@@ -755,12 +755,13 @@
     {
       "id": "t19",
       "title": "Implement the POSIX process-group supervisor",
-      "description": "Milestone 4 process primitive. Centralize array-argv spawn, allowlisted environment, new process group/session, capped stdout/stderr files, hashes/tails, timeout escalation, confirmed group death, and typed exit/infrastructure receipts. Worker, reviewer, remediation, gate, and delivery subprocesses will reuse this service. Unsupported platforms fail before spawn.",
+      "description": "Milestone 4 internal process primitive. Centralize array-argv spawn, sealed allowlisted environment, a new process group/session, capped stdout/stderr files, hashes/tails, bounded timeout escalation, exact tracked-identity observations, and typed exit/infrastructure receipts. POSIX process-table sampling is evidence about observed identities, not proof that no descendant escaped between observations; the primitive therefore retains cleanup ownership and leaves all-descendant confirmation false until t22 supplies validated authoritative containment. Worker, reviewer, remediation, gate, and delivery subprocesses will reuse this service only after that cutover. Unsupported platforms fail before spawn.",
       "acceptance_criteria": [
         "Every spawn creates and persists a PID/PGID/owner/context receipt before work can advance and never passes wholesale `process.env`.",
         "Output flood is streamed to bounded artifacts; state stores path/hash/original size/truncation/bounded tail and never accumulates unbounded strings.",
-        "Timeout sends group TERM, waits the configured grace, sends group KILL, and remains cleanup-pending until all descendants are confirmed dead.",
-        "Fixtures cover ignored TERM, child/grandchild/double-fork, closed stdio with continued execution, post-parent mutation, output flood, spawn failure, and unkillable/infrastructure outcomes.",
+        "Timeout sends group TERM, waits the configured grace, sends group KILL, finishes after bounded death observation even when the leader never exits, and remains cleanup-pending until authoritative containment confirms all descendants dead.",
+        "Fixtures cover ignored TERM, child/grandchild/double-fork escape, leader exit with a live child, closed stdio with continued execution, post-parent mutation, output flood, spawn failure, and unkillable/infrastructure outcomes.",
+        "Sampled ancestry may prove only that the process group and every observed exact PID/start identity are dead; it never sets the durable all-descendant confirmation bit or authorizes ownership release.",
         "macOS/Linux behavior is tested; Windows returns the stable unsupported-platform code without spawning."
       ],
       "verification": [
@@ -770,17 +771,37 @@
         "cd orchestrator && pnpm test"
       ],
       "output_artifacts": [
+        "orchestrator/src/process/posix.ts",
         "orchestrator/src/process/supervisor.ts",
+        "orchestrator/src/git/attempt-workspace.ts",
+        "orchestrator/src/state/migrations.ts",
+        "orchestrator/src/state/schema.ts",
+        "orchestrator/src/state/store.ts",
+        "orchestrator/src/state/transitions.ts",
+        "orchestrator/scripts/validate-state-contract.mjs",
+        "orchestrator/test/reliability/attempt-ownership.test.ts",
+        "orchestrator/test/reliability/process-posix.test.ts",
         "orchestrator/test/reliability/process-supervisor-corpus.test.ts",
+        "orchestrator/test/reliability/state-contract.test.ts",
+        "orchestrator/test/reliability/state-crash-corpus.test.ts",
+        "orchestrator/test/reliability/state-observation.test.ts",
+        "orchestrator/test/reliability/state-store.test.ts",
+        "orchestrator/test/reliability/transition-authority.test.ts",
+        "orchestrator/test/fixtures/crash-matrix/fault-points.json",
+        "orchestrator/test/fixtures/crash-matrix/manifest.json",
         "orchestrator/test/fixtures/process-supervisor/stubborn-tree.mjs",
-        "orchestrator/test/fixtures/process-supervisor/output-flood.mjs"
+        "orchestrator/test/fixtures/process-supervisor/output-flood.mjs",
+        "artifacts/reliability/state-crash-summary.json",
+        "docs/architecture/reliability/state-and-lifecycle-contract.json",
+        "docs/architecture/reliability/state-and-lifecycle-contract.md",
+        "docs/remediation/phase-4-process-supervisor-execution-report-2026-07-17.md"
       ],
       "proof_corpus": [
         "orchestrator/test/fixtures/process-supervisor/stubborn-tree.mjs",
         "orchestrator/test/fixtures/process-supervisor/output-flood.mjs"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t18"
       ]
@@ -851,9 +872,10 @@
     {
       "id": "t22",
       "title": "Integrate the attempt ownership critical section",
-      "description": "Milestone 4 integration. Introduce one AttemptRunner that enforces the fixed order: allocate identity/owner, acquire lease/resources, materialize policy context, supervise phase, collect evidence/commit, cleanup, oracle eligibility, compare-and-swap promote, remove attempt resources, compare-owner release, then finalize state. On every error/timeout it supervises death and salvage before terminal failure. Replace the interim run-worktree dispatch seam.",
+      "description": "Milestone 4 integration and production-containment cutover. Introduce one AttemptRunner that enforces the fixed order: allocate identity/owner, acquire lease/resources, enter a validated authoritative macOS/Linux containment boundary, materialize policy context, supervise phase, collect evidence/commit, cleanup, oracle eligibility, compare-and-swap promote, remove attempt resources, compare-owner release, then finalize state. On every error/timeout it supervises death and salvage before terminal failure. Replace the interim run-worktree dispatch seam; sampled process-table ancestry alone is never production release authority.",
       "acceptance_criteria": [
         "Production follows the documented acquisition/finalization order, with persisted receipts and no lease release before process/resource cleanup proof.",
+        "Production supervision obtains authoritative containment membership and death evidence on both supported platforms; unavailable containment is an infrastructure error before target release, and sampled ancestry cannot set all-descendant death.",
         "A successful attempt promotes only its attributable descendant commit from the recorded delivery baseline; ref movement fails and requires a new attempt.",
         "Timeout, spawn failure, policy denial, evidence failure, commit failure, promotion conflict, cleanup failure, and state crash each take the safe failure/cleanup path and never contaminate delivery.",
         "Caller checkout/HEAD/index remains unchanged and the interim run-level worktree no longer serves as the production ownership model.",
@@ -866,6 +888,7 @@
         "! rg -n \"kill\\(child\\.pid|lock\\.release\\(\\).*finally|cwd:\\s*opts\\.targetRepo\" orchestrator/src/dispatch orchestrator/src/lifecycle/build.ts"
       ],
       "output_artifacts": [
+        "orchestrator/src/process/containment.ts",
         "orchestrator/src/lifecycle/attempt-runner.ts",
         "orchestrator/test/reliability/attempt-critical-section.test.ts"
       ],

@@ -175,7 +175,8 @@ const REQUIRED_POINT_IDS = [
   "stale_ownership_recovery",
   "phase_start",
   "phase_finish",
-  "spawn_receipt",
+  "process_launch",
+  "process_terminal",
   "review_record",
   "remediation_record",
   "required_gate_result",
@@ -232,6 +233,7 @@ const TRANSITION_SUITE = "orchestrator/test/reliability/transition-authority.tes
 const ORACLE_SUITE = "orchestrator/test/reliability/oracle-store-integration.test.ts";
 const LEGACY_SUITE = "orchestrator/test/reliability/legacy-state-quarantine.test.ts";
 const ATTEMPT_OWNERSHIP_SUITE = "orchestrator/test/reliability/attempt-ownership.test.ts";
+const PROCESS_SUPERVISOR_SUITE = "orchestrator/test/reliability/process-supervisor-corpus.test.ts";
 const STORE_OPEN_PROOF = "creates and reopens the exact released schema and canonical repository row";
 const RUN_ALLOCATION_PROOF = "allocates distinct ordinary runs for identical normalized input and persists exact contracts";
 const ATTEMPT_ALLOCATION_PROOF = "commits monotonic attempts before downstream work and preserves prior rows";
@@ -241,7 +243,7 @@ const CONTEXT_PROOF = "resolves and persists complete immutable context without 
 const EVIDENCE_PROOF = "is idempotent for identical immutable input and conflicts on divergent input";
 const ORACLE_REFERENCE_PROOF = "resolves the exhaustive reference set itself and persists deterministic contiguous ordering";
 const PHASE_PROOF = "records a guarded phase flow through clean attempt, ticket, and run failure terminals";
-const LIFECYCLE_RECORD_PROOF = "creates and exactly replays every typed lifecycle proof without raw record insertion";
+const LIFECYCLE_RECORD_PROOF = "creates and exactly replays current typed lifecycle proofs while v1 process receipts remain read-only";
 const PROMOTION_PROOF = "creates, observes, and atomically finalizes a promotion with stable replay semantics";
 const DELIVERY_PROOF = "records an exact typed delivery chain and rejects every replay input drift";
 const LEGACY_PROOF = "quarantines valid terminal registry, terminal ledgers, locks, and Git subjects without importing truth";
@@ -249,6 +251,8 @@ const OWNERSHIP_ACQUISITION_PROOF = "atomically acquires one credential and the 
 const OWNERSHIP_MUTATION_PROOF = "rejects stale versions and forged resource truth while replaying the sealed committed result";
 const OWNERSHIP_WORKSPACE_PROOF = "provisions a detached attempt worktree and isolated index without changing dirty caller state";
 const OWNERSHIP_RECOVERY_PROOF = "allows stale cleanup ownership only after expiry and exact immutable process-death evidence";
+const PROCESS_LAUNCH_PROOF = "persists the launch before target exec, passes only explicit environment, and consumes authorization once";
+const PROCESS_TERMINAL_PROOF = "persists a nonzero terminal outcome and contains every owned resource for cleanup";
 
 type PointProjection = readonly [
   boundary: string,
@@ -282,7 +286,8 @@ const REQUIRED_POINT_PROJECTIONS: Readonly<Record<(typeof REQUIRED_POINT_IDS)[nu
   stale_ownership_recovery: ["ownership_recovery", null, "attempt_ownership_stale_recovery", "semantic_suite", ATTEMPT_OWNERSHIP_SUITE, OWNERSHIP_RECOVERY_PROOF, null],
   phase_start: ["phase_transition", "transition_entity_cas", "transition_entity_cas", "semantic_suite", TRANSITION_SUITE, PHASE_PROOF, null],
   phase_finish: ["phase_transition", "transition_entity_cas", "transition_entity_cas", "semantic_suite", TRANSITION_SUITE, PHASE_PROOF, null],
-  spawn_receipt: ["process_receipt_row", null, "persist_process_receipt", "semantic_suite", TRANSITION_SUITE, LIFECYCLE_RECORD_PROOF, "t19"],
+  process_launch: ["process_launch_rows", "process_supervisor_launch", "process_supervisor_launch", "semantic_suite", PROCESS_SUPERVISOR_SUITE, PROCESS_LAUNCH_PROOF, null],
+  process_terminal: ["process_terminal_rows", "process_supervisor_terminal", "process_supervisor_terminal", "semantic_suite", PROCESS_SUPERVISOR_SUITE, PROCESS_TERMINAL_PROOF, null],
   review_record: ["review_row", null, "persist_review_record", "semantic_suite", TRANSITION_SUITE, LIFECYCLE_RECORD_PROOF, null],
   remediation_record: ["remediation_row", null, "persist_remediation_record", "semantic_suite", TRANSITION_SUITE, LIFECYCLE_RECORD_PROOF, null],
   required_gate_result: ["ticket_contract_gate_row", null, "persist_gate_result", "semantic_suite", TRANSITION_SUITE, LIFECYCLE_RECORD_PROOF, null],
@@ -807,7 +812,7 @@ describe("bounded state crash and retry proof", () => {
     }
     expect(manifest.deferred_recovery).toEqual({
       operational_lease_and_resource_ownership: "t18",
-      process_group_spawn_and_death: "t19",
+      process_group_spawn_and_death: "t29",
       external_git_commit_recovery: "t20",
       salvage_and_cleanup_side_effects: "t21",
       operation_specific_recovery_and_oracle_parity: "t29",

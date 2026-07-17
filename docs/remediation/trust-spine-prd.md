@@ -487,8 +487,8 @@ The exact acceptance criteria and commands are in `refinement_manifest.json`; th
 - **Acceptance Criteria:** contributes the lease/resource portion of `AC-INV-01`; `t19` and `t23` complete the process/concurrency portions, and `t20` owns `AC-INV-05`
 
 ### Ticket 19: Implement the POSIX process-group supervisor
-- **Description:** Bound output, supervise all descendants, escalate timeout, and retain ownership until confirmed death.
-- **Declared Paths:** `orchestrator/src/process/supervisor.ts`, `orchestrator/test/reliability/process-supervisor-corpus.test.ts`
+- **Description:** Bound output, observe the process group and exact sampled PID/start identities, escalate timeout within a fixed deadline, and retain cleanup ownership unless an authoritative containment backend proves all descendants dead. Process-table sampling is never represented as proof that an unobserved escape did not occur.
+- **Declared Paths:** `orchestrator/src/process/posix.ts`, `orchestrator/src/process/supervisor.ts`, `orchestrator/src/git/attempt-workspace.ts`, `orchestrator/src/state/migrations.ts`, `orchestrator/src/state/schema.ts`, `orchestrator/src/state/store.ts`, `orchestrator/src/state/transitions.ts`, `orchestrator/scripts/validate-state-contract.mjs`, `orchestrator/test/reliability/attempt-ownership.test.ts`, `orchestrator/test/reliability/process-posix.test.ts`, `orchestrator/test/reliability/process-supervisor-corpus.test.ts`, `orchestrator/test/reliability/state-contract.test.ts`, `orchestrator/test/reliability/state-crash-corpus.test.ts`, `orchestrator/test/reliability/state-observation.test.ts`, `orchestrator/test/reliability/state-store.test.ts`, `orchestrator/test/reliability/transition-authority.test.ts`, `orchestrator/test/fixtures/crash-matrix`, `orchestrator/test/fixtures/process-supervisor`, `artifacts/reliability/state-crash-summary.json`, `docs/architecture/reliability/state-and-lifecycle-contract.json`, `docs/architecture/reliability/state-and-lifecycle-contract.md`, `docs/remediation/phase-4-process-supervisor-execution-report-2026-07-17.md`
 - **Acceptance Criteria:** `AC-INV-07`
 
 ### Ticket 20: Implement orchestrator-owned commit attribution
@@ -502,8 +502,8 @@ The exact acceptance criteria and commands are in `refinement_manifest.json`; th
 - **Acceptance Criteria:** `AC-INV-07`
 
 ### Ticket 22: Integrate the attempt ownership critical section
-- **Description:** Wire allocation, policy context, supervisor, evidence, commit, cleanup, promotion, and release in the fixed order.
-- **Declared Paths:** `orchestrator/src/lifecycle/attempt-runner.ts`, `orchestrator/src/lifecycle/build.ts`, `orchestrator/test/reliability/attempt-critical-section.test.ts`
+- **Description:** Wire allocation, validated authoritative macOS/Linux containment, policy context, supervisor, evidence, commit, cleanup, promotion, and release in the fixed order. Treat unavailable containment as a pre-release infrastructure error and never promote sampled ancestry into all-descendant death proof.
+- **Declared Paths:** `orchestrator/src/process/containment.ts`, `orchestrator/src/lifecycle/attempt-runner.ts`, `orchestrator/src/lifecycle/build.ts`, `orchestrator/test/reliability/attempt-critical-section.test.ts`
 - **Acceptance Criteria:** `AC-INV-01`, `AC-INV-05`, `AC-INV-07`
 
 ### Ticket 23: Prove conflicting concurrency isolation without enabling production parallelism

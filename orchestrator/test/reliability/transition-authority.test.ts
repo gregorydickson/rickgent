@@ -1158,6 +1158,39 @@ function lifecycleProcessRequest(data: LifecycleFixtureData, label: string): Pro
   };
 }
 
+function insertLegacyProcessReceiptFixture(
+  data: LifecycleFixtureData,
+  request: ProcessReceiptRecordRequest,
+): StateRecord {
+  insertFixtureRow(data.fixture.store.location.databasePath, "process_receipts", {
+    process_receipt_id: request.processReceiptId,
+    phase_execution_id: request.phaseExecutionId,
+    context_id: request.contextId,
+    lease_id: request.leaseId,
+    lease_generation: request.leaseGeneration,
+    pid: request.pid,
+    pgid: request.pgid,
+    boot_identity: request.bootIdentity,
+    process_start_identity: request.processStartIdentity,
+    argv_digest: request.argvDigest,
+    environment_digest: request.environmentDigest,
+    launch_evidence_id: request.launchEvidenceId,
+    exit_evidence_id: request.exitEvidenceId,
+    termination_evidence_id: request.terminationEvidenceId,
+    group_death_evidence_id: request.groupDeathEvidenceId,
+    stdout_evidence_id: request.stdoutEvidenceId,
+    stderr_evidence_id: request.stderrEvidenceId,
+    created_at: request.createdAt,
+  });
+  const stored = one(
+    data.fixture.store.location.databasePath,
+    "SELECT * FROM process_receipts WHERE process_receipt_id = ?",
+    request.processReceiptId,
+  );
+  if (stored === undefined) throw new Error("legacy process receipt fixture was not inserted");
+  return Object.freeze(stored);
+}
+
 function lifecycleReviewRequest(
   data: LifecycleFixtureData,
   label: string,
@@ -1409,7 +1442,9 @@ function advanceLifecycleToReview(data: LifecycleFixtureData, label: string): Li
     ),
   });
   const processRequest = lifecycleProcessRequest(data, label);
-  const process = data.authority.recordProcessReceipt(processRequest);
+  // Frozen v1 compatibility fixture only. Current process truth is produced by
+  // ProcessSupervisor into the additive v3 tables.
+  const process = insertLegacyProcessReceiptFixture(data, processRequest);
   transitions.captureImplementation({
     attemptId: data.fixture.attempt.attemptId,
     processReceiptId: processRequest.processReceiptId,
@@ -2721,7 +2756,7 @@ describe("lifecycle record authority", () => {
     }
   });
 
-  it("creates and exactly replays every typed lifecycle proof without raw record insertion", () => {
+  it("creates and exactly replays current typed lifecycle proofs while v1 process receipts remain read-only", () => {
     const data = prepareLifecycleFixture("happy");
     try {
       const started = advanceLifecycleToReview(data, "happy");
@@ -2845,7 +2880,7 @@ describe("lifecycle record authority", () => {
       expect(attribution).toMatchObject({ commit_oid: data.candidateOid, path_set_digest: data.delta.pathSetDigest });
       expect(cleanup).toMatchObject({ outcome: "verified", delivery_ref_observed_oid: data.fixture.run.currentDeliveryOid });
 
-      expect(data.authority.recordProcessReceipt(processRequest)).toEqual(process);
+      expect(() => data.authority.recordProcessReceipt(processRequest)).toThrow(/only ProcessSupervisor/);
       expect(data.authority.recordReview(rejectedReviewRequest)).toEqual(rejectedReview);
       expect(data.authority.recordReview(acceptedReviewRequest)).toEqual(acceptedReview);
       expect(data.authority.recordRemediation(remediationRequest)).toEqual(remediation);
@@ -2853,10 +2888,6 @@ describe("lifecycle record authority", () => {
       expect(data.authority.recordCommitAttribution(attributionRequest)).toEqual(attribution);
       expect(data.authority.recordCleanup(cleanupRequest)).toEqual(cleanup);
 
-      expectStateCode(() => data.authority.recordProcessReceipt({
-        ...processRequest,
-        createdAt: "2026-07-16T13:00:00.000Z",
-      }), "RICKGENT_STATE_IDEMPOTENCY_CONFLICT");
       expectStateCode(() => data.authority.recordReview({
         ...rejectedReviewRequest,
         createdAt: "2026-07-16T13:01:00.000Z",

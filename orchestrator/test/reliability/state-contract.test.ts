@@ -8,6 +8,8 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   APPEND_ONLY_STATE_TABLES,
   ATTEMPT_OWNERSHIP_MIGRATION,
+  ATTEMPT_OWNERSHIP_STATE_TABLES,
+  ALL_STATE_TABLES,
   ATTEMPT_STATES,
   ATTEMPT_TERMINAL_STATES,
   ATTEMPT_TRANSITIONS,
@@ -27,6 +29,8 @@ import {
   PROMOTION_STATES,
   PROMOTION_TERMINAL_STATES,
   PROMOTION_TRANSITIONS,
+  PROCESS_SUPERVISION_MIGRATION,
+  PROCESS_SUPERVISION_STATE_TABLES,
   REQUIRED_GATE_BLOCKING_STATUSES,
   REQUIRED_GATE_GREEN_STATUSES,
   RESOURCE_KINDS,
@@ -54,9 +58,11 @@ import {
 } from "../../src/state/schema.js";
 import {
   ATTEMPT_OWNERSHIP_MIGRATION_CHECKSUM,
+  ATTEMPT_OWNERSHIP_STATE_SQLITE_SCHEMA_CHECKSUM,
   INITIAL_STATE_MIGRATION_CHECKSUM,
   INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM,
   LATEST_STATE_SQLITE_SCHEMA_CHECKSUM,
+  PROCESS_SUPERVISION_MIGRATION_CHECKSUM,
   STATE_MIGRATIONS as EXECUTABLE_STATE_MIGRATIONS,
 } from "../../src/state/migrations.js";
 
@@ -107,7 +113,7 @@ describe("frozen state contract parity", () => {
     expect(INITIAL_STATE_MIGRATION.released_checksum).toBe(INITIAL_STATE_MIGRATION_CHECKSUM);
     expect(INITIAL_STATE_MIGRATION.sqlite_schema_checksum).toBe(INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM);
     expect(ATTEMPT_OWNERSHIP_MIGRATION.released_checksum).toBe(ATTEMPT_OWNERSHIP_MIGRATION_CHECKSUM);
-    expect(ATTEMPT_OWNERSHIP_MIGRATION.sqlite_schema_checksum).toBe(LATEST_STATE_SQLITE_SCHEMA_CHECKSUM);
+    expect(ATTEMPT_OWNERSHIP_MIGRATION.sqlite_schema_checksum).toBe(ATTEMPT_OWNERSHIP_STATE_SQLITE_SCHEMA_CHECKSUM);
     expect(EXECUTABLE_STATE_MIGRATIONS[0]).toMatchObject({
       version: INITIAL_STATE_MIGRATION.version,
       number: INITIAL_STATE_MIGRATION.number,
@@ -120,6 +126,25 @@ describe("frozen state contract parity", () => {
       name: ATTEMPT_OWNERSHIP_MIGRATION.name,
       checksum: ATTEMPT_OWNERSHIP_MIGRATION.released_checksum,
     });
+    expect(EXECUTABLE_STATE_MIGRATIONS[2]).toMatchObject({
+      version: PROCESS_SUPERVISION_MIGRATION.version,
+      number: PROCESS_SUPERVISION_MIGRATION.number,
+      name: PROCESS_SUPERVISION_MIGRATION.name,
+      checksum: PROCESS_SUPERVISION_MIGRATION_CHECKSUM,
+    });
+    expect(PROCESS_SUPERVISION_MIGRATION.released_checksum).toBe(PROCESS_SUPERVISION_MIGRATION_CHECKSUM);
+    expect(PROCESS_SUPERVISION_MIGRATION.sqlite_schema_checksum).toBe(LATEST_STATE_SQLITE_SCHEMA_CHECKSUM);
+    expect(new Set(ALL_STATE_TABLES)).toEqual(new Set([
+      ...STATE_TABLES,
+      ...ATTEMPT_OWNERSHIP_STATE_TABLES,
+      ...PROCESS_SUPERVISION_STATE_TABLES,
+    ]));
+    expect(PROCESS_SUPERVISION_STATE_TABLES).toEqual([
+      "attempt_process_launches",
+      "attempt_process_observations",
+      "attempt_process_terminal_receipts",
+    ]);
+    expect(LATEST_STATE_SQLITE_SCHEMA_CHECKSUM).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(contract.entity_model.catalog.map((table: { name: string }) => table.name)).toEqual(STATE_TABLES);
     expect(contract.entity_model.catalog.filter((table: { mutation: { mode: string } }) => table.mutation.mode !== "append_only").map((table: { name: string }) => table.name)).toEqual(CAS_STATE_TABLES);
     expect(contract.entity_model.catalog.filter((table: { mutation: { mode: string } }) => table.mutation.mode === "append_only").map((table: { name: string }) => table.name)).toEqual(APPEND_ONLY_STATE_TABLES);

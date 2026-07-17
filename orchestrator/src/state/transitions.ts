@@ -877,7 +877,6 @@ export interface CleanupRecordRequest {
 }
 
 export type LifecycleRecordCommandRequest =
-  | { readonly kind: "process_receipt"; readonly request: ProcessReceiptRecordRequest }
   | { readonly kind: "review_record"; readonly request: ReviewRecordRequest }
   | { readonly kind: "remediation_record"; readonly request: RemediationRecordRequest }
   | { readonly kind: "gate_result"; readonly request: GateResultRecordRequest }
@@ -914,7 +913,8 @@ export class LifecycleRecordAuthority {
   }
 
   recordProcessReceipt(request: ProcessReceiptRecordRequest): StateRecord {
-    return this.#commit({ kind: "process_receipt", request: Object.freeze({ ...request }) });
+    void request;
+    throw new TypeError("legacy process receipts are migration-compatible read models; only ProcessSupervisor may produce current process truth");
   }
 
   recordReview(request: ReviewRecordRequest): StateRecord {

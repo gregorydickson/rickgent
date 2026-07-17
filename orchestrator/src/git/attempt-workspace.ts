@@ -27,6 +27,7 @@ const READY_WORKSPACE_AUTHORITY = Symbol("rickgent.ready-attempt-workspace");
 const AUTHORIZED_READY_WORKSPACES = new WeakSet<object>();
 const SPAWN_AUTHORIZATION_AUTHORITY = Symbol("rickgent.attempt-workspace-spawn-authorization");
 const AUTHORIZED_SPAWN_AUTHORIZATIONS = new WeakSet<object>();
+const CONSUMED_SPAWN_AUTHORIZATIONS = new WeakSet<object>();
 
 export const ATTEMPT_OWNERSHIP_SCHEMA_VERSION = "rickgent.attempt-ownership/v1" as const;
 
@@ -154,6 +155,20 @@ export class AttemptWorkspaceSpawnAuthorization {
 
 export function isAuthorizedAttemptWorkspaceSpawnAuthorization(value: unknown): value is AttemptWorkspaceSpawnAuthorization {
   return typeof value === "object" && value !== null && AUTHORIZED_SPAWN_AUTHORIZATIONS.has(value);
+}
+
+/** Single-use internal handoff consumed by the t19 supervisor and wired by t22. */
+export function consumeAttemptWorkspaceSpawnAuthorization(authorization: AttemptWorkspaceSpawnAuthorization): void {
+  if (!isAuthorizedAttemptWorkspaceSpawnAuthorization(authorization)) {
+    throw new TypeError("spawn authorization was not minted by the attempt workspace authority");
+  }
+  if (CONSUMED_SPAWN_AUTHORIZATIONS.has(authorization)) {
+    throw new TypeError("spawn authorization has already been consumed");
+  }
+  if (Date.parse(authorization.expiresAt) <= Date.now()) {
+    throw new TypeError("spawn authorization has expired");
+  }
+  CONSUMED_SPAWN_AUTHORIZATIONS.add(authorization);
 }
 
 export interface AttemptWorkspacePlan {

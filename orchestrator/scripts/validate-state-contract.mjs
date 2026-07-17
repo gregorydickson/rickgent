@@ -79,7 +79,8 @@ const CAS_TABLES = new Set([
 
 const TRANSACTIONS = [
   "open_and_migrate", "allocate_run", "allocate_attempt", "append_evidence",
-  "transition_entity_cas", "acquire_lease", "heartbeat_lease", "begin_lease_cleanup",
+  "transition_entity_cas", "acquire_lease", "heartbeat_lease",
+  "process_supervisor_launch", "process_supervisor_terminal", "begin_lease_cleanup",
   "release_lease", "reserve_resource", "advance_resource", "quarantine_resource",
   "release_resource", "persist_oracle_decision", "create_promotion_intent",
   "observe_promotion", "finalize_promotion", "create_delivery_intent",
@@ -154,8 +155,8 @@ function validateMetadata(contract) {
   ], "STATE_CONTRACT_ACTIVATION_INVALID", "activation_boundary");
   equal(activation.decision_artifacts_enable_capabilities, false, "STATE_CONTRACT_ACTIVATION_INVALID", "decision artifacts capability boundary");
   equal(activation.implementation_status, "partial_internal_primitives", "STATE_CONTRACT_ACTIVATION_INVALID", "implementation status");
-  equal(activation.adoption_requires_tickets, ["t13", "t14", "t15", "t16", "t17", "t18"], "STATE_CONTRACT_ACTIVATION_INVALID", "adoption tickets");
-  equal(activation.production_ownership_activation_requires_tickets, ["t19", "t20", "t21", "t22", "t23", "t29"], "STATE_CONTRACT_ACTIVATION_INVALID", "production ownership activation tickets");
+  equal(activation.adoption_requires_tickets, ["t13", "t14", "t15", "t16", "t17", "t18", "t19"], "STATE_CONTRACT_ACTIVATION_INVALID", "adoption tickets");
+  equal(activation.production_ownership_activation_requires_tickets, ["t20", "t21", "t22", "t23", "t29"], "STATE_CONTRACT_ACTIVATION_INVALID", "production ownership activation tickets");
   if (array(activation.forbidden_in_this_ticket, "STATE_CONTRACT_ACTIVATION_INVALID", "forbidden_in_this_ticket").length !== 6) {
     fail("STATE_CONTRACT_ACTIVATION_INVALID", "ticket boundary is incomplete");
   }
@@ -292,6 +293,14 @@ function validateMigrations(contract) {
     sql_owner_ticket: "t18",
     released_checksum: "sha256:8dc1be6f92fbe281149b651c89fd1b2e8d7b4f3464c2f85a2113aa851123473d",
     sqlite_schema_checksum: "sha256:eb83ea80db2cc06eb46ffe135994fe79cf4f53146b5f71ac8a876b46f6224bbc",
+    status: "implemented",
+  }, {
+    version: 3,
+    number: "003",
+    name: "003_durable_process_supervision",
+    sql_owner_ticket: "t19",
+    released_checksum: "sha256:c94e5b62aa8dae64740685c13159f2d19610909729c789e6638deb59855ff8ce",
+    sqlite_schema_checksum: "sha256:c208339c0350aae8bd1ee3784da4e4ffc559b41e9c6079530a89da53c08753e3",
     status: "implemented",
   }], "STATE_CONTRACT_MIGRATION_INVALID", "initial migrations");
   for (let index = 0; index < migrations.initial.length; index += 1) {
@@ -725,16 +734,20 @@ function validateAllocationAndResources(contract) {
 
   const resources = object(contract.resource_identity, "STATE_CONTRACT_RESOURCE_INVALID", "resource_identity");
   exactKeys(resources, [
-    "status", "ownership_tables", "production_cutover_ticket", "process_death_evidence_producer_ticket", "terminal_disposition_producer_ticket",
+    "status", "ownership_tables", "production_cutover_ticket", "process_death_evidence_producer_ticket", "all_descendant_death_authority_ticket", "terminal_disposition_producer_ticket",
     "kinds", "delivery_ref_template", "attempt_ref_template", "ref_validation",
     "private_attempt_directory", "private_attempt_directory_mode", "fixed_slot_names",
     "reserve_before_side_effect", "process_identity_fields", "pid_alone_is_ownership_proof",
-    "owner_mutation_checks", "stale_recovery_requires", "ownership_table_contract",
+    "process_death_proof_bases", "owner_mutation_checks", "stale_recovery_requires", "ownership_table_contract",
   ], "STATE_CONTRACT_RESOURCE_INVALID", "resource_identity");
-  equal(resources.status, "internal_primitive_implemented", "STATE_CONTRACT_RESOURCE_INVALID", "resource status");
-  equal(resources.ownership_tables, ["attempt_ownership_leases", "attempt_resource_claims", "attempt_ownership_operations"], "STATE_CONTRACT_RESOURCE_INVALID", "resource ownership tables");
+  equal(resources.status, "process_supervisor_primitive_implemented", "STATE_CONTRACT_RESOURCE_INVALID", "resource status");
+  equal(resources.ownership_tables, [
+    "attempt_ownership_leases", "attempt_resource_claims", "attempt_ownership_operations",
+    "attempt_process_launches", "attempt_process_observations", "attempt_process_terminal_receipts",
+  ], "STATE_CONTRACT_RESOURCE_INVALID", "resource ownership tables");
   equal(resources.production_cutover_ticket, "t22", "STATE_CONTRACT_RESOURCE_INVALID", "resource production cutover");
   equal(resources.process_death_evidence_producer_ticket, "t19", "STATE_CONTRACT_RESOURCE_INVALID", "resource process-death producer");
+  equal(resources.all_descendant_death_authority_ticket, "t22", "STATE_CONTRACT_RESOURCE_INVALID", "all-descendant death authority");
   equal(resources.terminal_disposition_producer_ticket, "t21", "STATE_CONTRACT_RESOURCE_INVALID", "resource terminal-disposition producer");
   equal(resources.kinds, RESOURCE_KINDS, "STATE_CONTRACT_RESOURCE_INVALID", "resource kinds");
   equal(resources.delivery_ref_template, "refs/rickgent/runs/<run-id>/delivery", "STATE_CONTRACT_RESOURCE_INVALID", "delivery ref template");
@@ -744,11 +757,29 @@ function validateAllocationAndResources(contract) {
   equal(resources.fixed_slot_names, true, "STATE_CONTRACT_RESOURCE_INVALID", "fixed resource slots");
   equal(resources.reserve_before_side_effect, true, "STATE_CONTRACT_RESOURCE_INVALID", "resource reservation order");
   equal(resources.pid_alone_is_ownership_proof, false, "STATE_CONTRACT_RESOURCE_INVALID", "PID ownership");
+  equal(resources.process_death_proof_bases, {
+    sampled_tracked_identities: {
+      producer_ticket: "t19",
+      proves: ["process-group death", "death of every sampled exact PID/start identity"],
+      does_not_prove: "absence or death of descendants that escaped between process-table samples",
+      all_descendant_death: false,
+      lease_release_authority: false,
+    },
+    authoritative_containment: {
+      producer_ticket: "t22",
+      proves: ["authoritative containment membership", "death of every contained process"],
+      all_descendant_death: true,
+      lease_release_authority: true,
+    },
+  }, "STATE_CONTRACT_RESOURCE_INVALID", "process death proof bases");
   equal(resources.owner_mutation_checks, ["owner_token_digest", "lease_generation", "owner_context", "resource_state", "resource_version"], "STATE_CONTRACT_RESOURCE_INVALID", "resource owner checks");
+  if (!resources.stale_recovery_requires.includes("authoritative_containment proof basis")) fail("STATE_CONTRACT_RESOURCE_INVALID", "stale recovery lacks authoritative containment proof");
   if (!resources.stale_recovery_requires.includes("proven old process-group death")) fail("STATE_CONTRACT_RESOURCE_INVALID", "stale recovery lacks process-group death proof");
+  if (!resources.stale_recovery_requires.includes("proven death of every contained descendant")) fail("STATE_CONTRACT_RESOURCE_INVALID", "stale recovery lacks contained-descendant death proof");
   const ownershipContract = object(resources.ownership_table_contract, "STATE_CONTRACT_RESOURCE_INVALID", "ownership_table_contract");
   exactKeys(ownershipContract, [
     "attempt_ownership_leases", "attempt_resource_claims", "attempt_ownership_operations",
+    "attempt_process_launches", "attempt_process_observations", "attempt_process_terminal_receipts",
     "resource_mutation_authority", "process_death_producer_authority", "legacy_v1_tables",
   ], "STATE_CONTRACT_RESOURCE_INVALID", "ownership_table_contract");
 }
