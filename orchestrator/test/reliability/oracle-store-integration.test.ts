@@ -112,6 +112,25 @@ function insertRow(databasePath: string, table: string, row: Readonly<Record<str
   }
 }
 
+function updateRow(
+  databasePath: string,
+  table: string,
+  idColumn: string,
+  id: string,
+  changes: Readonly<Record<string, SqlValue>>,
+): void {
+  const database = openRaw(databasePath);
+  try {
+    const columns = Object.keys(changes);
+    const result = database.prepare(
+      `UPDATE "${table}" SET ${columns.map((column) => `"${column}" = ?`).join(", ")} WHERE "${idColumn}" = ?`,
+    ).run(...columns.map((column) => changes[column] ?? null), id);
+    expect(result.changes).toBe(1);
+  } finally {
+    database.close();
+  }
+}
+
 function queryAll(databasePath: string, sql: string, ...values: SqlValue[]): SqlRow[] {
   const database = openRaw(databasePath);
   try {
@@ -302,10 +321,8 @@ function completeFixture(gateStatuses: readonly ("passed" | "failed" | "missing"
     release_evidence_id: null,
     created_at: NOW,
   };
-  lease = store.createLease(
-    lease,
-    snapshotEvidence(fixtureBase, implement, leaseAcquisitionEvidenceId, "rickgent.lease-snapshot.v1", lease),
-  );
+  store.appendEvidence(snapshotEvidence(fixtureBase, implement, leaseAcquisitionEvidenceId, "rickgent.lease-snapshot.v1", lease));
+  insertRow(store.location.databasePath, "leases", lease);
 
   const resourceId = `resource-${attempt.attemptId}`;
   const resourceAcquisitionEvidenceId = `evidence-resource-0-${attempt.attemptId}`;
@@ -326,11 +343,8 @@ function completeFixture(gateStatuses: readonly ("passed" | "failed" | "missing"
     quarantine_evidence_id: null,
     created_at: NOW,
   };
-  resource = store.createAttemptResource(
-    resource,
-    snapshotEvidence(fixtureBase, implement, resourceAcquisitionEvidenceId, "rickgent.attempt-resource-snapshot.v1", resource),
-    ownerTokenDigest,
-  );
+  store.appendEvidence(snapshotEvidence(fixtureBase, implement, resourceAcquisitionEvidenceId, "rickgent.attempt-resource-snapshot.v1", resource));
+  insertRow(store.location.databasePath, "attempt_resources", resource);
 
   const launchEvidenceIds = [implement, review, verification].map((phase, ordinal) => String(appendEvidence(
     fixtureBase,
@@ -487,33 +501,26 @@ function completeFixture(gateStatuses: readonly ("passed" | "failed" | "missing"
   for (const [state, version] of [["allocated", 1], ["cleanup_pending", 2], ["released", 3]] as const) {
     const evidenceId = `evidence-resource-${version}-${attempt.attemptId}`;
     const desired = { ...resource, state, state_version: version, release_evidence_id: state === "released" ? releaseEvidenceId : null };
-    resource = store.updateAttemptResource({
-      resourceId,
-      allocationLeaseId: leaseId,
-      ownerTokenDigest,
-      ownerGeneration: 1,
-      ownerContextId: implement.persisted.contextId,
-      expectedState: String(resource.state),
-      expectedVersion: Number(resource.state_version),
-      changes: { state, release_evidence_id: desired.release_evidence_id },
-      snapshotEvidence: snapshotEvidence(fixtureBase, implement, evidenceId, "rickgent.attempt-resource-snapshot.v1", desired),
+    store.appendEvidence(snapshotEvidence(fixtureBase, implement, evidenceId, "rickgent.attempt-resource-snapshot.v1", desired));
+    updateRow(store.location.databasePath, "attempt_resources", "resource_id", resourceId, {
+      state,
+      state_version: version,
+      release_evidence_id: desired.release_evidence_id,
     });
+    resource = desired;
   }
   const resourceSnapshotEvidenceId = `evidence-resource-3-${attempt.attemptId}`;
 
   for (const [state, version] of [["live", 1], ["cleanup_pending", 2], ["released", 3]] as const) {
     const evidenceId = `evidence-lease-${version}-${attempt.attemptId}`;
     const desired = { ...lease, state, state_version: version, release_evidence_id: state === "released" ? releaseEvidenceId : null };
-    lease = store.updateLease({
-      leaseId,
-      ownerTokenDigest,
-      generation: 1,
-      ownerContextId: implement.persisted.contextId,
-      expectedState: String(lease.state),
-      expectedVersion: Number(lease.state_version),
-      changes: { state, release_evidence_id: desired.release_evidence_id },
-      snapshotEvidence: snapshotEvidence(fixtureBase, implement, evidenceId, "rickgent.lease-snapshot.v1", desired),
+    store.appendEvidence(snapshotEvidence(fixtureBase, implement, evidenceId, "rickgent.lease-snapshot.v1", desired));
+    updateRow(store.location.databasePath, "leases", "lease_id", leaseId, {
+      state,
+      state_version: version,
+      release_evidence_id: desired.release_evidence_id,
     });
+    lease = desired;
   }
   const leaseSnapshotEvidenceId = `evidence-lease-3-${attempt.attemptId}`;
 

@@ -61,7 +61,7 @@ interface FaultPoint {
   readonly id: string;
   readonly boundary: string;
   readonly contract_transaction: string | null;
-  readonly implementation_operation: string;
+  readonly implementation_operation: string | null;
   readonly proof_level: "semantic_suite" | "common_wrapper_crash" | "direct_retry_crash";
   readonly semantic_proof: string;
   readonly semantic_proof_id: string;
@@ -164,6 +164,7 @@ const REQUIRED_POINT_IDS = [
   "execution_context_insert",
   "immutable_evidence_insert",
   "lease_acquisition",
+  "ownership_assertion",
   "lease_heartbeat",
   "lease_cleanup_begin",
   "lease_release",
@@ -171,6 +172,7 @@ const REQUIRED_POINT_IDS = [
   "resource_activation",
   "resource_quarantine",
   "resource_release",
+  "stale_ownership_recovery",
   "phase_start",
   "phase_finish",
   "spawn_receipt",
@@ -216,6 +218,12 @@ const DYNAMIC_IMPLEMENTATION_OPERATIONS = [
   "allocate_retry_attempt",
   "observe_promotion",
   "finalize_promotion",
+  "attempt_ownership_acquire",
+  "attempt_ownership_assert_current",
+  "attempt_ownership_heartbeat",
+  "attempt_ownership_begin_cleanup",
+  "attempt_ownership_advance_resource",
+  "attempt_ownership_stale_recovery",
 ] as const;
 
 const STATE_STORE_SUITE = "orchestrator/test/reliability/state-store.test.ts";
@@ -223,6 +231,7 @@ const IDENTITY_SUITE = "orchestrator/test/reliability/identity-allocation.test.t
 const TRANSITION_SUITE = "orchestrator/test/reliability/transition-authority.test.ts";
 const ORACLE_SUITE = "orchestrator/test/reliability/oracle-store-integration.test.ts";
 const LEGACY_SUITE = "orchestrator/test/reliability/legacy-state-quarantine.test.ts";
+const ATTEMPT_OWNERSHIP_SUITE = "orchestrator/test/reliability/attempt-ownership.test.ts";
 const STORE_OPEN_PROOF = "creates and reopens the exact released schema and canonical repository row";
 const RUN_ALLOCATION_PROOF = "allocates distinct ordinary runs for identical normalized input and persists exact contracts";
 const ATTEMPT_ALLOCATION_PROOF = "commits monotonic attempts before downstream work and preserves prior rows";
@@ -236,11 +245,15 @@ const LIFECYCLE_RECORD_PROOF = "creates and exactly replays every typed lifecycl
 const PROMOTION_PROOF = "creates, observes, and atomically finalizes a promotion with stable replay semantics";
 const DELIVERY_PROOF = "records an exact typed delivery chain and rejects every replay input drift";
 const LEGACY_PROOF = "quarantines valid terminal registry, terminal ledgers, locks, and Git subjects without importing truth";
+const OWNERSHIP_ACQUISITION_PROOF = "atomically acquires one credential and the complete fixed resource set with response-loss replay";
+const OWNERSHIP_MUTATION_PROOF = "rejects stale versions and forged resource truth while replaying the sealed committed result";
+const OWNERSHIP_WORKSPACE_PROOF = "provisions a detached attempt worktree and isolated index without changing dirty caller state";
+const OWNERSHIP_RECOVERY_PROOF = "allows stale cleanup ownership only after expiry and exact immutable process-death evidence";
 
 type PointProjection = readonly [
   boundary: string,
   contractTransaction: string | null,
-  implementationOperation: string,
+  implementationOperation: string | null,
   proofLevel: FaultPoint["proof_level"],
   semanticSuite: string,
   semanticProofId: string,
@@ -257,14 +270,16 @@ const REQUIRED_POINT_PROJECTIONS: Readonly<Record<(typeof REQUIRED_POINT_IDS)[nu
   retry_attempt_allocation: ["retry_identity", "allocate_attempt", "allocate_retry_attempt", "direct_retry_crash", IDENTITY_SUITE, RETRY_RACE_PROOF, null],
   execution_context_insert: ["phase_context", null, "persist_durable_execution_context", "semantic_suite", IDENTITY_SUITE, CONTEXT_PROOF, null],
   immutable_evidence_insert: ["common_transaction_wrapper", "append_evidence", "append_idempotent", "common_wrapper_crash", STATE_STORE_SUITE, EVIDENCE_PROOF, null],
-  lease_acquisition: ["lease_row", "acquire_lease", "acquire_lease", "semantic_suite", ORACLE_SUITE, ORACLE_REFERENCE_PROOF, "t18"],
-  lease_heartbeat: ["lease_row", "heartbeat_lease", "heartbeat_lease", "semantic_suite", ORACLE_SUITE, ORACLE_REFERENCE_PROOF, "t18"],
-  lease_cleanup_begin: ["lease_row", "begin_lease_cleanup", "heartbeat_lease", "semantic_suite", ORACLE_SUITE, ORACLE_REFERENCE_PROOF, "t18"],
-  lease_release: ["lease_row", "release_lease", "heartbeat_lease", "semantic_suite", ORACLE_SUITE, ORACLE_REFERENCE_PROOF, "t18"],
-  resource_reservation: ["resource_row", "reserve_resource", "reserve_resource", "semantic_suite", ORACLE_SUITE, ORACLE_REFERENCE_PROOF, "t18"],
-  resource_activation: ["resource_row", "advance_resource", "advance_resource", "semantic_suite", ORACLE_SUITE, ORACLE_REFERENCE_PROOF, "t18"],
-  resource_quarantine: ["resource_row", "quarantine_resource", "advance_resource", "semantic_suite", ORACLE_SUITE, ORACLE_REFERENCE_PROOF, "t18"],
-  resource_release: ["resource_row", "release_resource", "advance_resource", "semantic_suite", ORACLE_SUITE, ORACLE_REFERENCE_PROOF, "t18"],
+  lease_acquisition: ["lease_row", "acquire_lease", "attempt_ownership_acquire", "semantic_suite", ATTEMPT_OWNERSHIP_SUITE, OWNERSHIP_ACQUISITION_PROOF, null],
+  ownership_assertion: ["ownership_read", null, "attempt_ownership_assert_current", "semantic_suite", ATTEMPT_OWNERSHIP_SUITE, OWNERSHIP_MUTATION_PROOF, null],
+  lease_heartbeat: ["lease_row", "heartbeat_lease", "attempt_ownership_heartbeat", "semantic_suite", ATTEMPT_OWNERSHIP_SUITE, OWNERSHIP_MUTATION_PROOF, null],
+  lease_cleanup_begin: ["lease_row", "begin_lease_cleanup", "attempt_ownership_begin_cleanup", "semantic_suite", ATTEMPT_OWNERSHIP_SUITE, OWNERSHIP_MUTATION_PROOF, null],
+  lease_release: ["lease_row", "release_lease", null, "semantic_suite", ATTEMPT_OWNERSHIP_SUITE, OWNERSHIP_MUTATION_PROOF, "t21"],
+  resource_reservation: ["resource_row", "reserve_resource", "attempt_ownership_acquire", "semantic_suite", ATTEMPT_OWNERSHIP_SUITE, OWNERSHIP_ACQUISITION_PROOF, null],
+  resource_activation: ["resource_row", "advance_resource", "attempt_ownership_advance_resource", "semantic_suite", ATTEMPT_OWNERSHIP_SUITE, OWNERSHIP_WORKSPACE_PROOF, null],
+  resource_quarantine: ["resource_row", "quarantine_resource", null, "semantic_suite", ATTEMPT_OWNERSHIP_SUITE, OWNERSHIP_MUTATION_PROOF, "t21"],
+  resource_release: ["resource_row", "release_resource", null, "semantic_suite", ATTEMPT_OWNERSHIP_SUITE, OWNERSHIP_MUTATION_PROOF, "t21"],
+  stale_ownership_recovery: ["ownership_recovery", null, "attempt_ownership_stale_recovery", "semantic_suite", ATTEMPT_OWNERSHIP_SUITE, OWNERSHIP_RECOVERY_PROOF, null],
   phase_start: ["phase_transition", "transition_entity_cas", "transition_entity_cas", "semantic_suite", TRANSITION_SUITE, PHASE_PROOF, null],
   phase_finish: ["phase_transition", "transition_entity_cas", "transition_entity_cas", "semantic_suite", TRANSITION_SUITE, PHASE_PROOF, null],
   spawn_receipt: ["process_receipt_row", null, "persist_process_receipt", "semantic_suite", TRANSITION_SUITE, LIFECYCLE_RECORD_PROOF, "t19"],
@@ -772,7 +787,9 @@ describe("bounded state crash and retry proof", () => {
     const source = readFileSync(storeSourcePath, "utf8");
     const literalOperations = [...source.matchAll(/#immediate\("([^"]+)"/g)].map((match) => match[1]!);
     const requiredOperations = sortedUnique([...literalOperations, ...DYNAMIC_IMPLEMENTATION_OPERATIONS]);
-    expect(sortedUnique(inventory.points.map((point) => point.implementation_operation))).toEqual(requiredOperations);
+    expect(sortedUnique(inventory.points.flatMap((point) =>
+      point.implementation_operation === null ? [] : [point.implementation_operation]
+    ))).toEqual(requiredOperations);
     expect(source.match(/db\.exec\("BEGIN IMMEDIATE"\)/g)).toHaveLength(1);
 
     const proofSuites = sortedUnique(inventory.points.map((point) => point.semantic_proof));

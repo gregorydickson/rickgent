@@ -19,13 +19,12 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  INITIAL_STATE_MIGRATION_CHECKSUM,
-  INITIAL_STATE_SCHEMA_OBJECTS,
-  INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM,
+  LATEST_STATE_SCHEMA_OBJECTS,
+  LATEST_STATE_SQLITE_SCHEMA_CHECKSUM,
   LATEST_STATE_SCHEMA_VERSION,
   STATE_MIGRATIONS,
 } from "../../src/state/migrations.js";
-import { STATE_TABLES } from "../../src/state/schema.js";
+import { ALL_STATE_TABLES } from "../../src/state/schema.js";
 import {
   StateStoreError,
   openStateStore,
@@ -389,24 +388,26 @@ describe("durable state-store bootstrap and preservation", () => {
         "SELECT type, name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
       ).all() as Array<{ type: string; name: string }>;
       const names = (type: string) => schemaRows.filter((row) => row.type === type).map((row) => row.name).sort();
-      expect(names("table")).toEqual([...INITIAL_STATE_SCHEMA_OBJECTS.tables].sort());
-      expect(names("index")).toEqual([...INITIAL_STATE_SCHEMA_OBJECTS.indexes].sort());
-      expect(names("trigger")).toEqual([...INITIAL_STATE_SCHEMA_OBJECTS.triggers].sort());
-      expect(names("table")).toEqual([...STATE_TABLES].sort());
+      expect(names("table")).toEqual([...LATEST_STATE_SCHEMA_OBJECTS.tables].sort());
+      expect(names("index")).toEqual([...LATEST_STATE_SCHEMA_OBJECTS.indexes].sort());
+      expect(names("trigger")).toEqual([...LATEST_STATE_SCHEMA_OBJECTS.triggers].sort());
+      expect(names("table")).toEqual([...ALL_STATE_TABLES].sort());
 
       const tableRows = database.prepare("PRAGMA table_list").all() as Array<{ name: string; strict: number }>;
       const strict = new Map(tableRows.map((row) => [row.name, row.strict]));
-      expect(STATE_TABLES.every((table) => strict.get(table) === 1)).toBe(true);
-      expect(sqliteSchemaChecksum(database)).toBe(INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM);
+      expect(ALL_STATE_TABLES.every((table) => strict.get(table) === 1)).toBe(true);
+      expect(sqliteSchemaChecksum(database)).toBe(LATEST_STATE_SQLITE_SCHEMA_CHECKSUM);
       expect(database.prepare("PRAGMA user_version").get()).toEqual({ user_version: LATEST_STATE_SCHEMA_VERSION });
       expect(database.prepare("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
       expect(database.prepare("PRAGMA quick_check").all()).toEqual([{ quick_check: "ok" }]);
       expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
-      expect(database.prepare("SELECT version, name, checksum FROM schema_migrations").get()).toEqual({
-        version: 1,
-        name: STATE_MIGRATIONS[0]?.name,
-        checksum: INITIAL_STATE_MIGRATION_CHECKSUM,
-      });
+      expect(database.prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version").all()).toEqual(
+        STATE_MIGRATIONS.map((migration) => ({
+          version: migration.version,
+          name: migration.name,
+          checksum: migration.checksum,
+        })),
+      );
 
       originalRepository = database.prepare("SELECT * FROM repositories").get() as SqlRow;
       expect(originalRepository).toMatchObject({
@@ -426,12 +427,95 @@ describe("durable state-store bootstrap and preservation", () => {
     const reopened = openStateStore({ repoPath: repo });
     try {
       expect(reopened.location).toEqual(expectedLocation);
-      expect(count(reopened.location.databasePath, "schema_migrations")).toBe(1);
+      expect(count(reopened.location.databasePath, "schema_migrations")).toBe(STATE_MIGRATIONS.length);
       expect(count(reopened.location.databasePath, "repositories")).toBe(1);
       expect(queryOne(reopened.location.databasePath, "SELECT * FROM repositories")).toEqual(originalRepository!);
       reopened.verifyIntegrity();
     } finally {
       reopened.close();
+    }
+  });
+
+  it("upgrades a released v1 database to the byte-identical v2 schema without rebuilding v1 tables", () => {
+    const repo = makeRepo("v1-upgrade");
+    const location = resolveStateLocation(repo);
+    const preservedManifestJson = JSON.stringify({ schema_version: "rickgent.v1-preserved/v1" });
+    const preservedManifestDigest = digest(preservedManifestJson);
+    mkdirSync(location.stateDirectory, { mode: 0o700 });
+    mkdirSync(location.resourceDirectory, { mode: 0o700 });
+    const database = new DatabaseSync(location.databasePath, {
+      enableForeignKeyConstraints: true,
+      timeout: 1_000,
+    });
+    try {
+      database.exec("PRAGMA journal_mode = WAL");
+      database.exec(STATE_MIGRATIONS[0]!.sql);
+      database.prepare("INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)")
+        .run(1, STATE_MIGRATIONS[0]!.name, STATE_MIGRATIONS[0]!.checksum, FIXED_TIME);
+      insert(database, "run_manifests", {
+        manifest_digest: preservedManifestDigest,
+        schema_version: "rickgent.v1-preserved/v1",
+        canonical_manifest_json: preservedManifestJson,
+        capability_snapshot_digest: digest("v1-capability"),
+        context_schema_version: "rickgent.execution-context/v1",
+        oracle_version: "rickgent.oracle.v1",
+        created_at: FIXED_TIME,
+      });
+      database.exec("PRAGMA user_version = 1");
+    } finally {
+      database.close();
+    }
+    chmodSync(location.databasePath, 0o600);
+
+    const store = openStateStore({ repoPath: repo });
+    try {
+      expect(store.schemaVersion).toBe(2);
+      expect(count(location.databasePath, "schema_migrations")).toBe(2);
+      expect(queryOne(location.databasePath, "SELECT canonical_manifest_json FROM run_manifests WHERE manifest_digest = ?", preservedManifestDigest))
+        .toEqual({ canonical_manifest_json: preservedManifestJson });
+      const upgraded = openRaw(location.databasePath, true);
+      try {
+        expect(sqliteSchemaChecksum(upgraded)).toBe(LATEST_STATE_SQLITE_SCHEMA_CHECKSUM);
+        expect(upgraded.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+      } finally {
+        upgraded.close();
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+  it("rejects and preserves released v1 schema drift before applying migration 002", () => {
+    const repo = makeRepo("v1-schema-drift");
+    const location = resolveStateLocation(repo);
+    mkdirSync(location.stateDirectory, { mode: 0o700 });
+    mkdirSync(location.resourceDirectory, { mode: 0o700 });
+    const database = new DatabaseSync(location.databasePath, {
+      enableForeignKeyConstraints: true,
+      timeout: 1_000,
+    });
+    try {
+      database.exec("PRAGMA journal_mode = WAL");
+      database.exec(STATE_MIGRATIONS[0]!.sql);
+      database.prepare("INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)")
+        .run(1, STATE_MIGRATIONS[0]!.name, STATE_MIGRATIONS[0]!.checksum, FIXED_TIME);
+      database.exec("CREATE TABLE unauthorized_v1_drift (value TEXT) STRICT");
+      database.exec("PRAGMA user_version = 1");
+    } finally {
+      database.close();
+    }
+    chmodSync(location.databasePath, 0o600);
+    const before = snapshotFile(location.databasePath);
+
+    expectStateError(() => openStateStore({ repoPath: repo }), "RICKGENT_STATE_CORRUPT");
+    expectFileUnchanged(location.databasePath, before);
+    const preserved = openRaw(location.databasePath, true);
+    try {
+      expect(preserved.prepare("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+      expect(preserved.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({ count: 1 });
+      expect(preserved.prepare("SELECT name FROM sqlite_schema WHERE name = 'attempt_ownership_leases'").get()).toBeUndefined();
+    } finally {
+      preserved.close();
     }
   });
 
@@ -661,7 +745,7 @@ describe("durable state-store transaction and lineage guarantees", () => {
 
     const store = openStateStore({ repoPath: repo });
     try {
-      expect(count(location.databasePath, "schema_migrations")).toBe(1);
+      expect(count(location.databasePath, "schema_migrations")).toBe(STATE_MIGRATIONS.length);
       expect(count(location.databasePath, "repositories")).toBe(1);
       store.verifyIntegrity();
     } finally {

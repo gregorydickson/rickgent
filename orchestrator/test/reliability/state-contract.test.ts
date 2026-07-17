@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   APPEND_ONLY_STATE_TABLES,
+  ATTEMPT_OWNERSHIP_MIGRATION,
   ATTEMPT_STATES,
   ATTEMPT_TERMINAL_STATES,
   ATTEMPT_TRANSITIONS,
@@ -52,8 +53,10 @@ import {
   TICKET_TRANSITIONS,
 } from "../../src/state/schema.js";
 import {
+  ATTEMPT_OWNERSHIP_MIGRATION_CHECKSUM,
   INITIAL_STATE_MIGRATION_CHECKSUM,
   INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM,
+  LATEST_STATE_SQLITE_SCHEMA_CHECKSUM,
   STATE_MIGRATIONS as EXECUTABLE_STATE_MIGRATIONS,
 } from "../../src/state/migrations.js";
 
@@ -103,11 +106,19 @@ describe("frozen state contract parity", () => {
     expect(contract.migrations.initial[0]).toEqual(INITIAL_STATE_MIGRATION);
     expect(INITIAL_STATE_MIGRATION.released_checksum).toBe(INITIAL_STATE_MIGRATION_CHECKSUM);
     expect(INITIAL_STATE_MIGRATION.sqlite_schema_checksum).toBe(INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM);
+    expect(ATTEMPT_OWNERSHIP_MIGRATION.released_checksum).toBe(ATTEMPT_OWNERSHIP_MIGRATION_CHECKSUM);
+    expect(ATTEMPT_OWNERSHIP_MIGRATION.sqlite_schema_checksum).toBe(LATEST_STATE_SQLITE_SCHEMA_CHECKSUM);
     expect(EXECUTABLE_STATE_MIGRATIONS[0]).toMatchObject({
       version: INITIAL_STATE_MIGRATION.version,
       number: INITIAL_STATE_MIGRATION.number,
       name: INITIAL_STATE_MIGRATION.name,
       checksum: INITIAL_STATE_MIGRATION.released_checksum,
+    });
+    expect(EXECUTABLE_STATE_MIGRATIONS[1]).toMatchObject({
+      version: ATTEMPT_OWNERSHIP_MIGRATION.version,
+      number: ATTEMPT_OWNERSHIP_MIGRATION.number,
+      name: ATTEMPT_OWNERSHIP_MIGRATION.name,
+      checksum: ATTEMPT_OWNERSHIP_MIGRATION.released_checksum,
     });
     expect(contract.entity_model.catalog.map((table: { name: string }) => table.name)).toEqual(STATE_TABLES);
     expect(contract.entity_model.catalog.filter((table: { mutation: { mode: string } }) => table.mutation.mode !== "append_only").map((table: { name: string }) => table.name)).toEqual(CAS_STATE_TABLES);

@@ -38,6 +38,7 @@
     "execution_context_insert",
     "immutable_evidence_insert",
     "lease_acquisition",
+    "ownership_assertion",
     "lease_heartbeat",
     "lease_cleanup_begin",
     "lease_release",
@@ -45,6 +46,7 @@
     "resource_activation",
     "resource_quarantine",
     "resource_release",
+    "stale_ownership_recovery",
     "phase_start",
     "phase_finish",
     "spawn_receipt",
@@ -73,6 +75,7 @@
     "orchestrator/test/reliability/identity-allocation.test.ts",
     "orchestrator/test/reliability/transition-authority.test.ts",
     "orchestrator/test/reliability/oracle-store-integration.test.ts",
+    "orchestrator/test/reliability/attempt-ownership.test.ts",
     "orchestrator/test/reliability/legacy-state-quarantine.test.ts"
   ],
   "deferred_recovery": {

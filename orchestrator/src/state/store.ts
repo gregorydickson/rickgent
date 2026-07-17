@@ -25,19 +25,21 @@ import { normalizeTicketContracts } from "../contracts/ticket-contract.js";
 import {
   INITIAL_STATE_SCHEMA_OBJECTS,
   INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM,
+  LATEST_STATE_SCHEMA_OBJECTS,
+  LATEST_STATE_SQLITE_SCHEMA_CHECKSUM,
   LATEST_STATE_SCHEMA_VERSION,
   STATE_MIGRATIONS,
   assertValidMigrationCatalog,
   type StateMigration,
 } from "./migrations.js";
 import {
+  ALL_STATE_TABLES,
   APPEND_ONLY_STATE_TABLES,
   ATTEMPT_TRANSITIONS,
   LEGACY_ARTIFACT_KINDS,
   PROMOTION_TRANSITIONS,
   RUN_TRANSITIONS,
   STATE_SQLITE_MINIMUM_NODE_VERSION,
-  STATE_TABLES,
   TICKET_TRANSITIONS,
   type StateErrorCode,
 } from "./schema.js";
@@ -54,6 +56,18 @@ import {
   LegacyInventoryCommand,
   isAuthorizedLegacyInventoryCommand,
 } from "./legacy-quarantine.js";
+import {
+  AttemptOwnershipCommand,
+  isAuthorizedAttemptOwnershipCommand,
+  type AttemptOwnershipPurpose,
+  type AttemptOwnershipStoreResult,
+} from "./leases.js";
+import {
+  ATTEMPT_OWNERSHIP_SCHEMA_VERSION,
+  deriveAttemptWorkspacePlan,
+  type AttemptOwnershipLineage,
+  type AttemptWorkspacePlan,
+} from "../git/attempt-workspace.js";
 import {
   DeliveryCommand,
   LifecycleRecordCommand,
@@ -92,7 +106,7 @@ const MAX_GIT_OUTPUT = 1024 * 1024;
 type SqlValue = null | string | number | bigint | Uint8Array;
 export type StateRecord = Readonly<Record<string, SqlValue>>;
 type MutableStateRecord = Record<string, SqlValue>;
-export type StateTableName = (typeof STATE_TABLES)[number];
+export type StateTableName = (typeof ALL_STATE_TABLES)[number];
 export type AppendOnlyStateTableName = Exclude<(typeof APPEND_ONLY_STATE_TABLES)[number], "schema_migrations">;
 
 export interface StateLocation {
@@ -379,29 +393,6 @@ export interface EvaluateAttemptOracleRequest {
 export interface PersistedAttemptOracleDecision {
   readonly decision: StateRecord;
   readonly references: readonly StateRecord[];
-}
-
-export interface LeaseCasRequest {
-  readonly leaseId: string;
-  readonly ownerTokenDigest: string;
-  readonly generation: number;
-  readonly ownerContextId: string;
-  readonly expectedState: string;
-  readonly expectedVersion: number;
-  readonly changes: StateRowInput;
-  readonly snapshotEvidence: StateRowInput;
-}
-
-export interface ResourceCasRequest {
-  readonly resourceId: string;
-  readonly allocationLeaseId: string;
-  readonly ownerTokenDigest: string;
-  readonly ownerGeneration: number;
-  readonly ownerContextId: string;
-  readonly expectedState: string;
-  readonly expectedVersion: number;
-  readonly changes: StateRowInput;
-  readonly snapshotEvidence: StateRowInput;
 }
 
 function recoveryFor(code: StateErrorCode): string {
@@ -799,7 +790,7 @@ function applyMigration(
     if (db.prepare("PRAGMA foreign_key_check").all().length !== 0) {
       throw new Error(`migration ${migration.name} introduced foreign-key violations`);
     }
-    if (migration.version === LATEST_STATE_SCHEMA_VERSION) validateReleasedSchema(db, databasePath);
+    if (migration.version === LATEST_STATE_SCHEMA_VERSION) validateReleasedSchema(db, databasePath, migration.version);
     db.exec("COMMIT");
     return migration.version;
   } catch (error) {
@@ -808,7 +799,7 @@ function applyMigration(
     if (!migrationStarted && error instanceof StateStoreError) throw error;
     throw typedError(
       "RICKGENT_STATE_MIGRATION_FAILED",
-      `migration ${migration.name} rolled back without changing authoritative state`,
+      `migration ${migration.name} rolled back without changing authoritative state: ${error instanceof Error ? error.message : String(error)}`,
       databasePath,
       error,
     );
@@ -843,14 +834,27 @@ function sqliteSchemaChecksum(db: DatabaseSync): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(JSON.stringify(rows)).digest("hex")}`;
 }
 
-function validateReleasedSchema(db: DatabaseSync, databasePath: string): void {
-  if (LATEST_STATE_SCHEMA_VERSION !== 1) return;
-  if (sqliteSchemaChecksum(db) !== INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM) {
-    throw typedError("RICKGENT_STATE_CORRUPT", "sqlite_schema does not equal the released migration definition", databasePath);
+function validateReleasedSchema(db: DatabaseSync, databasePath: string, version: number): void {
+  const expectedChecksum = version === 1
+    ? INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM
+    : version === LATEST_STATE_SCHEMA_VERSION
+      ? LATEST_STATE_SQLITE_SCHEMA_CHECKSUM
+      : undefined;
+  if (expectedChecksum === undefined) {
+    throw typedError("RICKGENT_STATE_CORRUPT", `no released schema definition exists for version ${version}`, databasePath);
+  }
+  const observedChecksum = sqliteSchemaChecksum(db);
+  if (observedChecksum !== expectedChecksum) {
+    throw typedError(
+      "RICKGENT_STATE_CORRUPT",
+      `sqlite_schema does not equal the released migration definition (expected ${expectedChecksum}, observed ${observedChecksum})`,
+      databasePath,
+    );
   }
   const tables = db.prepare("PRAGMA table_list").all() as Array<Record<string, SqlValue>>;
   const strict = new Map(tables.map((row) => [row.name, row.strict]));
-  for (const table of INITIAL_STATE_SCHEMA_OBJECTS.tables) {
+  const schemaObjects = version === 1 ? INITIAL_STATE_SCHEMA_OBJECTS : LATEST_STATE_SCHEMA_OBJECTS;
+  for (const table of schemaObjects.tables) {
     if (strict.get(table) !== 1) throw typedError("RICKGENT_STATE_CORRUPT", `released table is missing or not STRICT: ${table}`, databasePath);
   }
 }
@@ -878,7 +882,10 @@ function validateIntegrity(db: DatabaseSync, databasePath: string, expectLatestS
     if (db.prepare("PRAGMA foreign_key_check").all().length !== 0) {
       throw typedError("RICKGENT_STATE_CORRUPT", "PRAGMA foreign_key_check found violations", databasePath);
     }
-    if (expectLatestSchema && version === LATEST_STATE_SCHEMA_VERSION) validateReleasedSchema(db, databasePath);
+    if (expectLatestSchema && version !== LATEST_STATE_SCHEMA_VERSION) {
+      throw typedError("RICKGENT_STATE_CORRUPT", "state migration did not reach the latest released schema", databasePath);
+    }
+    validateReleasedSchema(db, databasePath, version);
   } catch (error) {
     if (error instanceof StateStoreError) throw error;
     throw typedError("RICKGENT_STATE_CORRUPT", "state database integrity checks failed", databasePath, error);
@@ -1185,7 +1192,7 @@ export class StateStore {
   private constructor(location: StateLocation, database: DatabaseSync) {
     this.location = location;
     this.#database = database;
-    for (const table of STATE_TABLES) {
+    for (const table of ALL_STATE_TABLES) {
       const rows = database.prepare(`PRAGMA table_xinfo(${quoteIdentifier(table)})`).all() as Array<Record<string, SqlValue>>;
       this.#columns.set(table, new Set(rows.map((row) => String(row.name))));
     }
@@ -1531,6 +1538,9 @@ export class StateStore {
   }
 
   appendEvidence(input: StateRowInput): StateRecord {
+    if (input.producer_service === "ProcessSupervisor") {
+      throw new TypeError("ProcessSupervisor evidence requires the t19 runtime-authorized producer path");
+    }
     return this.#appendIdempotent(
       "evidence",
       input,
@@ -1542,128 +1552,44 @@ export class StateStore {
     );
   }
 
-  createLease(leaseInput: StateRowInput, snapshotEvidence: StateRowInput): StateRecord {
-    const lease = this.#validatedColumns("leases", normalizeRow(leaseInput));
-    this.#requireCompleteRow("leases", lease);
-    if (lease.state !== "reserved" || lease.state_version !== 0) throw new TypeError("a new lease must begin reserved at state_version 0");
-    return this.#immediate("acquire_lease", () => {
-      const existing = this.#selectBy("leases", lease, ["lease_id"]);
-      if (existing !== undefined) {
-        if (this.#sameRecord(existing, lease)) return frozenRow(existing);
-        throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "lease identity already has different immutable input", this.location.databasePath);
+  /** @internal Accepts only runtime-unforgeable commands minted by LeaseAuthority. */
+  commitAuthorizedAttemptOwnership(command: AttemptOwnershipCommand): AttemptOwnershipStoreResult {
+    if (!isAuthorizedAttemptOwnershipCommand(command)) {
+      throw new TypeError("attempt ownership command was not minted by LeaseAuthority");
+    }
+    return this.#immediate(`attempt_ownership_${command.payload.kind}`, () => {
+      const payload = command.payload;
+      const canonicalInput = this.#canonicalOwnershipCommand(command);
+      const inputDigest = sha256Text(canonicalInput);
+      if (payload.kind === "assert_current") return this.#assertCurrentAttemptOwnership(command);
+      const replay = this.#requireDatabase().prepare(`
+        SELECT ownership_id, input_digest, canonical_input_json, result_digest, canonical_result_json
+        FROM attempt_ownership_operations
+        WHERE attempt_id = ? AND idempotency_key = ?
+      `).get(payload.attemptId, payload.idempotencyKey) as MutableStateRecord | undefined;
+      if (replay !== undefined) {
+        if (replay.input_digest !== inputDigest || replay.canonical_input_json !== canonicalInput) {
+          throw typedError(
+            "RICKGENT_STATE_IDEMPOTENCY_CONFLICT",
+            "attempt ownership idempotency key has different immutable input",
+            this.location.databasePath,
+          );
+        }
+        return this.#replayAttemptOwnershipResult(payload.attemptId, String(replay.ownership_id), replay);
       }
-      const evidence = this.#prepareSnapshotEvidence("rickgent.lease-snapshot.v1", lease, snapshotEvidence);
-      if (evidence.evidence_id !== lease.acquisition_evidence_id) throw new TypeError("lease acquisition evidence id does not match its snapshot");
-      this.#insertEvidenceInTransaction(evidence);
-      this.#insert("leases", lease);
-      return frozenRow(lease);
-    });
-  }
 
-  updateLease(request: LeaseCasRequest): StateRecord {
-    return this.#immediate("heartbeat_lease", () => {
-      const current = this.#selectBy("leases", { lease_id: request.leaseId }, ["lease_id"]);
-      if (
-        current === undefined || current.owner_token_digest !== request.ownerTokenDigest ||
-        current.generation !== request.generation || current.owner_context_id !== request.ownerContextId
-      ) {
-        throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "lease owner proof does not match", this.location.databasePath);
+      switch (payload.kind) {
+        case "acquire":
+          return this.#acquireAttemptOwnership(command, canonicalInput, inputDigest);
+        case "heartbeat":
+          return this.#heartbeatAttemptOwnership(command, canonicalInput, inputDigest);
+        case "advance_resource":
+          return this.#advanceAttemptResourceClaim(command, canonicalInput, inputDigest);
+        case "begin_cleanup":
+          return this.#beginAttemptOwnershipCleanup(command, canonicalInput, inputDigest);
+        case "stale_recovery":
+          return this.#recoverStaleAttemptOwnership(command, canonicalInput, inputDigest);
       }
-      if (current.state !== request.expectedState || current.state_version !== request.expectedVersion) {
-        throw typedError("RICKGENT_STATE_CONFLICT", "lease compare-and-set preimage changed", this.location.databasePath);
-      }
-      const changes = this.#validatedColumns("leases", normalizeRow(request.changes));
-      const allowed = new Set(["heartbeat_at", "expires_at", "state", "release_evidence_id"]);
-      for (const column of Object.keys(changes)) if (!allowed.has(column)) throw new TypeError(`lease CAS cannot update ${column}`);
-      const desired = { ...current, ...changes, state_version: request.expectedVersion + 1 };
-      const evidence = this.#prepareSnapshotEvidence("rickgent.lease-snapshot.v1", desired, request.snapshotEvidence);
-      this.#insertEvidenceInTransaction(evidence);
-      const assignments = [...Object.keys(changes), "state_version"];
-      const result = this.#requireDatabase().prepare(
-        `UPDATE leases SET ${assignments.map((column) => `${quoteIdentifier(column)} = ?`).join(", ")}
-         WHERE lease_id = ? AND owner_token_digest = ? AND generation = ? AND owner_context_id = ? AND state = ? AND state_version = ?`,
-      ).run(
-        ...Object.keys(changes).map((column) => changes[column] ?? null),
-        request.expectedVersion + 1,
-        request.leaseId,
-        request.ownerTokenDigest,
-        request.generation,
-        request.ownerContextId,
-        request.expectedState,
-        request.expectedVersion,
-      );
-      if (result.changes !== 1) throw typedError("RICKGENT_STATE_CONFLICT", "lease compare-and-set changed zero rows", this.location.databasePath);
-      return frozenRow(desired);
-    });
-  }
-
-  createAttemptResource(resourceInput: StateRowInput, snapshotEvidence: StateRowInput, ownerTokenDigest: string): StateRecord {
-    const resource = this.#validatedColumns("attempt_resources", normalizeRow(resourceInput));
-    this.#requireCompleteRow("attempt_resources", resource);
-    if (resource.state !== "reserved" || resource.state_version !== 0) throw new TypeError("a new resource must begin reserved at state_version 0");
-    return this.#immediate("reserve_resource", () => {
-      const lease = this.#requireDatabase().prepare(
-        `SELECT lease_id FROM leases WHERE lease_id = ? AND attempt_id = ? AND generation = ?
-         AND owner_context_id = ? AND owner_token_digest = ? AND state IN ('reserved','live','cleanup_pending')`,
-      ).get(
-        resource.allocation_lease_id ?? null,
-        resource.attempt_id ?? null,
-        resource.owner_generation ?? null,
-        resource.owner_context_id ?? null,
-        ownerTokenDigest,
-      );
-      if (lease === undefined) throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "resource allocation lease proof does not match", this.location.databasePath);
-      const existing = this.#selectBy("attempt_resources", resource, ["resource_id"]);
-      if (existing !== undefined) {
-        if (this.#sameRecord(existing, resource)) return frozenRow(existing);
-        throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "resource identity already has different immutable input", this.location.databasePath);
-      }
-      const evidence = this.#prepareSnapshotEvidence("rickgent.attempt-resource-snapshot.v1", resource, snapshotEvidence);
-      if (evidence.evidence_id !== resource.allocation_evidence_id) throw new TypeError("resource allocation evidence id does not match its snapshot");
-      this.#insertEvidenceInTransaction(evidence);
-      this.#insert("attempt_resources", resource);
-      return frozenRow(resource);
-    });
-  }
-
-  updateAttemptResource(request: ResourceCasRequest): StateRecord {
-    return this.#immediate("advance_resource", () => {
-      const current = this.#selectBy("attempt_resources", { resource_id: request.resourceId }, ["resource_id"]);
-      if (
-        current === undefined || current.allocation_lease_id !== request.allocationLeaseId ||
-        current.owner_generation !== request.ownerGeneration || current.owner_context_id !== request.ownerContextId
-      ) {
-        throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "resource owner proof does not match", this.location.databasePath);
-      }
-      const lease = this.#requireDatabase().prepare(
-        "SELECT lease_id FROM leases WHERE lease_id = ? AND generation = ? AND owner_context_id = ? AND owner_token_digest = ?",
-      ).get(request.allocationLeaseId, request.ownerGeneration, request.ownerContextId, request.ownerTokenDigest);
-      if (lease === undefined) throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "resource lease token proof does not match", this.location.databasePath);
-      if (current.state !== request.expectedState || current.state_version !== request.expectedVersion) {
-        throw typedError("RICKGENT_STATE_CONFLICT", "resource compare-and-set preimage changed", this.location.databasePath);
-      }
-      const changes = this.#validatedColumns("attempt_resources", normalizeRow(request.changes));
-      const allowed = new Set(["owner_generation", "owner_context_id", "state", "release_evidence_id", "quarantine_evidence_id"]);
-      for (const column of Object.keys(changes)) if (!allowed.has(column)) throw new TypeError(`resource CAS cannot update ${column}`);
-      const desired = { ...current, ...changes, state_version: request.expectedVersion + 1 };
-      const evidence = this.#prepareSnapshotEvidence("rickgent.attempt-resource-snapshot.v1", desired, request.snapshotEvidence);
-      this.#insertEvidenceInTransaction(evidence);
-      const assignments = [...Object.keys(changes), "state_version"];
-      const result = this.#requireDatabase().prepare(
-        `UPDATE attempt_resources SET ${assignments.map((column) => `${quoteIdentifier(column)} = ?`).join(", ")}
-         WHERE resource_id = ? AND owner_generation = ? AND owner_context_id = ? AND state = ? AND state_version = ? AND allocation_lease_id = ?`,
-      ).run(
-        ...Object.keys(changes).map((column) => changes[column] ?? null),
-        request.expectedVersion + 1,
-        request.resourceId,
-        request.ownerGeneration,
-        request.ownerContextId,
-        request.expectedState,
-        request.expectedVersion,
-        request.allocationLeaseId,
-      );
-      if (result.changes !== 1) throw typedError("RICKGENT_STATE_CONFLICT", "resource compare-and-set changed zero rows", this.location.databasePath);
-      return frozenRow(desired);
     });
   }
 
@@ -3718,7 +3644,7 @@ export class StateStore {
       if (!isAbsolute(value) || realpathSync.native(value) !== value) throw new TypeError(`execution context ${field} must be an existing canonical absolute path`);
     }
     if (input.worktreeRealpath !== this.location.repoRealpath) {
-      throw new TypeError("t14 context worktree must remain the selected repository until t15 persists attempt resources");
+      throw new TypeError("production execution contexts remain on the selected repository until t22 cuts over the attempt-workspace primitive");
     }
     for (const [field, value] of [
       ["policyRootRealpath", input.policyRootRealpath],
@@ -4101,42 +4027,6 @@ export class StateStore {
     return keys.length === Object.keys(left).length && keys.every((key) => sameValue(left[key], right[key]));
   }
 
-  #prepareSnapshotEvidence(
-    schemaVersion: string,
-    postImage: Readonly<Record<string, SqlValue>>,
-    evidenceInput: StateRowInput,
-  ): MutableStateRecord {
-    const evidence = this.#validatedColumns("evidence", normalizeRow(evidenceInput));
-    this.#requireCompleteRow("evidence", evidence);
-    if (
-      evidence.schema_version !== schemaVersion || evidence.attempt_id !== postImage.attempt_id ||
-      evidence.context_id !== postImage.owner_context_id || evidence.external_path !== null ||
-      evidence.external_digest !== null || evidence.external_size !== null
-    ) {
-      throw new TypeError(`${schemaVersion} evidence does not match its source post-image scope`);
-    }
-    const expectedPayload = canonicalJson(postImage);
-    if (evidence.inline_payload_json !== expectedPayload || evidence.content_digest !== sha256Text(expectedPayload)) {
-      throw new TypeError(`${schemaVersion} evidence is not the exact canonical post-image`);
-    }
-    this.#validateRecordSemantics("evidence", evidence);
-    return evidence;
-  }
-
-  #insertEvidenceInTransaction(evidence: MutableStateRecord): StateRecord {
-    const existing = this.#selectBy("evidence", evidence, ["producer_service", "scope", "idempotency_key"]);
-    if (existing !== undefined) {
-      if (this.#sameRecord(existing, evidence)) return frozenRow(existing);
-      throw typedError(
-        "RICKGENT_STATE_IDEMPOTENCY_CONFLICT",
-        "snapshot evidence idempotency key has different immutable input",
-        this.location.databasePath,
-      );
-    }
-    this.#insert("evidence", evidence);
-    return frozenRow(evidence);
-  }
-
   #assertRepositoryOid(value: SqlValue | undefined, label: string): void {
     if (
       typeof value !== "string" || value.length !== (this.location.objectFormat === "sha1" ? 40 : 64) ||
@@ -4446,6 +4336,630 @@ export class StateStore {
     const db = this.#database;
     if (db === undefined) throw new StateStoreError("RICKGENT_STATE_CONFLICT", "state store is closed");
     return db;
+  }
+
+  #canonicalOwnershipCommand(command: AttemptOwnershipCommand): string {
+    const payload = command.payload;
+    if (payload.attemptId === "" || payload.idempotencyKey === "" || payload.idempotencyKey !== payload.idempotencyKey.trim()) {
+      throw new TypeError("attempt ownership command identity is invalid");
+    }
+    if (!/^sha256:[0-9a-f]{64}$/.test(payload.ownerTokenDigest)) throw new TypeError("attempt owner token digest is invalid");
+    if (payload.repositoryId !== this.location.repositoryId) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "attempt ownership command belongs to another repository", this.location.databasePath);
+    }
+    if (!Number.isSafeInteger(payload.ttlMs) || payload.ttlMs < 1_000 || payload.ttlMs > 300_000) {
+      throw new TypeError("attempt ownership TTL is outside the supported bound");
+    }
+    const defined = Object.fromEntries(Object.entries(payload).filter((entry) => entry[1] !== undefined));
+    return canonicalJson({ schema_version: "rickgent.attempt-ownership-operation/v1", ...defined });
+  }
+
+  #attemptOwnershipPlan(attemptId: string): AttemptWorkspacePlan {
+    const row = this.#requireDatabase().prepare(`
+      SELECT a.attempt_id, a.ticket_instance_id, a.run_id, a.ticket_id, a.attempt_number,
+             a.contract_digest, a.resource_identity_version, a.delivery_baseline_oid,
+             a.state AS attempt_state, rt.state AS ticket_state, r.state AS run_state,
+             r.repository_id, r.delivery_ref
+      FROM attempts a
+      JOIN run_tickets rt ON rt.ticket_instance_id = a.ticket_instance_id
+      JOIN runs r ON r.run_id = a.run_id
+      WHERE a.attempt_id = ? AND r.repository_id = ?
+    `).get(attemptId, this.location.repositoryId) as MutableStateRecord | undefined;
+    if (row === undefined) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "attempt ownership does not resolve in the selected repository", this.location.databasePath);
+    }
+    const lineage: AttemptOwnershipLineage = {
+      repositoryId: String(row.repository_id),
+      runId: String(row.run_id),
+      ticketInstanceId: String(row.ticket_instance_id),
+      ticketId: String(row.ticket_id),
+      attemptId: String(row.attempt_id),
+      attemptNumber: Number(row.attempt_number),
+      contractDigest: String(row.contract_digest),
+      resourceIdentityVersion: String(row.resource_identity_version),
+      deliveryBaselineOid: String(row.delivery_baseline_oid),
+      deliveryRef: String(row.delivery_ref),
+    };
+    return deriveAttemptWorkspacePlan(this.location, lineage);
+  }
+
+  #attemptOwnershipAdmission(attemptId: string): AttemptWorkspacePlan {
+    const states = this.#requireDatabase().prepare(`
+      SELECT a.state AS attempt_state, a.delivery_baseline_oid,
+             rt.state AS ticket_state, r.state AS run_state, r.current_delivery_oid
+      FROM attempts a
+      JOIN run_tickets rt ON rt.ticket_instance_id = a.ticket_instance_id
+      JOIN runs r ON r.run_id = a.run_id
+      WHERE a.attempt_id = ? AND r.repository_id = ?
+    `).get(attemptId, this.location.repositoryId) as MutableStateRecord | undefined;
+    if (states === undefined) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "attempt ownership lineage does not exist", this.location.databasePath);
+    }
+    if (states.run_state !== "active" || states.ticket_state !== "active" || states.attempt_state !== "planned") {
+      throw typedError(
+        "RICKGENT_STATE_TRANSITION_ILLEGAL",
+        "attempt ownership requires an active run, active ticket, and planned attempt",
+        this.location.databasePath,
+      );
+    }
+    if (states.current_delivery_oid !== states.delivery_baseline_oid) {
+      throw typedError(
+        "RICKGENT_STATE_TRANSITION_ILLEGAL",
+        "attempt ownership baseline is stale relative to the authoritative run delivery chain",
+        this.location.databasePath,
+      );
+    }
+    return this.#attemptOwnershipPlan(attemptId);
+  }
+
+  #ownershipContext(
+    plan: AttemptWorkspacePlan,
+    generation: number,
+    ownerTokenDigest: string,
+    recoveredFromOwnershipId: string | null,
+  ): { readonly json: string; readonly digest: `sha256:${string}` } {
+    const json = canonicalJson({
+      schema_version: ATTEMPT_OWNERSHIP_SCHEMA_VERSION,
+      repository_id: plan.lineage.repositoryId,
+      run_id: plan.lineage.runId,
+      ticket_instance_id: plan.lineage.ticketInstanceId,
+      ticket_id: plan.lineage.ticketId,
+      attempt_id: plan.lineage.attemptId,
+      attempt_number: plan.lineage.attemptNumber,
+      contract_digest: plan.lineage.contractDigest,
+      resource_identity_version: plan.lineage.resourceIdentityVersion,
+      delivery_baseline_oid: plan.lineage.deliveryBaselineOid,
+      delivery_ref: plan.lineage.deliveryRef,
+      allocation_digest: plan.allocationDigest,
+      generation,
+      owner_token_digest: ownerTokenDigest,
+      recovered_from_ownership_id: recoveredFromOwnershipId,
+      resources: plan.resources.map((resource) => ({
+        resource_claim_id: resource.resourceClaimId,
+        slot: resource.slot,
+        kind: resource.kind,
+        canonical_identity: resource.canonicalIdentity,
+        identity_digest: resource.identityDigest,
+      })),
+    });
+    return { json, digest: sha256Text(json) };
+  }
+
+  #ownershipIdentity(attemptId: string, generation: number, ownerTokenDigest: string): string {
+    return `ownership-${sha256Text(canonicalJson({
+      schema_version: ATTEMPT_OWNERSHIP_SCHEMA_VERSION,
+      attempt_id: attemptId,
+      generation,
+      owner_token_digest: ownerTokenDigest,
+    })).slice(7)}`;
+  }
+
+  #acquireAttemptOwnership(
+    command: AttemptOwnershipCommand,
+    canonicalInput: string,
+    inputDigest: `sha256:${string}`,
+  ): AttemptOwnershipStoreResult {
+    const payload = command.payload;
+    const plan = this.#attemptOwnershipAdmission(payload.attemptId);
+    const existing = this.#requireDatabase().prepare(
+      "SELECT ownership_id FROM attempt_ownership_leases WHERE attempt_id = ? LIMIT 1",
+    ).get(payload.attemptId);
+    if (existing !== undefined) {
+      throw typedError("RICKGENT_STATE_CONFLICT", "attempt already has an ownership generation", this.location.databasePath);
+    }
+    const generation = 1;
+    const ownershipId = this.#ownershipIdentity(payload.attemptId, generation, payload.ownerTokenDigest);
+    const context = this.#ownershipContext(plan, generation, payload.ownerTokenDigest, null);
+    const heartbeatAt = new Date().toISOString();
+    const expiresAt = new Date(new Date(heartbeatAt).getTime() + payload.ttlMs).toISOString();
+    this.#insert("attempt_ownership_leases", {
+      ownership_id: ownershipId,
+      attempt_id: payload.attemptId,
+      generation,
+      owner_token_digest: payload.ownerTokenDigest,
+      context_digest: context.digest,
+      canonical_context_json: context.json,
+      recovered_from_ownership_id: null,
+      heartbeat_at: heartbeatAt,
+      expires_at: expiresAt,
+      state: "live",
+      state_version: 0,
+      created_at: heartbeatAt,
+    });
+    for (const resource of plan.resources) {
+      this.#insert("attempt_resource_claims", {
+        resource_claim_id: resource.resourceClaimId,
+        attempt_id: payload.attemptId,
+        slot: resource.slot,
+        kind: resource.kind,
+        canonical_identity: resource.canonicalIdentity,
+        identity_digest: resource.identityDigest,
+        allocation_ownership_id: ownershipId,
+        current_ownership_id: ownershipId,
+        owner_generation: generation,
+        state: "reserved",
+        state_version: 0,
+        release_proof_digest: null,
+        quarantine_proof_digest: null,
+        created_at: heartbeatAt,
+      });
+    }
+    return this.#recordOwnershipOperation(command, ownershipId, "execution", plan, canonicalInput, inputDigest);
+  }
+
+  #requireCurrentOwnership(command: AttemptOwnershipCommand): MutableStateRecord {
+    const payload = command.payload;
+    if (payload.ownershipId === undefined) throw new TypeError("ownership mutation requires an ownership id");
+    const current = this.#requireDatabase().prepare(
+      "SELECT * FROM attempt_ownership_leases WHERE ownership_id = ? AND attempt_id = ?",
+    ).get(payload.ownershipId, payload.attemptId) as MutableStateRecord | undefined;
+    if (current === undefined || current.owner_token_digest !== payload.ownerTokenDigest) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "attempt ownership credential does not match", this.location.databasePath);
+    }
+    return current;
+  }
+
+  #requireOwnershipPreimage(command: AttemptOwnershipCommand, current: MutableStateRecord): void {
+    const payload = command.payload;
+    if (current.state !== payload.expectedOwnershipState || current.state_version !== payload.expectedOwnershipVersion) {
+      throw typedError("RICKGENT_STATE_CONFLICT", "attempt ownership compare-and-set preimage changed", this.location.databasePath);
+    }
+  }
+
+  #assertCurrentAttemptOwnership(command: AttemptOwnershipCommand): AttemptOwnershipStoreResult {
+    const current = this.#requireCurrentOwnership(command);
+    if (
+      current.state !== "live" || current.recovered_from_ownership_id !== null ||
+      new Date(String(current.expires_at)).getTime() <= Date.now()
+    ) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "attempt execution ownership is not current and unexpired", this.location.databasePath);
+    }
+    const plan = this.#attemptOwnershipAdmission(command.payload.attemptId);
+    const resources = this.#requireDatabase().prepare(`
+      SELECT * FROM attempt_resource_claims
+      WHERE attempt_id = ? ORDER BY slot
+    `).all(command.payload.attemptId) as MutableStateRecord[];
+    if (
+      resources.length !== plan.resources.length ||
+      resources.some((resource) =>
+        resource.current_ownership_id !== current.ownership_id ||
+        resource.owner_generation !== current.generation ||
+        !["reserved", "allocated", "active"].includes(String(resource.state)))
+    ) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "attempt resource claims are not owned by the current execution generation", this.location.databasePath);
+    }
+    return this.#attemptOwnershipResult(
+      command.payload.attemptId,
+      String(current.ownership_id),
+      "execution",
+      false,
+      plan,
+    );
+  }
+
+  #heartbeatAttemptOwnership(
+    command: AttemptOwnershipCommand,
+    canonicalInput: string,
+    inputDigest: `sha256:${string}`,
+  ): AttemptOwnershipStoreResult {
+    const current = this.#requireCurrentOwnership(command);
+    this.#requireOwnershipPreimage(command, current);
+    if (current.state !== "live" || current.recovered_from_ownership_id !== null) {
+      throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "only execution ownership can heartbeat while live", this.location.databasePath);
+    }
+    const wallNow = Date.now();
+    if (new Date(String(current.expires_at)).getTime() <= wallNow) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "expired attempt ownership cannot heartbeat", this.location.databasePath);
+    }
+    const heartbeatMs = Math.max(wallNow, new Date(String(current.heartbeat_at)).getTime() + 1);
+    const heartbeatAt = new Date(heartbeatMs).toISOString();
+    const expiresAt = new Date(heartbeatMs + command.payload.ttlMs).toISOString();
+    const update = this.#requireDatabase().prepare(`
+      UPDATE attempt_ownership_leases
+      SET heartbeat_at = ?, expires_at = ?, state_version = state_version + 1
+      WHERE ownership_id = ? AND owner_token_digest = ? AND state = 'live' AND state_version = ?
+    `).run(heartbeatAt, expiresAt, String(current.ownership_id), command.payload.ownerTokenDigest, Number(current.state_version));
+    if (update.changes !== 1) throw typedError("RICKGENT_STATE_CONFLICT", "attempt ownership heartbeat lost its CAS race", this.location.databasePath);
+    return this.#recordOwnershipOperation(
+      command,
+      String(current.ownership_id),
+      "execution",
+      this.#attemptOwnershipPlan(command.payload.attemptId),
+      canonicalInput,
+      inputDigest,
+    );
+  }
+
+  #advanceAttemptResourceClaim(
+    command: AttemptOwnershipCommand,
+    canonicalInput: string,
+    inputDigest: `sha256:${string}`,
+  ): AttemptOwnershipStoreResult {
+    const payload = command.payload;
+    const ownership = this.#requireCurrentOwnership(command);
+    if (
+      payload.slot === undefined || payload.expectedResourceState === undefined ||
+      payload.expectedResourceVersion === undefined || payload.toResourceState === undefined
+    ) {
+      throw new TypeError("resource ownership operation is incomplete");
+    }
+    const resource = this.#requireDatabase().prepare(`
+      SELECT * FROM attempt_resource_claims
+      WHERE attempt_id = ? AND slot = ?
+    `).get(payload.attemptId, payload.slot) as MutableStateRecord | undefined;
+    if (
+      resource === undefined || resource.current_ownership_id !== ownership.ownership_id ||
+      resource.owner_generation !== ownership.generation
+    ) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "attempt resource current owner does not match", this.location.databasePath);
+    }
+    if (resource.state !== payload.expectedResourceState || resource.state_version !== payload.expectedResourceVersion) {
+      throw typedError("RICKGENT_STATE_CONFLICT", "attempt resource compare-and-set preimage changed", this.location.databasePath);
+    }
+    const edge = `${String(resource.state)}->${payload.toResourceState}`;
+    const allowed = new Set(["reserved->allocated", "allocated->active"]);
+    if (!allowed.has(edge)) {
+      throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", `illegal attempt resource edge ${edge}`, this.location.databasePath);
+    }
+    if (
+      ["allocated", "active"].includes(payload.toResourceState) &&
+      (ownership.state !== "live" || ownership.recovered_from_ownership_id !== null ||
+        new Date(String(ownership.expires_at)).getTime() <= Date.now())
+    ) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "new resource effects require current unexpired execution ownership", this.location.databasePath);
+    }
+    const update = this.#requireDatabase().prepare(`
+      UPDATE attempt_resource_claims
+      SET state = ?, state_version = state_version + 1,
+          release_proof_digest = ?, quarantine_proof_digest = ?
+      WHERE resource_claim_id = ? AND current_ownership_id = ? AND owner_generation = ? AND state = ? AND state_version = ?
+    `).run(
+      payload.toResourceState,
+      null,
+      null,
+      String(resource.resource_claim_id),
+      String(ownership.ownership_id),
+      Number(ownership.generation),
+      String(resource.state),
+      payload.expectedResourceVersion,
+    );
+    if (update.changes !== 1) throw typedError("RICKGENT_STATE_CONFLICT", "attempt resource advance lost its CAS race", this.location.databasePath);
+    return this.#recordOwnershipOperation(
+      command,
+      String(ownership.ownership_id),
+      ownership.recovered_from_ownership_id === null ? "execution" : "recovery_cleanup",
+      this.#attemptOwnershipPlan(payload.attemptId),
+      canonicalInput,
+      inputDigest,
+    );
+  }
+
+  #beginAttemptOwnershipCleanup(
+    command: AttemptOwnershipCommand,
+    canonicalInput: string,
+    inputDigest: `sha256:${string}`,
+  ): AttemptOwnershipStoreResult {
+    const current = this.#requireCurrentOwnership(command);
+    this.#requireOwnershipPreimage(command, current);
+    if (current.state !== "live") {
+      throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "only live ownership can begin cleanup", this.location.databasePath);
+    }
+    this.#requireDatabase().prepare(`
+      UPDATE attempt_resource_claims
+      SET state = 'cleanup_pending', state_version = state_version + 1
+      WHERE attempt_id = ? AND current_ownership_id = ? AND state IN ('reserved','allocated','active')
+    `).run(command.payload.attemptId, String(current.ownership_id));
+    const update = this.#requireDatabase().prepare(`
+      UPDATE attempt_ownership_leases
+      SET state = 'cleanup_pending', state_version = state_version + 1
+      WHERE ownership_id = ? AND owner_token_digest = ? AND state = 'live' AND state_version = ?
+    `).run(String(current.ownership_id), command.payload.ownerTokenDigest, Number(current.state_version));
+    if (update.changes !== 1) throw typedError("RICKGENT_STATE_CONFLICT", "attempt cleanup lost its ownership CAS race", this.location.databasePath);
+    return this.#recordOwnershipOperation(
+      command,
+      String(current.ownership_id),
+      current.recovered_from_ownership_id === null ? "execution" : "recovery_cleanup",
+      this.#attemptOwnershipPlan(command.payload.attemptId),
+      canonicalInput,
+      inputDigest,
+    );
+  }
+
+  #recoverStaleAttemptOwnership(
+    command: AttemptOwnershipCommand,
+    canonicalInput: string,
+    inputDigest: `sha256:${string}`,
+  ): AttemptOwnershipStoreResult {
+    const payload = command.payload;
+    if (payload.expiredOwnershipId === undefined || payload.deathEvidenceId === undefined) {
+      throw new TypeError("stale recovery requires an expired ownership id and death evidence");
+    }
+    const plan = this.#attemptOwnershipPlan(payload.attemptId);
+    const old = this.#requireDatabase().prepare(`
+      SELECT * FROM attempt_ownership_leases
+      WHERE ownership_id = ? AND attempt_id = ?
+    `).get(payload.expiredOwnershipId, payload.attemptId) as MutableStateRecord | undefined;
+    if (old === undefined || !["live", "cleanup_pending"].includes(String(old.state))) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "stale recovery target is not the current recoverable ownership", this.location.databasePath);
+    }
+    const nowMs = Date.now();
+    if (new Date(String(old.expires_at)).getTime() > nowMs) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "fresh ownership cannot be recovered", this.location.databasePath);
+    }
+    const evidence = this.#requireDatabase().prepare(`
+      SELECT attempt_id, phase_execution_id, context_id, producer_service, schema_version,
+             content_digest, inline_payload_json
+      FROM evidence WHERE evidence_id = ?
+    `).get(payload.deathEvidenceId) as MutableStateRecord | undefined;
+    if (
+      evidence === undefined || evidence.attempt_id !== payload.attemptId ||
+      evidence.producer_service !== "ProcessSupervisor" ||
+      evidence.schema_version !== "rickgent.process-group-death.v1" ||
+      evidence.inline_payload_json === null
+    ) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "stale recovery lacks exact immutable process-death evidence", this.location.databasePath);
+    }
+    const death = this.#parseJsonObject(String(evidence.inline_payload_json), "process death evidence");
+    const receipt = typeof death.process_receipt_id === "string" && death.process_receipt_id !== ""
+      ? this.#requireDatabase().prepare(`
+          SELECT p.*, x.attempt_id AS phase_attempt_id, x.context_id AS phase_context_id,
+                 c.context_digest AS phase_context_digest,
+                 l.attempt_id AS lease_attempt_id, l.generation AS durable_lease_generation,
+                 l.owner_token_digest AS durable_owner_token_digest,
+                 l.owner_context_id AS durable_owner_context_id
+          FROM process_receipts p
+          JOIN phase_executions x ON x.phase_execution_id = p.phase_execution_id
+          JOIN execution_contexts c ON c.context_id = p.context_id
+          JOIN leases l ON l.lease_id = p.lease_id AND l.generation = p.lease_generation
+          WHERE p.process_receipt_id = ?
+        `).get(death.process_receipt_id) as MutableStateRecord | undefined
+      : undefined;
+    const observedAt = typeof death.death_observed_at === "string" ? Date.parse(death.death_observed_at) : Number.NaN;
+    if (
+      evidence.content_digest !== sha256Text(canonicalJson(death)) ||
+      death.attempt_id !== payload.attemptId || death.ownership_id !== old.ownership_id ||
+      death.generation !== old.generation || death.lease_generation !== old.generation ||
+      death.context_digest !== old.context_digest || death.group_dead !== true ||
+      typeof death.process_receipt_id !== "string" || death.process_receipt_id === "" ||
+      !Number.isSafeInteger(death.pid) || Number(death.pid) < 1 ||
+      !Number.isSafeInteger(death.pgid) || Number(death.pgid) < 1 ||
+      typeof death.platform_boot_identity !== "string" || death.platform_boot_identity === "" ||
+      typeof death.process_start_identity !== "string" || death.process_start_identity === "" ||
+      typeof death.phase_execution_id !== "string" || death.phase_execution_id === "" ||
+      receipt === undefined || receipt.phase_attempt_id !== payload.attemptId ||
+      receipt.phase_execution_id !== death.phase_execution_id ||
+      receipt.phase_context_id !== receipt.context_id || evidence.context_id !== receipt.context_id ||
+      evidence.phase_execution_id !== receipt.phase_execution_id ||
+      receipt.phase_context_digest !== old.context_digest ||
+      receipt.lease_attempt_id !== payload.attemptId ||
+      receipt.durable_lease_generation !== old.generation || receipt.lease_generation !== old.generation ||
+      receipt.durable_owner_token_digest !== old.owner_token_digest ||
+      receipt.durable_owner_context_id !== receipt.context_id ||
+      receipt.pid !== death.pid || receipt.pgid !== death.pgid ||
+      receipt.boot_identity !== death.platform_boot_identity ||
+      receipt.process_start_identity !== death.process_start_identity ||
+      receipt.group_death_evidence_id !== payload.deathEvidenceId ||
+      !Number.isFinite(observedAt) || observedAt < new Date(String(old.heartbeat_at)).getTime() || observedAt > nowMs
+    ) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "process-death evidence does not prove the expired owner dead", this.location.databasePath);
+    }
+    const generation = Number(old.generation) + 1;
+    const ownershipId = this.#ownershipIdentity(payload.attemptId, generation, payload.ownerTokenDigest);
+    const context = this.#ownershipContext(plan, generation, payload.ownerTokenDigest, String(old.ownership_id));
+    const heartbeatAt = new Date(nowMs).toISOString();
+    const expiresAt = new Date(nowMs + payload.ttlMs).toISOString();
+    const oldUpdate = this.#requireDatabase().prepare(`
+      UPDATE attempt_ownership_leases
+      SET state = 'quarantined', state_version = state_version + 1
+      WHERE ownership_id = ? AND state = ? AND state_version = ?
+    `).run(String(old.ownership_id), String(old.state), Number(old.state_version));
+    if (oldUpdate.changes !== 1) throw typedError("RICKGENT_STATE_CONFLICT", "stale recovery lost the old-owner CAS race", this.location.databasePath);
+    this.#insert("attempt_ownership_leases", {
+      ownership_id: ownershipId,
+      attempt_id: payload.attemptId,
+      generation,
+      owner_token_digest: payload.ownerTokenDigest,
+      context_digest: context.digest,
+      canonical_context_json: context.json,
+      recovered_from_ownership_id: String(old.ownership_id),
+      heartbeat_at: heartbeatAt,
+      expires_at: expiresAt,
+      state: "cleanup_pending",
+      state_version: 0,
+      created_at: heartbeatAt,
+    });
+    this.#requireDatabase().prepare(`
+      UPDATE attempt_resource_claims
+      SET state = 'cleanup_pending', current_ownership_id = ?, owner_generation = ?, state_version = state_version + 1
+      WHERE attempt_id = ? AND current_ownership_id = ? AND state IN ('reserved','allocated','active')
+    `).run(ownershipId, generation, payload.attemptId, String(old.ownership_id));
+    this.#requireDatabase().prepare(`
+      UPDATE attempt_resource_claims
+      SET current_ownership_id = ?, owner_generation = ?, state_version = state_version + 1
+      WHERE attempt_id = ? AND current_ownership_id = ? AND state = 'cleanup_pending'
+    `).run(ownershipId, generation, payload.attemptId, String(old.ownership_id));
+    return this.#recordOwnershipOperation(command, ownershipId, "recovery_cleanup", plan, canonicalInput, inputDigest);
+  }
+
+  #recordOwnershipOperation(
+    command: AttemptOwnershipCommand,
+    ownershipId: string,
+    purpose: AttemptOwnershipPurpose,
+    plan: AttemptWorkspacePlan,
+    canonicalInput: string,
+    inputDigest: `sha256:${string}`,
+  ): AttemptOwnershipStoreResult {
+    const current = this.#requireDatabase().prepare(
+      "SELECT * FROM attempt_ownership_leases WHERE ownership_id = ? AND attempt_id = ?",
+    ).get(ownershipId, command.payload.attemptId) as MutableStateRecord | undefined;
+    if (current === undefined) throw new StateStoreError("RICKGENT_STATE_CORRUPT", "committed attempt ownership row is missing");
+    const resources = this.#requireDatabase().prepare(
+      "SELECT * FROM attempt_resource_claims WHERE attempt_id = ? ORDER BY slot",
+    ).all(command.payload.attemptId) as MutableStateRecord[];
+    const resultJson = canonicalJson({
+      schema_version: "rickgent.attempt-ownership-operation-result/v1",
+      purpose,
+      ownership_id: ownershipId,
+      ownership: current,
+      resources,
+    });
+    const operationId = `ownership-operation-${sha256Text(canonicalJson({
+      attempt_id: command.payload.attemptId,
+      idempotency_key: command.payload.idempotencyKey,
+      input_digest: inputDigest,
+    })).slice(7)}`;
+    this.#insert("attempt_ownership_operations", {
+      operation_id: operationId,
+      ownership_id: ownershipId,
+      attempt_id: command.payload.attemptId,
+      operation_kind: command.payload.kind,
+      idempotency_key: command.payload.idempotencyKey,
+      input_digest: inputDigest,
+      canonical_input_json: canonicalInput,
+      result_digest: sha256Text(resultJson),
+      canonical_result_json: resultJson,
+      created_at: new Date().toISOString(),
+    });
+    return this.#attemptOwnershipResult(command.payload.attemptId, ownershipId, purpose, false, plan);
+  }
+
+  #ownershipOperationRow(value: unknown, label: string): MutableStateRecord {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      throw new StateStoreError("RICKGENT_STATE_CORRUPT", `${label} is not a stored row object`);
+    }
+    const row: MutableStateRecord = {};
+    for (const [column, field] of Object.entries(value)) {
+      if (field !== null && typeof field !== "string" && typeof field !== "number") {
+        throw new StateStoreError("RICKGENT_STATE_CORRUPT", `${label}.${column} has a non-SQL value`);
+      }
+      row[column] = field;
+    }
+    return row;
+  }
+
+  #replayAttemptOwnershipResult(
+    attemptId: string,
+    ownershipId: string,
+    operation: MutableStateRecord,
+  ): AttemptOwnershipStoreResult {
+    const resultJson = String(operation.canonical_result_json);
+    if (sha256Text(resultJson) !== operation.result_digest) {
+      throw new StateStoreError("RICKGENT_STATE_CORRUPT", "attempt ownership operation result digest is corrupt");
+    }
+    const sealed = this.#parseJsonObject(resultJson, "attempt ownership operation result");
+    if (
+      sealed.schema_version !== "rickgent.attempt-ownership-operation-result/v1" ||
+      sealed.ownership_id !== ownershipId ||
+      (sealed.purpose !== "execution" && sealed.purpose !== "recovery_cleanup") ||
+      !Array.isArray(sealed.resources)
+    ) {
+      throw new StateStoreError("RICKGENT_STATE_CORRUPT", "attempt ownership operation result has an invalid envelope");
+    }
+    const committedOwnership = this.#ownershipOperationRow(sealed.ownership, "committed ownership");
+    const committedResources = sealed.resources.map((resource, index) =>
+      this.#ownershipOperationRow(resource, `committed resource ${index}`));
+    const plan = this.#attemptOwnershipPlan(attemptId);
+    if (committedOwnership.ownership_id !== ownershipId || committedOwnership.attempt_id !== attemptId) {
+      throw new StateStoreError("RICKGENT_STATE_CORRUPT", "attempt ownership operation result has different lineage");
+    }
+    const plannedClaims = new Map(plan.resources.map((resource) => [resource.resourceClaimId, resource]));
+    if (
+      committedResources.length !== plannedClaims.size ||
+      committedResources.some((resource) => {
+        const planned = plannedClaims.get(String(resource.resource_claim_id));
+        return planned === undefined || resource.attempt_id !== attemptId || resource.slot !== planned.slot ||
+          resource.kind !== planned.kind || resource.canonical_identity !== planned.canonicalIdentity ||
+          resource.identity_digest !== planned.identityDigest;
+      })
+    ) {
+      throw new StateStoreError("RICKGENT_STATE_CORRUPT", "attempt ownership operation result has an invalid fixed resource set");
+    }
+    const currentOwnership = this.#requireDatabase().prepare(
+      "SELECT * FROM attempt_ownership_leases WHERE ownership_id = ? AND attempt_id = ?",
+    ).get(ownershipId, attemptId) as MutableStateRecord | undefined;
+    if (currentOwnership === undefined || Number(currentOwnership.state_version) < Number(committedOwnership.state_version)) {
+      throw new StateStoreError("RICKGENT_STATE_CORRUPT", "attempt ownership operation current row predates its sealed result");
+    }
+    for (const column of [
+      "ownership_id", "attempt_id", "generation", "owner_token_digest", "context_digest",
+      "canonical_context_json", "recovered_from_ownership_id", "created_at",
+    ]) {
+      if (!sameValue(currentOwnership[column], committedOwnership[column])) {
+        throw new StateStoreError("RICKGENT_STATE_CORRUPT", `attempt ownership immutable replay field changed: ${column}`);
+      }
+    }
+    const currentResources = this.#requireDatabase().prepare(
+      "SELECT * FROM attempt_resource_claims WHERE attempt_id = ? ORDER BY slot",
+    ).all(attemptId) as MutableStateRecord[];
+    const currentById = new Map(currentResources.map((resource) => [String(resource.resource_claim_id), resource]));
+    for (const committed of committedResources) {
+      const current = currentById.get(String(committed.resource_claim_id));
+      if (current === undefined || Number(current.state_version) < Number(committed.state_version)) {
+        throw new StateStoreError("RICKGENT_STATE_CORRUPT", "attempt resource operation current row predates its sealed result");
+      }
+      for (const column of [
+        "resource_claim_id", "attempt_id", "slot", "kind", "canonical_identity",
+        "identity_digest", "allocation_ownership_id", "created_at",
+      ]) {
+        if (!sameValue(current[column], committed[column])) {
+          throw new StateStoreError("RICKGENT_STATE_CORRUPT", `attempt resource immutable replay field changed: ${column}`);
+        }
+      }
+    }
+    return freezeValue({
+      replayed: true,
+      purpose: sealed.purpose,
+      plan,
+      ownership: frozenRow(committedOwnership),
+      resources: Object.freeze(committedResources.map(frozenRow)),
+      currentOwnership: frozenRow(currentOwnership),
+      currentResources: Object.freeze(currentResources.map(frozenRow)),
+    });
+  }
+
+  #attemptOwnershipResult(
+    attemptId: string,
+    ownershipId: string,
+    purpose: AttemptOwnershipPurpose,
+    replayed: boolean,
+    plan: AttemptWorkspacePlan = this.#attemptOwnershipPlan(attemptId),
+  ): AttemptOwnershipStoreResult {
+    const ownership = this.#requireDatabase().prepare(
+      "SELECT * FROM attempt_ownership_leases WHERE ownership_id = ? AND attempt_id = ?",
+    ).get(ownershipId, attemptId) as MutableStateRecord | undefined;
+    if (ownership === undefined) throw new StateStoreError("RICKGENT_STATE_CORRUPT", "attempt ownership operation resolves to no lease");
+    const resources = this.#requireDatabase().prepare(
+      "SELECT * FROM attempt_resource_claims WHERE attempt_id = ? ORDER BY slot",
+    ).all(attemptId) as MutableStateRecord[];
+    return freezeValue({
+      replayed,
+      purpose,
+      plan,
+      ownership: frozenRow(ownership),
+      resources: Object.freeze(resources.map(frozenRow)),
+      currentOwnership: frozenRow(ownership),
+      currentResources: Object.freeze(resources.map(frozenRow)),
+    });
   }
 
   #validatedColumns<T extends StateTableName>(table: T, row: Readonly<Record<string, SqlValue>>): MutableStateRecord {

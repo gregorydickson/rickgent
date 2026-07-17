@@ -17,7 +17,7 @@ export const STATE_CONTRACT_SCHEMA_VERSION = "1.0.0" as const;
 export const STATE_SCHEMA_VERSION = STATE_CONTRACT_SCHEMA_VERSION;
 export const STATE_CONTRACT_ID = "rickgent-state-and-lifecycle-v1" as const;
 export const STATE_CONTRACT_DECISION_STATUS = "frozen_decision_only" as const;
-export const STATE_CONTRACT_IMPLEMENTATION_STATUS = "reserved_contract_only" as const;
+export const STATE_CONTRACT_IMPLEMENTATION_STATUS = "partial_internal_primitives" as const;
 export const STATE_SQLITE_MINIMUM_NODE_VERSION = "24.12.0" as const;
 
 export const SQLITE_CONNECTION_OPTION_MAPPING = deepFreeze({
@@ -38,7 +38,20 @@ export const INITIAL_STATE_MIGRATION = deepFreeze({
   status: "implemented",
 } as const);
 
-export const STATE_MIGRATIONS = deepFreeze([INITIAL_STATE_MIGRATION] as const);
+export const ATTEMPT_OWNERSHIP_MIGRATION = deepFreeze({
+  version: 2,
+  number: "002",
+  name: "002_attempt_ownership_primitive",
+  sql_owner_ticket: "t18",
+  released_checksum: "sha256:8dc1be6f92fbe281149b651c89fd1b2e8d7b4f3464c2f85a2113aa851123473d",
+  sqlite_schema_checksum: "sha256:eb83ea80db2cc06eb46ffe135994fe79cf4f53146b5f71ac8a876b46f6224bbc",
+  status: "implemented",
+} as const);
+
+export const STATE_MIGRATIONS = deepFreeze([
+  INITIAL_STATE_MIGRATION,
+  ATTEMPT_OWNERSHIP_MIGRATION,
+] as const);
 
 export const STATE_TABLES = deepFreeze([
   "schema_migrations",
@@ -107,6 +120,18 @@ export const APPEND_ONLY_STATE_TABLES = deepFreeze([
   "pr_observations",
   "delivery_records",
   "legacy_artifacts",
+] as const);
+
+/** Additive v2 tables. The frozen v1 catalog above remains immutable. */
+export const ATTEMPT_OWNERSHIP_STATE_TABLES = deepFreeze([
+  "attempt_ownership_leases",
+  "attempt_resource_claims",
+  "attempt_ownership_operations",
+] as const);
+
+export const ALL_STATE_TABLES = deepFreeze([
+  ...STATE_TABLES,
+  ...ATTEMPT_OWNERSHIP_STATE_TABLES,
 ] as const);
 
 export const SQLITE_PRAGMAS = deepFreeze([
@@ -386,7 +411,7 @@ export const CAPABILITY_RESERVATIONS = deepFreeze([
   { name: "oracle_and_promotion", status: "reserved_contract_only", enabled: false, implementation_ticket: "t15" },
   { name: "caller_cutover_and_internal_selectors", status: "reserved_contract_only", enabled: false, implementation_ticket: "t16" },
   { name: "public_resume_retry_and_reconciliation", status: "reserved_contract_only", enabled: false, implementation_ticket: "t29" },
-  { name: "attempt_resources", status: "reserved_contract_only", enabled: false, implementation_ticket: "t18_or_later" },
+  { name: "attempt_resources", status: "internal_primitive_implemented", enabled: false, implementation_ticket: "t18_internal_t22_cutover" },
   { name: "automatic_delivery", status: "reserved_contract_only", enabled: false, implementation_ticket: "post_milestone_3" },
 ] as const);
 

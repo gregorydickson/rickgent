@@ -717,16 +717,16 @@
     {
       "id": "t18",
       "title": "Implement owner-checked leases and per-attempt resource allocation",
-      "description": "Milestone 4 resource primitive. Replace the interim run worktree seam with transactionally allocated attempt branch/ref, worktree, isolated index, immutable baseline, resource rows, and owner-token lease. Verify repository/ref/worktree cleanliness and ownership before any policy materialization or spawn. Release and stale recovery compare the current owner and proven process liveness.",
+      "description": "Milestone 4 internal resource primitive. Add a pre-side-effect ownership identity, raw-token credential authority, atomic lease-plus-eleven-fixed-resource reservation, current/unexpired owner assertions, StateStore-selected Git-boundary pinning, receipt-bound detached attempt ref/worktree/isolated-index reconciliation, final-edge unforgeable spawn observation, and sealed committed/current replay. Consume only a digest-valid process-death evidence and its exact durable receipt/lease/context lineage for stale cleanup, but leave its real producer to t19, physical disposition proof to t21, and spawn consumption plus production run-worktree replacement to t22.",
       "acceptance_criteria": [
         "One attempt owns exactly one run/ticket/attempt identity, owner token, lease, baseline, ref, worktree, and index recorded transactionally.",
         "Two processes cannot acquire the same active attempt; an old/wrong owner cannot heartbeat, mutate, reclaim, or release a newer lease.",
-        "Stale recovery requires expired heartbeat plus proven owner/process death and enters cleanup before reuse.",
-        "Dirty caller repositories are preserved, while dirty/new/foreign attempt resources fail before spawn and are quarantined.",
+        "The stale-cleanup consumer requires an expired heartbeat plus digest-valid immutable owner/process-death evidence joined to its exact durable process receipt, lease, and execution context; it transfers resources only into cleanup and cannot authorize execution, while t19 owns the real evidence producer.",
+        "Dirty caller repositories are preserved, selected Git common-directory drift and dirty/new/foreign attempt resources fail before spawn, and every failure returns the current cleanup grant after durable containment; t21 owns physical release/quarantine proof.",
         "Worktree/state roots and refs use canonical, collision-resistant names and reject symlink/path traversal."
       ],
       "verification": [
-        "cd orchestrator && pnpm exec vitest run test/reliability/attempt-ownership.test.ts test/dispatch/dispatch-lock-race.test.ts test/dispatch/dispatch-lock-failclosed.test.ts",
+        "cd orchestrator && pnpm exec vitest run test/reliability/attempt-ownership.test.ts test/reliability/state-store.test.ts test/reliability/state-contract.test.ts",
         "cd orchestrator && pnpm typecheck",
         "cd orchestrator && pnpm test",
         "rg -n \"ownerToken|compare.*owner|git.*worktree|isolated.*index\" orchestrator/src/git/attempt-workspace.ts orchestrator/src/state/leases.ts"
@@ -734,10 +734,20 @@
       "output_artifacts": [
         "orchestrator/src/git/attempt-workspace.ts",
         "orchestrator/src/state/leases.ts",
-        "orchestrator/test/reliability/attempt-ownership.test.ts"
+        "orchestrator/src/state/migrations.ts",
+        "orchestrator/src/state/schema.ts",
+        "orchestrator/src/state/store.ts",
+        "orchestrator/test/reliability/attempt-ownership.test.ts",
+        "orchestrator/test/fixtures/attempt-ownership/child.mjs",
+        "orchestrator/test/reliability/state-crash-corpus.test.ts",
+        "orchestrator/test/fixtures/crash-matrix/fault-points.json",
+        "orchestrator/test/fixtures/crash-matrix/manifest.json",
+        "artifacts/reliability/state-crash-summary.json",
+        "docs/architecture/reliability/state-and-lifecycle-contract.json",
+        "docs/architecture/reliability/state-and-lifecycle-contract.md"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t17"
       ]

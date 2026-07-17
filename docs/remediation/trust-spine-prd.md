@@ -482,9 +482,9 @@ The exact acceptance criteria and commands are in `refinement_manifest.json`; th
 - **Acceptance Criteria:** contributes `AC-INV-08A`; does not complete composite `AC-INV-08`
 
 ### Ticket 18: Implement owner-checked leases and attempt resource allocation
-- **Description:** Transactionally bind worktree/ref/index/baseline/resources to one owner and reject stale/wrong-owner release.
-- **Declared Paths:** `orchestrator/src/git/attempt-workspace.ts`, `orchestrator/src/state/leases.ts`, `orchestrator/test/reliability/attempt-ownership.test.ts`
-- **Acceptance Criteria:** `AC-INV-01`, `AC-INV-05`
+- **Description:** Implement the internal pre-side-effect ownership primitive: a raw-token credential, atomic lease-plus-eleven-fixed-resource reservation, current/unexpired owner assertions, StateStore-selected Git-boundary pinning, receipt-bound deterministic detached worktree/ref/index reconciliation, final-edge unforgeable spawn observation, sealed committed/current replay, and a fail-closed stale-cleanup consumer bound to the exact durable process-receipt/evidence lineage. `t19` produces real process-death evidence, `t21` produces terminal physical-disposition proof, and `t22` alone consumes the spawn observation and replaces the interim production run-worktree/oracle seam.
+- **Declared Paths:** `orchestrator/src/git/attempt-workspace.ts`, `orchestrator/src/state/leases.ts`, `orchestrator/src/state/migrations.ts`, `orchestrator/src/state/schema.ts`, `orchestrator/src/state/store.ts`, `orchestrator/test/reliability/attempt-ownership.test.ts`, `orchestrator/test/fixtures/attempt-ownership/child.mjs`, `orchestrator/test/reliability/state-crash-corpus.test.ts`, `orchestrator/test/fixtures/crash-matrix`, `artifacts/reliability/state-crash-summary.json`, `docs/architecture/reliability/state-and-lifecycle-contract.json`, `docs/architecture/reliability/state-and-lifecycle-contract.md`
+- **Acceptance Criteria:** contributes the lease/resource portion of `AC-INV-01`; `t19` and `t23` complete the process/concurrency portions, and `t20` owns `AC-INV-05`
 
 ### Ticket 19: Implement the POSIX process-group supervisor
 - **Description:** Bound output, supervise all descendants, escalate timeout, and retain ownership until confirmed death.

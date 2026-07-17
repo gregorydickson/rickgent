@@ -150,12 +150,13 @@ function validateMetadata(contract) {
   const activation = object(contract.activation_boundary, "STATE_CONTRACT_ACTIVATION_INVALID", "activation_boundary");
   exactKeys(activation, [
     "decision_artifacts_enable_capabilities", "implementation_status",
-    "adoption_requires_tickets", "forbidden_in_this_ticket",
+    "adoption_requires_tickets", "production_ownership_activation_requires_tickets", "forbidden_in_this_ticket",
   ], "STATE_CONTRACT_ACTIVATION_INVALID", "activation_boundary");
   equal(activation.decision_artifacts_enable_capabilities, false, "STATE_CONTRACT_ACTIVATION_INVALID", "decision artifacts capability boundary");
-  equal(activation.implementation_status, "reserved_contract_only", "STATE_CONTRACT_ACTIVATION_INVALID", "implementation status");
-  equal(activation.adoption_requires_tickets, ["t13", "t14", "t15", "t16", "t17"], "STATE_CONTRACT_ACTIVATION_INVALID", "adoption tickets");
-  if (array(activation.forbidden_in_this_ticket, "STATE_CONTRACT_ACTIVATION_INVALID", "forbidden_in_this_ticket").length !== 8) {
+  equal(activation.implementation_status, "partial_internal_primitives", "STATE_CONTRACT_ACTIVATION_INVALID", "implementation status");
+  equal(activation.adoption_requires_tickets, ["t13", "t14", "t15", "t16", "t17", "t18"], "STATE_CONTRACT_ACTIVATION_INVALID", "adoption tickets");
+  equal(activation.production_ownership_activation_requires_tickets, ["t19", "t20", "t21", "t22", "t23", "t29"], "STATE_CONTRACT_ACTIVATION_INVALID", "production ownership activation tickets");
+  if (array(activation.forbidden_in_this_ticket, "STATE_CONTRACT_ACTIVATION_INVALID", "forbidden_in_this_ticket").length !== 6) {
     fail("STATE_CONTRACT_ACTIVATION_INVALID", "ticket boundary is incomplete");
   }
 }
@@ -283,6 +284,14 @@ function validateMigrations(contract) {
     sql_owner_ticket: "t13",
     released_checksum: "sha256:473f6581359fb59da29236aeb77acaba74aa46504fb0ac8c0089c59afca586a8",
     sqlite_schema_checksum: "sha256:11f061a28bffe7ed02a6d5b974cca09dcff189e18fb18834659a3aad175ecef9",
+    status: "implemented",
+  }, {
+    version: 2,
+    number: "002",
+    name: "002_attempt_ownership_primitive",
+    sql_owner_ticket: "t18",
+    released_checksum: "sha256:8dc1be6f92fbe281149b651c89fd1b2e8d7b4f3464c2f85a2113aa851123473d",
+    sqlite_schema_checksum: "sha256:eb83ea80db2cc06eb46ffe135994fe79cf4f53146b5f71ac8a876b46f6224bbc",
     status: "implemented",
   }], "STATE_CONTRACT_MIGRATION_INVALID", "initial migrations");
   for (let index = 0; index < migrations.initial.length; index += 1) {
@@ -716,12 +725,17 @@ function validateAllocationAndResources(contract) {
 
   const resources = object(contract.resource_identity, "STATE_CONTRACT_RESOURCE_INVALID", "resource_identity");
   exactKeys(resources, [
-    "status", "kinds", "delivery_ref_template", "attempt_ref_template", "ref_validation",
+    "status", "ownership_tables", "production_cutover_ticket", "process_death_evidence_producer_ticket", "terminal_disposition_producer_ticket",
+    "kinds", "delivery_ref_template", "attempt_ref_template", "ref_validation",
     "private_attempt_directory", "private_attempt_directory_mode", "fixed_slot_names",
     "reserve_before_side_effect", "process_identity_fields", "pid_alone_is_ownership_proof",
-    "owner_mutation_checks", "stale_recovery_requires",
+    "owner_mutation_checks", "stale_recovery_requires", "ownership_table_contract",
   ], "STATE_CONTRACT_RESOURCE_INVALID", "resource_identity");
-  equal(resources.status, "reserved_contract_only", "STATE_CONTRACT_RESOURCE_INVALID", "resource status");
+  equal(resources.status, "internal_primitive_implemented", "STATE_CONTRACT_RESOURCE_INVALID", "resource status");
+  equal(resources.ownership_tables, ["attempt_ownership_leases", "attempt_resource_claims", "attempt_ownership_operations"], "STATE_CONTRACT_RESOURCE_INVALID", "resource ownership tables");
+  equal(resources.production_cutover_ticket, "t22", "STATE_CONTRACT_RESOURCE_INVALID", "resource production cutover");
+  equal(resources.process_death_evidence_producer_ticket, "t19", "STATE_CONTRACT_RESOURCE_INVALID", "resource process-death producer");
+  equal(resources.terminal_disposition_producer_ticket, "t21", "STATE_CONTRACT_RESOURCE_INVALID", "resource terminal-disposition producer");
   equal(resources.kinds, RESOURCE_KINDS, "STATE_CONTRACT_RESOURCE_INVALID", "resource kinds");
   equal(resources.delivery_ref_template, "refs/rickgent/runs/<run-id>/delivery", "STATE_CONTRACT_RESOURCE_INVALID", "delivery ref template");
   equal(resources.attempt_ref_template, "refs/rickgent/runs/<run-id>/attempts/<attempt-id>", "STATE_CONTRACT_RESOURCE_INVALID", "attempt ref template");
@@ -732,6 +746,11 @@ function validateAllocationAndResources(contract) {
   equal(resources.pid_alone_is_ownership_proof, false, "STATE_CONTRACT_RESOURCE_INVALID", "PID ownership");
   equal(resources.owner_mutation_checks, ["owner_token_digest", "lease_generation", "owner_context", "resource_state", "resource_version"], "STATE_CONTRACT_RESOURCE_INVALID", "resource owner checks");
   if (!resources.stale_recovery_requires.includes("proven old process-group death")) fail("STATE_CONTRACT_RESOURCE_INVALID", "stale recovery lacks process-group death proof");
+  const ownershipContract = object(resources.ownership_table_contract, "STATE_CONTRACT_RESOURCE_INVALID", "ownership_table_contract");
+  exactKeys(ownershipContract, [
+    "attempt_ownership_leases", "attempt_resource_claims", "attempt_ownership_operations",
+    "resource_mutation_authority", "process_death_producer_authority", "legacy_v1_tables",
+  ], "STATE_CONTRACT_RESOURCE_INVALID", "ownership_table_contract");
 }
 
 function validateOraclePromotionDelivery(contract) {
@@ -866,7 +885,8 @@ function validateLegacyCapabilitiesAndErrors(contract) {
   unique(capabilities.map((entry) => entry.name), "STATE_CONTRACT_CAPABILITY_INVALID", "capability reservations");
   for (const entry of capabilities) {
     exactKeys(entry, ["name", "status", "enabled", "implementation_ticket"], "STATE_CONTRACT_CAPABILITY_INVALID", entry.name);
-    equal(entry.status, "reserved_contract_only", "STATE_CONTRACT_CAPABILITY_INVALID", `${entry.name}.status`);
+    const expectedStatus = entry.name === "attempt_resources" ? "internal_primitive_implemented" : "reserved_contract_only";
+    equal(entry.status, expectedStatus, "STATE_CONTRACT_CAPABILITY_INVALID", `${entry.name}.status`);
     equal(entry.enabled, false, "STATE_CONTRACT_CAPABILITY_INVALID", `${entry.name}.enabled`);
     if (!entry.implementation_ticket) fail("STATE_CONTRACT_CAPABILITY_INVALID", `${entry.name} lacks an implementation ticket`);
   }

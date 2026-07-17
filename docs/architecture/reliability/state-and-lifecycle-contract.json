@@ -2,21 +2,20 @@
   "schema_version": "1.0.0",
   "contract_id": "rickgent-state-and-lifecycle-v1",
   "decision_status": "frozen_decision_only",
-  "decision_digest": "sha256:2460b26960e9f35995103febfe8e270bf288489c00ab241c0487380b2ad5c42d",
+  "decision_digest": "sha256:5d4924597465410459346f8244849dbb3cfba1ef0f83c02c9466997e3bb76331",
   "parent_authority": {
     "contract_id": "rickgent-trust-spine-v1",
     "path": "docs/architecture/reliability/trust-spine-contract.json"
   },
   "activation_boundary": {
     "decision_artifacts_enable_capabilities": false,
-    "implementation_status": "reserved_contract_only",
-    "adoption_requires_tickets": ["t13", "t14", "t15", "t16", "t17"],
+    "implementation_status": "partial_internal_primitives",
+    "adoption_requires_tickets": ["t13", "t14", "t15", "t16", "t17", "t18"],
+    "production_ownership_activation_requires_tickets": ["t19", "t20", "t21", "t22", "t23", "t29"],
     "forbidden_in_this_ticket": [
-      "open_or_create_database",
-      "execute_migration",
       "switch_production_caller",
-      "allocate_runtime_resource",
-      "update_git_ref",
+      "spawn_attempt_process",
+      "terminalize_cleanup_without_t21_proof",
       "enable_resume_or_retry",
       "enable_reconciliation",
       "perform_delivery"
@@ -128,6 +127,15 @@
         "sql_owner_ticket": "t13",
         "released_checksum": "sha256:473f6581359fb59da29236aeb77acaba74aa46504fb0ac8c0089c59afca586a8",
         "sqlite_schema_checksum": "sha256:11f061a28bffe7ed02a6d5b974cca09dcff189e18fb18834659a3aad175ecef9",
+        "status": "implemented"
+      },
+      {
+        "version": 2,
+        "number": "002",
+        "name": "002_attempt_ownership_primitive",
+        "sql_owner_ticket": "t18",
+      "released_checksum": "sha256:8dc1be6f92fbe281149b651c89fd1b2e8d7b4f3464c2f85a2113aa851123473d",
+      "sqlite_schema_checksum": "sha256:eb83ea80db2cc06eb46ffe135994fe79cf4f53146b5f71ac8a876b46f6224bbc",
         "status": "implemented"
       }
     ],
@@ -622,7 +630,11 @@
     }
   },
   "resource_identity": {
-    "status": "reserved_contract_only",
+    "status": "internal_primitive_implemented",
+    "ownership_tables": ["attempt_ownership_leases", "attempt_resource_claims", "attempt_ownership_operations"],
+    "production_cutover_ticket": "t22",
+    "process_death_evidence_producer_ticket": "t19",
+    "terminal_disposition_producer_ticket": "t21",
     "kinds": ["delivery_ref", "attempt_ref", "worktree", "isolated_index", "policy_context", "policy_bundle", "process_group", "stdout", "stderr", "verification_output", "salvage_archive"],
     "delivery_ref_template": "refs/rickgent/runs/<run-id>/delivery",
     "attempt_ref_template": "refs/rickgent/runs/<run-id>/attempts/<attempt-id>",
@@ -634,7 +646,29 @@
     "process_identity_fields": ["pid", "pgid", "platform_boot_identity", "process_start_identity", "phase_execution_id", "context_digest", "lease_generation"],
     "pid_alone_is_ownership_proof": false,
     "owner_mutation_checks": ["owner_token_digest", "lease_generation", "owner_context", "resource_state", "resource_version"],
-    "stale_recovery_requires": ["expired heartbeat", "proven old process-group death", "immutable recovery evidence", "transition to cleanup before new generation ownership"]
+    "stale_recovery_requires": ["expired heartbeat", "digest-valid immutable recovery evidence", "durably joined process receipt identity", "exact receipt PID and PGID", "exact receipt platform boot identity", "exact receipt process start identity", "exact receipt phase execution identity", "exact receipt lease generation and owner token digest", "exact receipt execution-context digest", "death observation at or after the latest heartbeat", "proven old process-group death", "transition to cleanup before new generation ownership"],
+    "ownership_table_contract": {
+      "attempt_ownership_leases": {
+        "identity": ["ownership_id", "attempt_id", "generation", "owner_token_digest", "context_digest", "recovered_from_ownership_id"],
+        "mutable": ["heartbeat_at", "expires_at", "state", "state_version"],
+        "one_current_per_attempt": true,
+        "execution_generation": "generation 1 with no recovered owner; live and unexpired",
+        "recovery_generation": "generation > 1, cleanup_pending only, and recoverable again after expiry plus fresh exact death evidence"
+      },
+      "attempt_resource_claims": {
+        "identity": ["resource_claim_id", "attempt_id", "slot", "kind", "canonical_identity", "identity_digest", "allocation_ownership_id"],
+        "mutable": ["current_ownership_id", "owner_generation", "state", "state_version", "release_proof_digest", "quarantine_proof_digest"],
+        "constraints": ["slot equals kind", "current ownership, attempt, and generation resolve one ownership row", "active identity is unique", "terminal proof columns are state-shaped"]
+      },
+      "attempt_ownership_operations": {
+        "mode": "append_only",
+        "idempotency_scope": ["attempt_id", "idempotency_key"],
+        "replay": "validate sealed result digest and return committed and current images separately"
+      },
+      "resource_mutation_authority": "workspace allocation and activation require runtime-unforgeable kind-specific observation receipts; the ready workspace is runtime-unforgeable and exact-plan-bound; readiness uses read-only Git/index observations between entry and final current-owner fences, rechecks the selected common directory and exact worktree administrative identity, returns current cleanup authority on failure, and mints an exact ref/worktree/gitdir/index plus generation/version/expiry-bound spawn observation for t22 consumption; terminal release/quarantine APIs remain absent until t21 proof authorities exist",
+      "process_death_producer_authority": "generic evidence append rejects the ProcessSupervisor label; t19 must add a runtime-authorized producer",
+      "legacy_v1_tables": "leases and attempt_resources remain immutable-schema compatibility inputs and are not the t18 production writer path"
+    }
   },
   "oracle": {
     "status": "reserved_contract_only",
@@ -730,7 +764,7 @@
     {"name": "oracle_and_promotion", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "t15"},
     {"name": "caller_cutover_and_internal_selectors", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "t16"},
     {"name": "public_resume_retry_and_reconciliation", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "t29"},
-    {"name": "attempt_resources", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "t18_or_later"},
+    {"name": "attempt_resources", "status": "internal_primitive_implemented", "enabled": false, "implementation_ticket": "t18_internal_t22_cutover"},
     {"name": "automatic_delivery", "status": "reserved_contract_only", "enabled": false, "implementation_ticket": "post_milestone_3"}
   ],
   "stable_errors": [

@@ -1,12 +1,13 @@
 # State and lifecycle contract
 
-Status: frozen decision only (`rickgent-state-and-lifecycle-v1`, schema
+Status: frozen v1 contract with additive migrations implemented through
+`002_attempt_ownership_primitive` (`rickgent-state-and-lifecycle-v1`, schema
 `1.0.0`). The normative, closed machine contract is
 [`state-and-lifecycle-contract.json`](./state-and-lifecycle-contract.json).
-This document explains that contract; it does not activate persistence,
-resume, retry, promotion, reconciliation, attempt resources, or delivery.
-Those capabilities remain `reserved_contract_only` until their named adoption
-tickets land.
+The Phase 18 attempt-ownership primitive is implemented internally but is not
+a production dispatch capability: Phase 22 owns caller cutover and Phase 19
+owns real process-death evidence production. Resume, retry, automatic
+reconciliation, and delivery remain unavailable.
 
 ## Repository identity and state root
 
@@ -43,7 +44,7 @@ repeat the repository selection.
 
 ## SQLite and migrations
 
-t13 will implement the contract with `node:sqlite` `DatabaseSync`. The state
+t13 implemented the contract with `node:sqlite` `DatabaseSync`. The state
 subsystem requires Node `24.12.0` or newer within the supported Node 24 line;
 older Node 24 releases fail closed with
 `RICKGENT_STATE_RUNTIME_UNSUPPORTED`. Node added database-wide named-parameter
@@ -79,12 +80,19 @@ SQL checksum
 `sha256:473f6581359fb59da29236aeb77acaba74aa46504fb0ac8c0089c59afca586a8`
 and resulting `sqlite_schema` checksum
 `sha256:11f061a28bffe7ed02a6d5b974cca09dcff189e18fb18834659a3aad175ecef9`.
+Migration `002_attempt_ownership_primitive` is implemented by t18 with
+immutable SQL checksum
+`sha256:8dc1be6f92fbe281149b651c89fd1b2e8d7b4f3464c2f85a2113aa851123473d`
+and resulting latest `sqlite_schema` checksum
+`sha256:eb83ea80db2cc06eb46ffe135994fe79cf4f53146b5f71ac8a876b46f6224bbc`.
+It adds the pre-side-effect ownership aggregate without editing or rebuilding
+the released v1 lease tables.
 `schema_migrations` records the immutable version, unique name,
 exact-definition SHA-256, and application time. Its rows and
 `PRAGMA user_version` must agree. Released migrations never change; later
-versions append `002`, `003`, and so on. This release does not activate the
-reserved allocation, oracle, promotion, cutover, recovery, resource, or
-delivery capabilities.
+versions append `003`, `004`, and so on. This release activates only the
+internal attempt-ownership/resource primitive. Reserved allocation, oracle,
+promotion, production cutover, public recovery, and delivery remain inactive.
 
 Creation and each migration are atomic. Before use, open checks
 `quick_check`, `foreign_key_check`, migration contiguity/checksums, and the
@@ -96,7 +104,7 @@ truncates, recreates, or treats the database as empty.
 
 ## Relational model and mutation rules
 
-All 30 v1 tables are SQLite `STRICT` tables:
+All 30 frozen v1 tables are SQLite `STRICT` tables:
 
 1. `schema_migrations`
 2. `repositories`
@@ -129,6 +137,17 @@ All 30 v1 tables are SQLite `STRICT` tables:
 29. `delivery_records`
 30. `legacy_artifacts`
 
+Migration 002 adds three more `STRICT` tables:
+
+31. `attempt_ownership_leases`
+32. `attempt_resource_claims`
+33. `attempt_ownership_operations`
+
+These tables separate pre-materialization ownership from runnable execution
+contexts. Acquisition inserts one live ownership generation and all eleven fixed
+claims in one `BEGIN IMMEDIATE` transaction. The operation log is append-only;
+lease and claim identities are immutable, versioned snapshots.
+
 The JSON catalog freezes every column, primary key, foreign key and explicit
 `ON DELETE RESTRICT` action, uniqueness/partial uniqueness rule, check,
 immutable column, and mutation trigger. Canonical IDs are nonempty; versions
@@ -147,9 +166,9 @@ Run-, ticket-, and attempt-scoped oracle idempotency use three partial unique
 indexes so SQLite `NULL` semantics cannot admit duplicate keys.
 
 Immutable evidence tables are append-only with `BEFORE UPDATE` and
-`BEFORE DELETE` abort triggers. The six mutable snapshots/intents—`runs`,
+`BEFORE DELETE` abort triggers. The six frozen-v1 mutable snapshots/intents—`runs`,
 `run_tickets`, `attempts`, `leases`, `attempt_resources`, and
-`promotion_intents`—protect identity columns and permit state changes only
+`promotion_intents`—plus the v2 ownership lease and claim tables protect identity columns and permit state changes only
 through named compare-and-set operations. No generic update API exists.
 Promotion intents are unique per attempt. Per-ticket uniqueness applies only
 while an intent is in flight, so a terminal `conflicted` intent cannot prevent
@@ -163,21 +182,48 @@ rows is `RICKGENT_STATE_CONFLICT`; illegal edges, changed idempotent input, or
 wrong ownership have distinct stable errors. A crash exposes exactly the old
 or new committed state.
 
-Leases store token digests, never plain tokens. Heartbeat, cleanup, release,
-and resource mutation check token digest, generation, context, state, and
-version. Partial uniqueness permits only one `live|cleanup_pending` lease per
-attempt. Stale recovery requires expiry, proven old process-group death, and
-immutable recovery evidence before cleanup ownership can move.
+Ownership leases store token digests, never plain tokens. The raw token remains
+inside a runtime-unforgeable `LeaseAuthority` grant; Store commits accept only
+symbol-gated commands, so a readable database digest is not a bearer
+credential. Acquisition derives generation, context, ref, path, and identity
+digests from authoritative lineage and reserves the complete fixed claim set
+atomically. Heartbeat, cleanup, current-owner assertions, and claim mutation
+check token digest, generation, current ownership, state, version, and expiry.
+Allocation/activation additionally require runtime-unforgeable, kind-specific
+workspace observation receipts. The selected repository and Git common
+directory are carried by the ownership grant and rechecked around Git
+observations; runtime `.git` retargeting fails closed. The ready-workspace
+handle is runtime-unforgeable and bound to the authority-derived ref, baseline,
+worktree, administrative directory, and isolated index. Readiness uses
+read-only observations between entry and final live-owner fences, returns the
+current cleanup-capable grant on failure, and mints an unforgeable exact-target,
+generation/version/expiry-bound spawn observation for the future t22 consumer.
+Terminal release and quarantine APIs remain
+absent until t21 can supply validated physical-disposition proofs. Partial uniqueness permits
+only one `live|cleanup_pending` ownership generation per attempt. Stale cleanup
+requires expiry and exact immutable process-group death evidence, quarantines
+the old owner, and transfers claims only into cleanup under a new
+recovery-only generation. Phase 19 remains responsible for producing real
+process-death evidence with process receipt, PID/PGID, boot/start, phase,
+context, and post-heartbeat observation identity. The consumer verifies the
+evidence content digest and its exact durable process-receipt, execution-context,
+and lease lineage rather than trusting payload identifiers. A crashed recovery cleanup
+generation can itself be recovered under the same exact rule.
+The generic evidence appender rejects the reserved `ProcessSupervisor`
+producer label; t19 must add a runtime-authorized producer rather than turning
+that label into caller-controlled authority.
 
-The mutable `leases` and `attempt_resources` rows are never oracle inputs.
-Lease acquisition and every lease CAS atomically append an immutable
+The released-v1 mutable `leases` and `attempt_resources` rows are never direct
+oracle inputs. When present, their lease acquisition and CAS history is represented by immutable
 `rickgent.lease-snapshot.v1` evidence post-image; resource reservation and every
-resource CAS do the same with
+resource history does the same with
 `rickgent.attempt-resource-snapshot.v1`. Each snapshot includes the source
 identity, attempt, state, and state version in its canonical hashed payload.
 The oracle references only those append-only evidence rows. Later release or
 heartbeat writes therefore cannot erase the exact version accepted by an
-earlier oracle evaluation.
+earlier oracle evaluation. Phase 18 exposes no generic writer for these v1
+rows; its additive ownership aggregate is the internal successor, while t22
+owns the complete oracle/lifecycle production cutover.
 
 ## Allocation, retry, resume, and resources
 
@@ -222,8 +268,11 @@ index, policy context/bundle, process group, stdout/stderr, verification
 output, and salvage archive identities. Refs are validated before reservation;
 every identity is reserved before its side effect. Process ownership includes
 PID, PGID, platform boot/process-start identity, phase/context, and lease
-generation. PID alone is never ownership proof. These rows reserve a later
-contract; they do not claim resource allocation is implemented.
+generation. PID alone is never ownership proof. Phase 18 implements the
+internal reservation and detached ref/worktree/index reconciliation primitive.
+It preserves dirty caller state, rejects symlink/traversal and foreign or dirty
+attempt state, and durably quarantines ambiguity. It does not replace the
+production run-level workspace; that critical-section cutover is Phase 22.
 
 ## Lifecycle and terminal meaning
 
@@ -324,6 +373,7 @@ This contract reserves later rows and APIs without pretending they exist.
 t13 implements durable SQLite and migrations, t14 allocation, t15 oracle and
 promotion, t16 caller cutover selectors, and t17 the bounded common-transaction
 crash and retry-identity proof. Full recovery/reconciliation remains reserved
-for t29 after the operational lifecycle services exist.
-Attempt resources and automatic delivery remain later work. Until adoption,
-all are disabled and `reserved_contract_only`.
+for t29 after the operational lifecycle services exist. The t18
+attempt-resource primitive is implemented but disabled for production;
+t19–t23 and t29 own its remaining evidence, cleanup, integration, stress, and
+reconciliation boundaries. Automatic delivery remains reserved.

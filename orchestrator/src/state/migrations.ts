@@ -769,6 +769,144 @@ const INITIAL_SQL = [
   LEGAL_STATE_TRIGGERS.trim(),
 ].join("\n") + "\n";
 
+/*
+ * Migration 002 deliberately adds a new ownership aggregate instead of
+ * rewriting the released v1 lease tables. The v1 tables bind ownership to a
+ * materialized execution_context, which cannot exist before the resource and
+ * policy side effects that ownership must guard. These tables make the
+ * pre-side-effect identity explicit while preserving every released v1 row.
+ */
+const ATTEMPT_OWNERSHIP_SQL = `
+CREATE TABLE attempt_ownership_leases (
+  ownership_id TEXT PRIMARY KEY ${ID("ownership_id")},
+  attempt_id TEXT NOT NULL ${ID("attempt_id")},
+  generation INTEGER NOT NULL CHECK (generation > 0),
+  owner_token_digest TEXT NOT NULL ${DIGEST("owner_token_digest")},
+  context_digest TEXT NOT NULL ${DIGEST("context_digest")},
+  canonical_context_json TEXT NOT NULL ${JSON_OBJECT("canonical_context_json")},
+  recovered_from_ownership_id TEXT,
+  heartbeat_at TEXT NOT NULL ${UTC("heartbeat_at")},
+  expires_at TEXT NOT NULL ${UTC("expires_at")},
+  state TEXT NOT NULL CHECK (state IN ('live','cleanup_pending','released','quarantined')),
+  state_version INTEGER NOT NULL CHECK (state_version >= 0),
+  created_at TEXT NOT NULL ${UTC("created_at")},
+  FOREIGN KEY (attempt_id) REFERENCES attempts(attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (recovered_from_ownership_id) REFERENCES attempt_ownership_leases(ownership_id) ON DELETE RESTRICT,
+  CHECK (expires_at > heartbeat_at),
+  CHECK ((generation = 1 AND recovered_from_ownership_id IS NULL) OR
+         (generation > 1 AND recovered_from_ownership_id IS NOT NULL)),
+  CHECK ((state = 'live' AND recovered_from_ownership_id IS NULL) OR
+         (state <> 'live'))
+) STRICT;
+CREATE UNIQUE INDEX attempt_ownership_leases_attempt_generation_uq
+  ON attempt_ownership_leases(attempt_id, generation);
+CREATE UNIQUE INDEX attempt_ownership_leases_context_uq
+  ON attempt_ownership_leases(context_digest);
+CREATE UNIQUE INDEX attempt_ownership_leases_one_current_uq
+  ON attempt_ownership_leases(attempt_id) WHERE state IN ('live','cleanup_pending');
+CREATE UNIQUE INDEX attempt_ownership_leases_identity_attempt_uq
+  ON attempt_ownership_leases(ownership_id, attempt_id);
+CREATE UNIQUE INDEX attempt_ownership_leases_identity_attempt_generation_uq
+  ON attempt_ownership_leases(ownership_id, attempt_id, generation);
+
+CREATE TABLE attempt_resource_claims (
+  resource_claim_id TEXT PRIMARY KEY ${ID("resource_claim_id")},
+  attempt_id TEXT NOT NULL ${ID("attempt_id")},
+  slot TEXT NOT NULL ${ID("slot")},
+  kind TEXT NOT NULL CHECK (kind IN ('delivery_ref','attempt_ref','worktree','isolated_index','policy_context','policy_bundle','process_group','stdout','stderr','verification_output','salvage_archive')),
+  canonical_identity TEXT NOT NULL ${ID("canonical_identity")},
+  identity_digest TEXT NOT NULL ${DIGEST("identity_digest")},
+  allocation_ownership_id TEXT NOT NULL ${ID("allocation_ownership_id")},
+  current_ownership_id TEXT NOT NULL ${ID("current_ownership_id")},
+  owner_generation INTEGER NOT NULL CHECK (owner_generation > 0),
+  state TEXT NOT NULL CHECK (state IN ('reserved','allocated','active','cleanup_pending','released','quarantined')),
+  state_version INTEGER NOT NULL CHECK (state_version >= 0),
+  release_proof_digest TEXT ${OPTIONAL_DIGEST("release_proof_digest")},
+  quarantine_proof_digest TEXT ${OPTIONAL_DIGEST("quarantine_proof_digest")},
+  created_at TEXT NOT NULL ${UTC("created_at")},
+  FOREIGN KEY (attempt_id) REFERENCES attempts(attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (allocation_ownership_id, attempt_id) REFERENCES attempt_ownership_leases(ownership_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (current_ownership_id, attempt_id) REFERENCES attempt_ownership_leases(ownership_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (current_ownership_id, attempt_id, owner_generation) REFERENCES attempt_ownership_leases(ownership_id, attempt_id, generation) ON DELETE RESTRICT,
+  CHECK (slot = kind),
+  CHECK ((state = 'released' AND release_proof_digest IS NOT NULL AND quarantine_proof_digest IS NULL) OR
+         (state = 'quarantined' AND quarantine_proof_digest IS NOT NULL AND release_proof_digest IS NULL) OR
+         (state NOT IN ('released','quarantined') AND release_proof_digest IS NULL AND quarantine_proof_digest IS NULL))
+) STRICT;
+CREATE UNIQUE INDEX attempt_resource_claims_slot_uq
+  ON attempt_resource_claims(attempt_id, slot);
+CREATE UNIQUE INDEX attempt_resource_claims_active_identity_uq
+  ON attempt_resource_claims(kind, identity_digest)
+  WHERE state IN ('reserved','allocated','active','cleanup_pending');
+CREATE UNIQUE INDEX attempt_resource_claims_identity_attempt_uq
+  ON attempt_resource_claims(resource_claim_id, attempt_id);
+
+CREATE TABLE attempt_ownership_operations (
+  operation_id TEXT PRIMARY KEY ${ID("operation_id")},
+  ownership_id TEXT NOT NULL ${ID("ownership_id")},
+  attempt_id TEXT NOT NULL ${ID("attempt_id")},
+  operation_kind TEXT NOT NULL CHECK (operation_kind IN ('acquire','heartbeat','advance_resource','begin_cleanup','release_resource','quarantine_resource','release','quarantine','stale_recovery')),
+  idempotency_key TEXT NOT NULL ${ID("idempotency_key")},
+  input_digest TEXT NOT NULL ${DIGEST("input_digest")},
+  canonical_input_json TEXT NOT NULL ${JSON_OBJECT("canonical_input_json")},
+  result_digest TEXT NOT NULL ${DIGEST("result_digest")},
+  canonical_result_json TEXT NOT NULL ${JSON_OBJECT("canonical_result_json")},
+  created_at TEXT NOT NULL ${UTC("created_at")},
+  FOREIGN KEY (ownership_id, attempt_id) REFERENCES attempt_ownership_leases(ownership_id, attempt_id) ON DELETE RESTRICT
+) STRICT;
+CREATE UNIQUE INDEX attempt_ownership_operations_attempt_idempotency_uq
+  ON attempt_ownership_operations(attempt_id, idempotency_key);
+CREATE UNIQUE INDEX attempt_ownership_operations_result_uq
+  ON attempt_ownership_operations(operation_id, result_digest);
+
+CREATE TRIGGER attempt_ownership_leases_immutable_identity BEFORE UPDATE ON attempt_ownership_leases
+WHEN NEW.ownership_id IS NOT OLD.ownership_id OR
+     NEW.attempt_id IS NOT OLD.attempt_id OR
+     NEW.generation IS NOT OLD.generation OR
+     NEW.owner_token_digest IS NOT OLD.owner_token_digest OR
+     NEW.context_digest IS NOT OLD.context_digest OR
+     NEW.canonical_context_json IS NOT OLD.canonical_context_json OR
+     NEW.recovered_from_ownership_id IS NOT OLD.recovered_from_ownership_id OR
+     NEW.created_at IS NOT OLD.created_at
+BEGIN SELECT RAISE(ABORT, 'attempt ownership identity is immutable'); END;
+CREATE TRIGGER attempt_ownership_leases_state_version BEFORE UPDATE ON attempt_ownership_leases
+WHEN NEW.state_version <> OLD.state_version + 1
+BEGIN SELECT RAISE(ABORT, 'attempt ownership state_version must advance by one'); END;
+CREATE TRIGGER attempt_ownership_leases_legal_edge BEFORE UPDATE OF state ON attempt_ownership_leases
+WHEN NOT ((OLD.state = 'live' AND NEW.state IN ('cleanup_pending','quarantined')) OR
+          (OLD.state = 'cleanup_pending' AND NEW.state IN ('released','quarantined')))
+BEGIN SELECT RAISE(ABORT, 'illegal attempt ownership state transition'); END;
+CREATE TRIGGER attempt_ownership_leases_no_delete BEFORE DELETE ON attempt_ownership_leases
+BEGIN SELECT RAISE(ABORT, 'attempt ownership cannot be deleted'); END;
+
+CREATE TRIGGER attempt_resource_claims_immutable_identity BEFORE UPDATE ON attempt_resource_claims
+WHEN NEW.resource_claim_id IS NOT OLD.resource_claim_id OR
+     NEW.attempt_id IS NOT OLD.attempt_id OR
+     NEW.slot IS NOT OLD.slot OR
+     NEW.kind IS NOT OLD.kind OR
+     NEW.canonical_identity IS NOT OLD.canonical_identity OR
+     NEW.identity_digest IS NOT OLD.identity_digest OR
+     NEW.allocation_ownership_id IS NOT OLD.allocation_ownership_id OR
+     NEW.created_at IS NOT OLD.created_at
+BEGIN SELECT RAISE(ABORT, 'attempt resource claim identity is immutable'); END;
+CREATE TRIGGER attempt_resource_claims_state_version BEFORE UPDATE ON attempt_resource_claims
+WHEN NEW.state_version <> OLD.state_version + 1
+BEGIN SELECT RAISE(ABORT, 'attempt resource claim state_version must advance by one'); END;
+CREATE TRIGGER attempt_resource_claims_legal_edge BEFORE UPDATE OF state ON attempt_resource_claims
+WHEN NOT ((OLD.state = 'reserved' AND NEW.state IN ('allocated','cleanup_pending','quarantined')) OR
+          (OLD.state = 'allocated' AND NEW.state IN ('active','cleanup_pending','quarantined')) OR
+          (OLD.state = 'active' AND NEW.state IN ('cleanup_pending','quarantined')) OR
+          (OLD.state = 'cleanup_pending' AND NEW.state IN ('released','quarantined')))
+BEGIN SELECT RAISE(ABORT, 'illegal attempt resource claim state transition'); END;
+CREATE TRIGGER attempt_resource_claims_no_delete BEFORE DELETE ON attempt_resource_claims
+BEGIN SELECT RAISE(ABORT, 'attempt resource claim cannot be deleted'); END;
+
+CREATE TRIGGER attempt_ownership_operations_no_update BEFORE UPDATE ON attempt_ownership_operations
+BEGIN SELECT RAISE(ABORT, 'attempt ownership operations are append-only'); END;
+CREATE TRIGGER attempt_ownership_operations_no_delete BEFORE DELETE ON attempt_ownership_operations
+BEGIN SELECT RAISE(ABORT, 'attempt ownership operations are append-only'); END;
+`;
+
 function releasedObjectNames(sql: string, kind: "TABLE" | "INDEX" | "TRIGGER"): readonly string[] {
   const names = [...sql.matchAll(new RegExp(`CREATE (?:UNIQUE )?${kind} ([a-z0-9_]+)`, "g"))]
     .map((match) => match[1])
@@ -780,6 +918,14 @@ export const INITIAL_STATE_SCHEMA_OBJECTS = Object.freeze({
   tables: releasedObjectNames(INITIAL_SQL, "TABLE"),
   indexes: releasedObjectNames(INITIAL_SQL, "INDEX"),
   triggers: releasedObjectNames(INITIAL_SQL, "TRIGGER"),
+});
+
+const LATEST_SQL = `${INITIAL_SQL}${ATTEMPT_OWNERSHIP_SQL}`;
+
+export const LATEST_STATE_SCHEMA_OBJECTS = Object.freeze({
+  tables: releasedObjectNames(LATEST_SQL, "TABLE"),
+  indexes: releasedObjectNames(LATEST_SQL, "INDEX"),
+  triggers: releasedObjectNames(LATEST_SQL, "TRIGGER"),
 });
 
 function checksum(sql: string): `sha256:${string}` {
@@ -798,6 +944,12 @@ export const INITIAL_STATE_MIGRATION_CHECKSUM =
 export const INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM =
   "sha256:11f061a28bffe7ed02a6d5b974cca09dcff189e18fb18834659a3aad175ecef9" as const;
 
+export const ATTEMPT_OWNERSHIP_MIGRATION_CHECKSUM =
+  "sha256:8dc1be6f92fbe281149b651c89fd1b2e8d7b4f3464c2f85a2113aa851123473d" as const;
+
+export const LATEST_STATE_SQLITE_SCHEMA_CHECKSUM =
+  "sha256:eb83ea80db2cc06eb46ffe135994fe79cf4f53146b5f71ac8a876b46f6224bbc" as const;
+
 export const STATE_MIGRATIONS: readonly StateMigration[] = Object.freeze([
   Object.freeze({
     version: 1,
@@ -805,6 +957,13 @@ export const STATE_MIGRATIONS: readonly StateMigration[] = Object.freeze([
     name: "001_initial_durable_state",
     sql: INITIAL_SQL,
     checksum: INITIAL_STATE_MIGRATION_CHECKSUM,
+  }),
+  Object.freeze({
+    version: 2,
+    number: "002",
+    name: "002_attempt_ownership_primitive",
+    sql: ATTEMPT_OWNERSHIP_SQL,
+    checksum: ATTEMPT_OWNERSHIP_MIGRATION_CHECKSUM,
   }),
 ]);
 
@@ -819,8 +978,9 @@ export function assertValidMigrationCatalog(catalog: readonly StateMigration[] =
     }
     if (names.has(migration.name)) throw new Error(`duplicate state migration name: ${migration.name}`);
     names.add(migration.name);
-    if (migration.checksum !== checksum(migration.sql)) {
-      throw new Error(`state migration checksum mismatch: ${migration.name}`);
+    const calculatedChecksum = checksum(migration.sql);
+    if (migration.checksum !== calculatedChecksum) {
+      throw new Error(`state migration checksum mismatch: ${migration.name}; expected ${migration.checksum}, calculated ${calculatedChecksum}`);
     }
   }
 }
