@@ -450,11 +450,53 @@ function insertUpstreamFixtureRowWithoutForeignKeys(
 }
 
 interface PhaseGuardFixtures {
+  readonly ownershipId: string;
   readonly leaseId: string;
   readonly processReceiptId: string;
   readonly reviewRecordId: string;
   readonly gateResultId: string;
   readonly cleanupRecordId: string;
+}
+
+const T18_RESOURCE_KINDS = [
+  "delivery_ref", "attempt_ref", "worktree", "isolated_index", "policy_context", "policy_bundle",
+  "process_group", "stdout", "stderr", "verification_output", "salvage_archive",
+] as const;
+
+function insertT18Ownership(fixture: LineageFixture, ownershipId: string, label: string): void {
+  const now = "2026-07-16T12:00:00.000Z";
+  insertFixtureRow(fixture.store.location.databasePath, "attempt_ownership_leases", {
+    ownership_id: ownershipId,
+    attempt_id: fixture.attempt.attemptId,
+    generation: 1,
+    owner_token_digest: digest(`t18-owner-token:${label}`),
+    context_digest: fixture.phase.canonical.contextDigest,
+    canonical_context_json: canonicalJson({ schema_version: "rickgent.attempt-ownership-context/v1", label }),
+    recovered_from_ownership_id: null,
+    heartbeat_at: now,
+    expires_at: "2099-07-16T12:10:00.000Z",
+    state: "live",
+    state_version: 0,
+    created_at: now,
+  });
+  for (const kind of T18_RESOURCE_KINDS) {
+    insertFixtureRow(fixture.store.location.databasePath, "attempt_resource_claims", {
+      resource_claim_id: `claim-${label}-${kind}-${fixture.attempt.attemptId}`,
+      attempt_id: fixture.attempt.attemptId,
+      slot: kind,
+      kind,
+      canonical_identity: `t18:${label}:${kind}:${fixture.attempt.attemptId}`,
+      identity_digest: digest(`t18:${label}:${kind}:${fixture.attempt.attemptId}`),
+      allocation_ownership_id: ownershipId,
+      current_ownership_id: ownershipId,
+      owner_generation: 1,
+      state: "reserved",
+      state_version: 0,
+      release_proof_digest: null,
+      quarantine_proof_digest: null,
+      created_at: now,
+    });
+  }
 }
 
 function insertGateFixture(
@@ -494,9 +536,13 @@ function phaseGuardFixtures(
   const contextId = fixture.phase.persisted.contextId;
   const phaseExecutionId = fixture.phase.persisted.phaseExecutionId;
   const leaseId = `lease-${fixture.attempt.attemptId}`;
+  const ownershipId = `ownership-${fixture.attempt.attemptId}`;
   const processReceiptId = `receipt-${fixture.attempt.attemptId}`;
   const reviewRecordId = `review-${fixture.attempt.attemptId}`;
-  const cleanupRecordId = `cleanup-${fixture.attempt.attemptId}`;
+  const terminalProofDigest = cleanupOutcome === "quarantined"
+    ? digest(`quarantine-proof:${fixture.attempt.attemptId}`)
+    : digest(`release-proof:${fixture.attempt.attemptId}`);
+  const cleanupRecordId = `cleanup-record-${terminalProofDigest.slice(7)}`;
   const now = "2026-07-16T12:00:00.000Z";
   insertFixtureRow(databasePath, "leases", {
     lease_id: leaseId,
@@ -512,6 +558,7 @@ function phaseGuardFixtures(
     release_evidence_id: null,
     created_at: now,
   });
+  insertT18Ownership(fixture, ownershipId, "phase-guard");
   for (const kind of [
     "attempt_ref",
     "worktree",
@@ -592,7 +639,7 @@ function phaseGuardFixtures(
     record_digest: digest(`cleanup-record:${fixture.attempt.attemptId}:${cleanupOutcome}`),
     created_at: now,
   });
-  return { leaseId, processReceiptId, reviewRecordId, gateResultId, cleanupRecordId };
+  return { ownershipId, leaseId, processReceiptId, reviewRecordId, gateResultId, cleanupRecordId };
 }
 
 function lifecycleLeaseResources(
@@ -617,6 +664,7 @@ function lifecycleLeaseResources(
     release_evidence_id: null,
     created_at: now,
   });
+  insertT18Ownership(fixture, leaseId, `lifecycle-${label}`);
   for (const kind of [
     "attempt_ref",
     "worktree",
@@ -648,7 +696,12 @@ function lifecycleLeaseResources(
   return leaseId;
 }
 
-function releaseFixtureLease(fixture: LineageFixture, leaseId: string, evidenceId: string): void {
+function releaseFixtureLease(
+  fixture: LineageFixture,
+  ownershipId: string,
+  evidenceId: string,
+  disposition: "released" | "quarantined" = "released",
+): void {
   const database = openRaw(fixture.store.location.databasePath);
   try {
     database.prepare(
@@ -659,10 +712,34 @@ function releaseFixtureLease(fixture: LineageFixture, leaseId: string, evidenceI
     ).run(evidenceId, fixture.attempt.attemptId);
     database.prepare(
       "UPDATE leases SET state = 'cleanup_pending', state_version = state_version + 1 WHERE lease_id = ?",
-    ).run(leaseId);
+    ).run(ownershipId);
     database.prepare(
       "UPDATE leases SET state = 'released', state_version = state_version + 1, release_evidence_id = ? WHERE lease_id = ?",
-    ).run(evidenceId, leaseId);
+    ).run(evidenceId, ownershipId);
+    database.prepare(
+      "UPDATE attempt_resource_claims SET state = 'cleanup_pending', state_version = state_version + 1 WHERE attempt_id = ? AND current_ownership_id = ?",
+    ).run(fixture.attempt.attemptId, ownershipId);
+    database.prepare(
+      "UPDATE attempt_ownership_leases SET state = 'cleanup_pending', state_version = state_version + 1 WHERE ownership_id = ?",
+    ).run(ownershipId);
+    const proofDigest = disposition === "released"
+      ? digest(`release-proof:${fixture.attempt.attemptId}`)
+      : digest(`quarantine-proof:${fixture.attempt.attemptId}`);
+    database.prepare(`
+      UPDATE attempt_resource_claims
+      SET state = ?, state_version = state_version + 1,
+          release_proof_digest = ?, quarantine_proof_digest = ?
+      WHERE attempt_id = ? AND current_ownership_id = ?
+    `).run(
+      disposition,
+      disposition === "released" ? proofDigest : null,
+      disposition === "quarantined" ? proofDigest : null,
+      fixture.attempt.attemptId,
+      ownershipId,
+    );
+    database.prepare(
+      "UPDATE attempt_ownership_leases SET state = ?, state_version = state_version + 1 WHERE ownership_id = ?",
+    ).run(disposition, ownershipId);
   } finally {
     database.close();
   }
@@ -814,7 +891,7 @@ function advanceToVerifying(
   });
   authority.startAttempt({
     attemptId: fixture.attempt.attemptId,
-    leaseId: guards.leaseId,
+    ownershipId: guards.ownershipId,
     ...commonRequest(fixture, `${label}:attempt:start`, proof, 0),
   });
   authority.captureImplementation({
@@ -906,7 +983,7 @@ function preparePromotionFixture(label: string, createIntent = true): PromotionF
     attemptId: fixture.attempt.attemptId,
     ...commonRequest(fixture, `promotion-${label}:ticket-cleanup`, proof, 1),
   });
-  releaseFixtureLease(fixture, guards.leaseId, String(evidence.evidence_id));
+  releaseFixtureLease(fixture, guards.ownershipId, String(evidence.evidence_id));
   const createRequest: PromotionIntentRequest = {
     promotionIntentId: `promotion-${label}-${fixture.attempt.attemptId}`,
     runId: fixture.run.runId,
@@ -1433,7 +1510,8 @@ function lifecycleAttributionRequest(
 }
 
 function lifecycleCleanupRequest(data: LifecycleFixtureData, label: string): CleanupRecordRequest {
-  const cleanupRecordId = `cleanup-lifecycle-${label}-${data.fixture.attempt.attemptId}`;
+  const cleanupProofDigest = digest(`release-proof:${data.fixture.attempt.attemptId}`);
+  const cleanupRecordId = `cleanup-record-${cleanupProofDigest.slice(7)}`;
   const evidenceId = `evidence-lifecycle-${label}-cleanup`;
   const payload = {
     attempt_id: data.fixture.attempt.attemptId,
@@ -1511,7 +1589,7 @@ function advanceLifecycleToReview(data: LifecycleFixtureData, label: string): Li
   });
   transitions.startAttempt({
     attemptId: data.fixture.attempt.attemptId,
-    leaseId: data.leaseId,
+    ownershipId: data.leaseId,
     ...ownedTransitionRequest(
       data.fixture.phase.canonical.contextDigest,
       `lifecycle:${label}:attempt-start`,
@@ -1718,7 +1796,7 @@ describe("transactional lifecycle transition authority", () => {
       });
       const startRequest = {
         attemptId: fixture.attempt.attemptId,
-        leaseId: guards.leaseId,
+        ownershipId: guards.ownershipId,
         ...commonRequest(fixture, "attempt:start", proof, 0),
       };
       const startResult = authority.startAttempt(startRequest);
@@ -1764,7 +1842,7 @@ describe("transactional lifecycle transition authority", () => {
         attemptId: fixture.attempt.attemptId,
         ...commonRequest(fixture, "run:failure-cleanup", proof, 1),
       });
-      releaseFixtureLease(fixture, guards.leaseId, String(evidence.evidence_id));
+      releaseFixtureLease(fixture, guards.ownershipId, String(evidence.evidence_id));
       const attemptTerminal = authority.markAttemptFailedClean({
         attemptId: fixture.attempt.attemptId,
         cleanupRecordId: guards.cleanupRecordId,
@@ -1881,7 +1959,7 @@ describe("transactional lifecycle transition authority", () => {
       });
       authority.startAttempt({
         attemptId: fixture.attempt.attemptId,
-        leaseId: guards.leaseId,
+        ownershipId: guards.ownershipId,
         ...commonRequest(fixture, "guard-evidence:start", unrelatedProof, 0),
       });
       expectStateCode(() => authority.captureImplementation({
@@ -1941,7 +2019,7 @@ describe("transactional lifecycle transition authority", () => {
         });
         authority.startAttempt({
           attemptId: fixture.attempt.attemptId,
-          leaseId: guards.leaseId,
+          ownershipId: guards.ownershipId,
           ...commonRequest(fixture, `context-mismatch-${scenario}:start`, proof, 0),
         });
         if (scenario === "process") {
@@ -2012,7 +2090,7 @@ describe("transactional lifecycle transition authority", () => {
         attemptId: fixture.attempt.attemptId,
         ...commonRequest(fixture, "quarantine-target:ticket-cleanup", proof, 1),
       });
-      releaseFixtureLease(fixture, targetGuards.leaseId, String(evidence.evidence_id));
+      releaseFixtureLease(fixture, targetGuards.ownershipId, String(evidence.evidence_id), "quarantined");
       authority.quarantineAttempt({
         attemptId: fixture.attempt.attemptId,
         cleanupRecordId: targetGuards.cleanupRecordId,

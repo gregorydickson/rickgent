@@ -52,7 +52,7 @@ export interface TicketActivationRequest extends TicketTransitionRequest {
 }
 
 export interface LeaseGuardedAttemptRequest extends AttemptTransitionRequest {
-  readonly leaseId: string;
+  readonly ownershipId: string;
 }
 
 export interface ProcessReceiptGuardedAttemptRequest extends AttemptTransitionRequest {
@@ -134,7 +134,7 @@ export interface TransitionResult {
 export type TransitionGuard =
   | { readonly kind: "run_initial_attempt"; readonly attemptId: string }
   | { readonly kind: "ticket_attempt_allocation"; readonly attemptId: string; readonly retry: boolean }
-  | { readonly kind: "live_lease"; readonly leaseId: string }
+  | { readonly kind: "live_lease"; readonly ownershipId: string }
   | { readonly kind: "process_receipt"; readonly processReceiptId: string }
   | { readonly kind: "execution_context"; readonly contextId: string }
   | { readonly kind: "review_record"; readonly reviewRecordId: string; readonly verdict: "accepted" | "rejected" }
@@ -240,7 +240,7 @@ export class TransitionAuthority {
   }
 
   startAttempt(request: LeaseGuardedAttemptRequest): TransitionResult {
-    return this.#commit("attempt", request.attemptId, "planned", "implementing", "AttemptLifecycleService", request, { kind: "live_lease", leaseId: request.leaseId });
+    return this.#commit("attempt", request.attemptId, "planned", "implementing", "AttemptLifecycleService", request, { kind: "live_lease", ownershipId: request.ownershipId });
   }
 
   captureImplementation(request: ProcessReceiptGuardedAttemptRequest): TransitionResult {

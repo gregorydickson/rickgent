@@ -1713,7 +1713,7 @@ export class StateStore {
   }
 
   appendEvidence(input: StateRowInput): StateRecord {
-    if (["ProcessSupervisor", "CommitService", "SalvageService", "CleanupService"].includes(String(input.producer_service))) {
+    if (["LeaseAuthority", "ProcessSupervisor", "CommitService", "SalvageService", "CleanupService"].includes(String(input.producer_service))) {
       throw new TypeError(`${String(input.producer_service)} evidence requires its runtime-authorized producer path`);
     }
     return this.#appendIdempotent(
@@ -2312,16 +2312,28 @@ export class StateStore {
       add("cleanup_record", String(cleanup.cleanup_record_id), String(cleanup.evidence_content_digest), ticketInstanceId, attemptId, sealed);
     }
 
-    const resources = db.prepare("SELECT * FROM attempt_resources WHERE attempt_id = ? ORDER BY slot, resource_id").all(attemptId) as MutableStateRecord[];
+    const resources = db.prepare("SELECT * FROM attempt_resource_claims WHERE attempt_id = ? ORDER BY slot, resource_claim_id").all(attemptId) as MutableStateRecord[];
     for (const resource of resources) {
       const sealed = { ...resource } as Readonly<Record<string, unknown>>;
-      const evidence = this.#exactSnapshotEvidence(attemptId, "rickgent.attempt-resource-snapshot.v1", sealed, "attempt resource");
+      const evidence = this.#exactSnapshotEvidence(
+        attemptId,
+        "LeaseAuthority",
+        "rickgent.attempt-resource-claim-snapshot.v2",
+        sealed,
+        "attempt resource claim",
+      );
       add("attempt_resource_snapshot", String(evidence.evidence_id), String(evidence.content_digest), ticketInstanceId, attemptId, sealed);
     }
-    const leases = db.prepare("SELECT * FROM leases WHERE attempt_id = ? ORDER BY generation, lease_id").all(attemptId) as MutableStateRecord[];
+    const leases = db.prepare("SELECT * FROM attempt_ownership_leases WHERE attempt_id = ? ORDER BY generation, ownership_id").all(attemptId) as MutableStateRecord[];
     for (const lease of leases) {
       const sealed = { ...lease } as Readonly<Record<string, unknown>>;
-      const evidence = this.#exactSnapshotEvidence(attemptId, "rickgent.lease-snapshot.v1", sealed, "lease");
+      const evidence = this.#exactSnapshotEvidence(
+        attemptId,
+        "LeaseAuthority",
+        "rickgent.attempt-ownership-lease-snapshot.v2",
+        sealed,
+        "attempt ownership lease",
+      );
       add("lease_snapshot", String(evidence.evidence_id), String(evidence.content_digest), ticketInstanceId, attemptId, sealed);
     }
 
@@ -2366,6 +2378,7 @@ export class StateStore {
 
   #exactSnapshotEvidence(
     attemptId: string,
+    producerService: string,
     schemaVersion: string,
     sealed: Readonly<Record<string, unknown>>,
     label: string,
@@ -2374,9 +2387,9 @@ export class StateStore {
     const digest = sha256Text(payload);
     const evidence = this.#requireDatabase().prepare(`
       SELECT * FROM evidence WHERE attempt_id = ? AND schema_version = ?
-        AND inline_payload_json = ? AND content_digest = ?
+        AND producer_service = ? AND inline_payload_json = ? AND content_digest = ?
       ORDER BY created_at DESC, evidence_id DESC LIMIT 1
-    `).get(attemptId, schemaVersion, payload, digest) as MutableStateRecord | undefined;
+    `).get(attemptId, schemaVersion, producerService, payload, digest) as MutableStateRecord | undefined;
     if (evidence === undefined) this.#resumeIncompatible(`oracle current ${label} row has no exact immutable snapshot evidence`);
     return evidence;
   }
@@ -4062,19 +4075,24 @@ export class StateStore {
       }
       case "live_lease": {
         this.#requireTransitionGuard(`
-          SELECT 1 FROM leases l JOIN execution_contexts c ON c.context_id = l.owner_context_id
-          WHERE l.lease_id = ? AND l.attempt_id = ? AND l.state = 'live' AND c.context_digest = ?
-        `, [guard.leaseId, command.entityId, command.ownerContextDigest], "attempt start requires its live owner-checked lease");
-        const requiredKinds = ["attempt_ref", "worktree", "isolated_index", "policy_context", "policy_bundle", "process_group", "stdout", "stderr"];
+          SELECT 1 FROM attempt_ownership_leases
+          WHERE ownership_id = ? AND attempt_id = ? AND state = 'live'
+            AND recovered_from_ownership_id IS NULL AND context_digest = ?
+            AND expires_at > ?
+        `, [guard.ownershipId, command.entityId, command.ownerContextDigest, new Date().toISOString()],
+        "attempt start requires its current live t18 ownership");
+        const requiredKinds = [
+          "delivery_ref", "attempt_ref", "worktree", "isolated_index", "policy_context", "policy_bundle",
+          "process_group", "stdout", "stderr", "verification_output", "salvage_archive",
+        ];
         const resources = this.#requireDatabase().prepare(`
-          SELECT DISTINCT r.kind FROM attempt_resources r
-          JOIN execution_contexts c ON c.context_id = r.owner_context_id
-          WHERE r.attempt_id = ? AND r.allocation_lease_id = ? AND r.state IN ('reserved','allocated','active')
-            AND c.context_digest = ?
-        `).all(command.entityId, guard.leaseId, command.ownerContextDigest) as MutableStateRecord[];
+          SELECT DISTINCT kind FROM attempt_resource_claims
+          WHERE attempt_id = ? AND current_ownership_id = ?
+            AND state IN ('reserved','allocated','active')
+        `).all(command.entityId, guard.ownershipId) as MutableStateRecord[];
         const observed = new Set(resources.map((row) => String(row.kind)));
-        if (requiredKinds.some((kind) => !observed.has(kind))) {
-          throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "attempt start is missing required reserved resources", this.location.databasePath);
+        if (resources.length !== requiredKinds.length || requiredKinds.some((kind) => !observed.has(kind))) {
+          throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "attempt start is missing the complete t18 fixed resource claim set", this.location.databasePath);
         }
         return;
       }
@@ -5087,8 +5105,8 @@ export class StateStore {
         `).get(reference[column] ?? null) as MutableStateRecord | undefined;
         targetTable = "evidence";
         digestColumn = "content_digest";
-        requiredSchema = kind === "attempt_resource_snapshot" ? "rickgent.attempt-resource-snapshot.v1" :
-          kind === "lease_snapshot" ? "rickgent.lease-snapshot.v1" : undefined;
+        requiredSchema = kind === "attempt_resource_snapshot" ? "rickgent.attempt-resource-claim-snapshot.v2" :
+          kind === "lease_snapshot" ? "rickgent.attempt-ownership-lease-snapshot.v2" : undefined;
         break;
       }
       case "gate_result":
@@ -5164,6 +5182,9 @@ export class StateStore {
     }
     if (requiredSchema !== undefined && target.schema_version !== requiredSchema) {
       throw new StateStoreError("RICKGENT_STATE_RESUME_INCOMPATIBLE", `oracle ${String(kind)} input has the wrong snapshot schema`);
+    }
+    if ((kind === "attempt_resource_snapshot" || kind === "lease_snapshot") && target.producer_service !== "LeaseAuthority") {
+      throw new StateStoreError("RICKGENT_STATE_RESUME_INCOMPATIBLE", `oracle ${String(kind)} input was not minted by LeaseAuthority`);
     }
     const targetDigest = digestColumn === undefined ? this.#storedRecordDigest(targetTable, target) : target[digestColumn];
     if (targetDigest !== reference.content_digest) {
@@ -6763,6 +6784,66 @@ export class StateStore {
     });
   }
 
+  #recordTerminalAttemptOwnershipSnapshots(attemptId: string, contextId: string): void {
+    const snapshots = [
+      ...this.#requireDatabase().prepare(
+        "SELECT * FROM attempt_ownership_leases WHERE attempt_id = ? ORDER BY generation, ownership_id",
+      ).all(attemptId).map((row) => ({
+        row: row as MutableStateRecord,
+        schemaVersion: "rickgent.attempt-ownership-lease-snapshot.v2",
+        scopePrefix: "attempt-ownership-lease",
+      })),
+      ...this.#requireDatabase().prepare(
+        "SELECT * FROM attempt_resource_claims WHERE attempt_id = ? ORDER BY slot, resource_claim_id",
+      ).all(attemptId).map((row) => ({
+        row: row as MutableStateRecord,
+        schemaVersion: "rickgent.attempt-resource-claim-snapshot.v2",
+        scopePrefix: "attempt-resource-claim",
+      })),
+    ];
+    for (const snapshot of snapshots) {
+      const inlinePayload = canonicalJson(snapshot.row);
+      const contentDigest = sha256Text(inlinePayload);
+      const identity = snapshot.scopePrefix === "attempt-ownership-lease"
+        ? String(snapshot.row.ownership_id)
+        : String(snapshot.row.resource_claim_id);
+      const scope = `${snapshot.scopePrefix}:${identity}:version:${String(snapshot.row.state_version)}`;
+      const evidenceId = `${snapshot.scopePrefix}-snapshot-${contentDigest.slice(7)}`;
+      const expected: MutableStateRecord = {
+        evidence_id: evidenceId,
+        attempt_id: attemptId,
+        phase_execution_id: null,
+        context_id: contextId,
+        producer_service: "LeaseAuthority",
+        scope,
+        schema_version: snapshot.schemaVersion,
+        content_digest: contentDigest,
+        inline_payload_json: inlinePayload,
+        external_path: null,
+        external_digest: null,
+        external_size: null,
+        idempotency_key: scope,
+        created_at: new Date().toISOString(),
+      };
+      const existing = this.#requireDatabase().prepare(
+        "SELECT * FROM evidence WHERE evidence_id = ? OR (producer_service = ? AND scope = ? AND idempotency_key = ?)",
+      ).get(evidenceId, "LeaseAuthority", scope, scope) as MutableStateRecord | undefined;
+      if (existing !== undefined) {
+        const immutableColumns = Object.keys(expected).filter((column) => column !== "created_at");
+        if (!immutableColumns.every((column) => sameValue(existing[column], expected[column]))) {
+          throw typedError(
+            "RICKGENT_STATE_IDEMPOTENCY_CONFLICT",
+            "terminal attempt ownership snapshot identity has different immutable input",
+            this.location.databasePath,
+          );
+        }
+        continue;
+      }
+      this.#validateRecordSemantics("evidence", expected);
+      this.#insert("evidence", expected);
+    }
+  }
+
   #finalizeAttemptOwnershipCleanup(
     command: AttemptOwnershipCommand,
     canonicalInput: string,
@@ -6864,6 +6945,7 @@ export class StateStore {
     if (ownerUpdate.changes !== 1) {
       throw typedError("RICKGENT_STATE_CONFLICT", "cleanup owner finalization lost its CAS race", this.location.databasePath);
     }
+    this.#recordTerminalAttemptOwnershipSnapshots(payload.attemptId, String(payload.contextId));
     return this.#recordOwnershipOperation(
       command,
       String(ownership.ownership_id),

@@ -206,7 +206,7 @@ interface OracleFixture {
   readonly attributionId: string;
   readonly cleanupRecordId: string;
   readonly processReceiptIds: readonly string[];
-  readonly resourceSnapshotEvidenceId: string;
+  readonly resourceSnapshotEvidenceIds: readonly string[];
   readonly leaseSnapshotEvidenceId: string;
 }
 
@@ -265,6 +265,76 @@ function snapshotEvidence(
   postImage: Readonly<Record<string, SqlValue>>,
 ): Readonly<Record<string, SqlValue>> {
   return evidenceInput(fixture, phase, evidenceId, "OracleStoreTest", schemaVersion, postImage);
+}
+
+const T18_RESOURCE_KINDS = [
+  "delivery_ref", "attempt_ref", "worktree", "isolated_index", "policy_context", "policy_bundle",
+  "process_group", "stdout", "stderr", "verification_output", "salvage_archive",
+] as const;
+
+function insertT18OracleSnapshots(
+  fixture: Pick<OracleFixture, "store" | "attempt" | "implement">,
+): { readonly resourceSnapshotEvidenceIds: readonly string[]; readonly leaseSnapshotEvidenceId: string } {
+  const ownershipId = `ownership-${fixture.attempt.attemptId}`;
+  const releaseProofDigest = digest(`release-proof:${fixture.attempt.attemptId}`);
+  const ownership: Readonly<Record<string, SqlValue>> = {
+    ownership_id: ownershipId,
+    attempt_id: fixture.attempt.attemptId,
+    generation: 1,
+    owner_token_digest: digest(`owner-token:${fixture.attempt.attemptId}`),
+    context_digest: fixture.implement.canonical.contextDigest,
+    canonical_context_json: canonicalJson({ schema_version: "rickgent.attempt-ownership-context/v1" }),
+    recovered_from_ownership_id: null,
+    heartbeat_at: NOW,
+    expires_at: "2099-07-16T12:10:00.000Z",
+    state: "released",
+    state_version: 2,
+    created_at: NOW,
+  };
+  insertRow(fixture.store.location.databasePath, "attempt_ownership_leases", ownership);
+  const leaseSnapshotEvidenceId = `evidence-ownership-v2-${fixture.attempt.attemptId}`;
+  insertRow(fixture.store.location.databasePath, "evidence", evidenceInput(
+    fixture,
+    fixture.implement,
+    leaseSnapshotEvidenceId,
+    "LeaseAuthority",
+    "rickgent.attempt-ownership-lease-snapshot.v2",
+    ownership,
+    `attempt-ownership-lease:${ownershipId}:version:2`,
+  ));
+
+  const resourceSnapshotEvidenceIds = T18_RESOURCE_KINDS.map((kind) => {
+    const resourceClaimId = `claim-${kind}-${fixture.attempt.attemptId}`;
+    const resource: Readonly<Record<string, SqlValue>> = {
+      resource_claim_id: resourceClaimId,
+      attempt_id: fixture.attempt.attemptId,
+      slot: kind,
+      kind,
+      canonical_identity: `t18:${kind}:${fixture.attempt.attemptId}`,
+      identity_digest: digest(`t18:${kind}:${fixture.attempt.attemptId}`),
+      allocation_ownership_id: ownershipId,
+      current_ownership_id: ownershipId,
+      owner_generation: 1,
+      state: "released",
+      state_version: 2,
+      release_proof_digest: releaseProofDigest,
+      quarantine_proof_digest: null,
+      created_at: NOW,
+    };
+    insertRow(fixture.store.location.databasePath, "attempt_resource_claims", resource);
+    const evidenceId = `evidence-resource-claim-v2-${kind}-${fixture.attempt.attemptId}`;
+    insertRow(fixture.store.location.databasePath, "evidence", evidenceInput(
+      fixture,
+      fixture.implement,
+      evidenceId,
+      "LeaseAuthority",
+      "rickgent.attempt-resource-claim-snapshot.v2",
+      resource,
+      `attempt-resource-claim:${resourceClaimId}:version:2`,
+    ));
+    return evidenceId;
+  });
+  return { resourceSnapshotEvidenceIds, leaseSnapshotEvidenceId };
 }
 
 function advanceLifecycle(fixture: Pick<OracleFixture, "store" | "run" | "attempt">): void {
@@ -603,7 +673,10 @@ function completeFixture(gateStatuses: readonly ("passed" | "failed" | "missing"
     });
     lease = desired;
   }
-  const leaseSnapshotEvidenceId = `evidence-lease-3-${attempt.attemptId}`;
+  const {
+    resourceSnapshotEvidenceIds,
+    leaseSnapshotEvidenceId,
+  } = insertT18OracleSnapshots({ store, attempt, implement });
 
   const cleanupRecordId = `cleanup-${attempt.attemptId}`;
   const cleanupEvidenceId = `evidence-cleanup-${attempt.attemptId}`;
@@ -649,7 +722,7 @@ function completeFixture(gateStatuses: readonly ("passed" | "failed" | "missing"
     attributionId,
     cleanupRecordId,
     processReceiptIds,
-    resourceSnapshotEvidenceId,
+    resourceSnapshotEvidenceIds,
     leaseSnapshotEvidenceId,
   };
   advanceLifecycle(fixture);
@@ -747,7 +820,7 @@ describe("Store-owned attempt oracle integration", () => {
       "review_record",
       "commit_attribution",
       "cleanup_record",
-      "attempt_resource_snapshot",
+      ...T18_RESOURCE_KINDS.map(() => "attempt_resource_snapshot"),
       "lease_snapshot",
     ]);
     expect(references.map((row) => row.context_id).filter((value) => value !== null)).toEqual([
@@ -765,10 +838,32 @@ describe("Store-owned attempt oracle integration", () => {
       .toBe(fixture.attributionId);
     expect(references.find((row) => row.reference_kind === "cleanup_record")?.cleanup_record_id)
       .toBe(fixture.cleanupRecordId);
-    expect(references.find((row) => row.reference_kind === "attempt_resource_snapshot")?.resource_snapshot_evidence_id)
-      .toBe(fixture.resourceSnapshotEvidenceId);
+    const resourceSnapshotReferences = references.filter((row) => row.reference_kind === "attempt_resource_snapshot");
+    expect(resourceSnapshotReferences).toHaveLength(T18_RESOURCE_KINDS.length);
+    expect(resourceSnapshotReferences.map((row) => row.resource_snapshot_evidence_id).sort())
+      .toEqual([...fixture.resourceSnapshotEvidenceIds].sort());
     expect(references.find((row) => row.reference_kind === "lease_snapshot")?.lease_snapshot_evidence_id)
       .toBe(fixture.leaseSnapshotEvidenceId);
+    const snapshotEvidence = queryAll(
+      fixture.store.location.databasePath,
+      `SELECT e.producer_service, e.schema_version
+       FROM oracle_input_references reference
+       JOIN evidence e ON e.evidence_id = COALESCE(reference.resource_snapshot_evidence_id, reference.lease_snapshot_evidence_id)
+       WHERE reference.oracle_decision_id = ?
+         AND reference.reference_kind IN ('attempt_resource_snapshot','lease_snapshot')
+       ORDER BY reference.ordinal`,
+      String(result.decision.oracle_decision_id),
+    );
+    expect(snapshotEvidence).toEqual([
+      ...T18_RESOURCE_KINDS.map(() => ({
+        producer_service: "LeaseAuthority",
+        schema_version: "rickgent.attempt-resource-claim-snapshot.v2",
+      })),
+      {
+        producer_service: "LeaseAuthority",
+        schema_version: "rickgent.attempt-ownership-lease-snapshot.v2",
+      },
+    ]);
     expect(result.references).toEqual(references);
   });
 
