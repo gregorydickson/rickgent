@@ -904,14 +904,16 @@
     {
       "id": "t22",
       "title": "Integrate the attempt ownership critical section",
-      "description": "Milestone 4 integration and production-containment cutover. Introduce one AttemptRunner that enforces the fixed order: allocate identity/owner, acquire lease/resources, enter a validated authoritative macOS/Linux containment boundary, materialize policy context, supervise phase, collect evidence/commit, cleanup, oracle eligibility, compare-and-swap promote, remove attempt resources, compare-owner release, then finalize state. On every error/timeout it supervises death and salvage before terminal failure. Replace the interim run-worktree dispatch seam; sampled process-table ancestry alone is never production release authority.",
+      "description": "Milestone 4 integration and production-containment cutover, decomposed after the pre-implementation audit found an impossible cleanup/oracle/promotion cycle and no generally available unprivileged macOS death-containment primitive. Gate A cuts lifecycle/oracle/context authority to the t18 ownership model and adds distinct never-released, oracle-eligibility, failure-cleanup, promotion-cleanup, and quarantine proofs. Gate B integrates a runtime-unforgeable containment authority before target release; sampled process ancestry remains permanently non-authoritative. Gate C composes one AttemptRunner. Gate D removes the legacy run-worktree/direct-spawn/finally-release path and activates production only after real platform containment validation.",
       "acceptance_criteria": [
-        "Production follows the documented acquisition/finalization order, with persisted receipts and no lease release before process/resource cleanup proof.",
-        "Production supervision obtains authoritative containment membership and death evidence on both supported platforms; unavailable containment is an infrastructure error before target release, and sampled ancestry cannot set all-descendant death.",
-        "A successful attempt promotes only its attributable descendant commit from the recorded delivery baseline; ref movement fails and requires a new attempt.",
-        "Timeout, spawn failure, policy denial, evidence failure, commit failure, promotion conflict, cleanup failure, and state crash each take the safe failure/cleanup path and never contaminate delivery.",
-        "Caller checkout/HEAD/index remains unchanged and the interim run-level worktree no longer serves as the production ownership model.",
-        "All former Dispatcher/build lock, timeout, Git sampling, and finally-release call sites delegate to the new services."
+        "The t18 attempt_ownership_leases and attempt_resource_claims tables are the sole lifecycle/oracle ownership inputs; the released v1 lease/resource model is not dual-written or consulted by the runner.",
+        "The success state machine has an executable order: nonterminal cleanup eligibility feeds the oracle, the exact accepted candidate is persisted and independently observed, promotion cleanup releases the exact owner/resources, and atomic promotion finalization advances durable delivery and lifecycle state. Failure cleanup remains distinct and cannot satisfy successful promotion.",
+        "A durable target-never-released receipt authorizes cleanup for containment, policy, executable, output, or spawn failure without manufacturing a process terminal receipt.",
+        "Production supervision obtains runtime-unforgeable containment membership and empty/death evidence from a validated backend before target release. Unavailable containment is an infrastructure error before release; sampled ancestry, process groups, launchd, Seatbelt, pidfd, or process-table enumeration cannot mint all-descendant truth.",
+        "The real Linux corpus uses a no-migration cgroup-v2 or PID-namespace boundary. macOS success requires a separately installed validated privileged/VM authority; otherwise macOS production fails closed before target release or the supported-platform contract is explicitly narrowed.",
+        "Attempt-owned execution context and policy materialization bind exactly to the authority-derived worktree/index/policy paths; the legacy ReadyRunWorkspace cannot satisfy them.",
+        "One AttemptRunner follows the documented acquisition/finalization order. Timeout, spawn failure, policy denial, evidence failure, commit failure, promotion conflict, cleanup failure, and state crash each retain or terminalize only through exact persisted proof.",
+        "The build cutover removes the shared run worktree, direct Dispatcher spawn/supervision, caller-checkout gates, legacy TicketLock release, and finally workspace finalization. Caller checkout/HEAD/index remains unchanged."
       ],
       "verification": [
         "cd orchestrator && pnpm exec vitest run test/reliability/attempt-critical-section.test.ts test/dispatch/dispatch.test.ts test/lifecycle/build-loop.test.ts",
@@ -922,6 +924,17 @@
       "output_artifacts": [
         "orchestrator/src/process/containment.ts",
         "orchestrator/src/lifecycle/attempt-runner.ts",
+        "orchestrator/src/lifecycle/cleanup.ts",
+        "orchestrator/src/context/execution-context.ts",
+        "orchestrator/src/policy/policy-bundle.ts",
+        "orchestrator/src/process/supervisor.ts",
+        "orchestrator/src/state/migrations.ts",
+        "orchestrator/src/state/oracle.ts",
+        "orchestrator/src/state/store.ts",
+        "orchestrator/src/state/transitions.ts",
+        "orchestrator/src/dispatch/dispatch.ts",
+        "orchestrator/src/git/run-workspace.ts",
+        "orchestrator/src/lifecycle/build.ts",
         "orchestrator/test/reliability/attempt-critical-section.test.ts"
       ],
       "priority": "P0",
