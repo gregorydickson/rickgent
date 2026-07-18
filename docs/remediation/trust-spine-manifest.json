@@ -809,30 +809,53 @@
     {
       "id": "t20",
       "title": "Implement orchestrator-owned commit attribution",
-      "description": "Milestone 4 Git authority. After a clean phase result, inspect the attempt workspace against its immutable baseline, stage only allowed normalized changes, and create the final acceptance commit from the orchestrator. Persist parent/tree/commit/contract/context/path-kind receipts and validate ancestry, exact scope, expected change kinds, cleanliness, and delivery-baseline freshness. The model receives no Git mutation primitive.",
+      "description": "Milestone 4 Git authority. After an authoritatively contained clean phase result, durably prepare one owner/context/process-bound commit intent, inspect the attempt workspace against its immutable baseline, construct only allowed normalized blobs and a tree through filter-free Git plumbing, create a deterministic one-parent acceptance commit, verify the delivery baseline and compare-and-swap the private attempt ref, then atomically finalize v2 attribution evidence plus the existing v1 summary row. Prepared, ref-advanced, and finalized response-loss states replay the same candidate without rollback or guessing. The model receives no Git mutation primitive.",
       "acceptance_criteria": [
         "The service rejects no change, dirty/untracked foreign delta, out-of-scope addition/modification/deletion/rename, unexpected mode/submodule change, symlink escape, foreign commit, non-descendant commit, multiple unowned commits, and moved delivery ref.",
         "The accepted commit descends from the exact attempt baseline and its tree equals the staged allowed delta with no foreign paths.",
-        "The receipt records attempt owner, baseline/parent/tree/commit OIDs, contract/context digests, exact canonical paths/change kinds/modes, and command output hashes.",
-        "The worker bundle/instructions no longer demand or expose commit/shell capability.",
-        "Temporary-repository cases cover binary/untracked files, renames/deletes, dirty caller tree, and an in-scope file combined with foreign delta."
+        "The receipt records the exact attempt owner/generation/resource versions, authoritative process and phase lineage, baseline/parent/tree/commit/ref OIDs, contract/context digests, exact canonical paths/change kinds/modes, deterministic commit metadata, and bounded command input/output hashes.",
+        "Migration 004 makes prepare/finalize replay explicit: a crash after tree/commit creation, owner-proof-bound attempt-ref CAS, SQLite finalize, or before return converges only on the exact sealed candidate; a third ref OID, missing/forged CAS proof, or delivery movement enters cleanup containment, while stale/changed ownership fails before attribution and retains resources for recovery.",
+        "Ticket-contract v1 mode policy is fail-closed: creates are regular 100644 files, modify and pure 100%-similarity rename preserve baseline mode, deletions may remove an existing non-gitlink entry, and executable/symlink/type/mode changes are unsupported.",
+        "The worker bundle/instructions no longer demand or expose commit capability, and attached policy grants the worker no usable shell authority.",
+        "Temporary-repository cases cover binary/untracked files, renames/deletes, a byte-for-byte unchanged pre-dirty caller tree, rejected embedded repositories/special entries, hostile Git configuration, and an in-scope file combined with foreign delta."
       ],
       "verification": [
-        "cd orchestrator && pnpm exec vitest run test/reliability/git-attribution-corpus.test.ts test/dispatch/dispatch-evidence.test.ts",
-        "cd orchestrator && pnpm typecheck",
-        "cd orchestrator && pnpm test",
+        "cd orchestrator && npx vitest run test/reliability/git-attribution-corpus.test.ts test/dispatch/dispatch-evidence.test.ts",
+        "cd orchestrator && npm run typecheck",
+        "cd orchestrator && test -n \"$OMNIGENT_ROOT\" && test -n \"$OMNIGENT_PYTHON\" && npm test",
         "! rg -n \"ensure your work is committed|git commit\" agents/rickgent/agents/worker/config.yaml"
       ],
       "output_artifacts": [
+        "orchestrator/src/build-commit.ts",
+        "orchestrator/src/git/attempt-workspace.ts",
         "orchestrator/src/git/commit-service.ts",
+        "orchestrator/scripts/validate-state-contract.mjs",
+        "orchestrator/src/state/leases.ts",
+        "orchestrator/src/state/migrations.ts",
+        "orchestrator/src/state/oracle.ts",
+        "orchestrator/src/state/schema.ts",
+        "orchestrator/src/state/store.ts",
+        "orchestrator/src/state/transitions.ts",
         "orchestrator/test/reliability/git-attribution-corpus.test.ts",
-        "orchestrator/test/fixtures/git-attribution/manifest.json"
+        "orchestrator/test/fixtures/git-attribution/manifest.json",
+        "orchestrator/test/reliability/oracle-store-integration.test.ts",
+        "orchestrator/test/reliability/state-contract.test.ts",
+        "orchestrator/test/reliability/state-crash-corpus.test.ts",
+        "orchestrator/test/reliability/state-observation.test.ts",
+        "orchestrator/test/reliability/state-store.test.ts",
+        "orchestrator/test/reliability/transition-authority.test.ts",
+        "orchestrator/test/fixtures/crash-matrix/fault-points.json",
+        "orchestrator/test/fixtures/crash-matrix/manifest.json",
+        "artifacts/reliability/state-crash-summary.json",
+        "docs/architecture/reliability/state-and-lifecycle-contract.json",
+        "docs/architecture/reliability/state-and-lifecycle-contract.md",
+        "docs/remediation/phase-4-commit-attribution-execution-report-2026-07-17.md"
       ],
       "proof_corpus": [
         "orchestrator/test/fixtures/git-attribution/manifest.json"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t19"
       ]

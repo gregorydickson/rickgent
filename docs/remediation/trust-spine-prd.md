@@ -163,7 +163,7 @@ The acquisition/finalization order is fixed:
 9. compare-and-swap fast-forward the run delivery ref from the recorded baseline to the accepted commit;
 10. delete/quarantine remaining attempt resources, verify absence, release lease, and finalize `ready_for_delivery` transactionally.
 
-The worker cannot invoke Git mutation. The commit service stages only normalized owned paths and creates the final acceptance commit. It records baseline, parent, tree, commit OID, contract/context digests, exact changed paths/kinds/modes, and attribution. It rejects dirty caller input, unexpected worktree/index dirt, foreign/out-of-scope delta, unexpected delete/rename, submodule changes, non-descendant ancestry, multiple unowned commits, or a moved delivery ref.
+The worker cannot invoke Git mutation. The commit service stages only normalized owned paths and creates the final acceptance commit. It records baseline, parent, tree, commit OID, contract/context digests, exact changed paths/kinds/modes, and attribution. Pre-existing caller dirt is permitted only through the detached attempt boundary and must remain byte-for-byte unchanged; any caller drift is rejected. The service also rejects unexpected attempt-worktree/index dirt, foreign/out-of-scope delta, unexpected delete/rename, submodule changes, non-descendant ancestry, multiple unowned commits, or a moved delivery ref.
 
 ### 5. Process supervisor and sandbox
 
@@ -492,8 +492,8 @@ The exact acceptance criteria and commands are in `refinement_manifest.json`; th
 - **Acceptance Criteria:** `AC-INV-07`
 
 ### Ticket 20: Implement orchestrator-owned commit attribution
-- **Description:** Stage exact owned paths, create/verify the final descendant commit, and reject foreign or out-of-contract delta.
-- **Declared Paths:** `orchestrator/src/git/commit-service.ts`, `orchestrator/test/reliability/git-attribution-corpus.test.ts`
+- **Description:** Durably prepare one owner/context/process-bound commit intent, construct exact in-scope blobs/tree through filter-free Git plumbing, create a deterministic single-parent orchestrator commit, CAS the private attempt ref while verifying the delivery baseline, bind the CAS reflog to the in-memory owner credential, and atomically finalize v2 evidence plus the v1 attribution summary. Prepared, ref-advanced, and finalized response-loss states replay only the same candidate. Ticket-contract v1 accepts regular 100644 creates and mode-preserving modifications/pure renames; it rejects symlink, executable, type, mode, and gitlink changes that the contract cannot express.
+- **Declared Paths:** `orchestrator/scripts/validate-state-contract.mjs`, `orchestrator/src/build-commit.ts`, `orchestrator/src/git/attempt-workspace.ts`, `orchestrator/src/git/commit-service.ts`, `orchestrator/src/state/leases.ts`, `orchestrator/src/state/migrations.ts`, `orchestrator/src/state/oracle.ts`, `orchestrator/src/state/schema.ts`, `orchestrator/src/state/store.ts`, `orchestrator/src/state/transitions.ts`, `orchestrator/test/reliability/git-attribution-corpus.test.ts`, `orchestrator/test/fixtures/git-attribution`, `orchestrator/test/reliability/oracle-store-integration.test.ts`, `orchestrator/test/reliability/state-contract.test.ts`, `orchestrator/test/reliability/state-crash-corpus.test.ts`, `orchestrator/test/reliability/state-observation.test.ts`, `orchestrator/test/reliability/state-store.test.ts`, `orchestrator/test/reliability/transition-authority.test.ts`, `orchestrator/test/fixtures/crash-matrix`, `artifacts/reliability/state-crash-summary.json`, `docs/architecture/reliability/state-and-lifecycle-contract.json`, `docs/architecture/reliability/state-and-lifecycle-contract.md`, `docs/remediation/phase-4-commit-attribution-execution-report-2026-07-17.md`
 - **Acceptance Criteria:** `AC-INV-05`
 
 ### Ticket 21: Implement salvage, quarantine, restore, and cleanup proof

@@ -54,6 +54,7 @@
     "review_record",
     "remediation_record",
     "required_gate_result",
+    "commit_attribution_prepare",
     "commit_attribution",
     "cleanup_record",
     "oracle_decision",
@@ -78,12 +79,13 @@
     "orchestrator/test/reliability/oracle-store-integration.test.ts",
     "orchestrator/test/reliability/attempt-ownership.test.ts",
     "orchestrator/test/reliability/process-supervisor-corpus.test.ts",
+    "orchestrator/test/reliability/git-attribution-corpus.test.ts",
     "orchestrator/test/reliability/legacy-state-quarantine.test.ts"
   ],
   "deferred_recovery": {
     "operational_lease_and_resource_ownership": "t18",
     "process_group_spawn_and_death": "t29",
-    "external_git_commit_recovery": "t20",
+    "external_git_commit_recovery": "t29",
     "salvage_and_cleanup_side_effects": "t21",
     "operation_specific_recovery_and_oracle_parity": "t29"
   },

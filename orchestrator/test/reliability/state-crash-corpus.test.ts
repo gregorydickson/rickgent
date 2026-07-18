@@ -180,6 +180,7 @@ const REQUIRED_POINT_IDS = [
   "review_record",
   "remediation_record",
   "required_gate_result",
+  "commit_attribution_prepare",
   "commit_attribution",
   "cleanup_record",
   "oracle_decision",
@@ -234,6 +235,7 @@ const ORACLE_SUITE = "orchestrator/test/reliability/oracle-store-integration.tes
 const LEGACY_SUITE = "orchestrator/test/reliability/legacy-state-quarantine.test.ts";
 const ATTEMPT_OWNERSHIP_SUITE = "orchestrator/test/reliability/attempt-ownership.test.ts";
 const PROCESS_SUPERVISOR_SUITE = "orchestrator/test/reliability/process-supervisor-corpus.test.ts";
+const GIT_ATTRIBUTION_SUITE = "orchestrator/test/reliability/git-attribution-corpus.test.ts";
 const STORE_OPEN_PROOF = "creates and reopens the exact released schema and canonical repository row";
 const RUN_ALLOCATION_PROOF = "allocates distinct ordinary runs for identical normalized input and persists exact contracts";
 const ATTEMPT_ALLOCATION_PROOF = "commits monotonic attempts before downstream work and preserves prior rows";
@@ -253,6 +255,8 @@ const OWNERSHIP_WORKSPACE_PROOF = "provisions a detached attempt worktree and is
 const OWNERSHIP_RECOVERY_PROOF = "allows stale cleanup ownership only after expiry and exact immutable process-death evidence";
 const PROCESS_LAUNCH_PROOF = "persists the launch before target exec, passes only explicit environment, and consumes authorization once";
 const PROCESS_TERMINAL_PROOF = "persists a nonzero terminal outcome and contains every owned resource for cleanup";
+const COMMIT_PREPARE_PROOF = "records an immutable commit intent before Git mutation and exactly replays the prepare boundary";
+const COMMIT_FINALIZE_PROOF = "finalizes exact attribution after the ref CAS and exactly replays response loss";
 
 type PointProjection = readonly [
   boundary: string,
@@ -291,7 +295,8 @@ const REQUIRED_POINT_PROJECTIONS: Readonly<Record<(typeof REQUIRED_POINT_IDS)[nu
   review_record: ["review_row", null, "persist_review_record", "semantic_suite", TRANSITION_SUITE, LIFECYCLE_RECORD_PROOF, null],
   remediation_record: ["remediation_row", null, "persist_remediation_record", "semantic_suite", TRANSITION_SUITE, LIFECYCLE_RECORD_PROOF, null],
   required_gate_result: ["ticket_contract_gate_row", null, "persist_gate_result", "semantic_suite", TRANSITION_SUITE, LIFECYCLE_RECORD_PROOF, null],
-  commit_attribution: ["commit_attribution_row", null, "persist_commit_attribution", "semantic_suite", TRANSITION_SUITE, LIFECYCLE_RECORD_PROOF, "t20"],
+  commit_attribution_prepare: ["commit_intent_row", "commit_attribution_prepare", "commit_attribution_prepare", "semantic_suite", GIT_ATTRIBUTION_SUITE, COMMIT_PREPARE_PROOF, null],
+  commit_attribution: ["commit_attribution_row", "commit_attribution_finalize", "commit_attribution_finalize", "semantic_suite", GIT_ATTRIBUTION_SUITE, COMMIT_FINALIZE_PROOF, null],
   cleanup_record: ["cleanup_row", null, "persist_cleanup_record", "semantic_suite", TRANSITION_SUITE, LIFECYCLE_RECORD_PROOF, "t21"],
   oracle_decision: ["oracle_rows", "persist_oracle_decision", "persist_oracle_decision", "semantic_suite", ORACLE_SUITE, ORACLE_REFERENCE_PROOF, null],
   promotion_intent: ["promotion_rows", "create_promotion_intent", "create_promotion_intent", "semantic_suite", TRANSITION_SUITE, PROMOTION_PROOF, null],
@@ -813,7 +818,7 @@ describe("bounded state crash and retry proof", () => {
     expect(manifest.deferred_recovery).toEqual({
       operational_lease_and_resource_ownership: "t18",
       process_group_spawn_and_death: "t29",
-      external_git_commit_recovery: "t20",
+      external_git_commit_recovery: "t29",
       salvage_and_cleanup_side_effects: "t21",
       operation_specific_recovery_and_oracle_parity: "t29",
     });

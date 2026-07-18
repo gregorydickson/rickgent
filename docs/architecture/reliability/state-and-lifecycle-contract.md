@@ -1,13 +1,14 @@
 # State and lifecycle contract
 
 Status: frozen v1 contract with additive migrations implemented through
-`003_durable_process_supervision` (`rickgent-state-and-lifecycle-v1`, schema
+`004_durable_commit_attribution` (`rickgent-state-and-lifecycle-v1`, schema
 `1.0.0`). The normative, closed machine contract is
 [`state-and-lifecycle-contract.json`](./state-and-lifecycle-contract.json).
-The Phase 18 attempt-ownership and Phase 19 process-supervision primitives are
-implemented internally but are not a production dispatch capability: Phase 22
-owns caller cutover and Phase 21 owns physical cleanup/release proof. Resume, retry, automatic
-reconciliation, and delivery remain unavailable.
+The Phase 18 attempt-ownership, Phase 19 process-supervision, and Phase 20
+commit-attribution primitives are implemented internally but are not a
+production dispatch capability: Phase 22 owns caller cutover and Phase 21 owns
+physical cleanup/release proof. Resume, retry, automatic reconciliation, and
+delivery remain unavailable.
 
 ## Repository identity and state root
 
@@ -94,12 +95,20 @@ and resulting latest `sqlite_schema` checksum
 `sha256:c208339c0350aae8bd1ee3784da4e4ffc559b41e9c6079530a89da53c08753e3`.
 It adds launch-first process identity, ordered observations, and one terminal
 seal without mutating the frozen v1 process-receipt table.
+Migration `004_durable_commit_attribution` is implemented by t20 with immutable
+SQL checksum
+`sha256:66f819b89e1781ca7fdc7311e269a4991a86706224eaa269b0198ad434ce6469`
+and resulting latest `sqlite_schema` checksum
+`sha256:af782456d3402bd47cff0ca9fd4e358c52028c14fee3470efcc295cac926542d`.
+It adds the owner/process/resource/ref-bound CommitService intent and finalization
+bridge without mutating the frozen v1 attribution table.
 `schema_migrations` records the immutable version, unique name,
 exact-definition SHA-256, and application time. Its rows and
 `PRAGMA user_version` must agree. Released migrations never change; later
-versions append `004`, `005`, and so on. This release activates only the
-internal attempt-ownership/resource and process-supervision primitives. Reserved allocation, oracle,
-promotion, production cutover, public recovery, and delivery remain inactive.
+versions append `005`, `006`, and so on. This release activates only the
+internal attempt-ownership/resource, process-supervision, and commit-attribution
+primitives. Reserved allocation, oracle, promotion, production cutover, public
+recovery, and delivery remain inactive.
 
 Creation and each migration are atomic. Before use, open checks
 `quick_check`, `foreign_key_check`, migration contiguity/checksums, and the
@@ -155,6 +164,10 @@ Migration 003 adds three append-only `STRICT` tables:
 34. `attempt_process_launches`
 35. `attempt_process_observations`
 36. `attempt_process_terminal_receipts`
+
+Migration 004 adds one CAS `STRICT` table:
+
+37. `attempt_commit_intents`
 
 These tables separate pre-materialization ownership from runnable execution
 contexts. Acquisition inserts one live ownership generation and all eleven fixed
@@ -399,8 +412,8 @@ t13 implements durable SQLite and migrations, t14 allocation, t15 oracle and
 promotion, t16 caller cutover selectors, and t17 the bounded common-transaction
 crash and retry-identity proof. Full recovery/reconciliation remains reserved
 for t29 after the operational lifecycle services exist. The t18
-attempt-resource and t19 process-supervision primitives are implemented but
-disabled for production. t19's sampled tracker is diagnostic and cleanup-safe,
+attempt-resource, t19 process-supervision, and t20 commit-attribution primitives
+are implemented but disabled for production. t19's sampled tracker is diagnostic and cleanup-safe,
 not release authority; t22 must supply authoritative macOS/Linux containment
-before cutover. t20–t23 and t29 own attribution, cleanup, integration, stress,
-and reconciliation boundaries. Automatic delivery remains reserved.
+before cutover. t21–t23 and t29 own cleanup, integration, stress, and
+reconciliation boundaries. Automatic delivery remains reserved.

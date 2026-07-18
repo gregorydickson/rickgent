@@ -201,7 +201,7 @@ function safeInteger(value: unknown): number | null {
 }
 
 const GIT_OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-const GIT_MODE = /^(?:100644|100755)$/;
+const GIT_REGULAR_MODE = /^(?:100644|100755)$/;
 const CHANGE_KIND_SET = new Set(["create", "modify", "delete", "rename"]);
 
 function compareNullableText(left: string | null, right: string | null): number {
@@ -231,7 +231,8 @@ function normalizedDeltaEntry(value: unknown): OracleNormalizedDeltaEntry | null
     (entry.after_mode !== null && afterMode === null) ||
     (fromPath !== null && (fromPath.length === 0 || fromPath !== fromPath.trim() || fromPath.startsWith("/") ||
       fromPath.includes("\\") || fromPath.split("/").some((part) => part === "" || part === "." || part === ".."))) ||
-    (beforeMode !== null && !GIT_MODE.test(beforeMode)) || (afterMode !== null && !GIT_MODE.test(afterMode)) ||
+    (beforeMode !== null && !GIT_REGULAR_MODE.test(beforeMode) && !(changeKind === "delete" && beforeMode === "120000")) ||
+    (afterMode !== null && !GIT_REGULAR_MODE.test(afterMode)) ||
     (changeKind === "create" && (fromPath !== null || beforeMode !== null || afterMode === null)) ||
     (changeKind === "modify" && (fromPath !== null || beforeMode === null || afterMode === null)) ||
     (changeKind === "delete" && (fromPath !== null || beforeMode === null || afterMode !== null)) ||

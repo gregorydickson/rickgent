@@ -30,6 +30,8 @@ import {
   LATEST_STATE_SCHEMA_OBJECTS,
   LATEST_STATE_SQLITE_SCHEMA_CHECKSUM,
   LATEST_STATE_SCHEMA_VERSION,
+  PROCESS_SUPERVISION_STATE_SQLITE_SCHEMA_CHECKSUM,
+  PROCESS_SUPERVISION_STATE_SCHEMA_OBJECTS,
   STATE_MIGRATIONS,
   assertValidMigrationCatalog,
   type StateMigration,
@@ -71,6 +73,10 @@ import {
   type AttemptWorkspacePlan,
 } from "../git/attempt-workspace.js";
 import {
+  CommitServiceCommand,
+  isAuthorizedCommitServiceCommand,
+} from "../git/commit-service.js";
+import {
   ProcessSupervisorCommand,
   isAuthorizedProcessSupervisorCommand,
 } from "../process/supervisor.js";
@@ -88,7 +94,6 @@ import {
   promotionOperationEvidencePayload,
   deliveryDecisionEvidencePayload,
   type CleanupRecordRequest,
-  type CommitAttributionRecordRequest,
   type DeliveryDecisionRequest,
   type DeliveryIntentRequest,
   type GateResultRecordRequest,
@@ -107,6 +112,19 @@ const FILE_MODE = 0o600;
 const BUSY_TIMEOUT_MS = 5_000;
 const WAL_AUTOCHECKPOINT = 1_000;
 const MAX_GIT_OUTPUT = 1024 * 1024;
+const HERMETIC_GIT_ENVIRONMENT: Readonly<NodeJS.ProcessEnv> = Object.freeze({
+  PATH: "/usr/bin:/bin",
+  HOME: "/dev/null",
+  LANG: "C",
+  LC_ALL: "C",
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_OPTIONAL_LOCKS: "0",
+  GIT_LITERAL_PATHSPECS: "1",
+  GIT_NOGLOB_PATHSPECS: "1",
+  GIT_NO_REPLACE_OBJECTS: "1",
+});
 
 type SqlValue = null | string | number | bigint | Uint8Array;
 export type StateRecord = Readonly<Record<string, SqlValue>>;
@@ -388,6 +406,52 @@ export interface PersistedExecutionContextRows {
   readonly phaseIdentityDigest: string;
   readonly context: StateRecord;
   readonly phaseExecution: StateRecord;
+}
+
+export interface ResolveCommitPreparationInput {
+  readonly attemptId: string;
+  readonly phaseExecutionId: string;
+  readonly contextId: string;
+}
+
+export interface ResolvedCommitPreparation {
+  readonly phaseCreatedAt: string;
+  readonly launchId: string;
+  readonly processReceiptId: string;
+  readonly executionContextDigest: string;
+  readonly baselineOid: string;
+  readonly contractDigest: string;
+  readonly deliveryRef: string;
+  readonly candidateTreeOid: string;
+  readonly candidateDiffDigest: string;
+  /** Final accepted review first, followed by required gates ordered by gate id. */
+  readonly verificationReceiptDigests: readonly string[];
+}
+
+export interface ResolveCommitIntentReplayInput {
+  readonly attemptId: string;
+  readonly commitIntentId: string;
+}
+
+export interface ResolvedCommitCommandReceipt {
+  readonly purpose: string;
+  readonly executable: string;
+  readonly argvDigest: string;
+  readonly inputDigest: string;
+  readonly inputBytes: number;
+  readonly stdoutDigest: string;
+  readonly stdoutBytes: number;
+  readonly stderrDigest: string;
+  readonly stderrBytes: number;
+  readonly status: number;
+}
+
+export interface ResolvedCommitIntentReplay {
+  readonly state: "intent_recorded" | "finalized";
+  readonly stateVersion: 0 | 1;
+  readonly commitOid: string | null;
+  readonly commitAttributionId: string | null;
+  readonly commandReceipts: readonly ResolvedCommitCommandReceipt[];
 }
 
 export interface EvaluateAttemptOracleRequest {
@@ -844,6 +908,8 @@ function validateReleasedSchema(db: DatabaseSync, databasePath: string, version:
     ? INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM
     : version === 2
       ? ATTEMPT_OWNERSHIP_STATE_SQLITE_SCHEMA_CHECKSUM
+    : version === 3
+      ? PROCESS_SUPERVISION_STATE_SQLITE_SCHEMA_CHECKSUM
     : version === LATEST_STATE_SCHEMA_VERSION
       ? LATEST_STATE_SQLITE_SCHEMA_CHECKSUM
       : undefined;
@@ -864,7 +930,9 @@ function validateReleasedSchema(db: DatabaseSync, databasePath: string, version:
     ? INITIAL_STATE_SCHEMA_OBJECTS
     : version === 2
       ? ATTEMPT_OWNERSHIP_STATE_SCHEMA_OBJECTS
-      : LATEST_STATE_SCHEMA_OBJECTS;
+    : version === 3
+      ? PROCESS_SUPERVISION_STATE_SCHEMA_OBJECTS
+    : LATEST_STATE_SCHEMA_OBJECTS;
   for (const table of schemaObjects.tables) {
     if (strict.get(table) !== 1) throw typedError("RICKGENT_STATE_CORRUPT", `released table is missing or not STRICT: ${table}`, databasePath);
   }
@@ -1141,6 +1209,82 @@ export interface CanonicalGitDelta {
   readonly modeSetDigest: `sha256:${string}`;
 }
 
+interface CommitResourceVersions {
+  readonly delivery_ref: number;
+  readonly attempt_ref: number;
+  readonly worktree: number;
+  readonly isolated_index: number;
+}
+
+interface CommitMetadataProjection {
+  readonly authorName: string;
+  readonly authorEmail: string;
+  readonly authorDate: string;
+  readonly committerName: string;
+  readonly committerEmail: string;
+  readonly committerDate: string;
+  readonly messageDigest: string;
+}
+
+interface CommitIntentPrepareProjection {
+  readonly commitIntentId: string;
+  readonly attemptId: string;
+  readonly ownershipId: string;
+  readonly ownerGeneration: number;
+  readonly ownershipStateVersion: number;
+  readonly ownershipContextDigest: string;
+  readonly phaseExecutionId: string;
+  readonly contextId: string;
+  readonly executionContextDigest: string;
+  readonly launchId: string;
+  readonly processReceiptId: string;
+  readonly baselineOid: string;
+  readonly contractDigest: string;
+  readonly deliveryRef: string;
+  readonly attemptRef: string;
+  readonly expectedResourceVersions: CommitResourceVersions;
+  readonly treeBeforeOid: string;
+  readonly treeAfterOid: string;
+  readonly candidateDiffDigest: string;
+  readonly pathSetDigest: string;
+  readonly changeKindSetDigest: string;
+  readonly modeSetDigest: string;
+  readonly normalizedDelta: readonly CanonicalGitDeltaEntry[];
+  readonly verificationReceiptDigests: readonly string[];
+  readonly commitMetadata: CommitMetadataProjection;
+  readonly idempotencyKey: string;
+  readonly createdAt: string;
+}
+
+interface CommitAttributionFinalizeProjection {
+  readonly commitIntentId: string;
+  readonly attemptId: string;
+  readonly ownershipId: string;
+  readonly ownerGeneration: number;
+  readonly expectedIntentVersion: number;
+  readonly commitAttributionId: string;
+  readonly attributionEvidenceId: string;
+  readonly baselineOid: string;
+  readonly parentOid: string;
+  readonly treeBeforeOid: string;
+  readonly treeAfterOid: string;
+  readonly commitOid: string;
+  readonly contractDigest: string;
+  readonly contextDigest: string;
+  readonly deliveryRef: string;
+  readonly deliveryRefObservedOid: string;
+  readonly attemptRef: string;
+  readonly attemptRefBeforeOid: string;
+  readonly attemptRefAfterOid: string;
+  readonly candidateDiffDigest: string;
+  readonly pathSetDigest: string;
+  readonly changeKindSetDigest: string;
+  readonly modeSetDigest: string;
+  readonly normalizedDelta: readonly CanonicalGitDeltaEntry[];
+  readonly commandReceipts: readonly ResolvedCommitCommandReceipt[];
+  readonly createdAt: string;
+}
+
 /** Pure parser/digester for `git diff --raw -z --no-abbrev -M`; shared by production and conformance tests. */
 export function canonicalGitDeltaFromRaw(raw: string): CanonicalGitDelta {
   const tokens = raw.split("\0");
@@ -1148,13 +1292,14 @@ export function canonicalGitDeltaFromRaw(raw: string): CanonicalGitDelta {
   const entries: CanonicalGitDeltaEntry[] = [];
   for (let index = 0; index < tokens.length;) {
     const header = tokens[index++];
-    const match = /^:([0-7]{6}) ([0-7]{6}) ([0-9a-f]+) ([0-9a-f]+) ([A-Z])\d*$/.exec(header ?? "");
+    const match = /^:([0-7]{6}) ([0-7]{6}) ([0-9a-f]+) ([0-9a-f]+) ([A-Z])(\d*)$/.exec(header ?? "");
     if (match === null) throw new TypeError("malformed raw Git delta");
-    const [, oldMode, newMode, , , status] = match;
+    const [, oldMode, newMode, beforeOid, afterOid, status, similarity] = match;
     const firstPath = tokens[index++];
     if (firstPath === undefined || firstPath.length === 0) throw new TypeError("raw Git delta contains an empty path");
     if (oldMode === "160000" || newMode === "160000") throw new TypeError("raw Git delta contains an unsupported submodule");
     if (status === "R") {
+      if (similarity !== "100" || beforeOid !== afterOid) throw new TypeError("raw Git delta contains an impure rename");
       const destination = tokens[index++];
       if (destination === undefined || destination.length === 0) throw new TypeError("raw Git delta contains a malformed rename");
       entries.push({
@@ -1192,6 +1337,23 @@ export function canonicalGitDeltaFromRaw(raw: string): CanonicalGitDelta {
     changeKindSetDigest: derived.changeKindSetDigest as `sha256:${string}`,
     modeSetDigest: derived.modeSetDigest as `sha256:${string}`,
   });
+}
+
+/** Rejects executable/symlink ambiguity while preserving safe deletion of any non-gitlink baseline entry. */
+export function validateCommitDeltaModes(delta: CanonicalGitDelta): void {
+  const regularModes = new Set(["100644", "100755"]);
+  for (const entry of delta.entries) {
+    if (entry.change_kind !== "delete" && entry.before_mode !== null && !regularModes.has(entry.before_mode)) {
+      throw new TypeError(`commit delta has an unsupported before mode: ${entry.path}`);
+    }
+    if (entry.after_mode !== null && !regularModes.has(entry.after_mode)) {
+      throw new TypeError(`commit delta has an unsupported after mode: ${entry.path}`);
+    }
+    if (
+      (entry.change_kind === "modify" || entry.change_kind === "rename") &&
+      entry.before_mode !== entry.after_mode
+    ) throw new TypeError(`commit delta has an undeclared mode change: ${entry.path}`);
+  }
 }
 
 export class StateStore {
@@ -1549,8 +1711,8 @@ export class StateStore {
   }
 
   appendEvidence(input: StateRowInput): StateRecord {
-    if (input.producer_service === "ProcessSupervisor") {
-      throw new TypeError("ProcessSupervisor evidence requires the t19 runtime-authorized producer path");
+    if (input.producer_service === "ProcessSupervisor" || input.producer_service === "CommitService") {
+      throw new TypeError(`${String(input.producer_service)} evidence requires its runtime-authorized producer path`);
     }
     return this.#appendIdempotent(
       "evidence",
@@ -1561,6 +1723,184 @@ export class StateStore {
         "inline_payload_json", "external_path", "external_digest", "external_size",
       ],
     );
+  }
+
+  /** Read-only convenience projection. Prepare revalidates every returned fact transactionally. */
+  resolveCommitPreparation(input: ResolveCommitPreparationInput): ResolvedCommitPreparation {
+    const lineage = this.#requireTransitionGuard(`
+      SELECT x.created_at AS phase_created_at, c.context_digest,
+             l.launch_id, l.process_receipt_id,
+             a.delivery_baseline_oid, a.contract_digest, r.delivery_ref,
+             tc.canonical_contract_json
+      FROM attempts a
+      JOIN runs r ON r.run_id = a.run_id AND r.repository_id = ?
+      JOIN ticket_contracts tc ON tc.contract_digest = a.contract_digest
+      JOIN phase_executions x ON x.phase_execution_id = ? AND x.attempt_id = a.attempt_id
+      JOIN execution_contexts c ON c.context_id = ? AND c.attempt_id = a.attempt_id
+        AND x.context_id = c.context_id
+      JOIN attempt_process_launches l ON l.phase_execution_id = x.phase_execution_id
+        AND l.context_id = c.context_id AND l.attempt_id = a.attempt_id
+      JOIN attempt_process_terminal_receipts t ON t.process_receipt_id = l.process_receipt_id
+        AND t.launch_id = l.launch_id AND t.attempt_id = a.attempt_id
+      WHERE a.attempt_id = ? AND a.state = 'converging'
+        AND x.phase = 'implement' AND x.role = 'worker'
+        AND t.outcome = 'exit_zero' AND t.exit_code = 0 AND t.timed_out = 0
+        AND t.group_dead = 1 AND t.descendants_confirmed_dead = 1
+    `, [this.location.repositoryId, input.phaseExecutionId, input.contextId, input.attemptId],
+    "commit preparation requires an authoritative successful implement-worker phase");
+    const review = this.#requireTransitionGuard(`
+      SELECT rr.input_tree_oid, rr.input_diff_digest, e.content_digest
+      FROM review_records rr
+      JOIN evidence e ON e.evidence_id = rr.verdict_evidence_id AND e.attempt_id = rr.attempt_id
+      WHERE rr.attempt_id = ? AND rr.cycle = (SELECT MAX(cycle) FROM review_records WHERE attempt_id = ?)
+        AND rr.verdict = 'accepted'
+    `, [input.attemptId, input.attemptId], "commit preparation requires a final accepted review");
+    const gateRows = this.#requireDatabase().prepare(`
+      SELECT g.gate_result_id, g.gate_id, g.evaluation_ordinal, g.status, g.required, g.result_digest,
+             e.scope AS evidence_scope, e.schema_version AS evidence_schema_version,
+             e.inline_payload_json, e.content_digest AS evidence_content_digest
+      FROM gate_results g
+      JOIN evidence e ON e.evidence_id = g.evidence_id AND e.attempt_id = g.attempt_id
+        AND e.producer_service = 'VerificationService'
+      WHERE g.attempt_id = ? AND g.required = 1
+        AND g.evaluation_ordinal = (
+          SELECT MAX(latest.evaluation_ordinal) FROM gate_results latest
+          WHERE latest.attempt_id = g.attempt_id AND latest.gate_id = g.gate_id
+        )
+      ORDER BY g.gate_id, g.evaluation_ordinal
+    `).all(input.attemptId) as MutableStateRecord[];
+    const gates = gateRows.map((gate) => {
+      const sealed = this.#parseJsonObject(String(gate.inline_payload_json), "commit preparation gate evidence");
+      const required = sealed.required === true || sealed.required === 1;
+      const canonical = canonicalJson(sealed);
+      if (
+        gate.evidence_scope !== gate.gate_result_id || gate.evidence_schema_version !== "rickgent.gate-result.v1" ||
+        gate.inline_payload_json !== canonical || gate.evidence_content_digest !== sha256Text(canonical) ||
+        gate.result_digest !== gate.evidence_content_digest || sealed.gate_id !== gate.gate_id ||
+        sealed.evaluation_ordinal !== gate.evaluation_ordinal || !required || gate.required !== 1 ||
+        sealed.status !== gate.status || typeof sealed.candidate_tree_oid !== "string" ||
+        typeof sealed.candidate_diff_digest !== "string"
+      ) throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "required gate evidence is not an exact immutable candidate receipt", this.location.databasePath);
+      return Object.freeze({
+        ...gate,
+        candidate_tree_oid: sealed.candidate_tree_oid,
+        candidate_diff_digest: sealed.candidate_diff_digest,
+      } as MutableStateRecord);
+    });
+    const contract = this.#parseJsonObject(String(lineage.canonical_contract_json), "commit preparation contract");
+    const requiredGateIds = (Array.isArray(contract.verifications) ? contract.verifications : [])
+      .filter((verification) => verification !== null && typeof verification === "object" && !Array.isArray(verification))
+      .map((verification) => String((verification as Record<string, unknown>).id))
+      .sort();
+    if (
+      requiredGateIds.length === 0 || gates.map((gate) => String(gate.gate_id)).join("\0") !== requiredGateIds.join("\0") ||
+      gates.some((gate) =>
+        gate.status !== "passed" || gate.candidate_tree_oid !== review.input_tree_oid || gate.candidate_diff_digest !== review.input_diff_digest)
+    ) throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "required gates do not converge on the final accepted review candidate", this.location.databasePath);
+    return freezeValue({
+      phaseCreatedAt: String(lineage.phase_created_at),
+      launchId: String(lineage.launch_id),
+      processReceiptId: String(lineage.process_receipt_id),
+      executionContextDigest: String(lineage.context_digest),
+      baselineOid: String(lineage.delivery_baseline_oid),
+      contractDigest: String(lineage.contract_digest),
+      deliveryRef: String(lineage.delivery_ref),
+      candidateTreeOid: String(review.input_tree_oid),
+      candidateDiffDigest: String(review.input_diff_digest),
+      verificationReceiptDigests: Object.freeze([
+        String(review.content_digest),
+        ...gates.map((gate) => String(gate.result_digest)),
+      ]),
+    });
+  }
+
+  /** Read-only recovery projection over the sealed CommitService intent/result boundary. */
+  resolveCommitIntentReplay(input: ResolveCommitIntentReplayInput): ResolvedCommitIntentReplay | null {
+    if (input.attemptId === "" || input.commitIntentId === "") throw new TypeError("commit replay identity is required");
+    const row = this.#requireDatabase().prepare(`
+      SELECT state, state_version, commit_oid, commit_attribution_id, command_receipts_json
+      FROM attempt_commit_intents WHERE attempt_id = ? AND commit_intent_id = ?
+    `).get(input.attemptId, input.commitIntentId) as MutableStateRecord | undefined;
+    if (row === undefined) return null;
+    if (row.state === "intent_recorded" && row.state_version === 0) {
+      if (row.commit_oid !== null || row.commit_attribution_id !== null || row.command_receipts_json !== null) {
+        throw typedError("RICKGENT_STATE_CORRUPT", "prepared commit intent has terminal replay fields", this.location.databasePath);
+      }
+      return freezeValue({
+        state: "intent_recorded" as const,
+        stateVersion: 0 as const,
+        commitOid: null,
+        commitAttributionId: null,
+        commandReceipts: Object.freeze([]),
+      });
+    }
+    if (
+      row.state !== "finalized" || row.state_version !== 1 || typeof row.commit_oid !== "string" ||
+      typeof row.commit_attribution_id !== "string" || typeof row.command_receipts_json !== "string"
+    ) throw typedError("RICKGENT_STATE_CORRUPT", "commit intent replay state/version shape is invalid", this.location.databasePath);
+    try {
+      const text = assertCanonicalJsonText(row.command_receipts_json, "commit replay command receipts");
+      const parsed = JSON.parse(text) as unknown;
+      if (!Array.isArray(parsed) || parsed.length === 0) throw new TypeError("commit replay command receipts must be nonempty");
+      const keys = [
+        "purpose", "executable", "argv_digest", "input_digest", "input_bytes",
+        "stdout_digest", "stdout_bytes", "stderr_digest", "stderr_bytes", "status",
+      ].sort();
+      const commandReceipts = parsed.map((entry) => {
+        if (entry === null || typeof entry !== "object" || Array.isArray(entry) ||
+            Object.keys(entry).sort().join("\0") !== keys.join("\0")) {
+          throw new TypeError("commit replay command receipt has an invalid field set");
+        }
+        const value = entry as Record<string, unknown>;
+        if (
+          typeof value.purpose !== "string" || typeof value.executable !== "string" ||
+          typeof value.argv_digest !== "string" || typeof value.input_digest !== "string" ||
+          typeof value.input_bytes !== "number" || typeof value.stdout_digest !== "string" ||
+          typeof value.stdout_bytes !== "number" || typeof value.stderr_digest !== "string" ||
+          typeof value.stderr_bytes !== "number" || typeof value.status !== "number"
+        ) throw new TypeError("commit replay command receipt has an invalid value type");
+        return Object.freeze({
+          purpose: value.purpose,
+          executable: value.executable,
+          argvDigest: value.argv_digest,
+          inputDigest: value.input_digest,
+          inputBytes: value.input_bytes,
+          stdoutDigest: value.stdout_digest,
+          stdoutBytes: value.stdout_bytes,
+          stderrDigest: value.stderr_digest,
+          stderrBytes: value.stderr_bytes,
+          status: value.status,
+        });
+      });
+      if (this.#commandReceiptsJson(commandReceipts) !== text) throw new TypeError("commit replay command receipts are not exact");
+      return freezeValue({
+        state: "finalized" as const,
+        stateVersion: 1 as const,
+        commitOid: row.commit_oid,
+        commitAttributionId: row.commit_attribution_id,
+        commandReceipts,
+      });
+    } catch (error) {
+      throw typedError("RICKGENT_STATE_CORRUPT", "commit intent replay receipts are invalid", this.location.databasePath, error);
+    }
+  }
+
+  /** @internal Accepts only runtime-unforgeable prepare commands minted by CommitService. */
+  prepareAuthorizedCommitIntent(command: CommitServiceCommand): StateRecord {
+    if (!isAuthorizedCommitServiceCommand(command) || command.command.kind !== "prepare") {
+      throw new TypeError("commit intent prepare command was not minted by CommitService");
+    }
+    const request = command.command.request;
+    return this.#immediate("commit_attribution_prepare", () => this.#prepareCommitIntent(request));
+  }
+
+  /** @internal Accepts only runtime-unforgeable finalize commands minted by CommitService. */
+  finalizeAuthorizedCommitAttribution(command: CommitServiceCommand): StateRecord {
+    if (!isAuthorizedCommitServiceCommand(command) || command.command.kind !== "finalize") {
+      throw new TypeError("commit attribution finalize command was not minted by CommitService");
+    }
+    const request = command.command.request;
+    return this.#immediate("commit_attribution_finalize", () => this.#finalizeCommitAttribution(request));
   }
 
   /** @internal Accepts only runtime-unforgeable commands minted by LeaseAuthority. */
@@ -1907,13 +2247,16 @@ export class StateStore {
     const attribution = db.prepare(`
       SELECT c.*, e.scope AS evidence_scope, e.schema_version AS evidence_schema_version,
              e.inline_payload_json, e.content_digest AS evidence_content_digest
-      FROM commit_attributions c JOIN evidence e ON e.evidence_id = c.attribution_evidence_id
+      FROM commit_attributions c
+      JOIN attempt_commit_intents i ON i.commit_attribution_id = c.commit_attribution_id
+        AND i.attempt_id = c.attempt_id AND i.state = 'finalized'
+      JOIN evidence e ON e.evidence_id = c.attribution_evidence_id
       WHERE c.attempt_id = ?
     `).get(attemptId) as MutableStateRecord | undefined;
     if (attribution !== undefined) {
       const sealed = this.#parseJsonObject(String(attribution.inline_payload_json), "oracle commit attribution evidence");
       if (
-        attribution.evidence_schema_version !== "rickgent.commit-attribution.v1" ||
+        attribution.evidence_schema_version !== "rickgent.commit-attribution.v2" ||
         attribution.evidence_content_digest !== sha256Text(canonicalJson(sealed)) ||
         sealed.contract_digest !== attribution.contract_digest || sealed.baseline_oid !== attribution.baseline_oid ||
         sealed.parent_oid !== attribution.parent_oid || sealed.tree_before_oid !== attribution.tree_before_oid ||
@@ -2082,6 +2425,8 @@ export class StateStore {
         JOIN run_tickets rt ON rt.run_id = r.run_id AND rt.ticket_instance_id = ?
         JOIN attempts a ON a.run_id = r.run_id AND a.attempt_id = ? AND a.ticket_instance_id = ?
         JOIN commit_attributions c ON c.commit_attribution_id = ? AND c.attempt_id = a.attempt_id
+        JOIN attempt_commit_intents ci ON ci.commit_attribution_id = c.commit_attribution_id
+          AND ci.attempt_id = c.attempt_id AND ci.state = 'finalized'
         JOIN oracle_decisions o ON o.oracle_decision_id = ? AND o.run_id = r.run_id
           AND o.ticket_instance_id = a.ticket_instance_id AND o.attempt_id = a.attempt_id
         JOIN execution_contexts x ON x.context_id = ? AND x.attempt_id = a.attempt_id
@@ -2580,7 +2925,6 @@ export class StateStore {
       case "review_record": return this.#recordReview(command.command.request);
       case "remediation_record": return this.#recordRemediation(command.command.request);
       case "gate_result": return this.#recordGateResult(command.command.request);
-      case "commit_attribution": return this.#recordCommitAttribution(command.command.request);
       case "cleanup_record": return this.#recordCleanup(command.command.request);
     }
   }
@@ -2816,8 +3160,494 @@ export class StateStore {
     });
   }
 
-  #recordCommitAttribution(request: CommitAttributionRecordRequest): StateRecord {
-    const row = this.#validatedColumns("commit_attributions", normalizeRow({
+  #assertCommitDeltaModes(delta: CanonicalGitDelta): void {
+    try {
+      validateCommitDeltaModes(delta);
+    } catch (error) {
+      throw typedError(
+        "RICKGENT_STATE_TRANSITION_ILLEGAL",
+        error instanceof Error ? error.message : "commit delta has an unsupported mode",
+        this.location.databasePath,
+        error,
+      );
+    }
+  }
+
+  #assertExactCommitDelta(
+    request: Pick<CommitIntentPrepareProjection, "baselineOid" | "treeAfterOid" | "candidateDiffDigest" | "pathSetDigest" | "changeKindSetDigest" | "modeSetDigest" | "normalizedDelta">,
+    label: string,
+  ): CanonicalGitDelta {
+    const delta = this.#canonicalGitDelta(request.baselineOid, request.treeAfterOid, label);
+    if (
+      delta.entries.length === 0 || request.candidateDiffDigest !== delta.candidateDiffDigest ||
+      request.pathSetDigest !== delta.pathSetDigest || request.changeKindSetDigest !== delta.changeKindSetDigest ||
+      request.modeSetDigest !== delta.modeSetDigest || canonicalJson(request.normalizedDelta) !== canonicalJson(delta.entries)
+    ) throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", `${label} differs from the independently observed canonical Git delta`, this.location.databasePath);
+    this.#assertCommitDeltaModes(delta);
+    return delta;
+  }
+
+  #commitMetadataJson(metadata: CommitMetadataProjection): string {
+    for (const [label, value] of [
+      ["author name", metadata.authorName], ["author email", metadata.authorEmail],
+      ["committer name", metadata.committerName], ["committer email", metadata.committerEmail],
+    ] as const) {
+      if (value === "" || value !== value.trim() || value.includes("\0") || value.includes("\n")) {
+        throw new TypeError(`commit metadata ${label} is invalid`);
+      }
+    }
+    this.#assertProcessTimestamp(metadata.authorDate, "commit author date");
+    this.#assertProcessTimestamp(metadata.committerDate, "commit committer date");
+    this.#assertProcessDigest(metadata.messageDigest, "commit message digest");
+    return canonicalJson({
+      author_name: metadata.authorName,
+      author_email: metadata.authorEmail,
+      author_date: metadata.authorDate,
+      committer_name: metadata.committerName,
+      committer_email: metadata.committerEmail,
+      committer_date: metadata.committerDate,
+      message_digest: metadata.messageDigest,
+    });
+  }
+
+  #observeCommitRef(ref: string, label: string): string {
+    if (ref === "" || ref.startsWith("-") || ref.includes("\0")) throw new TypeError(`${label} is invalid`);
+    try {
+      return execFileSync("git", ["rev-parse", "--verify", `${ref}^{commit}`], {
+        cwd: this.location.repoRealpath,
+        encoding: "utf8",
+        env: HERMETIC_GIT_ENVIRONMENT,
+      }).trim();
+    } catch (error) {
+      throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", `${label} cannot be independently observed`, this.location.databasePath, error);
+    }
+  }
+
+  #prepareCommitIntent(request: CommitIntentPrepareProjection): StateRecord {
+    for (const [label, value] of [
+      ["commit intent id", request.commitIntentId], ["attempt id", request.attemptId],
+      ["ownership id", request.ownershipId], ["phase execution id", request.phaseExecutionId],
+      ["context id", request.contextId], ["launch id", request.launchId],
+      ["process receipt id", request.processReceiptId], ["idempotency key", request.idempotencyKey],
+    ] as const) this.#assertProcessIdentity(value, label);
+    for (const [label, value] of [
+      ["ownership context digest", request.ownershipContextDigest],
+      ["execution context digest", request.executionContextDigest],
+      ["contract digest", request.contractDigest], ["candidate diff digest", request.candidateDiffDigest],
+      ["path set digest", request.pathSetDigest], ["change kind set digest", request.changeKindSetDigest],
+      ["mode set digest", request.modeSetDigest],
+    ] as const) this.#assertProcessDigest(value, label);
+    this.#assertProcessTimestamp(request.createdAt, "commit intent time");
+    if (!Number.isSafeInteger(request.ownerGeneration) || request.ownerGeneration < 1 ||
+        !Number.isSafeInteger(request.ownershipStateVersion) || request.ownershipStateVersion < 0) {
+      throw new TypeError("commit intent ownership version is invalid");
+    }
+    for (const oid of [request.baselineOid, request.treeBeforeOid, request.treeAfterOid]) {
+      this.#assertRepositoryOid(oid, "commit intent Git OID");
+    }
+    const resourceSlots = ["delivery_ref", "attempt_ref", "worktree", "isolated_index"] as const;
+    if (
+      request.expectedResourceVersions === null || typeof request.expectedResourceVersions !== "object" ||
+      Object.keys(request.expectedResourceVersions).sort().join("\0") !== [...resourceSlots].sort().join("\0") ||
+      resourceSlots.some((slot) => !Number.isSafeInteger(request.expectedResourceVersions[slot]) || request.expectedResourceVersions[slot] < 0)
+    ) throw new TypeError("commit resource expected versions are invalid");
+    if (!Array.isArray(request.verificationReceiptDigests) || request.verificationReceiptDigests.length === 0) {
+      throw new TypeError("commit intent requires verification receipt digests");
+    }
+    for (const value of request.verificationReceiptDigests) this.#assertProcessDigest(value, "verification receipt digest");
+    const metadataJson = this.#commitMetadataJson(request.commitMetadata);
+    const metadata = this.#parseJsonObject(metadataJson, "commit metadata");
+    const normalizedDeltaJson = canonicalJson(request.normalizedDelta);
+    const verificationJson = canonicalJson(request.verificationReceiptDigests);
+    const preimage = {
+      schema_version: "rickgent.commit-intent.v1",
+      repository_id: this.location.repositoryId,
+      attempt_id: request.attemptId,
+      ownership_id: request.ownershipId,
+      owner_generation: request.ownerGeneration,
+      ownership_state_version: request.ownershipStateVersion,
+      ownership_context_digest: request.ownershipContextDigest,
+      phase_execution_id: request.phaseExecutionId,
+      context_id: request.contextId,
+      execution_context_digest: request.executionContextDigest,
+      launch_id: request.launchId,
+      process_receipt_id: request.processReceiptId,
+      delivery_ref: request.deliveryRef,
+      attempt_ref: request.attemptRef,
+      baseline_oid: request.baselineOid,
+      contract_digest: request.contractDigest,
+      resource_versions: request.expectedResourceVersions,
+      tree_before_oid: request.treeBeforeOid,
+      tree_after_oid: request.treeAfterOid,
+      candidate_diff_digest: request.candidateDiffDigest,
+      path_set_digest: request.pathSetDigest,
+      change_kind_set_digest: request.changeKindSetDigest,
+      mode_set_digest: request.modeSetDigest,
+      normalized_delta: request.normalizedDelta,
+      verification_receipt_digests: request.verificationReceiptDigests,
+      commit_metadata: metadata,
+      idempotency_key: request.idempotencyKey,
+      created_at: request.createdAt,
+    };
+    const inputDigest = sha256Text(canonicalJson(preimage));
+    const replay = this.#requireDatabase().prepare(`
+      SELECT * FROM attempt_commit_intents
+      WHERE commit_intent_id = ? OR attempt_id = ? OR (attempt_id = ? AND idempotency_key = ?)
+      LIMIT 1
+    `).get(request.commitIntentId, request.attemptId, request.attemptId, request.idempotencyKey) as MutableStateRecord | undefined;
+    if (replay !== undefined) {
+      const exact =
+        replay.commit_intent_id === request.commitIntentId && replay.repository_id === this.location.repositoryId &&
+        replay.attempt_id === request.attemptId && replay.ownership_id === request.ownershipId &&
+        replay.owner_generation === request.ownerGeneration && replay.ownership_state_version === request.ownershipStateVersion &&
+        replay.ownership_context_digest === request.ownershipContextDigest && replay.phase_execution_id === request.phaseExecutionId &&
+        replay.context_id === request.contextId && replay.execution_context_digest === request.executionContextDigest &&
+        replay.launch_id === request.launchId && replay.process_receipt_id === request.processReceiptId &&
+        replay.delivery_ref === request.deliveryRef && replay.attempt_ref === request.attemptRef &&
+        replay.baseline_oid === request.baselineOid && replay.contract_digest === request.contractDigest &&
+        replay.delivery_ref_expected_version === request.expectedResourceVersions.delivery_ref &&
+        replay.attempt_ref_expected_version === request.expectedResourceVersions.attempt_ref &&
+        replay.worktree_expected_version === request.expectedResourceVersions.worktree &&
+        replay.isolated_index_expected_version === request.expectedResourceVersions.isolated_index &&
+        replay.tree_before_oid === request.treeBeforeOid && replay.tree_after_oid === request.treeAfterOid &&
+        replay.candidate_diff_digest === request.candidateDiffDigest && replay.path_set_digest === request.pathSetDigest &&
+        replay.change_kind_set_digest === request.changeKindSetDigest && replay.mode_set_digest === request.modeSetDigest &&
+        replay.normalized_delta_json === normalizedDeltaJson && replay.verification_receipt_digests_json === verificationJson &&
+        replay.commit_metadata_json === metadataJson && replay.idempotency_key === request.idempotencyKey &&
+        replay.input_digest === inputDigest && replay.created_at === request.createdAt;
+      if (exact) return frozenRow(replay);
+      throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "commit intent identity has different immutable input", this.location.databasePath);
+    }
+
+    const preparation = this.resolveCommitPreparation({
+      attemptId: request.attemptId,
+      phaseExecutionId: request.phaseExecutionId,
+      contextId: request.contextId,
+    });
+    if (
+      preparation.launchId !== request.launchId || preparation.processReceiptId !== request.processReceiptId ||
+      preparation.executionContextDigest !== request.executionContextDigest || preparation.baselineOid !== request.baselineOid ||
+      preparation.contractDigest !== request.contractDigest || preparation.deliveryRef !== request.deliveryRef ||
+      preparation.candidateTreeOid !== request.treeAfterOid || preparation.candidateDiffDigest !== request.candidateDiffDigest ||
+      canonicalJson(preparation.verificationReceiptDigests) !== canonicalJson(request.verificationReceiptDigests)
+    ) throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "commit intent differs from the exact phase and verification projection", this.location.databasePath);
+    if (
+      preparation.phaseCreatedAt !== request.createdAt || metadata.author_date !== preparation.phaseCreatedAt ||
+      metadata.committer_date !== preparation.phaseCreatedAt
+    ) throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "commit timestamps must equal the durable phase creation time", this.location.databasePath);
+    this.#assertRepositoryTree(request.treeBeforeOid, "commit intent tree before");
+    this.#assertRepositoryTree(request.treeAfterOid, "commit intent tree after");
+    const observedBeforeTree = execFileSync("git", ["rev-parse", `${request.baselineOid}^{tree}`], {
+      cwd: this.location.repoRealpath,
+      encoding: "utf8",
+      env: HERMETIC_GIT_ENVIRONMENT,
+    }).trim();
+    if (observedBeforeTree !== request.treeBeforeOid) throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "commit intent baseline tree differs from Git", this.location.databasePath);
+    const contract = this.#requireTransitionGuard(
+      "SELECT canonical_contract_json FROM ticket_contracts WHERE contract_digest = ?",
+      [request.contractDigest],
+      "commit intent ticket contract is missing",
+    );
+    const contractJson = this.#parseJsonObject(String(contract.canonical_contract_json), "commit intent ticket contract");
+    const delta = this.#assertExactCommitDelta(request, "commit intent delta");
+    this.#assertDeltaWithinScope(delta, contractJson.scope, "commit intent delta");
+
+    const ownership = this.#requireTransitionGuard(`
+      SELECT * FROM attempt_ownership_leases
+      WHERE ownership_id = ? AND attempt_id = ? AND generation = ?
+        AND state = 'live' AND state_version = ? AND context_digest = ?
+        AND recovered_from_ownership_id IS NULL AND expires_at > ?
+    `, [request.ownershipId, request.attemptId, request.ownerGeneration, request.ownershipStateVersion,
+      request.ownershipContextDigest, new Date().toISOString()], "commit intent requires current live unexpired ownership");
+    void ownership;
+    const plan = this.#attemptOwnershipPlan(request.attemptId);
+    if (
+      request.baselineOid !== plan.lineage.deliveryBaselineOid || request.contractDigest !== plan.lineage.contractDigest ||
+      request.deliveryRef !== plan.lineage.deliveryRef || request.attemptRef !== plan.attemptRef
+    ) throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "commit intent refs or immutable attempt lineage differ from the ownership plan", this.location.databasePath);
+    if (
+      this.#observeCommitRef(request.deliveryRef, "commit delivery ref") !== request.baselineOid ||
+      this.#observeCommitRef(request.attemptRef, "commit attempt ref") !== request.baselineOid
+    ) throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "commit intent baseline refs moved before prepare", this.location.databasePath);
+
+    const resources = new Map<string, MutableStateRecord>();
+    for (const slot of resourceSlots) {
+      const resource = this.#requireTransitionGuard(`
+        SELECT * FROM attempt_resource_claims WHERE attempt_id = ? AND slot = ?
+          AND current_ownership_id = ? AND owner_generation = ? AND state = 'active' AND state_version = ?
+      `, [request.attemptId, slot, request.ownershipId, request.ownerGeneration, request.expectedResourceVersions[slot]],
+      `commit ${slot} resource does not match its exact active owner/version`);
+      const planned = plan.resources.find((candidate) => candidate.slot === slot);
+      if (
+        planned === undefined || resource.resource_claim_id !== planned.resourceClaimId || resource.kind !== slot ||
+        resource.canonical_identity !== planned.canonicalIdentity || resource.identity_digest !== planned.identityDigest
+      ) throw typedError("RICKGENT_STATE_OWNER_MISMATCH", `commit ${slot} resource identity differs from the ownership plan`, this.location.databasePath);
+      resources.set(slot, resource);
+    }
+    const row = this.#validatedColumns("attempt_commit_intents", normalizeRow({
+      commit_intent_id: request.commitIntentId,
+      repository_id: this.location.repositoryId,
+      attempt_id: request.attemptId,
+      ownership_id: request.ownershipId,
+      owner_generation: request.ownerGeneration,
+      ownership_state_version: request.ownershipStateVersion,
+      ownership_context_digest: request.ownershipContextDigest,
+      phase_execution_id: request.phaseExecutionId,
+      context_id: request.contextId,
+      execution_context_digest: request.executionContextDigest,
+      launch_id: request.launchId,
+      process_receipt_id: request.processReceiptId,
+      delivery_ref: request.deliveryRef,
+      attempt_ref: request.attemptRef,
+      baseline_oid: request.baselineOid,
+      contract_digest: request.contractDigest,
+      delivery_ref_claim_id: String(resources.get("delivery_ref")!.resource_claim_id),
+      delivery_ref_expected_version: request.expectedResourceVersions.delivery_ref,
+      attempt_ref_claim_id: String(resources.get("attempt_ref")!.resource_claim_id),
+      attempt_ref_expected_version: request.expectedResourceVersions.attempt_ref,
+      worktree_claim_id: String(resources.get("worktree")!.resource_claim_id),
+      worktree_expected_version: request.expectedResourceVersions.worktree,
+      isolated_index_claim_id: String(resources.get("isolated_index")!.resource_claim_id),
+      isolated_index_expected_version: request.expectedResourceVersions.isolated_index,
+      tree_before_oid: request.treeBeforeOid,
+      tree_after_oid: request.treeAfterOid,
+      candidate_diff_digest: request.candidateDiffDigest,
+      path_set_digest: request.pathSetDigest,
+      change_kind_set_digest: request.changeKindSetDigest,
+      mode_set_digest: request.modeSetDigest,
+      normalized_delta_json: normalizedDeltaJson,
+      verification_receipt_digests_json: verificationJson,
+      commit_metadata_json: metadataJson,
+      input_digest: inputDigest,
+      idempotency_key: request.idempotencyKey,
+      state: "intent_recorded",
+      state_version: 0,
+      commit_attribution_id: null,
+      commit_oid: null,
+      delivery_ref_observed_oid: null,
+      attempt_ref_before_oid: null,
+      attempt_ref_after_oid: null,
+      command_receipts_json: null,
+      result_digest: null,
+      created_at: request.createdAt,
+      finalized_at: null,
+    }));
+    this.#requireCompleteRow("attempt_commit_intents", row);
+    this.#insert("attempt_commit_intents", row);
+    return frozenRow(row);
+  }
+
+  #commandReceiptsJson(receipts: readonly ResolvedCommitCommandReceipt[]): string {
+    if (!Array.isArray(receipts) || receipts.length === 0) throw new TypeError("commit finalization requires command receipts");
+    const purposes = new Set<string>();
+    const normalized = receipts.map((receipt) => {
+      if (
+        receipt.purpose === "" || receipt.purpose !== receipt.purpose.trim() || purposes.has(receipt.purpose) ||
+        receipt.executable !== "/usr/bin/git"
+      ) throw new TypeError("commit command receipt identity is invalid");
+      purposes.add(receipt.purpose);
+      for (const [label, value] of [
+        ["argv", receipt.argvDigest], ["input", receipt.inputDigest], ["stdout", receipt.stdoutDigest], ["stderr", receipt.stderrDigest],
+      ] as const) this.#assertProcessDigest(value, `commit command ${label} digest`);
+      for (const value of [receipt.inputBytes, receipt.stdoutBytes, receipt.stderrBytes]) {
+        if (!Number.isSafeInteger(value) || value < 0) throw new TypeError("commit command receipt byte count is invalid");
+      }
+      if (!Number.isSafeInteger(receipt.status) || receipt.status !== 0) throw new TypeError("commit command receipt must record a successful exit status");
+      return {
+        purpose: receipt.purpose,
+        executable: receipt.executable,
+        argv_digest: receipt.argvDigest,
+        input_digest: receipt.inputDigest,
+        input_bytes: receipt.inputBytes,
+        stdout_digest: receipt.stdoutDigest,
+        stdout_bytes: receipt.stdoutBytes,
+        stderr_digest: receipt.stderrDigest,
+        stderr_bytes: receipt.stderrBytes,
+        status: receipt.status,
+      };
+    });
+    return canonicalJson(normalized);
+  }
+
+  #finalizeCommitAttribution(request: CommitAttributionFinalizeProjection): StateRecord {
+    for (const [label, value] of [
+      ["commit intent id", request.commitIntentId], ["attempt id", request.attemptId],
+      ["ownership id", request.ownershipId], ["commit attribution id", request.commitAttributionId],
+      ["commit attribution evidence id", request.attributionEvidenceId],
+    ] as const) this.#assertProcessIdentity(value, label);
+    for (const [label, value] of [
+      ["contract digest", request.contractDigest], ["execution context digest", request.contextDigest],
+      ["candidate diff digest", request.candidateDiffDigest], ["path set digest", request.pathSetDigest],
+      ["change kind set digest", request.changeKindSetDigest], ["mode set digest", request.modeSetDigest],
+    ] as const) this.#assertProcessDigest(value, label);
+    this.#assertProcessTimestamp(request.createdAt, "commit finalization time");
+    if (!Number.isSafeInteger(request.ownerGeneration) || request.ownerGeneration < 1 ||
+        !Number.isSafeInteger(request.expectedIntentVersion) || request.expectedIntentVersion < 0) {
+      throw new TypeError("commit finalization version is invalid");
+    }
+    for (const oid of [
+      request.baselineOid, request.parentOid, request.treeBeforeOid, request.treeAfterOid, request.commitOid,
+      request.deliveryRefObservedOid, request.attemptRefBeforeOid, request.attemptRefAfterOid,
+    ]) this.#assertRepositoryOid(oid, "commit finalization Git OID");
+    const commandReceiptsJson = this.#commandReceiptsJson(request.commandReceipts);
+    const normalizedDeltaJson = canonicalJson(request.normalizedDelta);
+    const intent = this.#requireTransitionGuard(
+      "SELECT * FROM attempt_commit_intents WHERE commit_intent_id = ? AND attempt_id = ?",
+      [request.commitIntentId, request.attemptId],
+      "commit finalization does not resolve to its durable intent",
+    );
+    const exactPreimage =
+      intent.ownership_id === request.ownershipId && intent.owner_generation === request.ownerGeneration &&
+      intent.baseline_oid === request.baselineOid && request.parentOid === request.baselineOid &&
+      intent.tree_before_oid === request.treeBeforeOid && intent.tree_after_oid === request.treeAfterOid &&
+      intent.contract_digest === request.contractDigest && intent.execution_context_digest === request.contextDigest &&
+      intent.delivery_ref === request.deliveryRef && intent.attempt_ref === request.attemptRef &&
+      intent.candidate_diff_digest === request.candidateDiffDigest && intent.path_set_digest === request.pathSetDigest &&
+      intent.change_kind_set_digest === request.changeKindSetDigest && intent.mode_set_digest === request.modeSetDigest &&
+      intent.normalized_delta_json === normalizedDeltaJson && intent.created_at === request.createdAt;
+    if (!exactPreimage) throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "commit finalization differs from its immutable intent", this.location.databasePath);
+
+    if (intent.state === "finalized") {
+      if (
+        intent.state_version !== request.expectedIntentVersion + 1 || intent.commit_attribution_id !== request.commitAttributionId ||
+        intent.commit_oid !== request.commitOid || intent.delivery_ref_observed_oid !== request.deliveryRefObservedOid ||
+        intent.attempt_ref_before_oid !== request.attemptRefBeforeOid || intent.attempt_ref_after_oid !== request.attemptRefAfterOid ||
+        intent.command_receipts_json !== commandReceiptsJson || intent.finalized_at !== request.createdAt
+      ) throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "finalized commit intent was replayed with different terminal input", this.location.databasePath);
+      const attribution = this.#requireTransitionGuard(
+        "SELECT * FROM commit_attributions WHERE commit_attribution_id = ? AND attempt_id = ? AND commit_oid = ? AND attribution_evidence_id = ?",
+        [request.commitAttributionId, request.attemptId, request.commitOid, request.attributionEvidenceId],
+        "finalized commit intent is missing its exact attribution summary",
+      );
+      return frozenRow(attribution);
+    }
+    if (intent.state !== "intent_recorded" || intent.state_version !== request.expectedIntentVersion || request.expectedIntentVersion !== 0) {
+      throw typedError("RICKGENT_STATE_CONFLICT", "commit intent is not at its exact prepare version", this.location.databasePath);
+    }
+    if (
+      request.deliveryRefObservedOid !== request.baselineOid || request.attemptRefBeforeOid !== request.baselineOid ||
+      request.attemptRefAfterOid !== request.commitOid
+    ) throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "commit ref observations do not prove the exact baseline-to-candidate CAS", this.location.databasePath);
+
+    this.#requireTransitionGuard(`
+      SELECT 1 FROM attempts a JOIN runs r ON r.run_id = a.run_id
+      JOIN run_tickets rt ON rt.ticket_instance_id = a.ticket_instance_id
+      WHERE a.attempt_id = ? AND a.state = 'converging' AND r.state = 'active' AND rt.state = 'active'
+        AND r.repository_id = ? AND a.delivery_baseline_oid = ? AND a.contract_digest = ?
+    `, [request.attemptId, this.location.repositoryId, request.baselineOid, request.contractDigest],
+    "commit finalization requires the exact active converging attempt");
+    this.#requireTransitionGuard(`
+      SELECT 1 FROM attempt_ownership_leases
+      WHERE ownership_id = ? AND attempt_id = ? AND generation = ? AND state = 'live'
+        AND state_version = ? AND context_digest = ? AND recovered_from_ownership_id IS NULL AND expires_at > ?
+    `, [request.ownershipId, request.attemptId, request.ownerGeneration, Number(intent.ownership_state_version),
+      String(intent.ownership_context_digest), new Date().toISOString()],
+    "commit finalization requires current live unexpired ownership");
+    for (const [slot, claimColumn, versionColumn] of [
+      ["delivery_ref", "delivery_ref_claim_id", "delivery_ref_expected_version"],
+      ["attempt_ref", "attempt_ref_claim_id", "attempt_ref_expected_version"],
+      ["worktree", "worktree_claim_id", "worktree_expected_version"],
+      ["isolated_index", "isolated_index_claim_id", "isolated_index_expected_version"],
+    ] as const) {
+      this.#requireTransitionGuard(`
+        SELECT 1 FROM attempt_resource_claims
+        WHERE resource_claim_id = ? AND attempt_id = ? AND slot = ? AND kind = ?
+          AND current_ownership_id = ? AND owner_generation = ? AND state = 'active' AND state_version = ?
+      `, [String(intent[claimColumn]), request.attemptId, slot, slot, request.ownershipId, request.ownerGeneration, Number(intent[versionColumn])],
+      `commit finalization ${slot} resource owner/version drifted`);
+    }
+    if (
+      this.#observeCommitRef(request.deliveryRef, "commit final delivery ref") !== request.deliveryRefObservedOid ||
+      this.#observeCommitRef(request.attemptRef, "commit final attempt ref") !== request.attemptRefAfterOid
+    ) throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "commit refs differ from the final observations", this.location.databasePath);
+    this.#assertRepositoryCommit(request.commitOid, "attributed commit oid");
+    const ancestry = execFileSync("git", ["rev-list", "--parents", "-n", "1", request.commitOid], {
+      cwd: this.location.repoRealpath,
+      encoding: "utf8",
+      env: HERMETIC_GIT_ENVIRONMENT,
+    }).trim().split(/\s+/);
+    const beforeTree = execFileSync("git", ["rev-parse", `${request.baselineOid}^{tree}`], {
+      cwd: this.location.repoRealpath, encoding: "utf8", env: HERMETIC_GIT_ENVIRONMENT,
+    }).trim();
+    const afterTree = execFileSync("git", ["rev-parse", `${request.commitOid}^{tree}`], {
+      cwd: this.location.repoRealpath, encoding: "utf8", env: HERMETIC_GIT_ENVIRONMENT,
+    }).trim();
+    if (
+      ancestry.length !== 2 || ancestry[1] !== request.parentOid || beforeTree !== request.treeBeforeOid ||
+      afterTree !== request.treeAfterOid
+    ) throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "attributed commit does not have the exact prepared parent and trees", this.location.databasePath);
+    const delta = this.#assertExactCommitDelta(request, "commit attribution final delta");
+    const contract = this.#requireTransitionGuard(
+      "SELECT canonical_contract_json FROM ticket_contracts WHERE contract_digest = ?",
+      [request.contractDigest],
+      "commit attribution contract is missing",
+    );
+    this.#assertDeltaWithinScope(delta, this.#parseJsonObject(String(contract.canonical_contract_json), "commit attribution contract").scope, "commit attribution final delta");
+
+    const metadata = this.#parseJsonObject(String(intent.commit_metadata_json), "prepared commit metadata");
+    const verificationReceiptDigests = JSON.parse(String(intent.verification_receipt_digests_json)) as unknown;
+    const commandReceipts = JSON.parse(commandReceiptsJson) as unknown;
+    const evidencePayload = {
+      schema_version: "rickgent.commit-attribution.v2",
+      commit_intent_id: request.commitIntentId,
+      commit_attribution_id: request.commitAttributionId,
+      attempt_id: request.attemptId,
+      ownership_id: request.ownershipId,
+      owner_generation: request.ownerGeneration,
+      ownership_context_digest: intent.ownership_context_digest,
+      phase_execution_id: String(intent.phase_execution_id),
+      context_id: String(intent.context_id),
+      execution_context_digest: request.contextDigest,
+      launch_id: intent.launch_id,
+      process_receipt_id: intent.process_receipt_id,
+      contract_digest: request.contractDigest,
+      baseline_oid: request.baselineOid,
+      parent_oid: request.parentOid,
+      tree_before_oid: request.treeBeforeOid,
+      tree_after_oid: request.treeAfterOid,
+      commit_oid: request.commitOid,
+      candidate_diff_digest: request.candidateDiffDigest,
+      path_set_digest: request.pathSetDigest,
+      change_kind_set_digest: request.changeKindSetDigest,
+      mode_set_digest: request.modeSetDigest,
+      normalized_delta: delta.entries,
+      verification_receipt_digests: verificationReceiptDigests,
+      resource_receipts: {
+        delivery_ref: { claim_id: intent.delivery_ref_claim_id, expected_version: intent.delivery_ref_expected_version },
+        attempt_ref: { claim_id: intent.attempt_ref_claim_id, expected_version: intent.attempt_ref_expected_version },
+        worktree: { claim_id: intent.worktree_claim_id, expected_version: intent.worktree_expected_version },
+        isolated_index: { claim_id: intent.isolated_index_claim_id, expected_version: intent.isolated_index_expected_version },
+      },
+      refs: {
+        delivery_ref: request.deliveryRef,
+        delivery_ref_observed_oid: request.deliveryRefObservedOid,
+        attempt_ref: request.attemptRef,
+        attempt_ref_before_oid: request.attemptRefBeforeOid,
+        attempt_ref_after_oid: request.attemptRefAfterOid,
+      },
+      commit_metadata: metadata,
+      command_receipts: commandReceipts,
+    };
+    const evidenceJson = canonicalJson(evidencePayload);
+    const evidenceRow = this.#validatedColumns("evidence", normalizeRow({
+      evidence_id: request.attributionEvidenceId,
+      attempt_id: request.attemptId,
+      phase_execution_id: String(intent.phase_execution_id),
+      context_id: String(intent.context_id),
+      producer_service: "CommitService",
+      scope: request.commitAttributionId,
+      schema_version: "rickgent.commit-attribution.v2",
+      content_digest: sha256Text(evidenceJson),
+      inline_payload_json: evidenceJson,
+      external_path: null,
+      external_digest: null,
+      external_size: null,
+      idempotency_key: request.commitIntentId,
+      created_at: request.createdAt,
+    }));
+    this.#requireCompleteRow("evidence", evidenceRow);
+    this.#validateRecordSemantics("evidence", evidenceRow);
+    const attributionRow = this.#validatedColumns("commit_attributions", normalizeRow({
       commit_attribution_id: request.commitAttributionId,
       attempt_id: request.attemptId,
       baseline_oid: request.baselineOid,
@@ -2833,57 +3663,33 @@ export class StateStore {
       attribution_evidence_id: request.attributionEvidenceId,
       created_at: request.createdAt,
     }));
-    this.#requireCompleteRow("commit_attributions", row);
-    return this.#immediate("persist_commit_attribution", () => {
-      const existing = this.#selectBy("commit_attributions", row, ["attempt_id"]);
-      if (existing !== undefined) {
-        if (this.#sameRecord(existing, row)) return frozenRow(existing);
-        throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "commit attribution attempt has different immutable input", this.location.databasePath);
-      }
-      const lineage = this.#requireTransitionGuard(`
-        SELECT a.delivery_baseline_oid, a.contract_digest, c.scope_digest, tc.canonical_contract_json
-        FROM attempts a JOIN execution_contexts c ON c.attempt_id = a.attempt_id AND c.context_digest = ?
-        JOIN ticket_contracts tc ON tc.contract_digest = a.contract_digest
-        WHERE a.attempt_id = ?
-          AND c.phase = 'implement' AND c.role = 'worker' AND a.state = 'converging'
-      `, [request.contextDigest, request.attemptId], "commit attribution context differs from its attempt");
-      if (lineage.delivery_baseline_oid !== request.baselineOid || lineage.contract_digest !== request.contractDigest || request.parentOid !== request.baselineOid) {
-        throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "commit attribution baseline, parent, or contract differs from its attempt", this.location.databasePath);
-      }
-      this.#assertRepositoryCommit(request.commitOid, "attributed commit oid");
-      const ancestry = execFileSync("git", ["rev-list", "--parents", "-n", "1", request.commitOid], { cwd: this.location.repoRealpath, encoding: "utf8" }).trim().split(/\s+/);
-      const beforeTree = execFileSync("git", ["rev-parse", `${request.baselineOid}^{tree}`], { cwd: this.location.repoRealpath, encoding: "utf8" }).trim();
-      const afterTree = execFileSync("git", ["rev-parse", `${request.commitOid}^{tree}`], { cwd: this.location.repoRealpath, encoding: "utf8" }).trim();
-      if (ancestry.length !== 2 || ancestry[1] !== request.parentOid || beforeTree !== request.treeBeforeOid || afterTree !== request.treeAfterOid) {
-        throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "commit attribution does not match the repository parent and tree identities", this.location.databasePath);
-      }
-      const contract = this.#parseJsonObject(String(lineage.canonical_contract_json), "commit attribution ticket contract");
-      if (lineage.scope_digest !== sha256Text(canonicalJson(contract.scope))) {
-        throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "commit attribution context scope digest differs from the sealed ticket scope", this.location.databasePath);
-      }
-      const delta = this.#canonicalGitDelta(request.baselineOid, request.commitOid, "commit attribution delta");
-      if (delta.entries.length === 0) throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "commit attribution cannot authorize an empty delta", this.location.databasePath);
-      this.#assertDeltaWithinScope(delta, contract.scope, "commit attribution delta");
-      if (
-        request.pathSetDigest !== delta.pathSetDigest || request.changeKindSetDigest !== delta.changeKindSetDigest ||
-        request.modeSetDigest !== delta.modeSetDigest
-      ) throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "commit attribution digests differ from the independently observed Git delta", this.location.databasePath);
-      this.#requireOwnedEvidence(request.attributionEvidenceId, request.attemptId, "AttemptLifecycleService", "commit attribution");
-      this.#requireExactInlineEvidence(request.attributionEvidenceId, "AttemptLifecycleService", request.commitAttributionId, "rickgent.commit-attribution.v1", {
-        contract_digest: request.contractDigest,
-        baseline_oid: request.baselineOid,
-        parent_oid: request.parentOid,
-        tree_before_oid: request.treeBeforeOid,
-        tree_after_oid: request.treeAfterOid,
-        commit_oid: request.commitOid,
-        candidate_diff_digest: delta.candidateDiffDigest,
-        path_set_digest: request.pathSetDigest,
-        change_kind_set_digest: request.changeKindSetDigest,
-        mode_set_digest: request.modeSetDigest,
-        normalized_delta: delta.entries,
-      }, "commit attribution");
-      return this.#insertExactLifecycleRow("commit_attributions", row, ["attempt_id"]);
-    });
+    this.#requireCompleteRow("commit_attributions", attributionRow);
+    this.#insert("evidence", evidenceRow);
+    this.#insert("commit_attributions", attributionRow);
+    const resultDigest = sha256Text(canonicalJson({
+      schema_version: "rickgent.commit-attribution-result.v1",
+      commit_intent_id: request.commitIntentId,
+      commit_attribution_id: request.commitAttributionId,
+      evidence_digest: evidenceRow.content_digest,
+      commit_oid: request.commitOid,
+      command_receipts: commandReceipts,
+    }));
+    const updated = this.#requireDatabase().prepare(`
+      UPDATE attempt_commit_intents
+      SET state = 'finalized', state_version = state_version + 1,
+          commit_attribution_id = ?, commit_oid = ?, delivery_ref_observed_oid = ?,
+          attempt_ref_before_oid = ?, attempt_ref_after_oid = ?, command_receipts_json = ?,
+          result_digest = ?, finalized_at = ?
+      WHERE commit_intent_id = ? AND attempt_id = ? AND ownership_id = ? AND owner_generation = ?
+        AND state = 'intent_recorded' AND state_version = ?
+    `).run(
+      request.commitAttributionId, request.commitOid, request.deliveryRefObservedOid,
+      request.attemptRefBeforeOid, request.attemptRefAfterOid, commandReceiptsJson,
+      resultDigest, request.createdAt, request.commitIntentId, request.attemptId,
+      request.ownershipId, request.ownerGeneration, request.expectedIntentVersion,
+    );
+    if (updated.changes !== 1) throw typedError("RICKGENT_STATE_CONFLICT", "commit intent finalization lost its CAS race", this.location.databasePath);
+    return frozenRow(attributionRow);
   }
 
   #recordCleanup(request: CleanupRecordRequest): StateRecord {
@@ -3277,7 +4083,10 @@ export class StateStore {
       case "cleanup_pending":
         if (guard.commitAttributionId !== undefined) {
           const attribution = this.#requireTransitionGuard(
-            "SELECT attribution_evidence_id FROM commit_attributions WHERE commit_attribution_id = ? AND attempt_id = ?",
+            `SELECT c.attribution_evidence_id FROM commit_attributions c
+             JOIN attempt_commit_intents i ON i.commit_attribution_id = c.commit_attribution_id
+               AND i.attempt_id = c.attempt_id AND i.state = 'finalized'
+             WHERE c.commit_attribution_id = ? AND c.attempt_id = ?`,
             [guard.commitAttributionId, command.entityId],
             "cleanup transition commit attribution differs from the attempt",
           );
@@ -4024,6 +4833,7 @@ export class StateStore {
       execFileSync("git", ["cat-file", "-e", `${String(value)}^{commit}`], {
         cwd: this.location.repoRealpath,
         stdio: "ignore",
+        env: HERMETIC_GIT_ENVIRONMENT,
       });
     } catch (error) {
       throw typedError("RICKGENT_STATE_RESUME_INCOMPATIBLE", `${label} is not an existing commit in the selected repository`, this.location.databasePath, error);
@@ -4036,6 +4846,7 @@ export class StateStore {
       const type = execFileSync("git", ["cat-file", "-t", String(value)], {
         cwd: this.location.repoRealpath,
         encoding: "utf8",
+        env: HERMETIC_GIT_ENVIRONMENT,
       }).trim();
       if (type !== "tree") throw new Error(`observed Git object type ${type}`);
     } catch (error) {
@@ -4050,6 +4861,7 @@ export class StateStore {
         cwd: this.location.repoRealpath,
         encoding: "utf8",
         maxBuffer: MAX_GIT_OUTPUT,
+        env: HERMETIC_GIT_ENVIRONMENT,
       });
       return canonicalGitDeltaFromRaw(raw);
     } catch (error) {
@@ -4253,6 +5065,8 @@ export class StateStore {
         target = db.prepare(`
           SELECT c.*, a.run_id, a.ticket_instance_id, e.content_digest AS oracle_content_digest
           FROM commit_attributions c JOIN attempts a ON a.attempt_id = c.attempt_id
+          JOIN attempt_commit_intents i ON i.commit_attribution_id = c.commit_attribution_id
+            AND i.attempt_id = c.attempt_id AND i.state = 'finalized'
           JOIN evidence e ON e.evidence_id = c.attribution_evidence_id
           WHERE c.commit_attribution_id = ?
         `).get(reference.commit_attribution_id ?? null) as MutableStateRecord | undefined;
@@ -4822,6 +5636,40 @@ export class StateStore {
     return this.#attemptOwnershipPlan(attemptId);
   }
 
+  /** Current-owner checks continue across the nonterminal attempt critical section; acquisition remains planned-only. */
+  #attemptOwnershipContinuation(attemptId: string): AttemptWorkspacePlan {
+    const states = this.#requireDatabase().prepare(`
+      SELECT a.state AS attempt_state, a.delivery_baseline_oid,
+             rt.state AS ticket_state, r.state AS run_state, r.current_delivery_oid
+      FROM attempts a
+      JOIN run_tickets rt ON rt.ticket_instance_id = a.ticket_instance_id
+      JOIN runs r ON r.run_id = a.run_id
+      WHERE a.attempt_id = ? AND r.repository_id = ?
+    `).get(attemptId, this.location.repositoryId) as MutableStateRecord | undefined;
+    const eligible = new Set([
+      "planned", "implementing", "implementation_captured", "reviewing", "remediating",
+      "remediation_captured", "verification_queued", "verifying", "converging",
+    ]);
+    if (
+      states === undefined || states.run_state !== "active" || states.ticket_state !== "active" ||
+      !eligible.has(String(states.attempt_state))
+    ) {
+      throw typedError(
+        "RICKGENT_STATE_TRANSITION_ILLEGAL",
+        "current attempt ownership requires an active run, active ticket, and nonterminal pre-cleanup attempt",
+        this.location.databasePath,
+      );
+    }
+    if (states.current_delivery_oid !== states.delivery_baseline_oid) {
+      throw typedError(
+        "RICKGENT_STATE_TRANSITION_ILLEGAL",
+        "current attempt ownership baseline is stale relative to the authoritative run delivery chain",
+        this.location.databasePath,
+      );
+    }
+    return this.#attemptOwnershipPlan(attemptId);
+  }
+
   #ownershipContext(
     plan: AttemptWorkspacePlan,
     generation: number,
@@ -4944,7 +5792,7 @@ export class StateStore {
     ) {
       throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "attempt execution ownership is not current and unexpired", this.location.databasePath);
     }
-    const plan = this.#attemptOwnershipAdmission(command.payload.attemptId);
+    const plan = this.#attemptOwnershipContinuation(command.payload.attemptId);
     const resources = this.#requireDatabase().prepare(`
       SELECT * FROM attempt_resource_claims
       WHERE attempt_id = ? ORDER BY slot
@@ -5590,6 +6438,8 @@ export function observeState(repoPath: string): StateObservation {
             a.state,
             a.state_version,
             (SELECT c.commit_oid FROM commit_attributions c
+              JOIN attempt_commit_intents i ON i.commit_attribution_id = c.commit_attribution_id
+                AND i.attempt_id = c.attempt_id AND i.state = 'finalized'
               WHERE c.attempt_id = a.attempt_id
               ORDER BY c.created_at DESC, c.commit_attribution_id DESC LIMIT 1) AS commit_oid,
             (SELECT o.result FROM oracle_decisions o

@@ -26,9 +26,12 @@ import {
 } from "../../src/state/migrations.js";
 import { ALL_STATE_TABLES } from "../../src/state/schema.js";
 import {
+  canonicalGitDeltaFromRaw,
   StateStoreError,
   openStateStore,
   resolveStateLocation,
+  validateCommitDeltaModes,
+  type CanonicalGitDelta,
   type StateStore,
 } from "../../src/state/store.js";
 import { TransitionAuthority } from "../../src/state/transitions.js";
@@ -369,6 +372,45 @@ async function openInChild(repoPath: string): Promise<Record<string, unknown>> {
   return opened;
 }
 
+describe("commit delta canonicalization", () => {
+  const before = "a".repeat(40);
+  const after = "b".repeat(40);
+
+  it("requires R100 and rejects content-changing rename classification", () => {
+    expect(() => canonicalGitDeltaFromRaw(
+      `:100644 100644 ${before} ${after} R90\0src/old.ts\0src/new.ts\0`,
+    )).toThrow(/impure rename/);
+    expect(canonicalGitDeltaFromRaw(
+      `:100644 100644 ${before} ${before} R100\0src/old.ts\0src/new.ts\0`,
+    ).entries).toEqual([{
+      path: "src/new.ts",
+      from_path: "src/old.ts",
+      change_kind: "rename",
+      before_mode: "100644",
+      after_mode: "100644",
+    }]);
+  });
+
+  it("allows symlink deletion but rejects symlink creation, modification, and rename", () => {
+    const deletion = canonicalGitDeltaFromRaw(
+      `:120000 000000 ${before} ${"0".repeat(40)} D\0src/link\0`,
+    );
+    expect(() => validateCommitDeltaModes(deletion)).not.toThrow();
+
+    const rejectedEntries = [{
+      path: "src/link", from_path: null, change_kind: "create", before_mode: null, after_mode: "120000",
+    }, {
+      path: "src/link", from_path: null, change_kind: "modify", before_mode: "120000", after_mode: "120000",
+    }, {
+      path: "src/new-link", from_path: "src/old-link", change_kind: "rename", before_mode: "120000", after_mode: "120000",
+    }] as const;
+    for (const entry of rejectedEntries) {
+      const delta = { ...deletion, entries: [entry] } as CanonicalGitDelta;
+      expect(() => validateCommitDeltaModes(delta)).toThrow(/unsupported/);
+    }
+  });
+});
+
 describe("durable state-store bootstrap and preservation", () => {
   it("creates and reopens the exact released schema and canonical repository row", () => {
     const repo = makeRepo();
@@ -485,7 +527,7 @@ describe("durable state-store bootstrap and preservation", () => {
     }
   });
 
-  it("upgrades the released v2 ownership schema through additive migration 003 and preserves v2 rows", () => {
+  it("upgrades the released v2 ownership schema through additive migrations 003/004 and preserves v2 rows", () => {
     const repo = makeRepo("v2-upgrade");
     const location = resolveStateLocation(repo);
     const preservedManifestJson = JSON.stringify({ schema_version: "rickgent.v2-preserved/v1" });
@@ -520,7 +562,7 @@ describe("durable state-store bootstrap and preservation", () => {
 
     const store = openStateStore({ repoPath: repo });
     try {
-      expect(store.schemaVersion).toBe(3);
+      expect(store.schemaVersion).toBe(LATEST_STATE_SCHEMA_VERSION);
       expect(queryOne(location.databasePath, "SELECT canonical_manifest_json FROM run_manifests WHERE manifest_digest = ?", preservedManifestDigest))
         .toEqual({ canonical_manifest_json: preservedManifestJson });
       const upgraded = openRaw(location.databasePath, true);
@@ -534,6 +576,8 @@ describe("durable state-store bootstrap and preservation", () => {
         const launchForeignKeys = upgraded.prepare("PRAGMA foreign_key_list(attempt_process_launches)").all() as Array<{ table: string }>;
         expect(launchForeignKeys.some((foreignKey) => foreignKey.table === "attempt_ownership_leases")).toBe(true);
         expect(launchForeignKeys.some((foreignKey) => foreignKey.table === "leases")).toBe(false);
+        expect(strict.find((entry) => entry.name === "attempt_commit_intents")?.strict).toBe(1);
+        expect(upgraded.prepare("SELECT name FROM sqlite_schema WHERE type = 'trigger' AND name = 'attempt_commit_intents_legal_finalize'").get()).toBeDefined();
         expect(upgraded.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
       } finally {
         upgraded.close();

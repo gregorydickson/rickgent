@@ -59,10 +59,22 @@ export const PROCESS_SUPERVISION_MIGRATION = deepFreeze({
   status: "implemented",
 } as const);
 
+/** Additive executable migration metadata for the sole Git commit authority. */
+export const COMMIT_ATTRIBUTION_MIGRATION = deepFreeze({
+  version: 4,
+  number: "004",
+  name: "004_durable_commit_attribution",
+  sql_owner_ticket: "t20",
+  released_checksum: "sha256:66f819b89e1781ca7fdc7311e269a4991a86706224eaa269b0198ad434ce6469",
+  sqlite_schema_checksum: "sha256:af782456d3402bd47cff0ca9fd4e358c52028c14fee3470efcc295cac926542d",
+  status: "implemented",
+} as const);
+
 export const STATE_MIGRATIONS = deepFreeze([
   INITIAL_STATE_MIGRATION,
   ATTEMPT_OWNERSHIP_MIGRATION,
   PROCESS_SUPERVISION_MIGRATION,
+  COMMIT_ATTRIBUTION_MIGRATION,
 ] as const);
 
 export const STATE_TABLES = deepFreeze([
@@ -150,10 +162,16 @@ export const PROCESS_SUPERVISION_STATE_TABLES = deepFreeze([
 
 export const PROCESS_SUPERVISION_APPEND_ONLY_STATE_TABLES = PROCESS_SUPERVISION_STATE_TABLES;
 
+/** Additive v4 CommitService authority aggregate. */
+export const COMMIT_ATTRIBUTION_STATE_TABLES = deepFreeze([
+  "attempt_commit_intents",
+] as const);
+
 export const ALL_STATE_TABLES = deepFreeze([
   ...STATE_TABLES,
   ...ATTEMPT_OWNERSHIP_STATE_TABLES,
   ...PROCESS_SUPERVISION_STATE_TABLES,
+  ...COMMIT_ATTRIBUTION_STATE_TABLES,
 ] as const);
 
 export const ALL_APPEND_ONLY_STATE_TABLES = deepFreeze([
@@ -182,6 +200,8 @@ export const STATE_TRANSACTION_NAMES = deepFreeze([
   "heartbeat_lease",
   "process_supervisor_launch",
   "process_supervisor_terminal",
+  "commit_attribution_prepare",
+  "commit_attribution_finalize",
   "begin_lease_cleanup",
   "release_lease",
   "reserve_resource",

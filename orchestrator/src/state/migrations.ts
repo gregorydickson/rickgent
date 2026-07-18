@@ -25,6 +25,8 @@ const OPTIONAL_JSON_OBJECT = (column: string): string =>
   `CHECK (${column} IS NULL OR (json_valid(${column}) AND json_type(${column}) = 'object'))`;
 const JSON_ARRAY = (column: string): string =>
   `CHECK (json_valid(${column}) AND json_type(${column}) = 'array')`;
+const OPTIONAL_JSON_ARRAY = (column: string): string =>
+  `CHECK (${column} IS NULL OR (json_valid(${column}) AND json_type(${column}) = 'array'))`;
 
 const BASE_SQL = `
 CREATE TABLE schema_migrations (
@@ -1065,6 +1067,150 @@ ${appendOnlyTriggers("attempt_process_observations")}
 ${appendOnlyTriggers("attempt_process_terminal_receipts")}
 `;
 
+/*
+ * Migration 004 is the durable CommitService intent/finalization bridge. The
+ * released v1 commit_attributions table remains the stable oracle/promotion
+ * summary; this CAS aggregate proves that the summary came from the sole Git
+ * mutation authority and pins the exact owner, phase, process, resources, refs,
+ * normalized delta, deterministic metadata, and command observations.
+ */
+const COMMIT_ATTRIBUTION_SQL = `
+CREATE TABLE attempt_commit_intents (
+  commit_intent_id TEXT PRIMARY KEY ${ID("commit_intent_id")},
+  repository_id TEXT NOT NULL ${ID("repository_id")},
+  attempt_id TEXT NOT NULL ${ID("attempt_id")},
+  ownership_id TEXT NOT NULL ${ID("ownership_id")},
+  owner_generation INTEGER NOT NULL CHECK (owner_generation > 0),
+  ownership_state_version INTEGER NOT NULL CHECK (ownership_state_version >= 0),
+  ownership_context_digest TEXT NOT NULL ${DIGEST("ownership_context_digest")},
+  phase_execution_id TEXT NOT NULL ${ID("phase_execution_id")},
+  context_id TEXT NOT NULL ${ID("context_id")},
+  execution_context_digest TEXT NOT NULL ${DIGEST("execution_context_digest")},
+  launch_id TEXT NOT NULL ${ID("launch_id")},
+  process_receipt_id TEXT NOT NULL ${ID("process_receipt_id")},
+  delivery_ref TEXT NOT NULL ${ID("delivery_ref")},
+  attempt_ref TEXT NOT NULL ${ID("attempt_ref")},
+  baseline_oid TEXT NOT NULL ${OID("baseline_oid")},
+  contract_digest TEXT NOT NULL ${DIGEST("contract_digest")},
+  delivery_ref_claim_id TEXT NOT NULL ${ID("delivery_ref_claim_id")},
+  delivery_ref_expected_version INTEGER NOT NULL CHECK (delivery_ref_expected_version >= 0),
+  attempt_ref_claim_id TEXT NOT NULL ${ID("attempt_ref_claim_id")},
+  attempt_ref_expected_version INTEGER NOT NULL CHECK (attempt_ref_expected_version >= 0),
+  worktree_claim_id TEXT NOT NULL ${ID("worktree_claim_id")},
+  worktree_expected_version INTEGER NOT NULL CHECK (worktree_expected_version >= 0),
+  isolated_index_claim_id TEXT NOT NULL ${ID("isolated_index_claim_id")},
+  isolated_index_expected_version INTEGER NOT NULL CHECK (isolated_index_expected_version >= 0),
+  tree_before_oid TEXT NOT NULL ${OID("tree_before_oid")},
+  tree_after_oid TEXT NOT NULL ${OID("tree_after_oid")},
+  candidate_diff_digest TEXT NOT NULL ${DIGEST("candidate_diff_digest")},
+  path_set_digest TEXT NOT NULL ${DIGEST("path_set_digest")},
+  change_kind_set_digest TEXT NOT NULL ${DIGEST("change_kind_set_digest")},
+  mode_set_digest TEXT NOT NULL ${DIGEST("mode_set_digest")},
+  normalized_delta_json TEXT NOT NULL ${JSON_ARRAY("normalized_delta_json")},
+  verification_receipt_digests_json TEXT NOT NULL ${JSON_ARRAY("verification_receipt_digests_json")},
+  commit_metadata_json TEXT NOT NULL ${JSON_OBJECT("commit_metadata_json")},
+  input_digest TEXT NOT NULL ${DIGEST("input_digest")},
+  idempotency_key TEXT NOT NULL ${ID("idempotency_key")},
+  state TEXT NOT NULL CHECK (state IN ('intent_recorded','finalized')),
+  state_version INTEGER NOT NULL CHECK (state_version >= 0),
+  commit_attribution_id TEXT,
+  commit_oid TEXT ${OPTIONAL_OID("commit_oid")},
+  delivery_ref_observed_oid TEXT ${OPTIONAL_OID("delivery_ref_observed_oid")},
+  attempt_ref_before_oid TEXT ${OPTIONAL_OID("attempt_ref_before_oid")},
+  attempt_ref_after_oid TEXT ${OPTIONAL_OID("attempt_ref_after_oid")},
+  command_receipts_json TEXT ${OPTIONAL_JSON_ARRAY("command_receipts_json")},
+  result_digest TEXT ${OPTIONAL_DIGEST("result_digest")},
+  created_at TEXT NOT NULL ${UTC("created_at")},
+  finalized_at TEXT CHECK (finalized_at IS NULL OR (length(finalized_at) >= 20 AND substr(finalized_at, -1) = 'Z')),
+  FOREIGN KEY (repository_id) REFERENCES repositories(repository_id) ON DELETE RESTRICT,
+  FOREIGN KEY (attempt_id) REFERENCES attempts(attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (attempt_id, contract_digest) REFERENCES attempts(attempt_id, contract_digest) ON DELETE RESTRICT,
+  FOREIGN KEY (ownership_id, attempt_id, owner_generation)
+    REFERENCES attempt_ownership_leases(ownership_id, attempt_id, generation) ON DELETE RESTRICT,
+  FOREIGN KEY (phase_execution_id, attempt_id)
+    REFERENCES phase_executions(phase_execution_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (context_id, attempt_id)
+    REFERENCES execution_contexts(context_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (phase_execution_id, context_id)
+    REFERENCES phase_executions(phase_execution_id, context_id) ON DELETE RESTRICT,
+  FOREIGN KEY (process_receipt_id)
+    REFERENCES attempt_process_terminal_receipts(process_receipt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (process_receipt_id, launch_id, attempt_id)
+    REFERENCES attempt_process_launches(process_receipt_id, launch_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (delivery_ref_claim_id, attempt_id)
+    REFERENCES attempt_resource_claims(resource_claim_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (attempt_ref_claim_id, attempt_id)
+    REFERENCES attempt_resource_claims(resource_claim_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (worktree_claim_id, attempt_id)
+    REFERENCES attempt_resource_claims(resource_claim_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (isolated_index_claim_id, attempt_id)
+    REFERENCES attempt_resource_claims(resource_claim_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (commit_attribution_id, attempt_id)
+    REFERENCES commit_attributions(commit_attribution_id, attempt_id) ON DELETE RESTRICT,
+  CHECK (json_array_length(normalized_delta_json) > 0),
+  CHECK (json_array_length(verification_receipt_digests_json) > 0),
+  CHECK ((state = 'intent_recorded' AND state_version = 0 AND commit_attribution_id IS NULL AND commit_oid IS NULL AND
+         delivery_ref_observed_oid IS NULL AND attempt_ref_before_oid IS NULL AND attempt_ref_after_oid IS NULL AND
+         command_receipts_json IS NULL AND result_digest IS NULL AND finalized_at IS NULL) OR
+         (state = 'finalized' AND state_version = 1 AND commit_attribution_id IS NOT NULL AND commit_oid IS NOT NULL AND
+         delivery_ref_observed_oid IS NOT NULL AND attempt_ref_before_oid IS NOT NULL AND attempt_ref_after_oid IS NOT NULL AND
+         command_receipts_json IS NOT NULL AND json_array_length(command_receipts_json) > 0 AND result_digest IS NOT NULL AND finalized_at IS NOT NULL)),
+  CHECK (state <> 'finalized' OR (delivery_ref_observed_oid = baseline_oid AND attempt_ref_before_oid = baseline_oid AND attempt_ref_after_oid = commit_oid))
+) STRICT;
+CREATE UNIQUE INDEX attempt_commit_intents_attempt_uq
+  ON attempt_commit_intents(attempt_id);
+CREATE UNIQUE INDEX attempt_commit_intents_idempotency_uq
+  ON attempt_commit_intents(attempt_id, idempotency_key);
+CREATE UNIQUE INDEX attempt_commit_intents_attribution_uq
+  ON attempt_commit_intents(commit_attribution_id) WHERE commit_attribution_id IS NOT NULL;
+CREATE UNIQUE INDEX attempt_commit_intents_commit_uq
+  ON attempt_commit_intents(commit_oid) WHERE commit_oid IS NOT NULL;
+
+CREATE TRIGGER attempt_commit_intents_immutable_preimage BEFORE UPDATE ON attempt_commit_intents
+WHEN NEW.commit_intent_id IS NOT OLD.commit_intent_id OR
+     NEW.repository_id IS NOT OLD.repository_id OR
+     NEW.attempt_id IS NOT OLD.attempt_id OR
+     NEW.ownership_id IS NOT OLD.ownership_id OR
+     NEW.owner_generation IS NOT OLD.owner_generation OR
+     NEW.ownership_state_version IS NOT OLD.ownership_state_version OR
+     NEW.ownership_context_digest IS NOT OLD.ownership_context_digest OR
+     NEW.phase_execution_id IS NOT OLD.phase_execution_id OR
+     NEW.context_id IS NOT OLD.context_id OR
+     NEW.execution_context_digest IS NOT OLD.execution_context_digest OR
+     NEW.launch_id IS NOT OLD.launch_id OR
+     NEW.process_receipt_id IS NOT OLD.process_receipt_id OR
+     NEW.delivery_ref IS NOT OLD.delivery_ref OR
+     NEW.attempt_ref IS NOT OLD.attempt_ref OR
+     NEW.baseline_oid IS NOT OLD.baseline_oid OR
+     NEW.contract_digest IS NOT OLD.contract_digest OR
+     NEW.delivery_ref_claim_id IS NOT OLD.delivery_ref_claim_id OR
+     NEW.delivery_ref_expected_version IS NOT OLD.delivery_ref_expected_version OR
+     NEW.attempt_ref_claim_id IS NOT OLD.attempt_ref_claim_id OR
+     NEW.attempt_ref_expected_version IS NOT OLD.attempt_ref_expected_version OR
+     NEW.worktree_claim_id IS NOT OLD.worktree_claim_id OR
+     NEW.worktree_expected_version IS NOT OLD.worktree_expected_version OR
+     NEW.isolated_index_claim_id IS NOT OLD.isolated_index_claim_id OR
+     NEW.isolated_index_expected_version IS NOT OLD.isolated_index_expected_version OR
+     NEW.tree_before_oid IS NOT OLD.tree_before_oid OR
+     NEW.tree_after_oid IS NOT OLD.tree_after_oid OR
+     NEW.candidate_diff_digest IS NOT OLD.candidate_diff_digest OR
+     NEW.path_set_digest IS NOT OLD.path_set_digest OR
+     NEW.change_kind_set_digest IS NOT OLD.change_kind_set_digest OR
+     NEW.mode_set_digest IS NOT OLD.mode_set_digest OR
+     NEW.normalized_delta_json IS NOT OLD.normalized_delta_json OR
+     NEW.verification_receipt_digests_json IS NOT OLD.verification_receipt_digests_json OR
+     NEW.commit_metadata_json IS NOT OLD.commit_metadata_json OR
+     NEW.input_digest IS NOT OLD.input_digest OR
+     NEW.idempotency_key IS NOT OLD.idempotency_key OR
+     NEW.created_at IS NOT OLD.created_at
+BEGIN SELECT RAISE(ABORT, 'attempt commit intent preimage is immutable'); END;
+CREATE TRIGGER attempt_commit_intents_legal_finalize BEFORE UPDATE ON attempt_commit_intents
+WHEN OLD.state <> 'intent_recorded' OR NEW.state <> 'finalized' OR NEW.state_version <> OLD.state_version + 1
+BEGIN SELECT RAISE(ABORT, 'illegal attempt commit intent transition'); END;
+CREATE TRIGGER attempt_commit_intents_no_delete BEFORE DELETE ON attempt_commit_intents
+BEGIN SELECT RAISE(ABORT, 'attempt commit intents cannot be deleted'); END;
+`;
+
 function releasedObjectNames(sql: string, kind: "TABLE" | "INDEX" | "TRIGGER"): readonly string[] {
   const names = [...sql.matchAll(new RegExp(`CREATE (?:UNIQUE )?${kind} ([a-z0-9_]+)`, "g"))]
     .map((match) => match[1])
@@ -1079,12 +1225,19 @@ export const INITIAL_STATE_SCHEMA_OBJECTS = Object.freeze({
 });
 
 const ATTEMPT_OWNERSHIP_STATE_SQL = `${INITIAL_SQL}${ATTEMPT_OWNERSHIP_SQL}`;
-const LATEST_SQL = `${ATTEMPT_OWNERSHIP_STATE_SQL}${PROCESS_SUPERVISION_SQL}`;
+const PROCESS_SUPERVISION_STATE_SQL = `${ATTEMPT_OWNERSHIP_STATE_SQL}${PROCESS_SUPERVISION_SQL}`;
+const LATEST_SQL = `${PROCESS_SUPERVISION_STATE_SQL}${COMMIT_ATTRIBUTION_SQL}`;
 
 export const ATTEMPT_OWNERSHIP_STATE_SCHEMA_OBJECTS = Object.freeze({
   tables: releasedObjectNames(ATTEMPT_OWNERSHIP_STATE_SQL, "TABLE"),
   indexes: releasedObjectNames(ATTEMPT_OWNERSHIP_STATE_SQL, "INDEX"),
   triggers: releasedObjectNames(ATTEMPT_OWNERSHIP_STATE_SQL, "TRIGGER"),
+});
+
+export const PROCESS_SUPERVISION_STATE_SCHEMA_OBJECTS = Object.freeze({
+  tables: releasedObjectNames(PROCESS_SUPERVISION_STATE_SQL, "TABLE"),
+  indexes: releasedObjectNames(PROCESS_SUPERVISION_STATE_SQL, "INDEX"),
+  triggers: releasedObjectNames(PROCESS_SUPERVISION_STATE_SQL, "TRIGGER"),
 });
 
 export const LATEST_STATE_SCHEMA_OBJECTS = Object.freeze({
@@ -1118,8 +1271,14 @@ export const ATTEMPT_OWNERSHIP_STATE_SQLITE_SCHEMA_CHECKSUM =
 export const PROCESS_SUPERVISION_MIGRATION_CHECKSUM =
   "sha256:c94e5b62aa8dae64740685c13159f2d19610909729c789e6638deb59855ff8ce" as const;
 
-export const LATEST_STATE_SQLITE_SCHEMA_CHECKSUM =
+export const COMMIT_ATTRIBUTION_MIGRATION_CHECKSUM =
+  "sha256:66f819b89e1781ca7fdc7311e269a4991a86706224eaa269b0198ad434ce6469" as const;
+
+export const PROCESS_SUPERVISION_STATE_SQLITE_SCHEMA_CHECKSUM =
   "sha256:c208339c0350aae8bd1ee3784da4e4ffc559b41e9c6079530a89da53c08753e3" as const;
+
+export const LATEST_STATE_SQLITE_SCHEMA_CHECKSUM =
+  "sha256:af782456d3402bd47cff0ca9fd4e358c52028c14fee3470efcc295cac926542d" as const;
 
 export const STATE_MIGRATIONS: readonly StateMigration[] = Object.freeze([
   Object.freeze({
@@ -1142,6 +1301,13 @@ export const STATE_MIGRATIONS: readonly StateMigration[] = Object.freeze([
     name: "003_durable_process_supervision",
     sql: PROCESS_SUPERVISION_SQL,
     checksum: PROCESS_SUPERVISION_MIGRATION_CHECKSUM,
+  }),
+  Object.freeze({
+    version: 4,
+    number: "004",
+    name: "004_durable_commit_attribution",
+    sql: COMMIT_ATTRIBUTION_SQL,
+    checksum: COMMIT_ATTRIBUTION_MIGRATION_CHECKSUM,
   }),
 ]);
 

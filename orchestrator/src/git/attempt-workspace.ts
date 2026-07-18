@@ -5,12 +5,16 @@ import {
   closeSync,
   constants as fsConstants,
   existsSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
   openSync,
+  opendirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
+  type Stats,
 } from "node:fs";
 import { dirname, isAbsolute, join, parse, relative, sep } from "node:path";
 import { canonicalJson } from "../contracts/ticket-contract.js";
@@ -19,7 +23,11 @@ import type { StateLocation } from "../state/store.js";
 
 const PRIVATE_DIRECTORY_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
+const GIT_EXECUTABLE = "/usr/bin/git";
 const MAX_GIT_OUTPUT = 1024 * 1024;
+const MAX_CALLER_PATHS = 100_000;
+const MAX_CALLER_FILE_BYTES = 64 * 1024 * 1024;
+const MAX_CALLER_TOTAL_BYTES = 512 * 1024 * 1024;
 const SAFE_REF_COMPONENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const WORKSPACE_RECEIPT_AUTHORITY = Symbol("rickgent.attempt-workspace-receipt");
 const AUTHORIZED_WORKSPACE_RECEIPTS = new WeakSet<object>();
@@ -245,6 +253,10 @@ export class ReadyAttemptWorkspace implements ReadyAttemptWorkspaceInput {
   }
 }
 
+export function isAuthorizedReadyAttemptWorkspace(value: unknown): value is ReadyAttemptWorkspace {
+  return typeof value === "object" && value !== null && AUTHORIZED_READY_WORKSPACES.has(value);
+}
+
 export type ProvisionAttemptWorkspaceResult =
   | {
       readonly ok: true;
@@ -283,19 +295,22 @@ function sha256(value: string | Buffer): `sha256:${string}` {
 
 function trustedGitEnvironment(overrides: NodeJS.ProcessEnv = {}, optionalLocks = false): NodeJS.ProcessEnv {
   return {
-    PATH: process.env.PATH ?? "/usr/bin:/bin",
+    PATH: "/usr/bin:/bin",
     LANG: "C",
     LC_ALL: "C",
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
     GIT_OPTIONAL_LOCKS: optionalLocks ? "0" : "1",
+    GIT_LITERAL_PATHSPECS: "1",
+    GIT_NOGLOB_PATHSPECS: "1",
+    GIT_NO_REPLACE_OBJECTS: "1",
     ...overrides,
   };
 }
 
 function gitText(repo: string, args: readonly string[], env?: NodeJS.ProcessEnv, optionalLocks = false): string {
-  return execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-C", repo, ...args], {
+  return execFileSync(GIT_EXECUTABLE, ["-c", "core.hooksPath=/dev/null", "-C", repo, ...args], {
     encoding: "utf8",
     env: trustedGitEnvironment(env, optionalLocks),
     stdio: ["ignore", "pipe", "pipe"],
@@ -305,7 +320,7 @@ function gitText(repo: string, args: readonly string[], env?: NodeJS.ProcessEnv,
 }
 
 function gitBuffer(repo: string, args: readonly string[], optionalLocks = false): Buffer {
-  return execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-C", repo, ...args], {
+  return execFileSync(GIT_EXECUTABLE, ["-c", "core.hooksPath=/dev/null", "-C", repo, ...args], {
     encoding: "buffer",
     env: trustedGitEnvironment({}, optionalLocks),
     stdio: ["ignore", "pipe", "pipe"],
@@ -477,6 +492,134 @@ function gitIndexPath(repo: string): string {
   return path;
 }
 
+function filterFreeCallerFilesystemInventory(repo: string): Buffer {
+  const paths: string[] = [];
+  let reservedEntries = 0;
+  const visit = (directory: string, prefix: string): void => {
+    const names: Array<{ readonly name: string; readonly raw: Buffer }> = [];
+    const handle = opendirSync(directory, { encoding: "utf8" });
+    try {
+      for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
+        const name = entry.name;
+        if (name.includes("\uFFFD")) throw new Error("caller worktree contains a non-UTF-8 filesystem path");
+        const rawName = Buffer.from(name, "utf8");
+        if (prefix === "" && name === ".git") continue;
+        if (name === ".git") throw new Error("caller worktree contains an embedded Git repository");
+        if (name === "" || name === "." || name === ".." || name.includes("/") || name.includes("\\") || name.includes("\0")) {
+          throw new Error("caller worktree contains a noncanonical filesystem entry");
+        }
+        if (paths.length + reservedEntries >= MAX_CALLER_PATHS) {
+          throw new Error("caller worktree path inventory exceeds its hard bound");
+        }
+        names.push({ name, raw: rawName });
+        reservedEntries += 1;
+      }
+    } finally {
+      handle.closeSync();
+    }
+    names.sort((left, right) => Buffer.compare(left.raw, right.raw));
+    for (const { name } of names) {
+      reservedEntries -= 1;
+      if (paths.length >= MAX_CALLER_PATHS) throw new Error("caller worktree path inventory exceeds its hard bound");
+      const path = prefix === "" ? name : `${prefix}/${name}`;
+      paths.push(path);
+      const absolute = join(directory, name);
+      const observed = lstatSync(absolute);
+      if (observed.isDirectory() && !observed.isSymbolicLink()) visit(absolute, path);
+    }
+  };
+  visit(repo, "");
+  return Buffer.from(paths.sort().join("\0") + (paths.length === 0 ? "" : "\0"), "utf8");
+}
+
+/** Exact raw-byte caller snapshot. It never invokes attributes, filters, textconv, or status conversion. */
+function filterFreeCallerWorktreeDigest(repo: string): `sha256:${string}` {
+  const enumerate = (): Buffer => gitBuffer(repo, ["ls-files", "--cached", "--others", "-z", "--"], true);
+  const listedBefore = enumerate();
+  const filesystemBefore = filterFreeCallerFilesystemInventory(repo);
+  const decodeInventory = (raw: Buffer, label: string): string[] => {
+    let decoded: string;
+    try {
+      decoded = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+    } catch {
+      throw new Error(`caller worktree contains a non-UTF-8 ${label} path`);
+    }
+    const paths = decoded.split("\0");
+    if (paths.at(-1) === "") paths.pop();
+    if (new Set(paths).size !== paths.length) throw new Error(`caller worktree ${label} path inventory is duplicate`);
+    return paths;
+  };
+  const gitPaths = decodeInventory(listedBefore, "Git");
+  const filesystemPaths = decodeInventory(filesystemBefore, "filesystem");
+  const uniquePaths = [...new Set([...gitPaths, ...filesystemPaths])].sort();
+  if (uniquePaths.length > MAX_CALLER_PATHS) {
+    throw new Error("caller worktree path inventory exceeds its hard bound");
+  }
+  const digest = createHash("sha256").update("rickgent.caller-worktree.v1\0");
+  let totalBytes = 0;
+  for (const path of uniquePaths) {
+    if (
+      path === "" || path.includes("\0") || path.includes("\\") || isAbsolute(path) ||
+      path === "." || path === ".." || path.startsWith("../") || path.includes("/../") || path.endsWith("/..")
+    ) throw new Error(`caller worktree contains a noncanonical Git path: ${JSON.stringify(path)}`);
+    const absolute = join(repo, ...path.split("/"));
+    const fromRoot = relative(repo, absolute);
+    if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+      throw new Error("caller worktree path escapes the selected repository");
+    }
+    digest.update(Buffer.from(`${Buffer.byteLength(path)}:`, "utf8")).update(path, "utf8").update("\0");
+    let before: Stats | null;
+    try {
+      before = lstatSync(absolute) as Stats;
+    } catch (error) {
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") before = null;
+      else throw error;
+    }
+    if (before === null) {
+      digest.update("missing\0");
+      continue;
+    }
+    const mode = before.mode & 0o177777;
+    if (before.isSymbolicLink()) {
+      const target = readlinkSync(absolute, { encoding: "buffer" });
+      digest.update(`symlink:${mode}:${target.length}:`).update(target).update("\0");
+      continue;
+    }
+    if (before.isDirectory()) {
+      digest.update(`directory:${mode}\0`);
+      continue;
+    }
+    if (!before.isFile()) {
+      throw new Error(`caller worktree contains an unsupported non-file entry: ${path}`);
+    }
+    if (before.size > MAX_CALLER_FILE_BYTES) throw new Error(`caller file exceeds its snapshot bound: ${path}`);
+    totalBytes += before.size;
+    if (totalBytes > MAX_CALLER_TOTAL_BYTES) throw new Error("caller worktree exceeds its total snapshot byte bound");
+    const descriptor = openSync(absolute, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    try {
+      const opened = fstatSync(descriptor);
+      if (opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size || !opened.isFile()) {
+        throw new Error(`caller file changed identity while opening: ${path}`);
+      }
+      const content = readFileSync(descriptor);
+      const after = fstatSync(descriptor);
+      if (
+        after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size ||
+        after.mode !== opened.mode || after.mtimeMs !== opened.mtimeMs || after.ctimeMs !== opened.ctimeMs ||
+        content.length !== opened.size
+      ) throw new Error(`caller file changed while being snapshotted: ${path}`);
+      digest.update(`file:${mode}:${content.length}:`).update(content).update("\0");
+    } finally {
+      closeSync(descriptor);
+    }
+  }
+  if (
+    !listedBefore.equals(enumerate()) ||
+    !filesystemBefore.equals(filterFreeCallerFilesystemInventory(repo))
+  ) throw new Error("caller worktree path inventory changed during snapshot");
+  return `sha256:${digest.digest("hex")}`;
+}
+
 export function snapshotAttemptCaller(repo: string, expectedCommonDirectory?: string): AttemptCallerSnapshot {
   if (expectedCommonDirectory !== undefined) assertSelectedGitBoundary(repo, expectedCommonDirectory);
   const headOid = gitText(repo, ["rev-parse", "--verify", "HEAD^{commit}"]);
@@ -489,7 +632,7 @@ export function snapshotAttemptCaller(repo: string, expectedCommonDirectory?: st
     // Detached callers are valid inputs; status 1 is Git's documented quiet miss.
   }
   if (expectedCommonDirectory !== undefined) assertSelectedGitBoundary(repo, expectedCommonDirectory);
-  const statusDigest = sha256(gitBuffer(repo, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], true));
+  const statusDigest = filterFreeCallerWorktreeDigest(repo);
   if (expectedCommonDirectory !== undefined) assertSelectedGitBoundary(repo, expectedCommonDirectory);
   return Object.freeze({
     headOid,
@@ -513,7 +656,7 @@ function assertRef(repo: string, expectedCommonDirectory: string, ref: string, b
   assertSelectedGitBoundary(repo, expectedCommonDirectory);
   gitText(repo, ["check-ref-format", ref]);
   try {
-    execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-C", repo, "show-ref", "--verify", "--quiet", ref], {
+    execFileSync(GIT_EXECUTABLE, ["-c", "core.hooksPath=/dev/null", "-C", repo, "show-ref", "--verify", "--quiet", ref], {
       env: trustedGitEnvironment({}, true),
       stdio: "ignore",
     });
@@ -522,7 +665,7 @@ function assertRef(repo: string, expectedCommonDirectory: string, ref: string, b
     if (!allowCreate) throw new Error(`${ref} disappeared after its durable allocation observation`);
     assertSelectedGitBoundary(repo, expectedCommonDirectory);
     const zeroOid = "0".repeat(baselineOid.length);
-    execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-C", repo, "update-ref", ref, baselineOid, zeroOid], {
+    execFileSync(GIT_EXECUTABLE, ["-c", "core.hooksPath=/dev/null", "-C", repo, "update-ref", ref, baselineOid, zeroOid], {
       env: trustedGitEnvironment(),
       stdio: ["ignore", "ignore", "pipe"],
     });
@@ -538,7 +681,7 @@ function observeWorktree(repo: string, expectedCommonDirectory: string, plan: At
   if (!existsSync(plan.worktreePath)) {
     if (!allowCreate) throw new Error("attempt worktree disappeared after durable allocation");
     assertSelectedGitBoundary(repo, expectedCommonDirectory);
-    execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-C", repo, "worktree", "add", "--detach", "--quiet", plan.worktreePath, plan.lineage.deliveryBaselineOid], {
+    execFileSync(GIT_EXECUTABLE, ["-c", "core.hooksPath=/dev/null", "-C", repo, "worktree", "add", "--detach", "--quiet", plan.worktreePath, plan.lineage.deliveryBaselineOid], {
       env: trustedGitEnvironment(),
       stdio: ["ignore", "ignore", "pipe"],
     });
@@ -625,7 +768,7 @@ function observeExistingIsolatedIndexReadOnly(
     throw new Error("isolated index is not the exact owned, canonical 0600 file");
   }
   try {
-    execFileSync("git", [
+    execFileSync(GIT_EXECUTABLE, [
       "-c", "core.hooksPath=/dev/null", "-C", repo,
       "diff-index", "--cached", "--quiet", plan.lineage.deliveryBaselineOid, "--",
     ], {

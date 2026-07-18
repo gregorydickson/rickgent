@@ -15,6 +15,8 @@ import {
   ATTEMPT_TRANSITIONS,
   CAPABILITY_RESERVATIONS,
   CAS_STATE_TABLES,
+  COMMIT_ATTRIBUTION_MIGRATION,
+  COMMIT_ATTRIBUTION_STATE_TABLES,
   DELIVERY_STATES,
   DELIVERY_TERMINAL_STATES,
   DELIVERY_TRANSITIONS,
@@ -59,10 +61,12 @@ import {
 import {
   ATTEMPT_OWNERSHIP_MIGRATION_CHECKSUM,
   ATTEMPT_OWNERSHIP_STATE_SQLITE_SCHEMA_CHECKSUM,
+  COMMIT_ATTRIBUTION_MIGRATION_CHECKSUM,
   INITIAL_STATE_MIGRATION_CHECKSUM,
   INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM,
   LATEST_STATE_SQLITE_SCHEMA_CHECKSUM,
   PROCESS_SUPERVISION_MIGRATION_CHECKSUM,
+  PROCESS_SUPERVISION_STATE_SQLITE_SCHEMA_CHECKSUM,
   STATE_MIGRATIONS as EXECUTABLE_STATE_MIGRATIONS,
 } from "../../src/state/migrations.js";
 
@@ -133,17 +137,27 @@ describe("frozen state contract parity", () => {
       checksum: PROCESS_SUPERVISION_MIGRATION_CHECKSUM,
     });
     expect(PROCESS_SUPERVISION_MIGRATION.released_checksum).toBe(PROCESS_SUPERVISION_MIGRATION_CHECKSUM);
-    expect(PROCESS_SUPERVISION_MIGRATION.sqlite_schema_checksum).toBe(LATEST_STATE_SQLITE_SCHEMA_CHECKSUM);
+    expect(PROCESS_SUPERVISION_MIGRATION.sqlite_schema_checksum).toBe(PROCESS_SUPERVISION_STATE_SQLITE_SCHEMA_CHECKSUM);
+    expect(EXECUTABLE_STATE_MIGRATIONS[3]).toMatchObject({
+      version: COMMIT_ATTRIBUTION_MIGRATION.version,
+      number: COMMIT_ATTRIBUTION_MIGRATION.number,
+      name: COMMIT_ATTRIBUTION_MIGRATION.name,
+      checksum: COMMIT_ATTRIBUTION_MIGRATION_CHECKSUM,
+    });
+    expect(COMMIT_ATTRIBUTION_MIGRATION.released_checksum).toBe(COMMIT_ATTRIBUTION_MIGRATION_CHECKSUM);
+    expect(COMMIT_ATTRIBUTION_MIGRATION.sqlite_schema_checksum).toBe(LATEST_STATE_SQLITE_SCHEMA_CHECKSUM);
     expect(new Set(ALL_STATE_TABLES)).toEqual(new Set([
       ...STATE_TABLES,
       ...ATTEMPT_OWNERSHIP_STATE_TABLES,
       ...PROCESS_SUPERVISION_STATE_TABLES,
+      ...COMMIT_ATTRIBUTION_STATE_TABLES,
     ]));
     expect(PROCESS_SUPERVISION_STATE_TABLES).toEqual([
       "attempt_process_launches",
       "attempt_process_observations",
       "attempt_process_terminal_receipts",
     ]);
+    expect(COMMIT_ATTRIBUTION_STATE_TABLES).toEqual(["attempt_commit_intents"]);
     expect(LATEST_STATE_SQLITE_SCHEMA_CHECKSUM).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(contract.entity_model.catalog.map((table: { name: string }) => table.name)).toEqual(STATE_TABLES);
     expect(contract.entity_model.catalog.filter((table: { mutation: { mode: string } }) => table.mutation.mode !== "append_only").map((table: { name: string }) => table.name)).toEqual(CAS_STATE_TABLES);

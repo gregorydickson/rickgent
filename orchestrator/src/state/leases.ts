@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { canonicalJson } from "../contracts/ticket-contract.js";
 import {
   isAuthorizedAttemptWorkspaceResourceReceipt,
   type AttemptWorkspacePlan,
@@ -78,6 +79,13 @@ export interface AdvanceAttemptWorkspaceResourceRequest {
 export interface OwnershipMutationRequest {
   readonly ownership: AttemptOwnershipGrant;
   readonly idempotencyKey: string;
+}
+
+export interface CommitRefProofInput {
+  readonly commitIntentId: string;
+  readonly attemptRef: string;
+  readonly baselineOid: string;
+  readonly commitOid: string;
 }
 
 export interface PrepareStaleRecoveryRequest {
@@ -303,6 +311,25 @@ export class LeaseAuthority {
       kind: "assert_current",
       idempotencyKey: `assert-current:${ownership.ownership.ownershipId}`,
     });
+  }
+
+  /** Token-bound proof that a ref transaction was issued by this exact in-memory owner. */
+  deriveCommitRefProof(ownership: AttemptOwnershipGrant, input: CommitRefProofInput): `sha256:${string}` {
+    const token = requireGrantToken(ownership);
+    for (const [label, value] of [
+      ["commit intent id", input.commitIntentId], ["attempt ref", input.attemptRef],
+      ["baseline oid", input.baselineOid], ["commit oid", input.commitOid],
+    ] as const) {
+      if (value === "" || value.includes("\0") || value.includes("\n")) {
+        throw new TypeError(`${label} is invalid for commit ref proof`);
+      }
+    }
+    return `sha256:${createHash("sha256")
+      .update("rickgent.commit-ref-owner-proof.v1\0")
+      .update(token, "utf8")
+      .update("\0")
+      .update(canonicalJson(input), "utf8")
+      .digest("hex")}`;
   }
 
   advanceWorkspaceResource(request: AdvanceAttemptWorkspaceResourceRequest): AttemptOwnershipGrant {

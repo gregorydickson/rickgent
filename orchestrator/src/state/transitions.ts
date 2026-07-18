@@ -880,7 +880,6 @@ export type LifecycleRecordCommandRequest =
   | { readonly kind: "review_record"; readonly request: ReviewRecordRequest }
   | { readonly kind: "remediation_record"; readonly request: RemediationRecordRequest }
   | { readonly kind: "gate_result"; readonly request: GateResultRecordRequest }
-  | { readonly kind: "commit_attribution"; readonly request: CommitAttributionRecordRequest }
   | { readonly kind: "cleanup_record"; readonly request: CleanupRecordRequest };
 
 const LIFECYCLE_RECORD_AUTHORITY = Symbol("rickgent.lifecycle-record-authority");
@@ -930,7 +929,8 @@ export class LifecycleRecordAuthority {
   }
 
   recordCommitAttribution(request: CommitAttributionRecordRequest): StateRecord {
-    return this.#commit({ kind: "commit_attribution", request: Object.freeze({ ...request }) });
+    void request;
+    throw new TypeError("legacy commit attributions are migration-compatible read models; only CommitService may create current attribution truth");
   }
 
   recordCleanup(request: CleanupRecordRequest): StateRecord {

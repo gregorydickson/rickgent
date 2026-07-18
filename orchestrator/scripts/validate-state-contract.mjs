@@ -80,7 +80,8 @@ const CAS_TABLES = new Set([
 const TRANSACTIONS = [
   "open_and_migrate", "allocate_run", "allocate_attempt", "append_evidence",
   "transition_entity_cas", "acquire_lease", "heartbeat_lease",
-  "process_supervisor_launch", "process_supervisor_terminal", "begin_lease_cleanup",
+  "process_supervisor_launch", "process_supervisor_terminal",
+  "commit_attribution_prepare", "commit_attribution_finalize", "begin_lease_cleanup",
   "release_lease", "reserve_resource", "advance_resource", "quarantine_resource",
   "release_resource", "persist_oracle_decision", "create_promotion_intent",
   "observe_promotion", "finalize_promotion", "create_delivery_intent",
@@ -301,6 +302,14 @@ function validateMigrations(contract) {
     sql_owner_ticket: "t19",
     released_checksum: "sha256:c94e5b62aa8dae64740685c13159f2d19610909729c789e6638deb59855ff8ce",
     sqlite_schema_checksum: "sha256:c208339c0350aae8bd1ee3784da4e4ffc559b41e9c6079530a89da53c08753e3",
+    status: "implemented",
+  }, {
+    version: 4,
+    number: "004",
+    name: "004_durable_commit_attribution",
+    sql_owner_ticket: "t20",
+    released_checksum: "sha256:66f819b89e1781ca7fdc7311e269a4991a86706224eaa269b0198ad434ce6469",
+    sqlite_schema_checksum: "sha256:af782456d3402bd47cff0ca9fd4e358c52028c14fee3470efcc295cac926542d",
     status: "implemented",
   }], "STATE_CONTRACT_MIGRATION_INVALID", "initial migrations");
   for (let index = 0; index < migrations.initial.length; index += 1) {
@@ -744,6 +753,7 @@ function validateAllocationAndResources(contract) {
   equal(resources.ownership_tables, [
     "attempt_ownership_leases", "attempt_resource_claims", "attempt_ownership_operations",
     "attempt_process_launches", "attempt_process_observations", "attempt_process_terminal_receipts",
+    "attempt_commit_intents",
   ], "STATE_CONTRACT_RESOURCE_INVALID", "resource ownership tables");
   equal(resources.production_cutover_ticket, "t22", "STATE_CONTRACT_RESOURCE_INVALID", "resource production cutover");
   equal(resources.process_death_evidence_producer_ticket, "t19", "STATE_CONTRACT_RESOURCE_INVALID", "resource process-death producer");
@@ -780,7 +790,8 @@ function validateAllocationAndResources(contract) {
   exactKeys(ownershipContract, [
     "attempt_ownership_leases", "attempt_resource_claims", "attempt_ownership_operations",
     "attempt_process_launches", "attempt_process_observations", "attempt_process_terminal_receipts",
-    "resource_mutation_authority", "process_death_producer_authority", "legacy_v1_tables",
+    "attempt_commit_intents", "resource_mutation_authority", "process_death_producer_authority",
+    "commit_attribution_producer_authority", "legacy_v1_tables",
   ], "STATE_CONTRACT_RESOURCE_INVALID", "ownership_table_contract");
 }
 

@@ -112,6 +112,23 @@ function insertRow(databasePath: string, table: string, row: Readonly<Record<str
   }
 }
 
+/** Isolated oracle fixtures project an already-proved upstream t20 aggregate; t20 has its own authority corpus. */
+function insertUpstreamRowWithoutForeignKeys(
+  databasePath: string,
+  table: string,
+  row: Readonly<Record<string, SqlValue>>,
+): void {
+  const database = new DatabaseSync(databasePath, { enableForeignKeyConstraints: false, timeout: 1_000 });
+  try {
+    const columns = Object.keys(row);
+    database.prepare(
+      `INSERT INTO "${table}" (${columns.map((column) => `"${column}"`).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+    ).run(...columns.map((column) => row[column] ?? null));
+  } finally {
+    database.close();
+  }
+}
+
 function updateRow(
   databasePath: string,
   table: string,
@@ -464,15 +481,24 @@ function completeFixture(gateStatuses: readonly ("passed" | "failed" | "missing"
       after_mode: entry.afterMode,
     })),
   } as const;
-  const attributionEvidenceId = String(appendEvidence(
-    fixtureBase,
-    implement,
-    `evidence-attribution-${attempt.attemptId}`,
-    "AttemptLifecycleService",
-    "rickgent.commit-attribution.v1",
-    attributionPayload,
-    attributionId,
-  ).evidence_id);
+  const attributionEvidenceId = `evidence-attribution-${attempt.attemptId}`;
+  const attributionPayloadJson = canonicalJson(attributionPayload);
+  insertRow(store.location.databasePath, "evidence", {
+    evidence_id: attributionEvidenceId,
+    attempt_id: attempt.attemptId,
+    phase_execution_id: implement.persisted.phaseExecutionId,
+    context_id: implement.persisted.contextId,
+    producer_service: "CommitService",
+    scope: attributionId,
+    schema_version: "rickgent.commit-attribution.v2",
+    content_digest: digest(attributionPayloadJson),
+    inline_payload_json: attributionPayloadJson,
+    external_path: null,
+    external_digest: null,
+    external_size: null,
+    idempotency_key: `intent-${attempt.attemptId}`,
+    created_at: NOW,
+  });
   insertRow(store.location.databasePath, "commit_attributions", {
     commit_attribution_id: attributionId,
     attempt_id: attempt.attemptId,
@@ -488,6 +514,54 @@ function completeFixture(gateStatuses: readonly ("passed" | "failed" | "missing"
     mode_set_digest: attributionDigests.modeSetDigest,
     attribution_evidence_id: attributionEvidenceId,
     created_at: NOW,
+  });
+  insertUpstreamRowWithoutForeignKeys(store.location.databasePath, "attempt_commit_intents", {
+    commit_intent_id: `intent-${attempt.attemptId}`,
+    repository_id: run.repositoryId,
+    attempt_id: attempt.attemptId,
+    ownership_id: `fixture-owner-${attempt.attemptId}`,
+    owner_generation: 1,
+    ownership_state_version: 0,
+    ownership_context_digest: digest(`fixture-owner-context:${attempt.attemptId}`),
+    phase_execution_id: implement.persisted.phaseExecutionId,
+    context_id: implement.persisted.contextId,
+    execution_context_digest: implement.canonical.contextDigest,
+    launch_id: `fixture-launch-${attempt.attemptId}`,
+    process_receipt_id: `fixture-receipt-${attempt.attemptId}`,
+    delivery_ref: run.deliveryRef,
+    attempt_ref: `refs/rickgent/runs/${run.runId}/attempts/${attempt.attemptId}`,
+    baseline_oid: attempt.deliveryBaselineOid,
+    contract_digest: attempt.contractDigest,
+    delivery_ref_claim_id: `fixture-delivery-claim-${attempt.attemptId}`,
+    delivery_ref_expected_version: 0,
+    attempt_ref_claim_id: `fixture-attempt-claim-${attempt.attemptId}`,
+    attempt_ref_expected_version: 0,
+    worktree_claim_id: `fixture-worktree-claim-${attempt.attemptId}`,
+    worktree_expected_version: 0,
+    isolated_index_claim_id: `fixture-index-claim-${attempt.attemptId}`,
+    isolated_index_expected_version: 0,
+    tree_before_oid: baselineTreeOid,
+    tree_after_oid: candidateTreeOid,
+    candidate_diff_digest: attributionDigests.candidateDiffDigest,
+    path_set_digest: attributionDigests.pathSetDigest,
+    change_kind_set_digest: attributionDigests.changeKindSetDigest,
+    mode_set_digest: attributionDigests.modeSetDigest,
+    normalized_delta_json: canonicalJson(attributionPayload.normalized_delta),
+    verification_receipt_digests_json: canonicalJson([digest(`fixture-verification:${attempt.attemptId}`)]),
+    commit_metadata_json: canonicalJson({ fixture: true }),
+    input_digest: digest(`fixture-intent-input:${attempt.attemptId}`),
+    idempotency_key: `fixture-intent:${attempt.attemptId}`,
+    state: "finalized",
+    state_version: 1,
+    commit_attribution_id: attributionId,
+    commit_oid: candidateOid,
+    delivery_ref_observed_oid: attempt.deliveryBaselineOid,
+    attempt_ref_before_oid: attempt.deliveryBaselineOid,
+    attempt_ref_after_oid: candidateOid,
+    command_receipts_json: canonicalJson([{ fixture: true }]),
+    result_digest: digest(`fixture-intent-result:${attempt.attemptId}`),
+    created_at: NOW,
+    finalized_at: NOW,
   });
 
   const releaseEvidenceId = String(appendEvidence(

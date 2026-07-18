@@ -422,6 +422,23 @@ function insertFixtureRow(
   }
 }
 
+/** Only for isolated downstream-authority fixtures whose current upstream producer has its own corpus. */
+function insertUpstreamFixtureRowWithoutForeignKeys(
+  databasePath: string,
+  table: string,
+  row: Readonly<Record<string, SqlValue>>,
+): void {
+  const database = new DatabaseSync(databasePath, { enableForeignKeyConstraints: false, timeout: 1_000 });
+  try {
+    const columns = Object.keys(row);
+    database.prepare(
+      `INSERT INTO "${table}" (${columns.map((column) => `"${column}"`).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+    ).run(...columns.map((column) => row[column] ?? null));
+  } finally {
+    database.close();
+  }
+}
+
 interface PhaseGuardFixtures {
   readonly leaseId: string;
   readonly processReceiptId: string;
@@ -673,6 +690,57 @@ function promotionPrerequisites(
     mode_set_digest: digest("promotion-mode-set"),
     attribution_evidence_id: String(evidence.evidence_id),
     created_at: "2026-07-16T12:00:00.000Z",
+  });
+  const delta = canonicalFixtureDelta(fixture, candidateOid);
+  const baselineTreeOid = repositoryTree(fixture.repo, fixture.attempt.deliveryBaselineOid);
+  const candidateTreeOid = repositoryTree(fixture.repo, candidateOid);
+  insertUpstreamFixtureRowWithoutForeignKeys(fixture.store.location.databasePath, "attempt_commit_intents", {
+    commit_intent_id: `intent-${fixture.attempt.attemptId}`,
+    repository_id: fixture.store.location.repositoryId,
+    attempt_id: fixture.attempt.attemptId,
+    ownership_id: `fixture-owner-${fixture.attempt.attemptId}`,
+    owner_generation: 1,
+    ownership_state_version: 0,
+    ownership_context_digest: digest(`fixture-owner-context:${fixture.attempt.attemptId}`),
+    phase_execution_id: fixture.phase.persisted.phaseExecutionId,
+    context_id: fixture.phase.persisted.contextId,
+    execution_context_digest: fixture.phase.canonical.contextDigest,
+    launch_id: `fixture-launch-${fixture.attempt.attemptId}`,
+    process_receipt_id: `fixture-receipt-${fixture.attempt.attemptId}`,
+    delivery_ref: fixture.run.deliveryRef,
+    attempt_ref: `refs/rickgent/runs/${fixture.run.runId}/attempts/${fixture.attempt.attemptId}`,
+    baseline_oid: fixture.attempt.deliveryBaselineOid,
+    contract_digest: fixture.attempt.contractDigest,
+    delivery_ref_claim_id: `fixture-delivery-claim-${fixture.attempt.attemptId}`,
+    delivery_ref_expected_version: 0,
+    attempt_ref_claim_id: `fixture-attempt-claim-${fixture.attempt.attemptId}`,
+    attempt_ref_expected_version: 0,
+    worktree_claim_id: `fixture-worktree-claim-${fixture.attempt.attemptId}`,
+    worktree_expected_version: 0,
+    isolated_index_claim_id: `fixture-index-claim-${fixture.attempt.attemptId}`,
+    isolated_index_expected_version: 0,
+    tree_before_oid: baselineTreeOid,
+    tree_after_oid: candidateTreeOid,
+    candidate_diff_digest: delta.candidateDiffDigest,
+    path_set_digest: delta.pathSetDigest,
+    change_kind_set_digest: delta.changeKindSetDigest,
+    mode_set_digest: delta.modeSetDigest,
+    normalized_delta_json: JSON.stringify(delta.entries),
+    verification_receipt_digests_json: JSON.stringify([digest(`fixture-verification:${fixture.attempt.attemptId}`)]),
+    commit_metadata_json: JSON.stringify({ fixture: true }),
+    input_digest: digest(`fixture-intent-input:${fixture.attempt.attemptId}`),
+    idempotency_key: `fixture-intent:${fixture.attempt.attemptId}`,
+    state: "finalized",
+    state_version: 1,
+    commit_attribution_id: commitAttributionId,
+    commit_oid: candidateOid,
+    delivery_ref_observed_oid: fixture.attempt.deliveryBaselineOid,
+    attempt_ref_before_oid: fixture.attempt.deliveryBaselineOid,
+    attempt_ref_after_oid: candidateOid,
+    command_receipts_json: JSON.stringify([{ fixture: true }]),
+    result_digest: digest(`fixture-intent-result:${fixture.attempt.attemptId}`),
+    created_at: "2026-07-16T12:00:00.000Z",
+    finalized_at: "2026-07-16T12:00:00.000Z",
   });
   insertFixtureRow(fixture.store.location.databasePath, "oracle_decisions", {
     oracle_decision_id: oracleDecisionId,
@@ -2843,14 +2911,20 @@ describe("lifecycle record authority", () => {
         ),
       });
       const attributionRequest = lifecycleAttributionRequest(data, "happy");
-      const attribution = data.authority.recordCommitAttribution(attributionRequest);
+      expect(() => data.authority.recordCommitAttribution(attributionRequest)).toThrow(/only CommitService/);
+      const attributionEvidence = one(
+        data.fixture.store.location.databasePath,
+        "SELECT * FROM evidence WHERE evidence_id = ?",
+        attributionRequest.attributionEvidenceId,
+      ) as StateRecord;
+      const durableAttribution = promotionPrerequisites(data.fixture, attributionEvidence, data.candidateOid);
       const attributionProof = [{
         purpose: "commit-attribution",
         evidenceId: attributionRequest.attributionEvidenceId,
       }] as const;
       started.transitions.beginAttemptCleanup({
         attemptId: data.fixture.attempt.attemptId,
-        commitAttributionId: attributionRequest.commitAttributionId,
+        commitAttributionId: durableAttribution.commitAttributionId,
         ...ownedTransitionRequest(
           data.fixture.phase.canonical.contextDigest,
           "lifecycle:happy:attempt-cleanup",
@@ -2877,7 +2951,6 @@ describe("lifecycle record authority", () => {
       expect(acceptedReview).toMatchObject({ verdict: "accepted", cycle: 2 });
       expect(remediation).toMatchObject({ cycle: 1, result_tree_oid: data.candidateTreeOid });
       expect(gate).toMatchObject({ gate_id: "VER-TRANSITION", status: "passed", required: 1 });
-      expect(attribution).toMatchObject({ commit_oid: data.candidateOid, path_set_digest: data.delta.pathSetDigest });
       expect(cleanup).toMatchObject({ outcome: "verified", delivery_ref_observed_oid: data.fixture.run.currentDeliveryOid });
 
       expect(() => data.authority.recordProcessReceipt(processRequest)).toThrow(/only ProcessSupervisor/);
@@ -2885,7 +2958,7 @@ describe("lifecycle record authority", () => {
       expect(data.authority.recordReview(acceptedReviewRequest)).toEqual(acceptedReview);
       expect(data.authority.recordRemediation(remediationRequest)).toEqual(remediation);
       expect(data.authority.recordGateResult(gateRequest)).toEqual(gate);
-      expect(data.authority.recordCommitAttribution(attributionRequest)).toEqual(attribution);
+      expect(() => data.authority.recordCommitAttribution(attributionRequest)).toThrow(/only CommitService/);
       expect(data.authority.recordCleanup(cleanupRequest)).toEqual(cleanup);
 
       expectStateCode(() => data.authority.recordReview({
@@ -2900,10 +2973,10 @@ describe("lifecycle record authority", () => {
         ...gateRequest,
         createdAt: "2026-07-16T13:03:00.000Z",
       }), "RICKGENT_STATE_IDEMPOTENCY_CONFLICT");
-      expectStateCode(() => data.authority.recordCommitAttribution({
+      expect(() => data.authority.recordCommitAttribution({
         ...attributionRequest,
         createdAt: "2026-07-16T13:04:00.000Z",
-      }), "RICKGENT_STATE_IDEMPOTENCY_CONFLICT");
+      })).toThrow(/only CommitService/);
       expectStateCode(() => data.authority.recordCleanup({
         ...cleanupRequest,
         createdAt: "2026-07-16T13:05:00.000Z",
@@ -2914,7 +2987,7 @@ describe("lifecycle record authority", () => {
       execFileSync("git", ["-C", data.fixture.repo, "commit", "-qm", "later live state"]);
       const laterOid = repoHead(data.fixture.repo);
       execFileSync("git", ["-C", data.fixture.repo, "update-ref", data.fixture.run.deliveryRef, laterOid]);
-      expect(data.authority.recordCommitAttribution(attributionRequest)).toEqual(attribution);
+      expect(() => data.authority.recordCommitAttribution(attributionRequest)).toThrow(/only CommitService/);
       expect(data.authority.recordCleanup(cleanupRequest)).toEqual(cleanup);
 
       for (const table of [
@@ -3059,15 +3132,15 @@ describe("lifecycle record authority", () => {
     }
   });
 
-  it("rejects attribution digest drift and an independently observed out-of-scope commit", () => {
+  it("keeps legacy attribution production disabled even for drifted and out-of-scope inputs", () => {
     const digestMismatch = prepareLifecycleFixture("attribution-digest");
     try {
       advanceLifecycleToConverging(digestMismatch, "attribution-digest");
       const request = lifecycleAttributionRequest(digestMismatch, "attribution-digest");
-      expectStateCode(() => digestMismatch.authority.recordCommitAttribution({
+      expect(() => digestMismatch.authority.recordCommitAttribution({
         ...request,
         pathSetDigest: digest("wrong-path-set"),
-      }), "RICKGENT_STATE_TRANSITION_ILLEGAL");
+      })).toThrow(/only CommitService/);
       expect(all(
         digestMismatch.fixture.store.location.databasePath,
         "SELECT commit_attribution_id FROM commit_attributions",
@@ -3114,7 +3187,7 @@ describe("lifecycle record authority", () => {
         },
         commitAttributionId,
       );
-      expectStateCode(() => outOfScope.authority.recordCommitAttribution({
+      expect(() => outOfScope.authority.recordCommitAttribution({
         commitAttributionId,
         attemptId: outOfScope.fixture.attempt.attemptId,
         baselineOid: outOfScope.fixture.attempt.deliveryBaselineOid,
@@ -3129,7 +3202,7 @@ describe("lifecycle record authority", () => {
         modeSetDigest: delta.modeSetDigest,
         attributionEvidenceId: String(evidence.evidence_id),
         createdAt: "2026-07-16T12:04:00.000Z",
-      }), "RICKGENT_STATE_TRANSITION_ILLEGAL");
+      })).toThrow(/only CommitService/);
       expect(all(
         outOfScope.fixture.store.location.databasePath,
         "SELECT commit_attribution_id FROM commit_attributions",

@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "contract_id": "rickgent-state-and-lifecycle-v1",
   "decision_status": "frozen_decision_only",
-  "decision_digest": "sha256:bd358e547129cd841119d802d9157a25d6f367dbc7ea7f5bf31cdab723cae19e",
+  "decision_digest": "sha256:922b76df8bde4fc252cd4c15973a0ece07b3114eb338b94bdcb2e50e5d2d510c",
   "parent_authority": {
     "contract_id": "rickgent-trust-spine-v1",
     "path": "docs/architecture/reliability/trust-spine-contract.json"
@@ -146,9 +146,18 @@
         "released_checksum": "sha256:c94e5b62aa8dae64740685c13159f2d19610909729c789e6638deb59855ff8ce",
         "sqlite_schema_checksum": "sha256:c208339c0350aae8bd1ee3784da4e4ffc559b41e9c6079530a89da53c08753e3",
         "status": "implemented"
+      },
+      {
+        "version": 4,
+        "number": "004",
+        "name": "004_durable_commit_attribution",
+        "sql_owner_ticket": "t20",
+        "released_checksum": "sha256:66f819b89e1781ca7fdc7311e269a4991a86706224eaa269b0198ad434ce6469",
+        "sqlite_schema_checksum": "sha256:af782456d3402bd47cff0ca9fd4e358c52028c14fee3470efcc295cac926542d",
+        "status": "implemented"
       }
     ],
-    "future_policy": "append 004 and later; never edit a released name, definition, or checksum"
+    "future_policy": "append 005 and later; never edit a released name, definition, or checksum"
   },
   "entity_model": {
     "all_tables_strict": true,
@@ -507,6 +516,8 @@
       {"name": "heartbeat_lease", "begin": "BEGIN IMMEDIATE", "owner": "LeaseService", "cas": true, "owner_check": true},
       {"name": "process_supervisor_launch", "begin": "BEGIN IMMEDIATE", "owner": "ProcessSupervisor", "cas": true, "owner_check": true},
       {"name": "process_supervisor_terminal", "begin": "BEGIN IMMEDIATE", "owner": "ProcessSupervisor", "cas": false, "owner_check": true},
+      {"name": "commit_attribution_prepare", "begin": "BEGIN IMMEDIATE", "owner": "CommitService", "cas": false, "owner_check": true},
+      {"name": "commit_attribution_finalize", "begin": "BEGIN IMMEDIATE", "owner": "CommitService", "cas": true, "owner_check": true},
       {"name": "begin_lease_cleanup", "begin": "BEGIN IMMEDIATE", "owner": "LeaseService", "cas": true, "owner_check": true},
       {"name": "release_lease", "begin": "BEGIN IMMEDIATE", "owner": "LeaseService", "cas": true, "owner_check": true},
       {"name": "reserve_resource", "begin": "BEGIN IMMEDIATE", "owner": "ResourceService", "cas": true, "owner_check": true},
@@ -642,7 +653,7 @@
   },
   "resource_identity": {
     "status": "process_supervisor_primitive_implemented",
-    "ownership_tables": ["attempt_ownership_leases", "attempt_resource_claims", "attempt_ownership_operations", "attempt_process_launches", "attempt_process_observations", "attempt_process_terminal_receipts"],
+    "ownership_tables": ["attempt_ownership_leases", "attempt_resource_claims", "attempt_ownership_operations", "attempt_process_launches", "attempt_process_observations", "attempt_process_terminal_receipts", "attempt_commit_intents"],
     "production_cutover_ticket": "t22",
     "process_death_evidence_producer_ticket": "t19",
     "all_descendant_death_authority_ticket": "t22",
@@ -708,8 +719,16 @@
         "seal": "one receipt per launch over the exact ordered observation references and result digest",
         "death_semantics": "process-group death, sampled tracked-identity death, and authoritative all-descendant death are separate facts; stale recovery requires process-group death plus authoritative containment proof of every descendant dead"
       },
+      "attempt_commit_intents": {
+        "mode": "cas_intent",
+        "authority": "runtime-unforgeable CommitService prepare/finalize commands around exact-path isolated-index staging, deterministic commit creation, and attempt-ref compare-and-swap",
+        "lineage": ["repository_id", "attempt_id", "ownership_id", "owner_generation", "ownership_context_digest", "phase_execution_id", "context_id", "execution_context_digest", "launch_id", "process_receipt_id"],
+        "preimage": "prepared after harmless isolated-index/tree construction and before commit-object creation or attempt-ref mutation; pins exact active resource versions, refs, baseline, contract, normalized delta, required verification receipts, and deterministic commit metadata",
+        "finalization": "one legal intent_recorded version 0 to finalized version 1 edge atomically links CommitService v2 evidence and the frozen v1 commit_attributions summary"
+      },
       "resource_mutation_authority": "workspace allocation and activation require runtime-unforgeable kind-specific observation receipts; the ready workspace is runtime-unforgeable and exact-plan-bound; readiness uses read-only Git/index observations between entry and final current-owner fences, rechecks the selected common directory and exact worktree administrative identity, returns current cleanup authority on failure, and mints an exact ref/worktree/gitdir/index plus generation/version/expiry-bound spawn observation for t22 consumption; terminal release/quarantine APIs remain absent until t21 proof authorities exist",
       "process_death_producer_authority": "generic evidence append rejects the ProcessSupervisor label; only the runtime supervisor can atomically persist exact launch-bound evidence and terminal observations; its default sampled POSIX adapter cannot mint all-descendant release authority",
+      "commit_attribution_producer_authority": "generic evidence append and LifecycleRecordAuthority reject current CommitService truth; only CommitService may prepare and finalize exact owner/process/resource/ref-bound attribution",
       "legacy_v1_tables": "leases, attempt_resources, and process_receipts remain immutable-schema compatibility inputs and are not the current ownership or process-supervision writer path"
     }
   },
