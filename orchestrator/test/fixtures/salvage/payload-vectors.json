@@ -1,0 +1,55 @@
+{
+  "schema_version": "rickgent.salvage-payload-vectors/v1",
+  "vectors": [
+    {
+      "id": "tracked-text",
+      "kind": "file",
+      "path": "owned/tracked.txt",
+      "before_base64": "YmVmb3JlCg==",
+      "after_base64": "YWZ0ZXIK",
+      "mode": "100644"
+    },
+    {
+      "id": "untracked-text",
+      "kind": "file",
+      "path": "owned/untracked.txt",
+      "after_base64": "dW50cmFja2VkIHNhbHZhZ2UK",
+      "mode": "100644"
+    },
+    {
+      "id": "untracked-empty",
+      "kind": "file",
+      "path": "owned/empty.txt",
+      "after_base64": "",
+      "mode": "100644"
+    },
+    {
+      "id": "tracked-binary",
+      "kind": "file",
+      "path": "owned/tracked.bin",
+      "before_base64": "AAECYmFzZf8=",
+      "after_base64": "AP+AY2hhbmdlZAA=",
+      "mode": "100644"
+    },
+    {
+      "id": "untracked-binary",
+      "kind": "file",
+      "path": "owned/untracked.bin",
+      "after_base64": "AAECA/8Af4A=",
+      "mode": "100644"
+    },
+    {
+      "id": "untracked-symlink",
+      "kind": "symlink",
+      "path": "owned/link",
+      "target": "../../outside/sentinel.bin",
+      "mode": "120000"
+    }
+  ],
+  "hostile_paths": [
+    ":(glob)**",
+    "--upload-pack=foreign",
+    "owned/newline\\nname.txt",
+    "owned/tab\\tname.txt"
+  ]
+}

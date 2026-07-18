@@ -1,6 +1,7 @@
 import { execFileSync, fork, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -8,6 +9,7 @@ import {
   realpathSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,10 +22,14 @@ import {
   deriveAttemptWorkspacePlan,
   isAuthorizedAttemptWorkspaceSpawnAuthorization,
   provisionAttemptWorkspace,
+  snapshotAttemptCaller,
 } from "../../src/git/attempt-workspace.js";
+import { CleanupService } from "../../src/lifecycle/cleanup.js";
+import { captureDurableSalvageArchive } from "../../src/lifecycle/salvage.js";
 import {
   LeaseAuthority,
   isAuthorizedAttemptOwnershipCommand,
+  type FinalizeCleanupRequest,
 } from "../../src/state/leases.js";
 import {
   StateStoreError,
@@ -512,9 +518,382 @@ describe("owner-checked attempt ownership", () => {
         ownership: { state: "live", stateVersion: 1 },
         currentOwnership: { state: "cleanup_pending", stateVersion: 2 },
       });
-      expectCode(() => authority.assertFresh(cleanup), "RICKGENT_STATE_OWNER_MISMATCH");
+      expect(authority.assertFresh(cleanup)).toMatchObject({
+        ownership: { state: "cleanup_pending", stateVersion: 2 },
+      });
+      expect("recordSalvage" in authority).toBe(true);
+      expect("finalizeCleanup" in authority).toBe(true);
       expect("release" in authority).toBe(false);
       expect("quarantine" in authority).toBe(false);
+    } finally {
+      fixture.store.close();
+    }
+  });
+
+  it("persists authority-bound salvage with replay and lets only a recovered lineage owner consume it", () => {
+    const fixture = seed("terminal-cleanup");
+    try {
+      const authority = new LeaseAuthority(fixture.store);
+      const acquired = authority.acquire(authority.prepareAcquisition({
+        attemptId: fixture.attemptId,
+        idempotencyKey: "acquire",
+      }));
+      execFileSync("/usr/bin/git", ["-C", fixture.repo, "update-ref", acquired.plan.deliveryRef, fixture.baselineOid]);
+      execFileSync("/usr/bin/git", ["-C", fixture.repo, "update-ref", acquired.plan.attemptRef, fixture.baselineOid]);
+      expect(git(fixture.repo, "rev-parse", "--verify", acquired.plan.deliveryRef)).toBe(fixture.baselineOid);
+      const suffix = "terminal-cleanup";
+      const groupDeathEvidenceId = appendDeathEvidence(fixture, acquired.ownership, suffix);
+      const processReceiptId = `process-receipt-${fixture.attemptId}-${suffix}`;
+      const contextId = `context-death-${fixture.attemptId}-${suffix}`;
+      const cleanup = authority.beginCleanup({ ownership: acquired, idempotencyKey: "begin-cleanup" });
+      const captured = captureDurableSalvageArchive(fixture.repo, {
+        archiveRoot: cleanup.plan.salvageArchivePath,
+        baselineOid: fixture.baselineOid,
+        attemptRef: cleanup.plan.attemptRef,
+        expectedAttemptRefOid: fixture.baselineOid,
+        salvageRecordId: `salvage-${fixture.attemptId}`,
+        attemptId: fixture.attemptId,
+        ownershipId: cleanup.ownership.ownershipId,
+        ownerGeneration: cleanup.ownership.generation,
+        ownershipContextDigest: cleanup.ownership.contextDigest as `sha256:${string}`,
+        contextId,
+        evidenceId: `evidence-salvage-${fixture.attemptId}`,
+        processReceiptId,
+        groupDeathEvidenceId,
+      });
+      expect(captured).toMatchObject({ outcome: "empty", receipt: { disposition: "empty" } });
+      if (captured.receipt === null) throw new Error(captured.detail);
+      const salvage = authority.recordSalvage({
+        ownership: cleanup,
+        receipt: captured.receipt,
+        idempotencyKey: "record-salvage",
+      });
+      expect(salvage.replayed).toBe(false);
+      expect(authority.recordSalvage({
+        ownership: cleanup,
+        receipt: captured.receipt,
+        idempotencyKey: "record-salvage",
+      }).replayed).toBe(true);
+      while (Date.now() <= Date.parse(captured.receipt.createdAt)) { /* force a fresh post-restart receipt time */ }
+      const recaptured = captureDurableSalvageArchive(fixture.repo, {
+        archiveRoot: cleanup.plan.salvageArchivePath,
+        baselineOid: fixture.baselineOid,
+        attemptRef: cleanup.plan.attemptRef,
+        expectedAttemptRefOid: fixture.baselineOid,
+        salvageRecordId: captured.receipt.salvageRecordId,
+        attemptId: fixture.attemptId,
+        ownershipId: cleanup.ownership.ownershipId,
+        ownerGeneration: cleanup.ownership.generation,
+        ownershipContextDigest: cleanup.ownership.contextDigest as `sha256:${string}`,
+        contextId,
+        evidenceId: captured.receipt.evidenceId,
+        processReceiptId,
+        groupDeathEvidenceId,
+      });
+      if (recaptured.receipt === null) throw new Error(recaptured.detail);
+      expect(recaptured.receipt.createdAt).not.toBe(captured.receipt.createdAt);
+      expect(authority.recordSalvage({
+        ownership: cleanup,
+        receipt: recaptured.receipt,
+        idempotencyKey: "record-salvage",
+      })).toMatchObject({ replayed: true, ownership: { state: "cleanup_pending" } });
+      expect(() => fixture.store.appendEvidence({ producer_service: "SalvageService" } as never)).toThrow(TypeError);
+      expect(() => fixture.store.appendEvidence({ producer_service: "CleanupService" } as never)).toThrow(TypeError);
+
+      const conflictingCapture = captureDurableSalvageArchive(fixture.repo, {
+        archiveRoot: join(dirname(fixture.repo), "conflicting-salvage-archive"),
+        baselineOid: fixture.baselineOid,
+        attemptRef: cleanup.plan.attemptRef,
+        expectedAttemptRefOid: fixture.baselineOid,
+        salvageRecordId: `salvage-conflict-${fixture.attemptId}`,
+        attemptId: fixture.attemptId,
+        ownershipId: cleanup.ownership.ownershipId,
+        ownerGeneration: cleanup.ownership.generation,
+        ownershipContextDigest: cleanup.ownership.contextDigest as `sha256:${string}`,
+        contextId,
+        evidenceId: `evidence-salvage-conflict-${fixture.attemptId}`,
+        processReceiptId,
+        groupDeathEvidenceId,
+      });
+      if (conflictingCapture.receipt === null) throw new Error(conflictingCapture.detail);
+      expectCode(() => authority.recordSalvage({
+        ownership: cleanup,
+        receipt: conflictingCapture.receipt,
+        idempotencyKey: "record-salvage",
+      }), "RICKGENT_STATE_IDEMPOTENCY_CONFLICT");
+      expectCode(() => authority.assertCleanupReady({
+        ownership: cleanup,
+        processReceiptId: "foreign-process-receipt",
+        groupDeathEvidenceId,
+        salvageRecordId: captured.receipt.salvageRecordId,
+        expectedAttemptRefOid: fixture.baselineOid,
+        idempotencyKey: "wrong-process",
+      }), "RICKGENT_STATE_OWNER_MISMATCH");
+      expect(git(fixture.repo, "rev-parse", "--verify", cleanup.plan.deliveryRef)).toBe(fixture.baselineOid);
+      const database = new DatabaseSync(fixture.store.location.databasePath);
+      try {
+        database.prepare(`
+          UPDATE attempt_ownership_leases
+          SET heartbeat_at = ?, expires_at = ?, state_version = state_version + 1
+          WHERE ownership_id = ?
+        `).run("2020-01-01T00:00:00.000Z", "2020-01-01T00:01:00.000Z", cleanup.ownership.ownershipId);
+      } finally {
+        database.close();
+      }
+      const recovery = authority.recoverStale(authority.prepareStaleRecovery({
+        attemptId: fixture.attemptId,
+        expiredOwnershipId: cleanup.ownership.ownershipId,
+        deathEvidenceId: groupDeathEvidenceId,
+        idempotencyKey: "recover-cleanup",
+      }));
+      expect(recovery).toMatchObject({
+        purpose: "recovery_cleanup",
+        ownership: { generation: 2, state: "cleanup_pending" },
+      });
+      expect(authority.assertCleanupReady({
+        ownership: recovery,
+        processReceiptId,
+        groupDeathEvidenceId,
+        salvageRecordId: captured.receipt.salvageRecordId,
+        expectedAttemptRefOid: fixture.baselineOid,
+        idempotencyKey: "recovered-ready",
+      })).toMatchObject({ ownership: { generation: 2, state: "cleanup_pending" } });
+    } finally {
+      fixture.store.close();
+    }
+  });
+
+  it("rejects pre-death salvage and revalidates captured bytes before cleanup readiness", () => {
+    const fixture = seed("salvage-stop-ship");
+    try {
+      const authority = new LeaseAuthority(fixture.store);
+      const acquired = authority.acquire(authority.prepareAcquisition({
+        attemptId: fixture.attemptId,
+        idempotencyKey: "acquire",
+      }));
+      const provisioned = provisionAttemptWorkspace(authority, acquired);
+      if (!provisioned.ok) throw new Error(`${provisioned.code}: ${provisioned.detail}`);
+      const cleanup = authority.beginCleanup({ ownership: provisioned.workspace.ownership, idempotencyKey: "begin-cleanup" });
+      const suffix = "salvage-stop-ship";
+      const processReceiptId = `process-receipt-${fixture.attemptId}-${suffix}`;
+      const groupDeathEvidenceId = `evidence-death-${fixture.attemptId}-${suffix}`;
+      const contextId = `context-death-${fixture.attemptId}-${suffix}`;
+      writeFileSync(join(provisioned.workspace.worktreePath, "failed-work.txt"), "must survive cleanup\n", "utf8");
+      const captureRequest = {
+        archiveRoot: cleanup.plan.salvageArchivePath,
+        baselineOid: fixture.baselineOid,
+        attemptRef: cleanup.plan.attemptRef,
+        expectedAttemptRefOid: fixture.baselineOid,
+        indexPath: cleanup.plan.isolatedIndexPath,
+        salvageRecordId: `salvage-${fixture.attemptId}`,
+        attemptId: fixture.attemptId,
+        ownershipId: cleanup.ownership.ownershipId,
+        ownerGeneration: cleanup.ownership.generation,
+        ownershipContextDigest: cleanup.ownership.contextDigest as `sha256:${string}`,
+        contextId,
+        evidenceId: `evidence-salvage-${fixture.attemptId}`,
+        processReceiptId,
+        groupDeathEvidenceId,
+      } as const;
+      const beforeDeath = captureDurableSalvageArchive(provisioned.workspace.worktreePath, captureRequest);
+      if (beforeDeath.receipt === null) throw new Error(beforeDeath.detail);
+      expectCode(() => authority.recordSalvage({
+        ownership: cleanup,
+        receipt: beforeDeath.receipt,
+        idempotencyKey: "record-before-death",
+      }), "RICKGENT_STATE_OWNER_MISMATCH");
+
+      const deathObservedMs = Date.parse(beforeDeath.receipt.createdAt) + 1;
+      appendDeathEvidence(fixture, cleanup.ownership, suffix, new Date(deathObservedMs).toISOString());
+      expectCode(() => authority.recordSalvage({
+        ownership: cleanup,
+        receipt: beforeDeath.receipt,
+        idempotencyKey: "record-stale-capture",
+      }), "RICKGENT_STATE_OWNER_MISMATCH");
+      while (Date.now() <= deathObservedMs) { /* preserve a strict causal timestamp edge */ }
+
+      const afterDeath = captureDurableSalvageArchive(provisioned.workspace.worktreePath, captureRequest);
+      if (afterDeath.receipt === null || afterDeath.receipt.artifactPath === null) throw new Error(afterDeath.detail);
+      authority.recordSalvage({
+        ownership: cleanup,
+        receipt: afterDeath.receipt,
+        idempotencyKey: "record-after-death",
+      });
+      const artifactBytes = readFileSync(afterDeath.receipt.artifactPath);
+      artifactBytes[0] = artifactBytes[0]! ^ 0xff;
+      writeFileSync(afterDeath.receipt.artifactPath, artifactBytes);
+      expectCode(() => authority.assertCleanupReady({
+        ownership: cleanup,
+        processReceiptId,
+        groupDeathEvidenceId,
+        salvageRecordId: afterDeath.receipt.salvageRecordId,
+        expectedAttemptRefOid: fixture.baselineOid,
+        idempotencyKey: "cleanup-ready-corrupt-artifact",
+      }), "RICKGENT_STATE_CONFLICT");
+      writeFileSync(afterDeath.receipt.artifactPath, artifactBytes.map((byte, index) => index === 0 ? byte ^ 0xff : byte));
+      const finalizeCleanup = authority.finalizeCleanup.bind(authority);
+      Object.defineProperty(authority, "finalizeCleanup", {
+        configurable: true,
+        value: (request: FinalizeCleanupRequest) => {
+          const bytes = readFileSync(afterDeath.receipt!.artifactPath!);
+          bytes[0] = bytes[0]! ^ 0xff;
+          writeFileSync(afterDeath.receipt!.artifactPath!, bytes);
+          return finalizeCleanup(request);
+        },
+      });
+      const callerBefore = snapshotAttemptCaller(fixture.repo, cleanup.gitCommonDirectory);
+      expectCode(() => new CleanupService(authority).execute({
+        ownership: cleanup,
+        callerRepository: fixture.repo,
+        callerBefore,
+        processReceiptId,
+        groupDeathEvidenceId,
+        salvageRecordId: afterDeath.receipt.salvageRecordId,
+        contextId,
+        expectedAttemptRefOid: fixture.baselineOid,
+        idempotencyKey: "finalize-corrupt-artifact",
+      }), "RICKGENT_STATE_CONFLICT");
+      expect(all(
+        fixture.store.location.databasePath,
+        "SELECT state FROM attempt_ownership_leases WHERE attempt_id = ?",
+        fixture.attemptId,
+      )).toEqual([{ state: "cleanup_pending" }]);
+      expect(all(fixture.store.location.databasePath, "SELECT * FROM cleanup_records WHERE attempt_id = ?", fixture.attemptId))
+        .toHaveLength(0);
+    } finally {
+      fixture.store.close();
+    }
+  });
+
+  it("atomically finalizes cleanup only after removing a real owned workspace while preserving delivery and caller state", () => {
+    const fixture = seed("terminal-workspace");
+    try {
+      const authority = new LeaseAuthority(fixture.store);
+      const acquired = authority.acquire(authority.prepareAcquisition({
+        attemptId: fixture.attemptId,
+        idempotencyKey: "acquire",
+      }));
+      const provisioned = provisionAttemptWorkspace(authority, acquired);
+      if (!provisioned.ok) throw new Error(`${provisioned.code}: ${provisioned.detail}`);
+      const workspace = provisioned.workspace;
+      const suffix = "terminal-workspace";
+      const groupDeathEvidenceId = appendDeathEvidence(fixture, workspace.ownership.ownership, suffix);
+      const processReceiptId = `process-receipt-${fixture.attemptId}-${suffix}`;
+      const contextId = `context-death-${fixture.attemptId}-${suffix}`;
+      const cleanup = authority.beginCleanup({ ownership: workspace.ownership, idempotencyKey: "begin-cleanup" });
+      const captured = captureDurableSalvageArchive(workspace.worktreePath, {
+        archiveRoot: cleanup.plan.salvageArchivePath,
+        baselineOid: fixture.baselineOid,
+        attemptRef: cleanup.plan.attemptRef,
+        expectedAttemptRefOid: fixture.baselineOid,
+        indexPath: cleanup.plan.isolatedIndexPath,
+        salvageRecordId: `salvage-${fixture.attemptId}`,
+        attemptId: fixture.attemptId,
+        ownershipId: cleanup.ownership.ownershipId,
+        ownerGeneration: cleanup.ownership.generation,
+        ownershipContextDigest: cleanup.ownership.contextDigest as `sha256:${string}`,
+        contextId,
+        evidenceId: `evidence-salvage-${fixture.attemptId}`,
+        processReceiptId,
+        groupDeathEvidenceId,
+      });
+      if (captured.receipt === null) throw new Error(captured.detail);
+      authority.recordSalvage({
+        ownership: cleanup,
+        receipt: captured.receipt,
+        idempotencyKey: "record-salvage",
+      });
+      const callerBefore = snapshotAttemptCaller(fixture.repo, cleanup.gitCommonDirectory);
+      const deliveryBefore = git(fixture.repo, "rev-parse", "--verify", cleanup.plan.lineage.deliveryRef);
+      const cleanupRequest = {
+        ownership: cleanup,
+        callerRepository: fixture.repo,
+        callerBefore,
+        processReceiptId,
+        groupDeathEvidenceId,
+        salvageRecordId: captured.receipt.salvageRecordId,
+        contextId,
+        expectedAttemptRefOid: fixture.baselineOid,
+        idempotencyKey: "finalize-cleanup",
+      } as const;
+
+      const alternateCaller = join(dirname(fixture.repo), "alternate-caller");
+      git(fixture.repo, "worktree", "add", "--detach", "--quiet", alternateCaller, "HEAD");
+      const alternateBefore = snapshotAttemptCaller(alternateCaller, cleanup.gitCommonDirectory);
+      expect(() => new CleanupService(authority).execute({
+        ...cleanupRequest,
+        callerRepository: alternateCaller,
+        callerBefore: alternateBefore,
+        idempotencyKey: "foreign-caller-cleanup",
+      })).toThrow(/caller repository differs.*authority-bound/i);
+      expect(existsSync(cleanup.plan.allocationRoot)).toBe(true);
+      expect(git(fixture.repo, "rev-parse", "--verify", cleanup.plan.attemptRef)).toBe(fixture.baselineOid);
+
+      const foreignSentinel = join(cleanup.plan.allocationRoot, "foreign-sentinel.txt");
+      writeFileSync(foreignSentinel, "must not be recursively deleted\n", "utf8");
+      expect(() => new CleanupService(authority).execute({
+        ...cleanupRequest,
+        idempotencyKey: "partial-cleanup",
+      })).toThrow();
+      expect(readFileSync(foreignSentinel, "utf8")).toBe("must not be recursively deleted\n");
+      expect(all(fixture.store.location.databasePath, "SELECT state FROM attempt_ownership_leases WHERE attempt_id = ?", fixture.attemptId))
+        .toEqual([{ state: "cleanup_pending" }]);
+      expect(all(fixture.store.location.databasePath, "SELECT * FROM cleanup_records WHERE attempt_id = ?", fixture.attemptId)).toHaveLength(0);
+      unlinkSync(foreignSentinel);
+
+      let finalization: FinalizeCleanupRequest | undefined;
+      let loseFinalResponse = true;
+      const finalizeCleanup = authority.finalizeCleanup.bind(authority);
+      Object.defineProperty(authority, "finalizeCleanup", {
+        configurable: true,
+        value: (request: FinalizeCleanupRequest) => {
+          finalization = request;
+          const result = finalizeCleanup(request);
+          if (loseFinalResponse) {
+            loseFinalResponse = false;
+            throw new Error("simulated post-COMMIT cleanup response loss");
+          }
+          return result;
+        },
+      });
+      const service = new CleanupService(authority);
+      expect(() => service.execute(cleanupRequest)).toThrow(/post-COMMIT cleanup response loss/);
+      expect(existsSync(cleanup.plan.allocationRoot)).toBe(false);
+      const terminal = service.execute(cleanupRequest);
+      expect(terminal.replayed).toBe(true);
+      expect(terminal.ownership).toMatchObject({ state: "released" });
+      expect(terminal.resources.every((resource) => resource.state === "released" && resource.releaseProofDigest !== null)).toBe(true);
+      expect(git(fixture.repo, "rev-parse", "--verify", cleanup.plan.lineage.deliveryRef)).toBe(deliveryBefore);
+      expect(snapshotAttemptCaller(fixture.repo, cleanup.gitCommonDirectory)).toEqual(callerBefore);
+      expect(git(fixture.repo, "worktree", "list", "--porcelain")).not.toContain(cleanup.plan.worktreePath);
+      expect(() => lstatSync(cleanup.plan.worktreePath)).toThrow();
+      expect(() => lstatSync(cleanup.plan.isolatedIndexPath)).toThrow();
+      expect(() => lstatSync(cleanup.plan.allocationRoot)).toThrow();
+      expect(() => git(fixture.repo, "rev-parse", "--verify", cleanup.plan.attemptRef)).toThrow();
+      expect(all(fixture.store.location.databasePath, "SELECT DISTINCT state FROM attempt_resource_claims WHERE attempt_id = ?", fixture.attemptId))
+        .toEqual([{ state: "released" }]);
+      expect(all(fixture.store.location.databasePath, `
+        SELECT outcome, group_dead, resources_absent, lease_release_eligible
+        FROM cleanup_records WHERE attempt_id = ?
+      `, fixture.attemptId)).toEqual([{
+        outcome: "failed_clean",
+        group_dead: 1,
+        resources_absent: 1,
+        lease_release_eligible: 1,
+      }]);
+      if (finalization === undefined) throw new Error("cleanup finalization was not intercepted");
+      const committedFinalization = finalization;
+      expect(finalizeCleanup(committedFinalization)).toMatchObject({ replayed: true, ownership: { state: "released" } });
+      expect(() => authority.finalizeCleanup({
+        ownership: cleanup,
+        receipt: {} as never,
+        idempotencyKey: "forged-receipt",
+      })).toThrow(TypeError);
+      expectCode(() => finalizeCleanup({
+        ...committedFinalization,
+        idempotencyKey: "stale-finalization",
+      }), "RICKGENT_STATE_CONFLICT");
+      expect(all(fixture.store.location.databasePath, "SELECT * FROM cleanup_records WHERE attempt_id = ?", fixture.attemptId)).toHaveLength(1);
     } finally {
       fixture.store.close();
     }

@@ -292,7 +292,7 @@ function appendEvidence(
     attempt_id: fixture.attempt.attemptId,
     context_id: fixture.phase.persisted.contextId,
   });
-  return fixture.store.appendEvidence({
+  const row = {
     evidence_id: `evidence-${label}`,
     attempt_id: fixture.attempt.attemptId,
     phase_execution_id: fixture.phase.persisted.phaseExecutionId,
@@ -307,7 +307,12 @@ function appendEvidence(
     external_size: null,
     idempotency_key: `evidence:${label}`,
     created_at: "2026-07-16T12:00:00.000Z",
-  });
+  } as const;
+  if (producerService === "CleanupService") {
+    insertFixtureRow(fixture.store.location.databasePath, "evidence", row);
+    return Object.freeze({ ...row });
+  }
+  return fixture.store.appendEvidence(row);
 }
 
 function appendLifecycleEvidence(
@@ -319,7 +324,7 @@ function appendLifecycleEvidence(
   scope = `attempt:${fixture.attempt.attemptId}`,
 ): StateRecord {
   const text = canonicalJson(payload);
-  return fixture.store.appendEvidence({
+  const row = {
     evidence_id: `evidence-${label}`,
     attempt_id: fixture.attempt.attemptId,
     phase_execution_id: fixture.phase.persisted.phaseExecutionId,
@@ -334,7 +339,12 @@ function appendLifecycleEvidence(
     external_size: null,
     idempotency_key: `evidence:${label}`,
     created_at: "2026-07-16T12:00:00.000Z",
-  });
+  } as const;
+  if (producerService === "CleanupService") {
+    insertFixtureRow(fixture.store.location.databasePath, "evidence", row);
+    return Object.freeze({ ...row });
+  }
+  return fixture.store.appendEvidence(row);
 }
 
 function evidenceReference(evidence: StateRecord, purpose = "authority"): ExistingTransitionEvidenceReference {

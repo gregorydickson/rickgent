@@ -1,0 +1,106 @@
+{
+  "schema_version": "rickgent.salvage-corpus/v1",
+  "corpus_id": "t21-salvage-v1",
+  "complete_inventory": true,
+  "current_execution_surface": "durable_capture_restore_and_owner_bound_cleanup",
+  "proof_scope": "failed-work capture, exact restore, archive durability, Git invariance, cleanup ownership, and crash replay",
+  "bounds": {
+    "max_entries": 10000,
+    "max_file_bytes": 16777216,
+    "max_total_file_bytes": 67108864,
+    "max_bundle_bytes": 33554432,
+    "max_artifact_bytes": 100663296,
+    "max_git_metadata_bytes": 8388608,
+    "max_refs": 16
+  },
+  "required_observations": [
+    "capture_failure_is_not_empty_work",
+    "archive_precedes_destructive_cleanup",
+    "archive_survives_worktree_removal",
+    "restore_is_byte_mode_and_type_exact",
+    "committed_object_graph_is_retained",
+    "delivery_ref_is_unchanged",
+    "caller_head_index_and_dirty_bytes_are_unchanged",
+    "literal_paths_cannot_expand_scope",
+    "archive_creation_is_private_and_no_follow",
+    "file_path_total_and_git_output_bounds_are_strict",
+    "cleanup_requires_exact_owner_generation_and_resource_preimages",
+    "partial_cleanup_replays_exactly_once",
+    "crash_replay_resolves_to_preimage_postimage_or_quarantine",
+    "lease_release_follows_authoritative_group_death_and_verified_resource_terminality"
+  ],
+  "capabilities": [
+    {
+      "id": "durable_capture",
+      "current": "available",
+      "expected_api": "capture failed work into a content-addressed fsync-durable archive and mint a branded receipt"
+    },
+    {
+      "id": "exact_text_restore",
+      "current": "available",
+      "expected_api": "restore tracked, untracked, empty, and symlink work exactly"
+    },
+    {
+      "id": "exact_binary_restore",
+      "current": "available",
+      "expected_api": "restore tracked and untracked binary bytes exactly after verifying every digest"
+    },
+    {
+      "id": "committed_graph_capture",
+      "current": "available",
+      "expected_api": "retain bounded changed refs, commit OIDs, and a verified Git bundle"
+    },
+    {
+      "id": "literal_bounded_paths",
+      "current": "available",
+      "expected_api": "scan canonical filesystem paths literally under strict entry/file/total/ref/output bounds"
+    },
+    {
+      "id": "private_durable_archive",
+      "current": "available",
+      "expected_api": "create archives through canonical 0700 roots with no-follow exclusive publication and fsync"
+    },
+    {
+      "id": "caller_byte_invariance",
+      "current": "available",
+      "expected_api": "capture every worktree form without mutating HEAD, refs, or any Git index"
+    },
+    {
+      "id": "ownership_bound_cleanup",
+      "current": "available",
+      "expected_api": "persist only runtime-branded salvage receipts matching the exact cleanup owner and generation"
+    },
+    {
+      "id": "partial_cleanup_replay",
+      "current": "available",
+      "expected_api": "replay response loss at cleanup ownership begin to the same cleanup-pending owner and claim versions"
+    },
+    {
+      "id": "crash_replay",
+      "current": "available",
+      "expected_api": "replay a response-loss capture to the same content-addressed durable postimage"
+    }
+  ],
+  "cases": [
+    { "id": "empty-no-work", "family": "empty", "capability": "durable_capture", "current": "executable", "expected": "empty" },
+    { "id": "capture-failure-is-not-empty", "family": "failure", "capability": "durable_capture", "current": "executable", "expected": "capture_failed" },
+    { "id": "tracked-uncommitted-text", "family": "uncommitted", "capability": "exact_text_restore", "current": "executable", "expected": "captured" },
+    { "id": "untracked-text", "family": "untracked", "capability": "exact_text_restore", "current": "executable", "expected": "captured" },
+    { "id": "untracked-empty", "family": "empty", "capability": "exact_text_restore", "current": "executable", "expected": "captured" },
+    { "id": "untracked-symlink", "family": "symlink", "capability": "exact_text_restore", "current": "executable", "expected": "captured" },
+    { "id": "tracked-and-untracked-binary", "family": "binary", "capability": "exact_binary_restore", "current": "executable", "expected": "captured" },
+    { "id": "committed-clean-attempt", "family": "committed", "capability": "committed_graph_capture", "current": "executable", "expected": "captured" },
+    { "id": "mixed-worktree-index-ref", "family": "mixed", "capability": "caller_byte_invariance", "current": "executable", "expected": "captured" },
+    { "id": "archive-survives-worktree-removal", "family": "durability", "capability": "durable_capture", "current": "executable", "expected": "captured" },
+    { "id": "caller-and-delivery-invariance", "family": "invariance", "capability": "durable_capture", "current": "executable", "expected": "captured" },
+    { "id": "pathspec-magic-is-literal-filename", "family": "path", "capability": "literal_bounded_paths", "current": "executable", "expected": "captured" },
+    { "id": "max-path-count-plus-one", "family": "bounds", "capability": "literal_bounded_paths", "current": "executable", "expected": "capture_failed" },
+    { "id": "max-file-bytes-plus-one", "family": "bounds", "capability": "literal_bounded_paths", "current": "executable", "expected": "capture_failed" },
+    { "id": "max-total-bytes-plus-one", "family": "bounds", "capability": "literal_bounded_paths", "current": "executable", "expected": "capture_failed" },
+    { "id": "archive-root-symlink-swap", "family": "no_follow", "capability": "private_durable_archive", "current": "executable", "expected": "capture_failed" },
+    { "id": "wrong-owner-rejected", "family": "ownership", "capability": "ownership_bound_cleanup", "current": "executable", "expected": "rejected" },
+    { "id": "partial-cleanup-resume", "family": "cleanup", "capability": "partial_cleanup_replay", "current": "executable", "expected": "cleanup_pending_exact_replay" },
+    { "id": "untracked-capture-never-mutates-index", "family": "crash", "capability": "caller_byte_invariance", "current": "executable", "expected": "index_unchanged" },
+    { "id": "crash-after-archive-rename", "family": "crash", "capability": "crash_replay", "current": "executable", "expected": "durable_postimage" }
+  ]
+}

@@ -224,8 +224,17 @@ worktree, administrative directory, and isolated index. Readiness uses
 read-only observations between entry and final live-owner fences, returns the
 current cleanup-capable grant on failure, and mints an unforgeable exact-target,
 generation/version/expiry-bound spawn observation for the future t22 consumer.
-Terminal release and quarantine APIs remain
-absent until t21 can supply validated physical-disposition proofs. Partial uniqueness permits
+Phase 21 supplies a terminal physical-release command; retained ambiguity may
+still transition to lifecycle quarantine, but `CleanupService` cannot mint a
+quarantine receipt without a separately implemented and verified quarantine
+move. Release accepts only a runtime-unforgeable `CleanupService` receipt. Before the first destructive
+effect, the exact cleanup owner must pass a Store-observed readiness gate that
+joins authoritative t19 terminal/group-death evidence, a captured-or-positively-empty
+t21 salvage record, the full cleanup-pending v2 claim set, and an attempt-ref
+postimage equal to either the delivery baseline or the exact finalized t20
+candidate. Finalization re-observes delivery and attempt-ref absence, writes
+reserved cleanup evidence, terminalizes every v2 claim, and terminalizes the
+same owner in one immediate transaction. Partial uniqueness permits
 only one `live|cleanup_pending` ownership generation per attempt. Stale cleanup
 requires expiry and exact immutable process-group death evidence, quarantines
 the old owner, and transfers claims only into cleanup under a new
@@ -247,9 +256,28 @@ consumer verifies the evidence content
 digest and its exact durable launch, terminal, execution-context, and ownership
 lineage rather than trusting payload identifiers. A crashed recovery cleanup
 generation can itself be recovered under the same exact rule.
-The generic evidence appender rejects the reserved `ProcessSupervisor`
-producer label; the supervisor's symbol-gated Store path is the only current
-producer, and the generic v1 lifecycle process-receipt writer is disabled.
+The generic evidence appender rejects the reserved `ProcessSupervisor`,
+`SalvageService`, and `CleanupService` producer labels. Their symbol-gated
+Store paths are the only current producers, and generic v1 lifecycle writers
+cannot manufacture current process, salvage, or cleanup truth.
+
+Salvage capture never mutates the caller or attempt index. It makes a bounded,
+double-observed inventory of regular files, directories, symlinks, modes,
+binary bytes, deletions, the complete isolated-index snapshot and staged blob
+bytes, ref OIDs, and committed object graphs relative to the exact baseline.
+The exact attempt ref and index are part of the owner-bound receipt. Capture is
+accepted only when it postdates the exact authoritative terminal/group-death
+chain. A content-addressed 0600 artifact is fsynced and published
+outside the removable allocation root before its owner-bound SQLite receipt is
+accepted, and its bytes are reopened and digest-verified again at readiness and
+finalization. `empty` is a positive comparison result; any bound, identity, I/O,
+or archive failure is `capture_failed` and cannot authorize cleanup. Restore
+validates the artifact and every entry digest before extracting the failed-work
+delta into an empty, owned destination. It is not a baseline-aware Git replay:
+the deletion inventory, index snapshot, and bundle remain recovery material for
+an authority-owned importer. A recovery owner may consume an
+exact salvage receipt from its ownership ancestry, so a crash after receipt
+commit does not force recapture from an already-removed worktree.
 
 The released-v1 mutable `leases` and `attempt_resources` rows are never direct
 oracle inputs. When present, their lease acquisition and CAS history is represented by immutable
@@ -412,8 +440,8 @@ t13 implements durable SQLite and migrations, t14 allocation, t15 oracle and
 promotion, t16 caller cutover selectors, and t17 the bounded common-transaction
 crash and retry-identity proof. Full recovery/reconciliation remains reserved
 for t29 after the operational lifecycle services exist. The t18
-attempt-resource, t19 process-supervision, and t20 commit-attribution primitives
-are implemented but disabled for production. t19's sampled tracker is diagnostic and cleanup-safe,
+attempt-resource, t19 process-supervision, t20 commit-attribution, and t21
+salvage/cleanup primitives are implemented but disabled for production. t19's sampled tracker is diagnostic and cleanup-safe,
 not release authority; t22 must supply authoritative macOS/Linux containment
-before cutover. t21–t23 and t29 own cleanup, integration, stress, and
-reconciliation boundaries. Automatic delivery remains reserved.
+before cutover. t22, t23, and t29 own integration, stress, and reconciliation
+boundaries. Automatic delivery remains reserved.

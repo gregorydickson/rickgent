@@ -1,0 +1,37 @@
+{
+  "schema_version": "rickgent.salvage-crash-points/v1",
+  "allowed_replay_images": [
+    "exact_preimage",
+    "exact_durable_postimage",
+    "explicit_quarantine"
+  ],
+  "forbidden_replay_images": [
+    "archive_missing_after_cleanup",
+    "partial_archive_reported_final",
+    "resource_released_while_present",
+    "ownership_released_with_cleanup_pending_resource",
+    "delivery_ref_rewound",
+    "caller_index_rewritten"
+  ],
+  "points": [
+    "before_archive_intent",
+    "after_archive_intent",
+    "after_archive_temp_fsync",
+    "after_archive_rename",
+    "after_archive_dir_fsync",
+    "after_archive_finalize",
+    "before_attempt_ref_cas",
+    "after_attempt_ref_cas",
+    "before_worktree_remove",
+    "after_worktree_remove",
+    "after_worktree_admin_remove",
+    "before_index_remove",
+    "after_index_remove",
+    "before_resource_release",
+    "after_resource_release",
+    "before_ownership_release",
+    "after_ownership_release",
+    "before_cleanup_finalize",
+    "after_cleanup_finalize"
+  ]
+}

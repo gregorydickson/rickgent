@@ -872,22 +872,31 @@
         "Wrong-owner cleanup and partial cleanup cannot delete another attempt's resources."
       ],
       "verification": [
-        "cd orchestrator && pnpm exec vitest run test/reliability/salvage-corpus.test.ts test/lifecycle/salvage-executor.test.ts",
+        "cd orchestrator && pnpm exec vitest run test/lifecycle/salvage-durable-archive.test.ts test/reliability/salvage-corpus.test.ts test/reliability/attempt-ownership.test.ts test/reliability/packed-capability-boundary.test.ts",
         "cd orchestrator && pnpm typecheck",
         "cd orchestrator && pnpm test",
         "rg -n \"delivery.*unchanged|process.*dead|compare.*owner|binary|committed\" orchestrator/test/reliability/salvage-corpus.test.ts"
       ],
       "output_artifacts": [
+        "orchestrator/src/git/attempt-workspace.ts",
         "orchestrator/src/lifecycle/salvage.ts",
         "orchestrator/src/lifecycle/cleanup.ts",
+        "orchestrator/src/state/leases.ts",
+        "orchestrator/src/state/store.ts",
+        "orchestrator/test/lifecycle/salvage-durable-archive.test.ts",
         "orchestrator/test/reliability/salvage-corpus.test.ts",
-        "orchestrator/test/fixtures/salvage/manifest.json"
+        "orchestrator/test/fixtures/salvage/manifest.json",
+        "orchestrator/test/fixtures/salvage/payload-vectors.json",
+        "orchestrator/test/fixtures/salvage/crash-points.json",
+        "docs/architecture/reliability/state-and-lifecycle-contract.json",
+        "docs/architecture/reliability/state-and-lifecycle-contract.md",
+        "docs/remediation/phase-4-salvage-cleanup-execution-report-2026-07-18.md"
       ],
       "proof_corpus": [
         "orchestrator/test/fixtures/salvage/manifest.json"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t20"
       ]

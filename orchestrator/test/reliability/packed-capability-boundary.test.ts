@@ -63,7 +63,7 @@ describe("packed capability boundary", () => {
     expect(files.some((path) => path.startsWith("dist-fixture/"))).toBe(false);
     expect(files.some((path) => path.startsWith("src/"))).toBe(false);
     expect(files.some((path) => path.startsWith("test/"))).toBe(false);
-    expect(files.some((path) => path.startsWith("dist/lifecycle/salvage."))).toBe(false);
+    expect(files).toContain("dist/lifecycle/salvage.js");
     const runtimeMap = JSON.parse(
       readFileSync(join(packageRoot, "dist", "capabilities", "runtime-gate.js.map"), "utf-8"),
     ) as { sourcesContent?: unknown[] };
@@ -81,13 +81,15 @@ describe("packed capability boundary", () => {
       "dist/testing/fixture-authority.js",
       "dist/testing/fixture-runtime.js",
       "dist/internal/fixture-authority.js",
-      "dist/lifecycle/salvage.js",
     ];
     for (const path of missingPrivateModules) {
       await expect(import(new URL(path, resolvedRoot).href)).rejects.toMatchObject({
         code: "ERR_MODULE_NOT_FOUND",
       });
     }
+    const salvage = await import(new URL("dist/lifecycle/salvage.js", resolvedRoot).href);
+    expect(salvage.captureDurableSalvageArchive).toBeTypeOf("function");
+    expect(() => new salvage.SalvageDispositionReceipt(Symbol("forged"), {})).toThrow(TypeError);
 
     const runtime = await import(new URL("dist/capabilities/runtime-gate.js", resolvedRoot).href);
     expect(Object.isFrozen(runtime.RUNTIME_CAPABILITY_GATE)).toBe(true);

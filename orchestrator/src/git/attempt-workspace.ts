@@ -403,7 +403,10 @@ export function deriveAttemptWorkspacePlan(
   const stdoutPath = join(allocationRoot, "output", "stdout.log");
   const stderrPath = join(allocationRoot, "output", "stderr.log");
   const verificationOutputPath = join(allocationRoot, "output", "verification.json");
-  const salvageArchivePath = join(allocationRoot, "salvage", "archive");
+  // Salvage is evidence for the failed allocation, so it must not live below
+  // the allocation root that cleanup removes. Keep it in a sibling, private
+  // namespace whose identity is still derived entirely from the attempt.
+  const salvageArchivePath = join(location.resourceDirectory, "salvage", allocationDigest.slice(7), "archive");
   for (const [label, path] of [
     ["allocation root", allocationRoot],
     ["worktree", worktreePath],

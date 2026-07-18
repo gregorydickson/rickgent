@@ -247,7 +247,14 @@ function appendEvidence(
   payload: Readonly<Record<string, unknown>>,
   scope?: string,
 ): StateRecord {
-  return fixture.store.appendEvidence(evidenceInput(fixture, phase, id, producerService, schemaVersion, payload, scope));
+  const row = evidenceInput(fixture, phase, id, producerService, schemaVersion, payload, scope);
+  if (producerService === "CleanupService") {
+    // Downstream oracle fixtures project already-proved cleanup truth without
+    // reopening the production generic-evidence forgery path.
+    insertRow(fixture.store.location.databasePath, "evidence", row);
+    return Object.freeze({ ...row });
+  }
+  return fixture.store.appendEvidence(row);
 }
 
 function snapshotEvidence(

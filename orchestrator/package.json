@@ -13,8 +13,7 @@
     "!dist/testing",
     "!dist/testing/**",
     "!dist/internal",
-    "!dist/internal/**",
-    "!dist/lifecycle/salvage.*"
+    "!dist/internal/**"
   ],
   "packageManager": "pnpm@10.22.0",
   "bin": {

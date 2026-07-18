@@ -498,7 +498,7 @@ The exact acceptance criteria and commands are in `refinement_manifest.json`; th
 
 ### Ticket 21: Implement salvage, quarantine, restore, and cleanup proof
 - **Description:** Capture every failed-work form, prove delivery absence, and release only after verified cleanup.
-- **Declared Paths:** `orchestrator/src/lifecycle/salvage.ts`, `orchestrator/test/reliability/salvage-corpus.test.ts`
+- **Declared Paths:** `orchestrator/src/lifecycle/salvage.ts`, `orchestrator/src/lifecycle/cleanup.ts`, `orchestrator/src/state/leases.ts`, `orchestrator/src/state/store.ts`, `orchestrator/test/reliability/salvage-corpus.test.ts`, `orchestrator/test/fixtures/salvage/manifest.json`
 - **Acceptance Criteria:** `AC-INV-07`
 
 ### Ticket 22: Integrate the attempt ownership critical section

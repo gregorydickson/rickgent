@@ -6,6 +6,14 @@ import {
   type AttemptWorkspaceResourceReceipt,
   type FixedAttemptResourceKind,
 } from "../git/attempt-workspace.js";
+import {
+  isAuthorizedCleanupReceipt,
+  type CleanupDispositionReceipt,
+} from "../lifecycle/cleanup.js";
+import {
+  isAuthorizedSalvageReceipt,
+  type SalvageDispositionReceipt,
+} from "../lifecycle/salvage.js";
 import type { StateRecord, StateStore } from "./store.js";
 
 const OWNERSHIP_COMMAND_AUTHORITY = Symbol("rickgent.attempt-ownership-authority");
@@ -81,6 +89,28 @@ export interface OwnershipMutationRequest {
   readonly idempotencyKey: string;
 }
 
+export interface FinalizeCleanupRequest extends OwnershipMutationRequest {
+  readonly receipt: CleanupDispositionReceipt;
+}
+
+export interface AssertCleanupReadyRequest extends OwnershipMutationRequest {
+  readonly processReceiptId: string;
+  readonly groupDeathEvidenceId: string;
+  readonly salvageRecordId: string;
+  readonly expectedAttemptRefOid: string;
+}
+
+export interface RecordSalvageRequest extends OwnershipMutationRequest {
+  readonly receipt: SalvageDispositionReceipt;
+}
+
+export interface AttemptResourceClaimPreimage {
+  readonly resourceClaimId: string;
+  readonly slot: FixedAttemptResourceKind;
+  readonly expectedState: "cleanup_pending";
+  readonly expectedVersion: number;
+}
+
 export interface CommitRefProofInput {
   readonly commitIntentId: string;
   readonly attemptRef: string;
@@ -99,9 +129,13 @@ export interface PrepareStaleRecoveryRequest {
 export type AttemptOwnershipCommandKind =
   | "acquire"
   | "assert_current"
+  | "assert_cleanup_ready"
+  | "record_salvage"
   | "heartbeat"
   | "advance_resource"
   | "begin_cleanup"
+  | "release"
+  | "quarantine"
   | "stale_recovery";
 
 export interface AttemptOwnershipCommandPayload {
@@ -118,6 +152,24 @@ export interface AttemptOwnershipCommandPayload {
   readonly expectedResourceState?: AttemptResourceClaimState;
   readonly expectedResourceVersion?: number;
   readonly toResourceState?: AttemptResourceClaimState;
+  readonly cleanupProofDigest?: string;
+  readonly cleanupResourcePreimages?: readonly AttemptResourceClaimPreimage[];
+  readonly processReceiptId?: string;
+  readonly groupDeathEvidenceId?: string;
+  readonly salvageRecordId?: string;
+  readonly contextId?: string;
+  readonly deliveryRef?: string;
+  readonly deliveryObservedOid?: string;
+  readonly expectedAttemptRefOid?: string;
+  readonly salvageDisposition?: "captured" | "empty";
+  readonly salvageArtifactPath?: string | null;
+  readonly salvageArtifactDigest?: string | null;
+  readonly salvageArtifactSize?: number | null;
+  readonly salvageBaselineOid?: string;
+  readonly salvageAttemptRef?: string;
+  readonly salvageIndexDigest?: string;
+  readonly evidenceId?: string;
+  readonly createdAt?: string;
   readonly expiredOwnershipId?: string;
   readonly deathEvidenceId?: string;
 }
@@ -166,7 +218,12 @@ export class AttemptOwnershipCommand {
 
   constructor(authority: symbol, payload: AttemptOwnershipCommandPayload) {
     if (authority !== OWNERSHIP_COMMAND_AUTHORITY) throw new TypeError("ownership commands can only be minted by LeaseAuthority");
-    this.payload = Object.freeze({ ...payload });
+    this.payload = Object.freeze({
+      ...payload,
+      ...(payload.cleanupResourcePreimages === undefined ? {} : {
+        cleanupResourcePreimages: Object.freeze(payload.cleanupResourcePreimages.map((preimage) => Object.freeze({ ...preimage }))),
+      }),
+    });
     AUTHORIZED_OWNERSHIP_COMMANDS.add(this);
     Object.freeze(this);
   }
@@ -313,6 +370,60 @@ export class LeaseAuthority {
     });
   }
 
+  /** Revalidates durable death and salvage truth immediately before cleanup effects. */
+  assertCleanupReady(request: AssertCleanupReadyRequest): AttemptOwnershipGrant {
+    return this.#commitForGrant(request.ownership, {
+      kind: "assert_cleanup_ready",
+      idempotencyKey: request.idempotencyKey,
+      expectedOwnershipState: "cleanup_pending",
+      expectedOwnershipVersion: request.ownership.ownership.stateVersion,
+      processReceiptId: request.processReceiptId,
+      groupDeathEvidenceId: request.groupDeathEvidenceId,
+      salvageRecordId: request.salvageRecordId,
+      expectedAttemptRefOid: request.expectedAttemptRefOid,
+    });
+  }
+
+  /** Persists only a runtime-branded salvage disposition bound to this exact cleanup owner. */
+  recordSalvage(request: RecordSalvageRequest): AttemptOwnershipGrant {
+    if (!isAuthorizedSalvageReceipt(request.receipt)) {
+      throw new TypeError("salvage persistence requires a receipt minted by durable salvage capture");
+    }
+    const receipt = request.receipt;
+    const ownership = request.ownership.ownership;
+    if (
+      ownership.state !== "cleanup_pending" || receipt.attemptId !== request.ownership.attemptId ||
+      receipt.ownershipId !== ownership.ownershipId || receipt.ownerGeneration !== ownership.generation ||
+      receipt.ownershipContextDigest !== ownership.contextDigest ||
+      receipt.baselineOid !== request.ownership.plan.lineage.deliveryBaselineOid ||
+      receipt.attemptRef !== request.ownership.plan.attemptRef
+    ) {
+      throw new TypeError("salvage receipt belongs to a different cleanup ownership");
+    }
+    if (receipt.artifactDigest !== null) assertDigest(receipt.artifactDigest, "salvage artifact digest");
+    assertDigest(receipt.indexDigest, "salvage index digest");
+    return this.#commitForGrant(request.ownership, {
+      kind: "record_salvage",
+      idempotencyKey: request.idempotencyKey,
+      expectedOwnershipState: "cleanup_pending",
+      expectedOwnershipVersion: ownership.stateVersion,
+      salvageRecordId: receipt.salvageRecordId,
+      contextId: receipt.contextId,
+      salvageDisposition: receipt.disposition,
+      salvageArtifactPath: receipt.artifactPath,
+      salvageArtifactDigest: receipt.artifactDigest,
+      salvageArtifactSize: receipt.artifactSize,
+      salvageBaselineOid: receipt.baselineOid,
+      salvageAttemptRef: receipt.attemptRef,
+      expectedAttemptRefOid: receipt.expectedAttemptRefOid,
+      salvageIndexDigest: receipt.indexDigest,
+      processReceiptId: receipt.processReceiptId,
+      groupDeathEvidenceId: receipt.groupDeathEvidenceId,
+      evidenceId: receipt.evidenceId,
+      createdAt: receipt.createdAt,
+    });
+  }
+
   /** Token-bound proof that a ref transaction was issued by this exact in-memory owner. */
   deriveCommitRefProof(ownership: AttemptOwnershipGrant, input: CommitRefProofInput): `sha256:${string}` {
     const token = requireGrantToken(ownership);
@@ -362,6 +473,50 @@ export class LeaseAuthority {
       idempotencyKey: request.idempotencyKey,
       expectedOwnershipState: "live",
       expectedOwnershipVersion: request.ownership.ownership.stateVersion,
+    });
+  }
+
+  /** Terminalizes the exact cleanup-pending owner and fixed claim set proven by CleanupService. */
+  finalizeCleanup(request: FinalizeCleanupRequest): AttemptOwnershipGrant {
+    if (!isAuthorizedCleanupReceipt(request.receipt)) {
+      throw new TypeError("cleanup finalization requires a receipt minted by CleanupService");
+    }
+    const ownership = request.ownership.ownership;
+    const receipt = request.receipt;
+    if (
+      ownership.state !== "cleanup_pending" || receipt.attemptId !== request.ownership.attemptId ||
+      receipt.ownershipId !== ownership.ownershipId || receipt.ownerGeneration !== ownership.generation ||
+      receipt.ownershipContextDigest !== ownership.contextDigest ||
+      receipt.expectedOwnershipVersion !== ownership.stateVersion
+    ) {
+      throw new TypeError("cleanup receipt belongs to a different ownership preimage");
+    }
+    assertDigest(receipt.proofDigest, "cleanup proof digest");
+    const resourceById = new Map(request.ownership.resources.map((resource) => [resource.resourceClaimId, resource]));
+    if (
+      receipt.claims.length !== request.ownership.resources.length ||
+      new Set(receipt.claims.map((claim) => claim.resourceClaimId)).size !== receipt.claims.length ||
+      receipt.claims.some((claim) => {
+        const resource = resourceById.get(claim.resourceClaimId);
+        return resource === undefined || resource.slot !== claim.slot || resource.state !== "cleanup_pending" ||
+          resource.stateVersion !== claim.expectedVersion || claim.expectedState !== "cleanup_pending";
+      })
+    ) {
+      throw new TypeError("cleanup receipt does not cover the exact ownership resource preimage");
+    }
+    return this.#commitForGrant(request.ownership, {
+      kind: receipt.disposition === "released" ? "release" : "quarantine",
+      idempotencyKey: request.idempotencyKey,
+      expectedOwnershipState: "cleanup_pending",
+      expectedOwnershipVersion: receipt.expectedOwnershipVersion,
+      cleanupProofDigest: receipt.proofDigest,
+      cleanupResourcePreimages: receipt.claims,
+      processReceiptId: receipt.processReceiptId,
+      groupDeathEvidenceId: receipt.groupDeathEvidenceId,
+      salvageRecordId: receipt.salvageRecordId,
+      contextId: receipt.contextId,
+      deliveryRef: receipt.deliveryRef,
+      deliveryObservedOid: receipt.deliveryObservedOid,
     });
   }
 

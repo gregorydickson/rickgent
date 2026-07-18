@@ -4,11 +4,13 @@ import {
   closeSync,
   constants as fsConstants,
   existsSync,
+  fstatSync,
   fsyncSync,
   linkSync,
   lstatSync,
   mkdirSync,
   openSync,
+  readSync,
   realpathSync,
   statSync,
   unlinkSync,
@@ -1711,7 +1713,7 @@ export class StateStore {
   }
 
   appendEvidence(input: StateRowInput): StateRecord {
-    if (input.producer_service === "ProcessSupervisor" || input.producer_service === "CommitService") {
+    if (["ProcessSupervisor", "CommitService", "SalvageService", "CleanupService"].includes(String(input.producer_service))) {
       throw new TypeError(`${String(input.producer_service)} evidence requires its runtime-authorized producer path`);
     }
     return this.#appendIdempotent(
@@ -1913,6 +1915,8 @@ export class StateStore {
       const canonicalInput = this.#canonicalOwnershipCommand(command);
       const inputDigest = sha256Text(canonicalInput);
       if (payload.kind === "assert_current") return this.#assertCurrentAttemptOwnership(command);
+      if (payload.kind === "assert_cleanup_ready") return this.#assertAttemptCleanupReady(command);
+      if (payload.kind === "record_salvage") return this.#recordAuthorizedSalvage(command);
       const replay = this.#requireDatabase().prepare(`
         SELECT ownership_id, input_digest, canonical_input_json, result_digest, canonical_result_json
         FROM attempt_ownership_operations
@@ -1938,6 +1942,9 @@ export class StateStore {
           return this.#advanceAttemptResourceClaim(command, canonicalInput, inputDigest);
         case "begin_cleanup":
           return this.#beginAttemptOwnershipCleanup(command, canonicalInput, inputDigest);
+        case "release":
+        case "quarantine":
+          return this.#finalizeAttemptOwnershipCleanup(command, canonicalInput, inputDigest);
         case "stale_recovery":
           return this.#recoverStaleAttemptOwnership(command, canonicalInput, inputDigest);
       }
@@ -3744,7 +3751,10 @@ export class StateStore {
       }
       if (observed !== request.deliveryRefObservedOid) throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "cleanup delivery ref observation differs from the repository", this.location.databasePath);
       const result = this.#insertExactLifecycleRow("cleanup_records", row, ["attempt_id", "sequence"]);
-      if (request.leaseReleaseEligible) this.#validateCleanAttempt(request.attemptId, request.cleanupRecordId);
+      if (request.leaseReleaseEligible) {
+        if (request.outcome === "quarantined") this.#validateQuarantinedAttempt(request.attemptId, request.cleanupRecordId);
+        else this.#validateCleanAttempt(request.attemptId, request.cleanupRecordId);
+      }
       return result;
     });
   }
@@ -3928,7 +3938,11 @@ export class StateStore {
     return row;
   }
 
-  #validateCleanAttempt(attemptId: string, cleanupRecordId: string): MutableStateRecord {
+  #validateTerminalAttemptOwnership(
+    attemptId: string,
+    cleanupRecordId: string,
+    expectedState: "released" | "quarantined",
+  ): MutableStateRecord {
     const cleanup = this.#requireTransitionGuard(`
       SELECT c.*, a.run_id, a.ticket_instance_id
       FROM cleanup_records c JOIN attempts a ON a.attempt_id = c.attempt_id
@@ -3936,6 +3950,41 @@ export class StateStore {
     `, [cleanupRecordId, attemptId], "cleanup record does not belong to the transition attempt");
     if (cleanup.group_dead !== 1 || cleanup.resources_absent !== 1 || cleanup.lease_release_eligible !== 1) {
       throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "cleanup record does not prove group death, resource absence, and lease release eligibility", this.location.databasePath);
+    }
+    const currentOwnership = this.#requireDatabase().prepare(`
+      SELECT * FROM attempt_ownership_leases
+      WHERE attempt_id = ? ORDER BY generation DESC LIMIT 1
+    `).get(attemptId) as MutableStateRecord | undefined;
+    const currentResources = this.#requireDatabase().prepare(`
+      SELECT * FROM attempt_resource_claims WHERE attempt_id = ? ORDER BY slot
+    `).all(attemptId) as MutableStateRecord[];
+    if (currentOwnership !== undefined || currentResources.length > 0) {
+      const plan = this.#attemptOwnershipPlan(attemptId);
+      const proofColumn = expectedState === "released" ? "release_proof_digest" : "quarantine_proof_digest";
+      if (
+        currentOwnership === undefined || currentOwnership.state !== expectedState ||
+        currentResources.length !== plan.resources.length ||
+        currentResources.some((resource) =>
+          resource.current_ownership_id !== currentOwnership.ownership_id ||
+          resource.owner_generation !== currentOwnership.generation ||
+          resource.state !== expectedState || typeof resource[proofColumn] !== "string") ||
+        new Set(currentResources.map((resource) => resource[proofColumn])).size !== 1
+      ) {
+        throw typedError(
+          "RICKGENT_STATE_TRANSITION_ILLEGAL",
+          `cleanup proof conflicts with current v2 ${expectedState} ownership or resource state`,
+          this.location.databasePath,
+        );
+      }
+      const proofDigest = String(currentResources[0]?.[proofColumn]);
+      if (cleanup.cleanup_record_id !== `cleanup-record-${proofDigest.slice(7)}`) {
+        throw typedError(
+          "RICKGENT_STATE_TRANSITION_ILLEGAL",
+          "cleanup record is not bound to the current v2 terminal ownership proof",
+          this.location.databasePath,
+        );
+      }
+      return cleanup;
     }
     const activeResource = this.#requireDatabase().prepare(
       "SELECT 1 FROM attempt_resources WHERE attempt_id = ? AND state NOT IN ('released','quarantined') LIMIT 1",
@@ -3947,6 +3996,14 @@ export class StateStore {
       throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "cleanup proof conflicts with live lease or resource state", this.location.databasePath);
     }
     return cleanup;
+  }
+
+  #validateCleanAttempt(attemptId: string, cleanupRecordId: string): MutableStateRecord {
+    return this.#validateTerminalAttemptOwnership(attemptId, cleanupRecordId, "released");
+  }
+
+  #validateQuarantinedAttempt(attemptId: string, cleanupRecordId: string): MutableStateRecord {
+    return this.#validateTerminalAttemptOwnership(attemptId, cleanupRecordId, "quarantined");
   }
 
   #requireCommandEvidence(
@@ -4098,11 +4155,7 @@ export class StateStore {
       case "cleanup_record": {
         const cleanup = guard.outcome === "failed_clean"
           ? this.#validateCleanAttempt(command.entityId, guard.cleanupRecordId)
-          : this.#requireTransitionGuard(
-            "SELECT * FROM cleanup_records WHERE cleanup_record_id = ? AND attempt_id = ?",
-            [guard.cleanupRecordId, command.entityId],
-            "quarantine transition requires an immutable cleanup observation",
-          );
+          : this.#validateQuarantinedAttempt(command.entityId, guard.cleanupRecordId);
         if (cleanup.outcome !== guard.outcome) throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "cleanup outcome does not authorize this terminal edge", this.location.databasePath);
         const cleanupContext = this.#requireDatabase().prepare(
           "SELECT context_digest FROM execution_contexts WHERE context_id = ?",
@@ -4157,11 +4210,7 @@ export class StateStore {
         const required = guard.quarantined ? "quarantined" : "failed_clean";
         if (attempt.state !== required) throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", `ticket failure requires an attempt in ${required}`, this.location.databasePath);
         const cleanup = guard.quarantined
-          ? this.#requireTransitionGuard(
-            "SELECT * FROM cleanup_records WHERE cleanup_record_id = ? AND attempt_id = ? AND outcome = 'quarantined'",
-            [guard.cleanupRecordId, guard.attemptId],
-            "ticket quarantine requires its attempt quarantine cleanup record",
-          )
+          ? this.#validateQuarantinedAttempt(guard.attemptId, guard.cleanupRecordId)
           : this.#validateCleanAttempt(guard.attemptId, guard.cleanupRecordId);
         this.#requireCommandEvidence(evidence, [cleanup.evidence_id], "ticket cleanup evidence");
         return;
@@ -5786,13 +5835,16 @@ export class StateStore {
 
   #assertCurrentAttemptOwnership(command: AttemptOwnershipCommand): AttemptOwnershipStoreResult {
     const current = this.#requireCurrentOwnership(command);
-    if (
-      current.state !== "live" || current.recovered_from_ownership_id !== null ||
-      new Date(String(current.expires_at)).getTime() <= Date.now()
-    ) {
+    const cleanupPending = current.state === "cleanup_pending";
+    if (new Date(String(current.expires_at)).getTime() <= Date.now()) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "attempt ownership is expired", this.location.databasePath);
+    }
+    if (!cleanupPending && (current.state !== "live" || current.recovered_from_ownership_id !== null)) {
       throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "attempt execution ownership is not current and unexpired", this.location.databasePath);
     }
-    const plan = this.#attemptOwnershipContinuation(command.payload.attemptId);
+    const plan = cleanupPending
+      ? this.#attemptOwnershipPlan(command.payload.attemptId)
+      : this.#attemptOwnershipContinuation(command.payload.attemptId);
     const resources = this.#requireDatabase().prepare(`
       SELECT * FROM attempt_resource_claims
       WHERE attempt_id = ? ORDER BY slot
@@ -5802,17 +5854,436 @@ export class StateStore {
       resources.some((resource) =>
         resource.current_ownership_id !== current.ownership_id ||
         resource.owner_generation !== current.generation ||
-        !["reserved", "allocated", "active"].includes(String(resource.state)))
+        (cleanupPending
+          ? resource.state !== "cleanup_pending"
+          : !["reserved", "allocated", "active"].includes(String(resource.state))))
     ) {
-      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "attempt resource claims are not owned by the current execution generation", this.location.databasePath);
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "attempt resource claims are not owned by the current ownership generation", this.location.databasePath);
     }
     return this.#attemptOwnershipResult(
       command.payload.attemptId,
       String(current.ownership_id),
-      "execution",
+      current.recovered_from_ownership_id === null ? "execution" : "recovery_cleanup",
       false,
       plan,
     );
+  }
+
+  #assertAttemptCleanupReady(command: AttemptOwnershipCommand): AttemptOwnershipStoreResult {
+    const payload = command.payload;
+    const current = this.#requireCurrentOwnership(command);
+    this.#requireOwnershipPreimage(command, current);
+    if (current.state !== "cleanup_pending" || new Date(String(current.expires_at)).getTime() <= Date.now()) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "cleanup ownership is not current and unexpired", this.location.databasePath);
+    }
+    this.#requireCleanupResourcePreimage(command, current, false);
+    const processProof = this.#requireCleanupProcessProof(
+      payload.attemptId,
+      String(current.ownership_id),
+      payload.processReceiptId,
+      payload.groupDeathEvidenceId,
+    );
+    this.#requireAuthorizedSalvageRecord(
+      payload.attemptId,
+      String(current.ownership_id),
+      payload.salvageRecordId,
+      payload.processReceiptId,
+      payload.groupDeathEvidenceId,
+      processProof,
+      payload.expectedAttemptRefOid,
+    );
+    this.#requireAuthorizedAttemptRefPostimage(payload.attemptId, payload.expectedAttemptRefOid, "present_or_absent");
+    return this.#attemptOwnershipResult(
+      payload.attemptId,
+      String(current.ownership_id),
+      current.recovered_from_ownership_id === null ? "execution" : "recovery_cleanup",
+      false,
+      this.#attemptOwnershipPlan(payload.attemptId),
+    );
+  }
+
+  #recordAuthorizedSalvage(command: AttemptOwnershipCommand): AttemptOwnershipStoreResult {
+    const payload = command.payload;
+    const ownership = this.#requireCurrentOwnership(command);
+    const plan = this.#attemptOwnershipPlan(payload.attemptId);
+    if (
+      payload.salvageRecordId === undefined || payload.contextId === undefined || payload.evidenceId === undefined ||
+      payload.salvageDisposition === undefined || payload.createdAt === undefined ||
+      payload.processReceiptId === undefined || payload.groupDeathEvidenceId === undefined ||
+      payload.salvageBaselineOid === undefined || payload.salvageAttemptRef === undefined ||
+      payload.expectedAttemptRefOid === undefined || payload.salvageIndexDigest === undefined ||
+      !payload.createdAt.endsWith("Z") || Number.isNaN(Date.parse(payload.createdAt))
+    ) {
+      throw new TypeError("authorized salvage receipt is incomplete");
+    }
+    const artifactPath = payload.salvageArtifactPath ?? null;
+    const artifactDigest = payload.salvageArtifactDigest ?? null;
+    const artifactSize = payload.salvageArtifactSize ?? null;
+    if (
+      (payload.salvageDisposition === "empty" && (artifactPath !== null || artifactDigest !== null || artifactSize !== null)) ||
+      (payload.salvageDisposition === "captured" &&
+        (artifactPath === null || artifactDigest === null || artifactSize === null))
+    ) {
+      throw new TypeError("authorized salvage artifact shape differs from its disposition");
+    }
+    this.#assertRepositoryOid(payload.salvageBaselineOid, "salvage baseline oid");
+    this.#assertRepositoryOid(payload.expectedAttemptRefOid, "salvage attempt-ref oid");
+    if (
+      payload.salvageBaselineOid !== plan.lineage.deliveryBaselineOid || payload.salvageAttemptRef !== plan.attemptRef ||
+      !/^sha256:[0-9a-f]{64}$/.test(payload.salvageIndexDigest)
+    ) {
+      throw typedError(
+        "RICKGENT_STATE_OWNER_MISMATCH",
+        "salvage completeness proof differs from its authority-derived attempt lineage",
+        this.location.databasePath,
+      );
+    }
+    const processProof = this.#requireCleanupProcessProof(
+      payload.attemptId,
+      String(ownership.ownership_id),
+      payload.processReceiptId,
+      payload.groupDeathEvidenceId,
+    );
+    if (
+      Date.parse(payload.createdAt) < Date.parse(String(processProof.terminal_created_at)) ||
+      Date.parse(payload.createdAt) < Date.parse(String(processProof.observation_created_at))
+    ) {
+      throw typedError(
+        "RICKGENT_STATE_OWNER_MISMATCH",
+        "salvage capture predates its authoritative terminal and group-death proof",
+        this.location.databasePath,
+      );
+    }
+    const evidencePayload = {
+      schema_version: "rickgent.salvage-record.v2",
+      salvage_record_id: payload.salvageRecordId,
+      attempt_id: payload.attemptId,
+      ownership_id: String(ownership.ownership_id),
+      owner_generation: Number(ownership.generation),
+      ownership_context_digest: String(ownership.context_digest),
+      context_id: payload.contextId,
+      disposition: payload.salvageDisposition,
+      artifact_path: artifactPath,
+      artifact_digest: artifactDigest,
+      artifact_size: artifactSize,
+      process_receipt_id: payload.processReceiptId,
+      group_death_evidence_id: payload.groupDeathEvidenceId,
+      process_terminal_result_digest: processProof.terminal_result_digest,
+      process_terminal_created_at: processProof.terminal_created_at,
+      group_death_content_digest: processProof.content_digest,
+      group_death_created_at: processProof.observation_created_at,
+      baseline_oid: payload.salvageBaselineOid,
+      attempt_ref: payload.salvageAttemptRef,
+      expected_attempt_ref_oid: payload.expectedAttemptRefOid,
+      index_digest: payload.salvageIndexDigest,
+      evidence_id: payload.evidenceId,
+      created_at: payload.createdAt,
+    };
+    const inlinePayload = canonicalJson(evidencePayload);
+    const expectedEvidence: MutableStateRecord = {
+      evidence_id: payload.evidenceId,
+      attempt_id: payload.attemptId,
+      phase_execution_id: null,
+      context_id: payload.contextId,
+      producer_service: "SalvageService",
+      scope: payload.salvageRecordId,
+      schema_version: "rickgent.salvage-record.v2",
+      content_digest: sha256Text(inlinePayload),
+      inline_payload_json: inlinePayload,
+      external_path: null,
+      external_digest: null,
+      external_size: null,
+      idempotency_key: payload.idempotencyKey,
+      created_at: payload.createdAt,
+    };
+    const expectedSalvage: MutableStateRecord = {
+      salvage_record_id: payload.salvageRecordId,
+      attempt_id: payload.attemptId,
+      disposition: payload.salvageDisposition,
+      artifact_path: artifactPath,
+      artifact_digest: artifactDigest,
+      artifact_size: artifactSize,
+      evidence_id: payload.evidenceId,
+      created_at: payload.createdAt,
+    };
+    const existingMatches = this.#requireDatabase().prepare(`
+      SELECT salvage.*, evidence.phase_execution_id, evidence.context_id,
+             evidence.producer_service, evidence.scope, evidence.schema_version,
+             evidence.content_digest, evidence.inline_payload_json,
+             evidence.external_path, evidence.external_digest, evidence.external_size,
+             evidence.idempotency_key, evidence.created_at AS evidence_created_at
+      FROM salvage_records salvage
+      JOIN evidence evidence ON evidence.evidence_id = salvage.evidence_id
+      WHERE salvage.attempt_id = ? AND evidence.producer_service = 'SalvageService'
+        AND (salvage.salvage_record_id = ? OR evidence.idempotency_key = ?)
+      ORDER BY salvage.salvage_record_id
+    `).all(payload.attemptId, payload.salvageRecordId, payload.idempotencyKey) as MutableStateRecord[];
+    if (existingMatches.length > 1) {
+      throw typedError(
+        "RICKGENT_STATE_IDEMPOTENCY_CONFLICT",
+        "salvage attempt idempotency key and record identity resolve to different durable records",
+        this.location.databasePath,
+      );
+    }
+    const existing = existingMatches[0];
+    if (existing !== undefined) {
+      const exactSalvage = Object.entries(expectedSalvage).every(([column, value]) =>
+        column === "created_at" || sameValue(existing[column], value));
+      const exactEvidence = Object.entries(expectedEvidence).every(([column, value]) => {
+        if (["created_at", "content_digest", "inline_payload_json"].includes(column)) return true;
+        const selected = column === "created_at" ? existing.evidence_created_at : existing[column];
+        return sameValue(selected, value);
+      });
+      const existingPayload = this.#parseJsonObject(String(existing.inline_payload_json), "salvage replay evidence");
+      const semanticPayload = (value: Record<string, unknown>): string => canonicalJson(
+        Object.fromEntries(Object.entries(value).filter(([key]) => key !== "created_at")),
+      );
+      if (!exactSalvage || !exactEvidence || semanticPayload(existingPayload) !== semanticPayload(evidencePayload)) {
+        throw typedError(
+          "RICKGENT_STATE_IDEMPOTENCY_CONFLICT",
+          "salvage record identity has different immutable input",
+          this.location.databasePath,
+        );
+      }
+      const manifest = this.#verifyAuthorizedSalvageArtifact(plan, existing);
+      this.#requireSalvageCompleteness(
+        payload.salvageDisposition,
+        payload.salvageBaselineOid,
+        payload.salvageAttemptRef,
+        payload.expectedAttemptRefOid,
+        payload.salvageIndexDigest,
+        manifest,
+      );
+      return this.#attemptOwnershipResult(
+        payload.attemptId,
+        String(ownership.ownership_id),
+        ownership.recovered_from_ownership_id === null ? "execution" : "recovery_cleanup",
+        true,
+        plan,
+      );
+    }
+    this.#requireOwnershipPreimage(command, ownership);
+    if (ownership.state !== "cleanup_pending" || new Date(String(ownership.expires_at)).getTime() <= Date.now()) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "salvage owner is not current cleanup ownership", this.location.databasePath);
+    }
+    this.#requireCleanupResourcePreimage(command, ownership, false);
+    this.#requireTransitionGuard(`
+      SELECT 1 FROM execution_contexts context
+      JOIN phase_executions phase
+        ON phase.context_id = context.context_id AND phase.attempt_id = context.attempt_id
+      WHERE context.context_id = ? AND context.attempt_id = ?
+        AND phase.phase = 'cleanup' AND phase.role = 'cleanup'
+    `, [payload.contextId, payload.attemptId], "salvage context differs from its cleanup attempt");
+    const manifest = this.#verifyAuthorizedSalvageArtifact(plan, expectedSalvage);
+    this.#requireSalvageCompleteness(
+      payload.salvageDisposition,
+      payload.salvageBaselineOid,
+      payload.salvageAttemptRef,
+      payload.expectedAttemptRefOid,
+      payload.salvageIndexDigest,
+      manifest,
+    );
+    this.#insert("evidence", expectedEvidence);
+    this.#insert("salvage_records", expectedSalvage);
+    return this.#attemptOwnershipResult(
+      payload.attemptId,
+      String(ownership.ownership_id),
+      ownership.recovered_from_ownership_id === null ? "execution" : "recovery_cleanup",
+      false,
+      plan,
+    );
+  }
+
+  #verifyAuthorizedSalvageArtifact(plan: AttemptWorkspacePlan, salvage: MutableStateRecord): Record<string, unknown> | null {
+    if (salvage.disposition === "empty") {
+      if (salvage.artifact_path !== null || salvage.artifact_digest !== null || salvage.artifact_size !== null) {
+        throw typedError(
+          "RICKGENT_STATE_CONFLICT",
+          "empty salvage disposition unexpectedly names an artifact",
+          this.location.databasePath,
+        );
+      }
+      return null;
+    }
+    if (
+      salvage.disposition !== "captured" || typeof salvage.artifact_path !== "string" ||
+      typeof salvage.artifact_digest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(salvage.artifact_digest) ||
+      typeof salvage.artifact_size !== "number" || !Number.isSafeInteger(salvage.artifact_size) || salvage.artifact_size < 0
+    ) {
+      throw typedError(
+        "RICKGENT_STATE_CONFLICT",
+        "captured salvage disposition has an invalid artifact identity",
+        this.location.databasePath,
+      );
+    }
+    const artifact = salvage.artifact_path;
+    let descriptor: number | null = null;
+    try {
+      const archiveRoot = realpathSync.native(plan.salvageArchivePath);
+      const canonicalArtifact = realpathSync.native(artifact);
+      const relativeArtifact = relative(archiveRoot, canonicalArtifact);
+      if (
+        archiveRoot !== plan.salvageArchivePath || canonicalArtifact !== artifact ||
+        relativeArtifact === "" || relativeArtifact === ".." || relativeArtifact.startsWith(`..${sep}`) ||
+        isAbsolute(relativeArtifact)
+      ) {
+        throw typedError(
+          "RICKGENT_STATE_OWNER_MISMATCH",
+          "salvage artifact escaped its authority-derived archive",
+          this.location.databasePath,
+        );
+      }
+      const pathInfo = lstatSync(artifact);
+      const maximumArtifactBytes = 96 * 1024 * 1024;
+      if (
+        !pathInfo.isFile() || pathInfo.isSymbolicLink() || pathInfo.size !== salvage.artifact_size ||
+        pathInfo.size > maximumArtifactBytes
+      ) {
+        throw typedError(
+          "RICKGENT_STATE_CONFLICT",
+          "salvage artifact identity or size differs from its durable record",
+          this.location.databasePath,
+        );
+      }
+      descriptor = openSync(artifact, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      const before = fstatSync(descriptor);
+      if (
+        !before.isFile() || before.dev !== pathInfo.dev || before.ino !== pathInfo.ino ||
+        before.size !== pathInfo.size || before.mtimeMs !== pathInfo.mtimeMs || before.ctimeMs !== pathInfo.ctimeMs
+      ) {
+        throw typedError(
+          "RICKGENT_STATE_CONFLICT",
+          "salvage artifact changed while opening its proof",
+          this.location.databasePath,
+        );
+      }
+      const hash = createHash("sha256");
+      const chunk = Buffer.allocUnsafe(64 * 1024);
+      const chunks: Buffer[] = [];
+      let offset = 0;
+      while (offset < before.size) {
+        const count = readSync(descriptor, chunk, 0, Math.min(chunk.length, before.size - offset), offset);
+        if (count <= 0) {
+          throw typedError(
+            "RICKGENT_STATE_CONFLICT",
+            "salvage artifact ended before its recorded size",
+            this.location.databasePath,
+          );
+        }
+        hash.update(chunk.subarray(0, count));
+        chunks.push(Buffer.from(chunk.subarray(0, count)));
+        offset += count;
+      }
+      const after = fstatSync(descriptor);
+      const observedDigest = `sha256:${hash.digest("hex")}`;
+      if (
+        after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size ||
+        after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs ||
+        observedDigest !== salvage.artifact_digest
+      ) {
+        throw typedError(
+          "RICKGENT_STATE_CONFLICT",
+          "salvage artifact bytes changed during authority verification",
+          this.location.databasePath,
+        );
+      }
+      const artifactText = Buffer.concat(chunks, before.size).toString("utf8");
+      const manifest = this.#parseJsonObject(artifactText, "salvage artifact manifest");
+      if (canonicalJson(manifest) !== artifactText) {
+        throw typedError(
+          "RICKGENT_STATE_CONFLICT",
+          "salvage artifact manifest is not canonical JSON",
+          this.location.databasePath,
+        );
+      }
+      return manifest;
+    } catch (error) {
+      if (error instanceof StateStoreError) throw error;
+      throw typedError(
+        "RICKGENT_STATE_CONFLICT",
+        "salvage artifact is unavailable for authority verification",
+        this.location.databasePath,
+        error,
+      );
+    } finally {
+      if (descriptor !== null) closeSync(descriptor);
+    }
+  }
+
+  #requireSalvageCompleteness(
+    disposition: unknown,
+    baselineOid: unknown,
+    attemptRef: unknown,
+    expectedAttemptRefOid: unknown,
+    indexDigest: unknown,
+    manifest: Record<string, unknown> | null,
+  ): void {
+    if (
+      typeof baselineOid !== "string" || typeof attemptRef !== "string" ||
+      typeof expectedAttemptRefOid !== "string" || typeof indexDigest !== "string" ||
+      !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(baselineOid) ||
+      !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(expectedAttemptRefOid) ||
+      !/^sha256:[0-9a-f]{64}$/.test(indexDigest)
+    ) {
+      throw typedError(
+        "RICKGENT_STATE_CONFLICT",
+        "salvage completeness proof has an invalid ref or index identity",
+        this.location.databasePath,
+      );
+    }
+    if (disposition === "empty") {
+      if (manifest !== null || expectedAttemptRefOid !== baselineOid) {
+        throw typedError(
+          "RICKGENT_STATE_CONFLICT",
+          "empty salvage does not prove baseline attempt-ref and index completeness",
+          this.location.databasePath,
+        );
+      }
+      return;
+    }
+    const indexSnapshot = manifest?.index_snapshot;
+    const refObservations = manifest?.ref_observations;
+    if (
+      disposition !== "captured" || manifest === null || manifest.schema_version !== "rickgent.salvage-archive.v1" ||
+      manifest.disposition !== "captured" || manifest.baseline_oid !== baselineOid ||
+      manifest.attempt_ref !== attemptRef || manifest.attempt_ref_oid !== expectedAttemptRefOid ||
+      indexSnapshot === null || typeof indexSnapshot !== "object" || Array.isArray(indexSnapshot) ||
+      !Array.isArray(refObservations)
+    ) {
+      throw typedError(
+        "RICKGENT_STATE_CONFLICT",
+        "captured salvage manifest differs from its durable completeness proof",
+        this.location.databasePath,
+      );
+    }
+    const index = indexSnapshot as Record<string, unknown>;
+    if (
+      index.digest !== indexDigest || typeof index.size !== "number" || !Number.isSafeInteger(index.size) || index.size < 0 ||
+      typeof index.content_base64 !== "string" || !Array.isArray(index.changed_entries) ||
+      !refObservations.some((value) => {
+        if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+        const observation = value as Record<string, unknown>;
+        return observation.ref === attemptRef && observation.oid === expectedAttemptRefOid;
+      })
+    ) {
+      throw typedError(
+        "RICKGENT_STATE_CONFLICT",
+        "captured salvage manifest omits its exact attempt ref or index snapshot",
+        this.location.databasePath,
+      );
+    }
+    const indexBytes = Buffer.from(index.content_base64, "base64");
+    const observedIndexDigest = `sha256:${createHash("sha256").update(indexBytes).digest("hex")}`;
+    if (
+      indexBytes.toString("base64") !== index.content_base64 || indexBytes.length !== index.size ||
+      observedIndexDigest !== indexDigest
+    ) {
+      throw typedError(
+        "RICKGENT_STATE_CONFLICT",
+        "captured salvage index snapshot bytes differ from their durable digest",
+        this.location.databasePath,
+      );
+    }
   }
 
   #heartbeatAttemptOwnership(
@@ -5938,6 +6409,466 @@ export class StateStore {
       String(current.ownership_id),
       current.recovered_from_ownership_id === null ? "execution" : "recovery_cleanup",
       this.#attemptOwnershipPlan(command.payload.attemptId),
+      canonicalInput,
+      inputDigest,
+    );
+  }
+
+  #requireCleanupResourcePreimage(
+    command: AttemptOwnershipCommand,
+    ownership: MutableStateRecord,
+    requireReceiptPreimage: boolean,
+  ): MutableStateRecord[] {
+    const payload = command.payload;
+    const plan = this.#attemptOwnershipPlan(payload.attemptId);
+    const resources = this.#requireDatabase().prepare(`
+      SELECT * FROM attempt_resource_claims WHERE attempt_id = ? ORDER BY slot
+    `).all(payload.attemptId) as MutableStateRecord[];
+    if (
+      resources.length !== plan.resources.length ||
+      resources.some((resource) =>
+        resource.current_ownership_id !== ownership.ownership_id ||
+        resource.owner_generation !== ownership.generation ||
+        resource.state !== "cleanup_pending")
+    ) {
+      throw typedError(
+        "RICKGENT_STATE_OWNER_MISMATCH",
+        "cleanup does not own the complete current cleanup-pending resource set",
+        this.location.databasePath,
+      );
+    }
+    if (!requireReceiptPreimage) return resources;
+    const expected = payload.cleanupResourcePreimages;
+    if (
+      expected === undefined || expected.length !== plan.resources.length ||
+      new Set(expected.map((preimage) => preimage.resourceClaimId)).size !== expected.length
+    ) {
+      throw new TypeError("cleanup finalization requires the complete fixed resource preimage");
+    }
+    const expectedById = new Map(expected.map((preimage) => [preimage.resourceClaimId, preimage]));
+    if (resources.some((resource) => {
+      const preimage = expectedById.get(String(resource.resource_claim_id));
+      return preimage === undefined || preimage.slot !== resource.slot || preimage.expectedState !== "cleanup_pending" ||
+        preimage.expectedVersion !== resource.state_version;
+    })) {
+      throw typedError(
+        "RICKGENT_STATE_CONFLICT",
+        "cleanup resource compare-and-set preimage changed",
+        this.location.databasePath,
+      );
+    }
+    return resources;
+  }
+
+  #requireCleanupProcessProof(
+    attemptId: string,
+    ownershipId: string,
+    processReceiptId: string | undefined,
+    groupDeathEvidenceId: string | undefined,
+  ): MutableStateRecord {
+    if (processReceiptId === undefined || groupDeathEvidenceId === undefined) {
+      throw new TypeError("cleanup requires process terminal and group-death identities");
+    }
+    const proof = this.#requireDatabase().prepare(`
+      WITH RECURSIVE ownership_lineage(ownership_id) AS (
+        SELECT ownership_id FROM attempt_ownership_leases WHERE ownership_id = ? AND attempt_id = ?
+        UNION ALL
+        SELECT lease.recovered_from_ownership_id
+        FROM attempt_ownership_leases lease
+        JOIN ownership_lineage lineage ON lineage.ownership_id = lease.ownership_id
+        WHERE lease.attempt_id = ? AND lease.recovered_from_ownership_id IS NOT NULL
+      )
+      SELECT terminal.process_receipt_id, terminal.group_dead, terminal.descendants_confirmed_dead,
+             terminal.result_digest AS terminal_result_digest,
+             terminal.created_at AS terminal_created_at,
+             launch.ownership_id AS launch_ownership_id,
+             launch.owner_generation AS launch_owner_generation,
+             launch.ownership_context_digest AS launch_context_digest,
+             owner.generation AS durable_owner_generation,
+             owner.context_digest AS durable_owner_context_digest,
+             observation.kind AS observation_kind,
+             observation.schema_version AS observation_schema_version,
+             observation.payload_digest AS observation_payload_digest,
+             observation.created_at AS observation_created_at,
+             evidence.producer_service, evidence.schema_version AS evidence_schema_version,
+             evidence.content_digest, evidence.inline_payload_json,
+             evidence.evidence_id AS group_death_evidence_id,
+             evidence.attempt_id AS evidence_attempt_id,
+             evidence.created_at AS evidence_created_at
+      FROM attempt_process_terminal_receipts terminal
+      JOIN attempt_process_launches launch
+        ON launch.launch_id = terminal.launch_id
+       AND launch.process_receipt_id = terminal.process_receipt_id
+       AND launch.attempt_id = terminal.attempt_id
+      JOIN ownership_lineage lineage ON lineage.ownership_id = launch.ownership_id
+      JOIN attempt_ownership_leases owner
+        ON owner.ownership_id = launch.ownership_id AND owner.attempt_id = launch.attempt_id
+      JOIN attempt_process_observations observation
+        ON observation.launch_id = launch.launch_id AND observation.evidence_id = ?
+      JOIN evidence evidence
+        ON evidence.evidence_id = observation.evidence_id AND evidence.attempt_id = launch.attempt_id
+      WHERE terminal.process_receipt_id = ? AND terminal.attempt_id = ?
+        AND observation.kind = 'group_death'
+    `).get(
+      ownershipId,
+      attemptId,
+      attemptId,
+      groupDeathEvidenceId,
+      processReceiptId,
+      attemptId,
+    ) as MutableStateRecord | undefined;
+    if (
+      proof === undefined || proof.group_dead !== 1 || proof.descendants_confirmed_dead !== 1 ||
+      proof.launch_owner_generation !== proof.durable_owner_generation ||
+      proof.launch_context_digest !== proof.durable_owner_context_digest ||
+      proof.observation_kind !== "group_death" || proof.observation_schema_version !== "rickgent.process-group-death.v1" ||
+      proof.producer_service !== "ProcessSupervisor" || proof.evidence_schema_version !== "rickgent.process-group-death.v1" ||
+      proof.evidence_attempt_id !== attemptId || proof.inline_payload_json === null ||
+      proof.process_receipt_id !== processReceiptId || proof.group_death_evidence_id !== groupDeathEvidenceId ||
+      typeof proof.terminal_result_digest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(proof.terminal_result_digest) ||
+      typeof proof.terminal_created_at !== "string" || Number.isNaN(Date.parse(proof.terminal_created_at)) ||
+      typeof proof.observation_created_at !== "string" || Number.isNaN(Date.parse(proof.observation_created_at)) ||
+      proof.evidence_created_at !== proof.observation_created_at ||
+      proof.content_digest !== proof.observation_payload_digest ||
+      proof.content_digest !== sha256Text(String(proof.inline_payload_json))
+    ) {
+      throw typedError(
+        "RICKGENT_STATE_OWNER_MISMATCH",
+        "cleanup lacks an exact authoritative process terminal and group-death proof",
+        this.location.databasePath,
+      );
+    }
+    return proof;
+  }
+
+  #requireAuthorizedSalvageRecord(
+    attemptId: string,
+    ownershipId: string,
+    salvageRecordId: string | undefined,
+    processReceiptId: string | undefined,
+    groupDeathEvidenceId: string | undefined,
+    processProof: MutableStateRecord,
+    expectedAttemptRefOid?: string,
+  ): MutableStateRecord {
+    if (salvageRecordId === undefined) throw new TypeError("cleanup requires a salvage record identity");
+    const plan = this.#attemptOwnershipPlan(attemptId);
+    const salvage = this.#requireDatabase().prepare(`
+      SELECT salvage.*, evidence.producer_service, evidence.schema_version,
+             evidence.content_digest, evidence.inline_payload_json
+      FROM salvage_records salvage
+      JOIN evidence evidence
+        ON evidence.evidence_id = salvage.evidence_id AND evidence.attempt_id = salvage.attempt_id
+      WHERE salvage.salvage_record_id = ? AND salvage.attempt_id = ?
+    `).get(salvageRecordId, attemptId) as MutableStateRecord | undefined;
+    if (
+      salvage === undefined || !["captured", "empty"].includes(String(salvage.disposition)) ||
+      salvage.producer_service !== "SalvageService" || salvage.schema_version !== "rickgent.salvage-record.v2" ||
+      salvage.inline_payload_json === null || salvage.content_digest !== sha256Text(String(salvage.inline_payload_json))
+    ) {
+      throw typedError(
+        "RICKGENT_STATE_TRANSITION_ILLEGAL",
+        "cleanup salvage identity is not an authority-produced captured or empty disposition",
+        this.location.databasePath,
+      );
+    }
+    const payload = this.#parseJsonObject(String(salvage.inline_payload_json), "salvage record evidence");
+    const lineage = typeof payload.ownership_id === "string"
+      ? this.#requireDatabase().prepare(`
+        WITH RECURSIVE ownership_lineage(ownership_id) AS (
+          SELECT ownership_id FROM attempt_ownership_leases WHERE ownership_id = ? AND attempt_id = ?
+          UNION ALL
+          SELECT lease.recovered_from_ownership_id
+          FROM attempt_ownership_leases lease
+          JOIN ownership_lineage current ON current.ownership_id = lease.ownership_id
+          WHERE lease.attempt_id = ? AND lease.recovered_from_ownership_id IS NOT NULL
+        )
+        SELECT lease.generation, lease.context_digest
+        FROM ownership_lineage lineage
+        JOIN attempt_ownership_leases lease ON lease.ownership_id = lineage.ownership_id
+        WHERE lease.ownership_id = ? AND lease.attempt_id = ?
+      `).get(ownershipId, attemptId, attemptId, payload.ownership_id, attemptId) as MutableStateRecord | undefined
+      : undefined;
+    if (
+      payload.salvage_record_id !== salvageRecordId || payload.attempt_id !== attemptId ||
+      lineage === undefined || payload.owner_generation !== lineage.generation ||
+      payload.ownership_context_digest !== lineage.context_digest || payload.disposition !== salvage.disposition ||
+      payload.artifact_path !== salvage.artifact_path || payload.artifact_digest !== salvage.artifact_digest ||
+      payload.artifact_size !== salvage.artifact_size || payload.process_receipt_id !== processReceiptId ||
+      payload.group_death_evidence_id !== groupDeathEvidenceId ||
+      payload.process_terminal_result_digest !== processProof.terminal_result_digest ||
+      payload.process_terminal_created_at !== processProof.terminal_created_at ||
+      payload.group_death_content_digest !== processProof.content_digest ||
+      payload.group_death_created_at !== processProof.observation_created_at ||
+      payload.baseline_oid !== plan.lineage.deliveryBaselineOid || payload.attempt_ref !== plan.attemptRef ||
+      typeof payload.expected_attempt_ref_oid !== "string" ||
+      !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(payload.expected_attempt_ref_oid) ||
+      (expectedAttemptRefOid !== undefined && payload.expected_attempt_ref_oid !== expectedAttemptRefOid) ||
+      typeof payload.index_digest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(payload.index_digest) ||
+      typeof payload.created_at !== "string" ||
+      Date.parse(payload.created_at) < Date.parse(String(processProof.terminal_created_at)) ||
+      Date.parse(payload.created_at) < Date.parse(String(processProof.observation_created_at))
+    ) {
+      throw typedError(
+        "RICKGENT_STATE_TRANSITION_ILLEGAL",
+        "cleanup salvage evidence does not exactly bind its durable record",
+        this.location.databasePath,
+      );
+    }
+    const manifest = this.#verifyAuthorizedSalvageArtifact(plan, salvage);
+    this.#requireSalvageCompleteness(
+      payload.disposition,
+      payload.baseline_oid,
+      payload.attempt_ref,
+      payload.expected_attempt_ref_oid,
+      payload.index_digest,
+      manifest,
+    );
+    return salvage;
+  }
+
+  #requireAuthorizedAttemptRefPostimage(
+    attemptId: string,
+    expectedAttemptRefOid: string | undefined,
+    mode: "present_or_absent" | "absent",
+  ): void {
+    const plan = this.#attemptOwnershipPlan(attemptId);
+    if (mode === "absent") {
+      try {
+        execFileSync("git", ["show-ref", "--verify", "--quiet", plan.attemptRef], {
+          cwd: this.location.repoRealpath,
+          encoding: "utf8",
+          env: HERMETIC_GIT_ENVIRONMENT,
+          timeout: 10_000,
+          maxBuffer: MAX_GIT_OUTPUT,
+        });
+        throw typedError("RICKGENT_STATE_CONFLICT", "cleanup attempt ref remains after external cleanup", this.location.databasePath);
+      } catch (error) {
+        if (error instanceof StateStoreError) throw error;
+        const status = (error as NodeJS.ErrnoException & { status?: number }).status;
+        if (status !== 1) {
+          throw typedError(
+            "RICKGENT_STATE_TRANSITION_ILLEGAL",
+            "cleanup attempt-ref absence cannot be proven",
+            this.location.databasePath,
+            error,
+          );
+        }
+      }
+      return;
+    }
+    if (expectedAttemptRefOid === undefined) throw new TypeError("cleanup requires an expected attempt-ref OID");
+    this.#assertRepositoryOid(expectedAttemptRefOid, "cleanup expected attempt ref oid");
+    const authorized = this.#requireDatabase().prepare(`
+      SELECT a.delivery_baseline_oid,
+             EXISTS (
+               SELECT 1 FROM attempt_commit_intents intent
+               WHERE intent.attempt_id = a.attempt_id AND intent.state = 'finalized'
+                 AND intent.commit_oid = ? AND intent.commit_attribution_id IS NOT NULL
+             ) AS finalized_candidate
+      FROM attempts a WHERE a.attempt_id = ?
+    `).get(expectedAttemptRefOid, attemptId) as MutableStateRecord | undefined;
+    if (
+      authorized === undefined ||
+      (authorized.delivery_baseline_oid !== expectedAttemptRefOid && authorized.finalized_candidate !== 1)
+    ) {
+      throw typedError(
+        "RICKGENT_STATE_OWNER_MISMATCH",
+        "cleanup attempt-ref postimage is neither the baseline nor the exact finalized attributed candidate",
+        this.location.databasePath,
+      );
+    }
+    try {
+      const observed = execFileSync("git", ["rev-parse", "--verify", plan.attemptRef], {
+        cwd: this.location.repoRealpath,
+        encoding: "utf8",
+        env: HERMETIC_GIT_ENVIRONMENT,
+        timeout: 10_000,
+        maxBuffer: MAX_GIT_OUTPUT,
+      }).trim();
+      if (observed !== expectedAttemptRefOid) {
+        throw typedError("RICKGENT_STATE_CONFLICT", "cleanup attempt ref has a foreign postimage", this.location.databasePath);
+      }
+    } catch (error) {
+      if (error instanceof StateStoreError) throw error;
+      const status = (error as NodeJS.ErrnoException & { status?: number }).status;
+      if (status !== 128) {
+        throw typedError(
+          "RICKGENT_STATE_TRANSITION_ILLEGAL",
+          "cleanup attempt ref cannot be independently observed",
+          this.location.databasePath,
+          error,
+        );
+      }
+    }
+  }
+
+  #recordAuthorizedCleanupFinalization(command: AttemptOwnershipCommand, terminalState: "released" | "quarantined"): void {
+    const payload = command.payload;
+    if (payload.contextId === undefined || payload.cleanupProofDigest === undefined || payload.deliveryObservedOid === undefined) {
+      throw new TypeError("cleanup finalization evidence is incomplete");
+    }
+    this.#requireTransitionGuard(`
+      SELECT 1
+      FROM execution_contexts context
+      JOIN phase_executions phase
+        ON phase.context_id = context.context_id AND phase.attempt_id = context.attempt_id
+      WHERE context.context_id = ? AND context.attempt_id = ?
+        AND phase.phase = 'cleanup' AND phase.role = 'cleanup'
+    `, [payload.contextId, payload.attemptId], "cleanup finalization context differs from its attempt");
+    const cleanupRecordId = `cleanup-record-${payload.cleanupProofDigest.slice(7)}`;
+    const evidenceId = `cleanup-evidence-${payload.cleanupProofDigest.slice(7)}`;
+    const sequence = this.#requireDatabase().prepare(`
+      SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence
+      FROM cleanup_records WHERE attempt_id = ?
+    `).get(payload.attemptId) as MutableStateRecord;
+    const cleanupPayload = {
+      attempt_id: payload.attemptId,
+      sequence: Number(sequence.next_sequence),
+      context_id: payload.contextId,
+      outcome: terminalState === "released" ? "failed_clean" : "quarantined",
+      group_dead: 1,
+      worktree_disposition: terminalState === "released" ? "removed" : "quarantined",
+      index_disposition: terminalState === "released" ? "removed" : "quarantined",
+      ref_disposition: terminalState === "released" ? "removed" : "quarantined",
+      context_disposition: terminalState === "released" ? "removed" : "quarantined",
+      bundle_disposition: terminalState === "released" ? "removed" : "quarantined",
+      delivery_ref_observed_oid: payload.deliveryObservedOid,
+      resources_absent: 1,
+      lease_release_eligible: 1,
+      evidence_id: evidenceId,
+    };
+    const createdAt = new Date().toISOString();
+    const inlinePayload = canonicalJson(cleanupPayload);
+    this.#insert("evidence", {
+      evidence_id: evidenceId,
+      attempt_id: payload.attemptId,
+      phase_execution_id: null,
+      context_id: payload.contextId,
+      producer_service: "CleanupService",
+      scope: cleanupRecordId,
+      schema_version: "rickgent.cleanup-record.v1",
+      content_digest: sha256Text(inlinePayload),
+      inline_payload_json: inlinePayload,
+      external_path: null,
+      external_digest: null,
+      external_size: null,
+      idempotency_key: payload.idempotencyKey,
+      created_at: createdAt,
+    });
+    this.#insert("cleanup_records", {
+      cleanup_record_id: cleanupRecordId,
+      ...cleanupPayload,
+      record_digest: sha256Text(canonicalJson(cleanupPayload)),
+      created_at: createdAt,
+    });
+  }
+
+  #finalizeAttemptOwnershipCleanup(
+    command: AttemptOwnershipCommand,
+    canonicalInput: string,
+    inputDigest: `sha256:${string}`,
+  ): AttemptOwnershipStoreResult {
+    const payload = command.payload;
+    const ownership = this.#requireCurrentOwnership(command);
+    this.#requireOwnershipPreimage(command, ownership);
+    if (ownership.state !== "cleanup_pending") {
+      throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "only cleanup-pending ownership can be finalized", this.location.databasePath);
+    }
+    if (new Date(String(ownership.expires_at)).getTime() <= Date.now()) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "expired cleanup ownership cannot be finalized", this.location.databasePath);
+    }
+    if (payload.cleanupProofDigest === undefined || !/^sha256:[0-9a-f]{64}$/.test(payload.cleanupProofDigest)) {
+      throw new TypeError("cleanup finalization requires a SHA-256 proof digest");
+    }
+    const resources = this.#requireCleanupResourcePreimage(command, ownership, true);
+    const processProof = this.#requireCleanupProcessProof(
+      payload.attemptId,
+      String(ownership.ownership_id),
+      payload.processReceiptId,
+      payload.groupDeathEvidenceId,
+    );
+    this.#requireAuthorizedSalvageRecord(
+      payload.attemptId,
+      String(ownership.ownership_id),
+      payload.salvageRecordId,
+      payload.processReceiptId,
+      payload.groupDeathEvidenceId,
+      processProof,
+    );
+    const plan = this.#attemptOwnershipPlan(payload.attemptId);
+    if (payload.deliveryRef !== plan.lineage.deliveryRef || payload.deliveryObservedOid === undefined) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "cleanup delivery observation has different lineage", this.location.databasePath);
+    }
+    this.#assertRepositoryOid(payload.deliveryObservedOid, "cleanup delivery observed oid");
+    const delivery = this.#requireDatabase().prepare(`
+      SELECT delivery_ref, current_delivery_oid FROM runs WHERE run_id = ? AND repository_id = ?
+    `).get(plan.lineage.runId, this.location.repositoryId) as MutableStateRecord | undefined;
+    if (
+      delivery === undefined || delivery.delivery_ref !== payload.deliveryRef ||
+      delivery.current_delivery_oid !== payload.deliveryObservedOid
+    ) {
+      throw typedError("RICKGENT_STATE_CONFLICT", "cleanup delivery observation differs from durable run truth", this.location.databasePath);
+    }
+    let observedDelivery: string;
+    try {
+      observedDelivery = execFileSync("git", ["rev-parse", "--verify", payload.deliveryRef], {
+        cwd: this.location.repoRealpath,
+        encoding: "utf8",
+        env: HERMETIC_GIT_ENVIRONMENT,
+        timeout: 10_000,
+        maxBuffer: MAX_GIT_OUTPUT,
+      }).trim();
+    } catch (error) {
+      throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "cleanup delivery ref cannot be independently observed", this.location.databasePath, error);
+    }
+    if (observedDelivery !== payload.deliveryObservedOid) {
+      throw typedError("RICKGENT_STATE_CONFLICT", "cleanup delivery observation differs from the repository", this.location.databasePath);
+    }
+    this.#requireAuthorizedAttemptRefPostimage(payload.attemptId, undefined, "absent");
+    const terminalState = payload.kind === "release" ? "released" : "quarantined";
+    this.#recordAuthorizedCleanupFinalization(command, terminalState);
+    for (const resource of resources) {
+      const update = this.#requireDatabase().prepare(`
+        UPDATE attempt_resource_claims
+        SET state = ?, state_version = state_version + 1,
+            release_proof_digest = ?, quarantine_proof_digest = ?
+        WHERE resource_claim_id = ? AND attempt_id = ?
+          AND current_ownership_id = ? AND owner_generation = ?
+          AND state = 'cleanup_pending' AND state_version = ?
+      `).run(
+        terminalState,
+        terminalState === "released" ? payload.cleanupProofDigest : null,
+        terminalState === "quarantined" ? payload.cleanupProofDigest : null,
+        String(resource.resource_claim_id),
+        payload.attemptId,
+        String(ownership.ownership_id),
+        Number(ownership.generation),
+        Number(resource.state_version),
+      );
+      if (update.changes !== 1) {
+        throw typedError("RICKGENT_STATE_CONFLICT", "cleanup resource finalization lost its CAS race", this.location.databasePath);
+      }
+    }
+    const ownerUpdate = this.#requireDatabase().prepare(`
+      UPDATE attempt_ownership_leases
+      SET state = ?, state_version = state_version + 1
+      WHERE ownership_id = ? AND attempt_id = ? AND owner_token_digest = ?
+        AND state = 'cleanup_pending' AND state_version = ?
+    `).run(
+      terminalState,
+      String(ownership.ownership_id),
+      payload.attemptId,
+      payload.ownerTokenDigest,
+      Number(ownership.state_version),
+    );
+    if (ownerUpdate.changes !== 1) {
+      throw typedError("RICKGENT_STATE_CONFLICT", "cleanup owner finalization lost its CAS race", this.location.databasePath);
+    }
+    return this.#recordOwnershipOperation(
+      command,
+      String(ownership.ownership_id),
+      ownership.recovered_from_ownership_id === null ? "execution" : "recovery_cleanup",
+      plan,
       canonicalInput,
       inputDigest,
     );
