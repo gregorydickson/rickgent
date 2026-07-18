@@ -311,6 +311,14 @@ function validateMigrations(contract) {
     released_checksum: "sha256:66f819b89e1781ca7fdc7311e269a4991a86706224eaa269b0198ad434ce6469",
     sqlite_schema_checksum: "sha256:af782456d3402bd47cff0ca9fd4e358c52028c14fee3470efcc295cac926542d",
     status: "implemented",
+  }, {
+    version: 5,
+    number: "005",
+    name: "005_attempt_cleanup_proof_model",
+    sql_owner_ticket: "t22",
+    released_checksum: "sha256:e9c6896dd23d8d07127fa8ddb05483ad00ff9a59b2042dc32ce75428371ac6f1",
+    sqlite_schema_checksum: "sha256:c91fd35e83d879890dd13ef8f8bb18fa6f8b116e8b85545e4c3e8c65785681c6",
+    status: "implemented",
   }], "STATE_CONTRACT_MIGRATION_INVALID", "initial migrations");
   for (let index = 0; index < migrations.initial.length; index += 1) {
     if (migrations.initial[index].version !== index + 1) fail("STATE_CONTRACT_MIGRATION_INVALID", "migration versions are not contiguous");
@@ -743,22 +751,26 @@ function validateAllocationAndResources(contract) {
 
   const resources = object(contract.resource_identity, "STATE_CONTRACT_RESOURCE_INVALID", "resource_identity");
   exactKeys(resources, [
-    "status", "ownership_tables", "production_cutover_ticket", "process_death_evidence_producer_ticket", "all_descendant_death_authority_ticket", "terminal_disposition_producer_ticket",
+    "status", "ownership_tables", "attempt_disposition_writer_status", "production_cutover_ticket", "process_death_evidence_producer_ticket", "all_descendant_death_authority_ticket", "physical_cleanup_primitive_ticket", "attempt_disposition_authority_ticket",
     "kinds", "delivery_ref_template", "attempt_ref_template", "ref_validation",
     "private_attempt_directory", "private_attempt_directory_mode", "fixed_slot_names",
     "reserve_before_side_effect", "process_identity_fields", "pid_alone_is_ownership_proof",
     "process_death_proof_bases", "owner_mutation_checks", "stale_recovery_requires", "ownership_table_contract",
   ], "STATE_CONTRACT_RESOURCE_INVALID", "resource_identity");
-  equal(resources.status, "process_supervisor_primitive_implemented", "STATE_CONTRACT_RESOURCE_INVALID", "resource status");
+  equal(resources.status, "attempt_cleanup_proof_substrate_implemented", "STATE_CONTRACT_RESOURCE_INVALID", "resource status");
   equal(resources.ownership_tables, [
     "attempt_ownership_leases", "attempt_resource_claims", "attempt_ownership_operations",
     "attempt_process_launches", "attempt_process_observations", "attempt_process_terminal_receipts",
-    "attempt_commit_intents",
+    "attempt_commit_intents", "target_start_gates", "attempt_target_proof_sets", "attempt_target_proof_members",
+    "cleanup_eligibility_records", "failure_cleanup_records", "promotion_cleanup_records",
+    "quarantine_claim_sets", "quarantine_claim_members", "quarantine_records",
   ], "STATE_CONTRACT_RESOURCE_INVALID", "resource ownership tables");
+  equal(resources.attempt_disposition_writer_status, "unavailable", "STATE_CONTRACT_RESOURCE_INVALID", "disposition writer status");
   equal(resources.production_cutover_ticket, "t22", "STATE_CONTRACT_RESOURCE_INVALID", "resource production cutover");
   equal(resources.process_death_evidence_producer_ticket, "t19", "STATE_CONTRACT_RESOURCE_INVALID", "resource process-death producer");
   equal(resources.all_descendant_death_authority_ticket, "t22", "STATE_CONTRACT_RESOURCE_INVALID", "all-descendant death authority");
-  equal(resources.terminal_disposition_producer_ticket, "t21", "STATE_CONTRACT_RESOURCE_INVALID", "resource terminal-disposition producer");
+  equal(resources.physical_cleanup_primitive_ticket, "t21", "STATE_CONTRACT_RESOURCE_INVALID", "physical cleanup primitive");
+  equal(resources.attempt_disposition_authority_ticket, "t22", "STATE_CONTRACT_RESOURCE_INVALID", "attempt disposition authority");
   equal(resources.kinds, RESOURCE_KINDS, "STATE_CONTRACT_RESOURCE_INVALID", "resource kinds");
   equal(resources.delivery_ref_template, "refs/rickgent/runs/<run-id>/delivery", "STATE_CONTRACT_RESOURCE_INVALID", "delivery ref template");
   equal(resources.attempt_ref_template, "refs/rickgent/runs/<run-id>/attempts/<attempt-id>", "STATE_CONTRACT_RESOURCE_INVALID", "attempt ref template");
@@ -790,7 +802,8 @@ function validateAllocationAndResources(contract) {
   exactKeys(ownershipContract, [
     "attempt_ownership_leases", "attempt_resource_claims", "attempt_ownership_operations",
     "attempt_process_launches", "attempt_process_observations", "attempt_process_terminal_receipts",
-    "attempt_commit_intents", "resource_mutation_authority", "process_death_producer_authority",
+    "attempt_commit_intents", "target_start_gates", "attempt_target_proof_sets", "cleanup_eligibility_records",
+    "terminal_disposition_records", "quarantine_claim_sets", "resource_mutation_authority", "process_death_producer_authority",
     "commit_attribution_producer_authority", "legacy_v1_tables",
   ], "STATE_CONTRACT_RESOURCE_INVALID", "ownership_table_contract");
 }
@@ -799,8 +812,8 @@ function validateOraclePromotionDelivery(contract) {
   const oracle = object(contract.oracle, "STATE_CONTRACT_ORACLE_INVALID", "oracle");
   exactKeys(oracle, [
     "status", "result_states", "gate_statuses", "required_gate_green_statuses",
-    "required_gate_blocking_statuses", "reference_kinds", "required_input_classes",
-    "reference_resolution", "snapshot_references", "scope_congruence", "pure_function",
+    "required_gate_blocking_statuses", "reference_kinds", "current_reference_kinds", "legacy_reference_kinds", "required_input_classes",
+    "reference_resolution", "snapshot_references", "legacy_snapshot_references", "eligibility_reference", "scope_congruence", "pure_function",
     "reads_live_files", "reads_live_git_refs", "reads_live_processes",
     "reads_environment", "reads_legacy_state", "reads_commit_messages",
     "updates_sqlite", "version_change_behavior",
@@ -813,6 +826,8 @@ function validateOraclePromotionDelivery(contract) {
   equal(oracle.required_gate_green_statuses, ["passed"], "STATE_CONTRACT_ORACLE_INVALID", "required green statuses");
   equal(oracle.required_gate_blocking_statuses, GATE_STATUSES.slice(1), "STATE_CONTRACT_ORACLE_INVALID", "required blocking statuses");
   equal(oracle.reference_kinds, ORACLE_REFERENCE_KINDS, "STATE_CONTRACT_ORACLE_INVALID", "oracle reference kinds");
+  equal(oracle.current_reference_kinds, ORACLE_REFERENCE_KINDS.filter((kind) => !["cleanup_record", "process_receipt"].includes(kind)), "STATE_CONTRACT_ORACLE_INVALID", "current oracle reference kinds");
+  equal(oracle.legacy_reference_kinds, { kinds: ["cleanup_record", "process_receipt"], mode: "read_replay_only" }, "STATE_CONTRACT_ORACLE_INVALID", "legacy oracle reference kinds");
   if (oracle.required_input_classes.length !== 12) fail("STATE_CONTRACT_ORACLE_INVALID", "oracle input classes are incomplete");
   if (!String(oracle.reference_resolution).includes("one read transaction") || !String(oracle.reference_resolution).includes("content-pinned")) {
     fail("STATE_CONTRACT_ORACLE_INVALID", "oracle reference resolution is not exact and atomic");
@@ -822,18 +837,31 @@ function validateOraclePromotionDelivery(contract) {
   equal(oracle.snapshot_references.write_atomic_with_source_mutation, true, "STATE_CONTRACT_ORACLE_INVALID", "snapshot write atomicity");
   equal(oracle.snapshot_references.lease, {
     reference_kind: "lease_snapshot",
-    column: "lease_snapshot_evidence_id",
-    evidence_schema_version: "rickgent.lease-snapshot.v1",
-    source_table: "leases",
+    column: "ownership_snapshot_evidence_id",
+    evidence_schema_version: "rickgent.attempt-ownership-lease-snapshot.v2",
+    source_table: "attempt_ownership_leases",
     source_version_column: "state_version",
+    required_state: "cleanup_pending",
   }, "STATE_CONTRACT_ORACLE_INVALID", "lease snapshot reference");
   equal(oracle.snapshot_references.attempt_resource, {
     reference_kind: "attempt_resource_snapshot",
-    column: "resource_snapshot_evidence_id",
-    evidence_schema_version: "rickgent.attempt-resource-snapshot.v1",
-    source_table: "attempt_resources",
+    column: "claim_snapshot_evidence_ids_json[]",
+    evidence_schema_version: "rickgent.attempt-resource-claim-snapshot.v2",
+    source_table: "attempt_resource_claims",
     source_version_column: "state_version",
+    required_state: "cleanup_pending",
+    exact_slots: 11,
+    set_digest_column: "claim_snapshot_set_digest",
   }, "STATE_CONTRACT_ORACLE_INVALID", "resource snapshot reference");
+  equal(oracle.legacy_snapshot_references.mode, "read_replay_only", "STATE_CONTRACT_ORACLE_INVALID", "legacy snapshot mode");
+  equal(oracle.eligibility_reference, {
+    producer: "CleanupEligibilityService",
+    schema: "rickgent.cleanup-eligibility.v1",
+    source_table: "cleanup_eligibility_records",
+    cardinality: 1,
+    terminal: false,
+    target_proof_set_state: "sealed_complete",
+  }, "STATE_CONTRACT_ORACLE_INVALID", "cleanup eligibility reference");
   if (!String(oracle.scope_congruence).includes("rejects any input")
     || !String(oracle.scope_congruence).includes("run, ticket, or attempt lineage differs")) {
     fail("STATE_CONTRACT_ORACLE_INVALID", "oracle does not reject cross-scope input");

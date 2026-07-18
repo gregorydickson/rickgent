@@ -1211,6 +1211,823 @@ CREATE TRIGGER attempt_commit_intents_no_delete BEFORE DELETE ON attempt_commit_
 BEGIN SELECT RAISE(ABORT, 'attempt commit intents cannot be deleted'); END;
 `;
 
+/*
+ * Migration 005 separates nonterminal oracle eligibility from the three
+ * terminal cleanup meanings. Target release is a CAS gate so absence of a
+ * launch is never treated as proof that user code did not run.
+ */
+const ATTEMPT_CLEANUP_PROOF_SQL = `
+CREATE UNIQUE INDEX attempt_commit_intents_identity_attempt_uq
+  ON attempt_commit_intents(commit_intent_id, attempt_id);
+CREATE UNIQUE INDEX attempt_process_terminal_receipts_identity_attempt_uq
+  ON attempt_process_terminal_receipts(process_receipt_id, attempt_id);
+CREATE UNIQUE INDEX salvage_records_identity_attempt_uq
+  ON salvage_records(salvage_record_id, attempt_id);
+CREATE UNIQUE INDEX promotion_intents_identity_attempt_uq
+  ON promotion_intents(promotion_intent_id, attempt_id);
+CREATE UNIQUE INDEX oracle_decisions_identity_attempt_uq
+  ON oracle_decisions(oracle_decision_id, attempt_id);
+CREATE UNIQUE INDEX attempt_process_launches_target_proof_uq
+  ON attempt_process_launches(
+    launch_id, process_receipt_id, attempt_id, ownership_id, owner_generation,
+    phase_execution_id, context_id
+  );
+CREATE UNIQUE INDEX attempt_process_terminal_receipts_target_proof_uq
+  ON attempt_process_terminal_receipts(
+    process_receipt_id, launch_id, attempt_id, group_dead, descendants_confirmed_dead
+  );
+CREATE UNIQUE INDEX attempt_resource_claims_quarantine_snapshot_uq
+  ON attempt_resource_claims(
+    resource_claim_id, attempt_id, slot, kind, current_ownership_id,
+    owner_generation, state, state_version
+  );
+
+CREATE TABLE target_start_gates (
+  target_start_gate_id TEXT PRIMARY KEY ${ID("target_start_gate_id")},
+  attempt_id TEXT NOT NULL ${ID("attempt_id")},
+  ownership_id TEXT NOT NULL ${ID("ownership_id")},
+  owner_generation INTEGER NOT NULL CHECK (owner_generation > 0),
+  phase_execution_id TEXT NOT NULL ${ID("phase_execution_id")},
+  context_id TEXT NOT NULL ${ID("context_id")},
+  execution_context_digest TEXT NOT NULL ${DIGEST("execution_context_digest")},
+  start_authorization_digest TEXT NOT NULL ${DIGEST("start_authorization_digest")},
+  state TEXT NOT NULL CHECK (state IN ('held','released','closed_never_released')),
+  state_version INTEGER NOT NULL CHECK (state_version >= 0),
+  release_evidence_id TEXT,
+  never_released_evidence_id TEXT,
+  input_digest TEXT NOT NULL ${DIGEST("input_digest")},
+  idempotency_key TEXT NOT NULL ${ID("idempotency_key")},
+  created_at TEXT NOT NULL ${UTC("created_at")},
+  FOREIGN KEY (attempt_id) REFERENCES attempts(attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (ownership_id, attempt_id, owner_generation)
+    REFERENCES attempt_ownership_leases(ownership_id, attempt_id, generation) ON DELETE RESTRICT,
+  FOREIGN KEY (phase_execution_id, attempt_id)
+    REFERENCES phase_executions(phase_execution_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (context_id, attempt_id)
+    REFERENCES execution_contexts(context_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (phase_execution_id, context_id)
+    REFERENCES phase_executions(phase_execution_id, context_id) ON DELETE RESTRICT,
+  FOREIGN KEY (release_evidence_id, attempt_id)
+    REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (never_released_evidence_id, attempt_id)
+    REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  CHECK ((state = 'held' AND state_version = 0 AND release_evidence_id IS NULL AND never_released_evidence_id IS NULL) OR
+         (state = 'released' AND state_version = 1 AND release_evidence_id IS NOT NULL AND never_released_evidence_id IS NULL) OR
+         (state = 'closed_never_released' AND state_version = 1 AND release_evidence_id IS NULL AND never_released_evidence_id IS NOT NULL))
+) STRICT;
+CREATE UNIQUE INDEX target_start_gates_phase_uq ON target_start_gates(phase_execution_id);
+CREATE UNIQUE INDEX target_start_gates_attempt_idempotency_uq ON target_start_gates(attempt_id, idempotency_key);
+CREATE UNIQUE INDEX target_start_gates_identity_attempt_uq ON target_start_gates(target_start_gate_id, attempt_id);
+CREATE UNIQUE INDEX target_start_gates_proof_snapshot_uq
+  ON target_start_gates(
+    target_start_gate_id, attempt_id, ownership_id, owner_generation,
+    phase_execution_id, context_id, state, state_version
+  );
+
+CREATE TABLE attempt_target_proof_sets (
+  target_proof_set_id TEXT PRIMARY KEY ${ID("target_proof_set_id")},
+  attempt_id TEXT NOT NULL ${ID("attempt_id")},
+  ownership_id TEXT NOT NULL ${ID("ownership_id")},
+  owner_generation INTEGER NOT NULL CHECK (owner_generation > 0),
+  ownership_context_digest TEXT NOT NULL ${DIGEST("ownership_context_digest")},
+  target_count INTEGER NOT NULL CHECK (target_count >= 0),
+  state TEXT NOT NULL CHECK (state IN ('collecting','sealed_complete','sealed_incomplete')),
+  state_version INTEGER NOT NULL CHECK (state_version >= 0),
+  proof_set_digest TEXT ${OPTIONAL_DIGEST("proof_set_digest")},
+  evidence_id TEXT,
+  input_digest TEXT NOT NULL ${DIGEST("input_digest")},
+  idempotency_key TEXT NOT NULL ${ID("idempotency_key")},
+  created_at TEXT NOT NULL ${UTC("created_at")},
+  sealed_at TEXT CHECK (sealed_at IS NULL OR (length(sealed_at) >= 20 AND substr(sealed_at, -1) = 'Z')),
+  FOREIGN KEY (attempt_id) REFERENCES attempts(attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (ownership_id, attempt_id, owner_generation)
+    REFERENCES attempt_ownership_leases(ownership_id, attempt_id, generation) ON DELETE RESTRICT,
+  FOREIGN KEY (evidence_id, attempt_id) REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  CHECK ((state = 'collecting' AND state_version = 0 AND proof_set_digest IS NULL AND evidence_id IS NULL AND sealed_at IS NULL) OR
+         (state IN ('sealed_complete','sealed_incomplete') AND state_version = 1 AND proof_set_digest IS NOT NULL AND evidence_id IS NOT NULL AND sealed_at IS NOT NULL))
+) STRICT;
+CREATE UNIQUE INDEX attempt_target_proof_sets_attempt_uq ON attempt_target_proof_sets(attempt_id);
+CREATE UNIQUE INDEX attempt_target_proof_sets_attempt_idempotency_uq
+  ON attempt_target_proof_sets(attempt_id, idempotency_key);
+CREATE UNIQUE INDEX attempt_target_proof_sets_identity_owner_uq
+  ON attempt_target_proof_sets(target_proof_set_id, attempt_id, ownership_id, owner_generation);
+CREATE UNIQUE INDEX attempt_target_proof_sets_sealed_identity_uq
+  ON attempt_target_proof_sets(
+    target_proof_set_id, attempt_id, ownership_id, owner_generation, state,
+    proof_set_digest, evidence_id, target_count
+  );
+CREATE UNIQUE INDEX attempt_target_proof_sets_sealed_attempt_uq
+  ON attempt_target_proof_sets(
+    target_proof_set_id, attempt_id, state, proof_set_digest, evidence_id, target_count
+  );
+
+CREATE TABLE attempt_target_proof_members (
+  target_proof_set_id TEXT NOT NULL ${ID("target_proof_set_id")},
+  attempt_id TEXT NOT NULL ${ID("attempt_id")},
+  ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+  ownership_id TEXT NOT NULL ${ID("ownership_id")},
+  owner_generation INTEGER NOT NULL CHECK (owner_generation > 0),
+  phase_execution_id TEXT NOT NULL ${ID("phase_execution_id")},
+  context_id TEXT NOT NULL ${ID("context_id")},
+  target_start_gate_id TEXT,
+  gate_state TEXT CHECK (gate_state IS NULL OR gate_state IN ('held','released','closed_never_released')),
+  gate_state_version INTEGER CHECK (gate_state_version IS NULL OR gate_state_version >= 0),
+  gate_release_evidence_id TEXT,
+  gate_never_released_evidence_id TEXT,
+  proof_kind TEXT NOT NULL CHECK (proof_kind IN ('terminal_process','never_released','unproven')),
+  launch_id TEXT,
+  process_receipt_id TEXT,
+  terminal_group_dead INTEGER CHECK (terminal_group_dead IS NULL OR terminal_group_dead = 1),
+  terminal_descendants_confirmed_dead INTEGER CHECK (terminal_descendants_confirmed_dead IS NULL OR terminal_descendants_confirmed_dead = 1),
+  group_death_evidence_id TEXT,
+  unproven_evidence_id TEXT,
+  member_digest TEXT NOT NULL ${DIGEST("member_digest")},
+  created_at TEXT NOT NULL ${UTC("created_at")},
+  PRIMARY KEY (target_proof_set_id, ordinal),
+  UNIQUE (target_proof_set_id, phase_execution_id),
+  UNIQUE (target_proof_set_id, target_start_gate_id),
+  FOREIGN KEY (target_proof_set_id, attempt_id, ownership_id, owner_generation)
+    REFERENCES attempt_target_proof_sets(target_proof_set_id, attempt_id, ownership_id, owner_generation) ON DELETE RESTRICT,
+  FOREIGN KEY (phase_execution_id, attempt_id)
+    REFERENCES phase_executions(phase_execution_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (context_id, attempt_id)
+    REFERENCES execution_contexts(context_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (phase_execution_id, context_id)
+    REFERENCES phase_executions(phase_execution_id, context_id) ON DELETE RESTRICT,
+  FOREIGN KEY (
+    target_start_gate_id, attempt_id, ownership_id, owner_generation,
+    phase_execution_id, context_id, gate_state, gate_state_version
+  ) REFERENCES target_start_gates(
+    target_start_gate_id, attempt_id, ownership_id, owner_generation,
+    phase_execution_id, context_id, state, state_version
+  ) ON DELETE RESTRICT,
+  FOREIGN KEY (
+    launch_id, process_receipt_id, attempt_id, ownership_id, owner_generation,
+    phase_execution_id, context_id
+  ) REFERENCES attempt_process_launches(
+    launch_id, process_receipt_id, attempt_id, ownership_id, owner_generation,
+    phase_execution_id, context_id
+  ) ON DELETE RESTRICT,
+  FOREIGN KEY (
+    process_receipt_id, launch_id, attempt_id,
+    terminal_group_dead, terminal_descendants_confirmed_dead
+  ) REFERENCES attempt_process_terminal_receipts(
+    process_receipt_id, launch_id, attempt_id, group_dead, descendants_confirmed_dead
+  ) ON DELETE RESTRICT,
+  FOREIGN KEY (gate_release_evidence_id, attempt_id) REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (gate_never_released_evidence_id, attempt_id) REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (group_death_evidence_id, attempt_id) REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (unproven_evidence_id, attempt_id) REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  CHECK ((target_start_gate_id IS NULL AND gate_state IS NULL AND gate_state_version IS NULL AND gate_release_evidence_id IS NULL AND gate_never_released_evidence_id IS NULL) OR
+         (target_start_gate_id IS NOT NULL AND gate_state IS NOT NULL AND gate_state_version IS NOT NULL)),
+  CHECK ((launch_id IS NULL AND process_receipt_id IS NULL) OR (launch_id IS NOT NULL AND process_receipt_id IS NOT NULL)),
+  CHECK ((proof_kind = 'terminal_process' AND target_start_gate_id IS NOT NULL AND gate_state = 'released' AND
+          gate_release_evidence_id IS NOT NULL AND gate_never_released_evidence_id IS NULL AND
+          launch_id IS NOT NULL AND process_receipt_id IS NOT NULL AND terminal_group_dead = 1 AND
+          terminal_descendants_confirmed_dead = 1 AND group_death_evidence_id IS NOT NULL AND unproven_evidence_id IS NULL) OR
+         (proof_kind = 'never_released' AND target_start_gate_id IS NOT NULL AND gate_state = 'closed_never_released' AND
+          gate_release_evidence_id IS NULL AND gate_never_released_evidence_id IS NOT NULL AND
+          ((launch_id IS NULL AND process_receipt_id IS NULL AND terminal_group_dead IS NULL AND
+            terminal_descendants_confirmed_dead IS NULL AND group_death_evidence_id IS NULL) OR
+           (launch_id IS NOT NULL AND process_receipt_id IS NOT NULL AND terminal_group_dead = 1 AND
+            terminal_descendants_confirmed_dead = 1 AND group_death_evidence_id IS NOT NULL)) AND
+          unproven_evidence_id IS NULL) OR
+         (proof_kind = 'unproven' AND (target_start_gate_id IS NOT NULL OR launch_id IS NOT NULL) AND
+          terminal_group_dead IS NULL AND terminal_descendants_confirmed_dead IS NULL AND
+          group_death_evidence_id IS NULL AND unproven_evidence_id IS NOT NULL))
+) STRICT;
+
+CREATE TABLE cleanup_eligibility_records (
+  cleanup_eligibility_record_id TEXT PRIMARY KEY ${ID("cleanup_eligibility_record_id")},
+  attempt_id TEXT NOT NULL ${ID("attempt_id")},
+  ownership_id TEXT NOT NULL ${ID("ownership_id")},
+  owner_generation INTEGER NOT NULL CHECK (owner_generation > 0),
+  ownership_state_version INTEGER NOT NULL CHECK (ownership_state_version >= 0),
+  ownership_context_digest TEXT NOT NULL ${DIGEST("ownership_context_digest")},
+  context_id TEXT NOT NULL ${ID("context_id")},
+  commit_intent_id TEXT NOT NULL ${ID("commit_intent_id")},
+  commit_attribution_id TEXT NOT NULL ${ID("commit_attribution_id")},
+  candidate_oid TEXT NOT NULL ${OID("candidate_oid")},
+  attempt_ref TEXT NOT NULL ${ID("attempt_ref")},
+  attempt_ref_observed_oid TEXT NOT NULL ${OID("attempt_ref_observed_oid")},
+  delivery_ref TEXT NOT NULL ${ID("delivery_ref")},
+  delivery_baseline_oid TEXT NOT NULL ${OID("delivery_baseline_oid")},
+  delivery_observed_oid TEXT NOT NULL ${OID("delivery_observed_oid")},
+  target_proof_set_id TEXT NOT NULL ${ID("target_proof_set_id")},
+  target_proof_set_state TEXT NOT NULL CHECK (target_proof_set_state = 'sealed_complete'),
+  target_proof_set_digest TEXT NOT NULL ${DIGEST("target_proof_set_digest")},
+  target_proof_set_evidence_id TEXT NOT NULL ${ID("target_proof_set_evidence_id")},
+  target_proof_count INTEGER NOT NULL CHECK (target_proof_count > 0),
+  ownership_snapshot_evidence_id TEXT NOT NULL ${ID("ownership_snapshot_evidence_id")},
+  claim_snapshot_evidence_ids_json TEXT NOT NULL ${JSON_ARRAY("claim_snapshot_evidence_ids_json")},
+  claim_snapshot_set_digest TEXT NOT NULL ${DIGEST("claim_snapshot_set_digest")},
+  evidence_id TEXT NOT NULL ${ID("evidence_id")},
+  input_digest TEXT NOT NULL ${DIGEST("input_digest")},
+  record_digest TEXT NOT NULL ${DIGEST("record_digest")},
+  idempotency_key TEXT NOT NULL ${ID("idempotency_key")},
+  created_at TEXT NOT NULL ${UTC("created_at")},
+  FOREIGN KEY (attempt_id) REFERENCES attempts(attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (ownership_id, attempt_id, owner_generation)
+    REFERENCES attempt_ownership_leases(ownership_id, attempt_id, generation) ON DELETE RESTRICT,
+  FOREIGN KEY (context_id, attempt_id) REFERENCES execution_contexts(context_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (commit_intent_id, attempt_id)
+    REFERENCES attempt_commit_intents(commit_intent_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (commit_attribution_id, attempt_id)
+    REFERENCES commit_attributions(commit_attribution_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (
+    target_proof_set_id, attempt_id, target_proof_set_state,
+    target_proof_set_digest, target_proof_set_evidence_id, target_proof_count
+  ) REFERENCES attempt_target_proof_sets(
+    target_proof_set_id, attempt_id, state, proof_set_digest, evidence_id, target_count
+  ) ON DELETE RESTRICT,
+  FOREIGN KEY (ownership_snapshot_evidence_id, attempt_id)
+    REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (evidence_id, attempt_id) REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  CHECK (candidate_oid = attempt_ref_observed_oid),
+  CHECK (delivery_baseline_oid = delivery_observed_oid),
+  CHECK (json_array_length(claim_snapshot_evidence_ids_json) = 11)
+) STRICT;
+CREATE UNIQUE INDEX cleanup_eligibility_records_attempt_uq ON cleanup_eligibility_records(attempt_id);
+CREATE UNIQUE INDEX cleanup_eligibility_records_attempt_idempotency_uq
+  ON cleanup_eligibility_records(attempt_id, idempotency_key);
+CREATE UNIQUE INDEX cleanup_eligibility_records_digest_uq ON cleanup_eligibility_records(record_digest);
+CREATE UNIQUE INDEX cleanup_eligibility_records_identity_attempt_uq
+  ON cleanup_eligibility_records(cleanup_eligibility_record_id, attempt_id);
+
+CREATE TABLE failure_cleanup_records (
+  failure_cleanup_record_id TEXT PRIMARY KEY ${ID("failure_cleanup_record_id")},
+  attempt_id TEXT NOT NULL ${ID("attempt_id")},
+  ownership_id TEXT NOT NULL ${ID("ownership_id")},
+  owner_generation INTEGER NOT NULL CHECK (owner_generation > 0),
+  ownership_state_version INTEGER NOT NULL CHECK (ownership_state_version >= 0),
+  ownership_context_digest TEXT NOT NULL ${DIGEST("ownership_context_digest")},
+  context_id TEXT NOT NULL ${ID("context_id")},
+  failure_kind TEXT NOT NULL CHECK (failure_kind IN ('pre_oracle','oracle_rejected','promotion_aborted')),
+  cause_evidence_id TEXT NOT NULL ${ID("cause_evidence_id")},
+  cleanup_eligibility_record_id TEXT,
+  oracle_decision_id TEXT,
+  promotion_intent_id TEXT,
+  target_proof_set_id TEXT NOT NULL ${ID("target_proof_set_id")},
+  target_proof_set_state TEXT NOT NULL CHECK (target_proof_set_state = 'sealed_complete'),
+  target_proof_set_digest TEXT NOT NULL ${DIGEST("target_proof_set_digest")},
+  target_proof_set_evidence_id TEXT NOT NULL ${ID("target_proof_set_evidence_id")},
+  target_proof_count INTEGER NOT NULL CHECK (target_proof_count >= 0),
+  salvage_record_id TEXT NOT NULL ${ID("salvage_record_id")},
+  delivery_ref TEXT NOT NULL ${ID("delivery_ref")},
+  delivery_baseline_oid TEXT NOT NULL ${OID("delivery_baseline_oid")},
+  delivery_observed_oid TEXT NOT NULL ${OID("delivery_observed_oid")},
+  claim_preimage_digest TEXT NOT NULL ${DIGEST("claim_preimage_digest")},
+  worktree_disposition TEXT NOT NULL CHECK (worktree_disposition = 'removed'),
+  index_disposition TEXT NOT NULL CHECK (index_disposition = 'removed'),
+  ref_disposition TEXT NOT NULL CHECK (ref_disposition = 'removed'),
+  context_disposition TEXT NOT NULL CHECK (context_disposition = 'removed'),
+  bundle_disposition TEXT NOT NULL CHECK (bundle_disposition = 'removed'),
+  group_dead INTEGER NOT NULL CHECK (group_dead = 1),
+  resources_absent INTEGER NOT NULL CHECK (resources_absent = 1),
+  ownership_release_eligible INTEGER NOT NULL CHECK (ownership_release_eligible = 1),
+  evidence_id TEXT NOT NULL ${ID("evidence_id")},
+  input_digest TEXT NOT NULL ${DIGEST("input_digest")},
+  record_digest TEXT NOT NULL ${DIGEST("record_digest")},
+  idempotency_key TEXT NOT NULL ${ID("idempotency_key")},
+  created_at TEXT NOT NULL ${UTC("created_at")},
+  FOREIGN KEY (attempt_id) REFERENCES attempts(attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (ownership_id, attempt_id, owner_generation)
+    REFERENCES attempt_ownership_leases(ownership_id, attempt_id, generation) ON DELETE RESTRICT,
+  FOREIGN KEY (context_id, attempt_id) REFERENCES execution_contexts(context_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (cause_evidence_id, attempt_id) REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (cleanup_eligibility_record_id, attempt_id)
+    REFERENCES cleanup_eligibility_records(cleanup_eligibility_record_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (oracle_decision_id, attempt_id)
+    REFERENCES oracle_decisions(oracle_decision_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (promotion_intent_id, attempt_id)
+    REFERENCES promotion_intents(promotion_intent_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (
+    target_proof_set_id, attempt_id, target_proof_set_state,
+    target_proof_set_digest, target_proof_set_evidence_id, target_proof_count
+  ) REFERENCES attempt_target_proof_sets(
+    target_proof_set_id, attempt_id, state, proof_set_digest, evidence_id, target_count
+  ) ON DELETE RESTRICT,
+  FOREIGN KEY (salvage_record_id, attempt_id)
+    REFERENCES salvage_records(salvage_record_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (evidence_id, attempt_id) REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  CHECK (delivery_baseline_oid = delivery_observed_oid),
+  CHECK ((failure_kind = 'pre_oracle' AND cleanup_eligibility_record_id IS NULL AND oracle_decision_id IS NULL AND promotion_intent_id IS NULL) OR
+         (failure_kind = 'oracle_rejected' AND cleanup_eligibility_record_id IS NOT NULL AND oracle_decision_id IS NOT NULL AND promotion_intent_id IS NULL) OR
+         (failure_kind = 'promotion_aborted' AND cleanup_eligibility_record_id IS NOT NULL AND oracle_decision_id IS NOT NULL AND promotion_intent_id IS NOT NULL))
+) STRICT;
+CREATE UNIQUE INDEX failure_cleanup_records_attempt_uq ON failure_cleanup_records(attempt_id);
+CREATE UNIQUE INDEX failure_cleanup_records_attempt_idempotency_uq ON failure_cleanup_records(attempt_id, idempotency_key);
+CREATE UNIQUE INDEX failure_cleanup_records_digest_uq ON failure_cleanup_records(record_digest);
+
+CREATE TABLE promotion_cleanup_records (
+  promotion_cleanup_record_id TEXT PRIMARY KEY ${ID("promotion_cleanup_record_id")},
+  attempt_id TEXT NOT NULL ${ID("attempt_id")},
+  ownership_id TEXT NOT NULL ${ID("ownership_id")},
+  owner_generation INTEGER NOT NULL CHECK (owner_generation > 0),
+  ownership_state_version INTEGER NOT NULL CHECK (ownership_state_version >= 0),
+  ownership_context_digest TEXT NOT NULL ${DIGEST("ownership_context_digest")},
+  context_id TEXT NOT NULL ${ID("context_id")},
+  cleanup_eligibility_record_id TEXT NOT NULL ${ID("cleanup_eligibility_record_id")},
+  oracle_decision_id TEXT NOT NULL ${ID("oracle_decision_id")},
+  promotion_intent_id TEXT NOT NULL ${ID("promotion_intent_id")},
+  promotion_observation_evidence_id TEXT NOT NULL ${ID("promotion_observation_evidence_id")},
+  delivery_ref TEXT NOT NULL ${ID("delivery_ref")},
+  expected_old_oid TEXT NOT NULL ${OID("expected_old_oid")},
+  candidate_oid TEXT NOT NULL ${OID("candidate_oid")},
+  delivery_observed_oid TEXT NOT NULL ${OID("delivery_observed_oid")},
+  claim_preimage_digest TEXT NOT NULL ${DIGEST("claim_preimage_digest")},
+  worktree_disposition TEXT NOT NULL CHECK (worktree_disposition = 'removed'),
+  index_disposition TEXT NOT NULL CHECK (index_disposition = 'removed'),
+  ref_disposition TEXT NOT NULL CHECK (ref_disposition = 'removed'),
+  context_disposition TEXT NOT NULL CHECK (context_disposition = 'removed'),
+  bundle_disposition TEXT NOT NULL CHECK (bundle_disposition = 'removed'),
+  group_dead INTEGER NOT NULL CHECK (group_dead = 1),
+  resources_absent INTEGER NOT NULL CHECK (resources_absent = 1),
+  ownership_release_eligible INTEGER NOT NULL CHECK (ownership_release_eligible = 1),
+  evidence_id TEXT NOT NULL ${ID("evidence_id")},
+  input_digest TEXT NOT NULL ${DIGEST("input_digest")},
+  record_digest TEXT NOT NULL ${DIGEST("record_digest")},
+  idempotency_key TEXT NOT NULL ${ID("idempotency_key")},
+  created_at TEXT NOT NULL ${UTC("created_at")},
+  FOREIGN KEY (attempt_id) REFERENCES attempts(attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (ownership_id, attempt_id, owner_generation)
+    REFERENCES attempt_ownership_leases(ownership_id, attempt_id, generation) ON DELETE RESTRICT,
+  FOREIGN KEY (context_id, attempt_id) REFERENCES execution_contexts(context_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (cleanup_eligibility_record_id, attempt_id)
+    REFERENCES cleanup_eligibility_records(cleanup_eligibility_record_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (oracle_decision_id, attempt_id)
+    REFERENCES oracle_decisions(oracle_decision_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (promotion_intent_id, attempt_id)
+    REFERENCES promotion_intents(promotion_intent_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (promotion_observation_evidence_id, attempt_id)
+    REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (evidence_id, attempt_id) REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  CHECK (candidate_oid = delivery_observed_oid),
+  CHECK (candidate_oid <> expected_old_oid)
+) STRICT;
+CREATE UNIQUE INDEX promotion_cleanup_records_attempt_uq ON promotion_cleanup_records(attempt_id);
+CREATE UNIQUE INDEX promotion_cleanup_records_intent_uq ON promotion_cleanup_records(promotion_intent_id);
+CREATE UNIQUE INDEX promotion_cleanup_records_attempt_idempotency_uq ON promotion_cleanup_records(attempt_id, idempotency_key);
+CREATE UNIQUE INDEX promotion_cleanup_records_digest_uq ON promotion_cleanup_records(record_digest);
+
+CREATE TABLE quarantine_claim_sets (
+  quarantine_claim_set_id TEXT PRIMARY KEY ${ID("quarantine_claim_set_id")},
+  attempt_id TEXT NOT NULL ${ID("attempt_id")},
+  ownership_id TEXT NOT NULL ${ID("ownership_id")},
+  owner_generation INTEGER NOT NULL CHECK (owner_generation > 0),
+  ownership_context_digest TEXT NOT NULL ${DIGEST("ownership_context_digest")},
+  ownership_snapshot_evidence_id TEXT NOT NULL ${ID("ownership_snapshot_evidence_id")},
+  claim_count INTEGER NOT NULL CHECK (claim_count = 11),
+  absent_count INTEGER NOT NULL CHECK (absent_count >= 0),
+  retained_count INTEGER NOT NULL CHECK (retained_count >= 0),
+  unknown_count INTEGER NOT NULL CHECK (unknown_count >= 0),
+  not_applicable_count INTEGER NOT NULL CHECK (not_applicable_count >= 0),
+  all_required_absent INTEGER NOT NULL CHECK (all_required_absent IN (0,1)),
+  state TEXT NOT NULL CHECK (state IN ('collecting','sealed')),
+  state_version INTEGER NOT NULL CHECK (state_version >= 0),
+  claim_set_digest TEXT ${OPTIONAL_DIGEST("claim_set_digest")},
+  evidence_id TEXT,
+  input_digest TEXT NOT NULL ${DIGEST("input_digest")},
+  idempotency_key TEXT NOT NULL ${ID("idempotency_key")},
+  created_at TEXT NOT NULL ${UTC("created_at")},
+  sealed_at TEXT CHECK (sealed_at IS NULL OR (length(sealed_at) >= 20 AND substr(sealed_at, -1) = 'Z')),
+  FOREIGN KEY (attempt_id) REFERENCES attempts(attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (ownership_id, attempt_id, owner_generation)
+    REFERENCES attempt_ownership_leases(ownership_id, attempt_id, generation) ON DELETE RESTRICT,
+  FOREIGN KEY (ownership_snapshot_evidence_id, attempt_id)
+    REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (evidence_id, attempt_id) REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  CHECK (absent_count + retained_count + unknown_count + not_applicable_count = claim_count),
+  CHECK ((state = 'collecting' AND state_version = 0 AND claim_set_digest IS NULL AND evidence_id IS NULL AND sealed_at IS NULL) OR
+         (state = 'sealed' AND state_version = 1 AND claim_set_digest IS NOT NULL AND evidence_id IS NOT NULL AND sealed_at IS NOT NULL))
+) STRICT;
+CREATE UNIQUE INDEX quarantine_claim_sets_attempt_uq ON quarantine_claim_sets(attempt_id);
+CREATE UNIQUE INDEX quarantine_claim_sets_attempt_idempotency_uq
+  ON quarantine_claim_sets(attempt_id, idempotency_key);
+CREATE UNIQUE INDEX quarantine_claim_sets_identity_owner_uq
+  ON quarantine_claim_sets(quarantine_claim_set_id, attempt_id, ownership_id, owner_generation);
+CREATE UNIQUE INDEX quarantine_claim_sets_sealed_identity_uq
+  ON quarantine_claim_sets(
+    quarantine_claim_set_id, attempt_id, ownership_id, owner_generation,
+    state, claim_set_digest, evidence_id, all_required_absent
+  );
+
+CREATE TABLE quarantine_claim_members (
+  quarantine_claim_set_id TEXT NOT NULL ${ID("quarantine_claim_set_id")},
+  attempt_id TEXT NOT NULL ${ID("attempt_id")},
+  ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+  resource_claim_id TEXT NOT NULL ${ID("resource_claim_id")},
+  slot TEXT NOT NULL CHECK (slot IN ('delivery_ref','attempt_ref','worktree','isolated_index','policy_context','policy_bundle','process_group','stdout','stderr','verification_output','salvage_archive')),
+  kind TEXT NOT NULL CHECK (kind = slot),
+  current_ownership_id TEXT NOT NULL ${ID("current_ownership_id")},
+  owner_generation INTEGER NOT NULL CHECK (owner_generation > 0),
+  claim_state TEXT NOT NULL CHECK (claim_state = 'quarantined'),
+  claim_state_version INTEGER NOT NULL CHECK (claim_state_version >= 0),
+  claim_snapshot_evidence_id TEXT NOT NULL ${ID("claim_snapshot_evidence_id")},
+  absence_required INTEGER NOT NULL CHECK (absence_required IN (0,1)),
+  physical_disposition TEXT NOT NULL CHECK (physical_disposition IN ('absent','retained','unknown','not_applicable')),
+  disposition_evidence_id TEXT NOT NULL ${ID("disposition_evidence_id")},
+  member_digest TEXT NOT NULL ${DIGEST("member_digest")},
+  created_at TEXT NOT NULL ${UTC("created_at")},
+  PRIMARY KEY (quarantine_claim_set_id, ordinal),
+  UNIQUE (quarantine_claim_set_id, resource_claim_id),
+  UNIQUE (quarantine_claim_set_id, slot),
+  FOREIGN KEY (quarantine_claim_set_id, attempt_id, current_ownership_id, owner_generation)
+    REFERENCES quarantine_claim_sets(quarantine_claim_set_id, attempt_id, ownership_id, owner_generation) ON DELETE RESTRICT,
+  FOREIGN KEY (
+    resource_claim_id, attempt_id, slot, kind, current_ownership_id,
+    owner_generation, claim_state, claim_state_version
+  ) REFERENCES attempt_resource_claims(
+    resource_claim_id, attempt_id, slot, kind, current_ownership_id,
+    owner_generation, state, state_version
+  ) ON DELETE RESTRICT,
+  FOREIGN KEY (claim_snapshot_evidence_id, attempt_id)
+    REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (disposition_evidence_id, attempt_id)
+    REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  CHECK ((absence_required = 0 AND slot = 'delivery_ref' AND physical_disposition = 'not_applicable') OR
+         (absence_required = 1 AND slot <> 'delivery_ref' AND physical_disposition IN ('absent','retained','unknown')))
+) STRICT;
+
+CREATE TABLE quarantine_records (
+  quarantine_record_id TEXT PRIMARY KEY ${ID("quarantine_record_id")},
+  attempt_id TEXT NOT NULL ${ID("attempt_id")},
+  ownership_id TEXT NOT NULL ${ID("ownership_id")},
+  owner_generation INTEGER NOT NULL CHECK (owner_generation > 0),
+  ownership_state_version INTEGER NOT NULL CHECK (ownership_state_version >= 0),
+  ownership_context_digest TEXT NOT NULL ${DIGEST("ownership_context_digest")},
+  context_id TEXT NOT NULL ${ID("context_id")},
+  quarantine_stage TEXT NOT NULL CHECK (quarantine_stage IN ('pre_oracle','oracle','promotion')),
+  reason_code TEXT NOT NULL ${ID("reason_code")},
+  cause_evidence_id TEXT NOT NULL ${ID("cause_evidence_id")},
+  cleanup_eligibility_record_id TEXT,
+  oracle_decision_id TEXT,
+  promotion_intent_id TEXT,
+  target_proof_set_id TEXT NOT NULL ${ID("target_proof_set_id")},
+  target_proof_set_state TEXT NOT NULL CHECK (target_proof_set_state = 'sealed_complete'),
+  target_proof_set_digest TEXT NOT NULL ${DIGEST("target_proof_set_digest")},
+  target_proof_set_evidence_id TEXT NOT NULL ${ID("target_proof_set_evidence_id")},
+  target_proof_count INTEGER NOT NULL CHECK (target_proof_count >= 0),
+  quarantine_claim_set_id TEXT NOT NULL ${ID("quarantine_claim_set_id")},
+  quarantine_claim_set_state TEXT NOT NULL CHECK (quarantine_claim_set_state = 'sealed'),
+  quarantine_claim_set_digest TEXT NOT NULL ${DIGEST("quarantine_claim_set_digest")},
+  quarantine_claim_set_evidence_id TEXT NOT NULL ${ID("quarantine_claim_set_evidence_id")},
+  delivery_ref TEXT NOT NULL ${ID("delivery_ref")},
+  expected_delivery_oid TEXT ${OPTIONAL_OID("expected_delivery_oid")},
+  observed_delivery_oid TEXT ${OPTIONAL_OID("observed_delivery_oid")},
+  group_dead INTEGER NOT NULL CHECK (group_dead = 1),
+  resources_absent INTEGER NOT NULL CHECK (resources_absent IN (0,1)),
+  evidence_id TEXT NOT NULL ${ID("evidence_id")},
+  input_digest TEXT NOT NULL ${DIGEST("input_digest")},
+  record_digest TEXT NOT NULL ${DIGEST("record_digest")},
+  idempotency_key TEXT NOT NULL ${ID("idempotency_key")},
+  created_at TEXT NOT NULL ${UTC("created_at")},
+  FOREIGN KEY (attempt_id) REFERENCES attempts(attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (ownership_id, attempt_id, owner_generation)
+    REFERENCES attempt_ownership_leases(ownership_id, attempt_id, generation) ON DELETE RESTRICT,
+  FOREIGN KEY (context_id, attempt_id) REFERENCES execution_contexts(context_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (cause_evidence_id, attempt_id) REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (cleanup_eligibility_record_id, attempt_id)
+    REFERENCES cleanup_eligibility_records(cleanup_eligibility_record_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (oracle_decision_id, attempt_id)
+    REFERENCES oracle_decisions(oracle_decision_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (promotion_intent_id, attempt_id)
+    REFERENCES promotion_intents(promotion_intent_id, attempt_id) ON DELETE RESTRICT,
+  FOREIGN KEY (
+    target_proof_set_id, attempt_id, target_proof_set_state,
+    target_proof_set_digest, target_proof_set_evidence_id, target_proof_count
+  ) REFERENCES attempt_target_proof_sets(
+    target_proof_set_id, attempt_id, state, proof_set_digest, evidence_id, target_count
+  ) ON DELETE RESTRICT,
+  FOREIGN KEY (
+    quarantine_claim_set_id, attempt_id, ownership_id, owner_generation,
+    quarantine_claim_set_state, quarantine_claim_set_digest,
+    quarantine_claim_set_evidence_id, resources_absent
+  ) REFERENCES quarantine_claim_sets(
+    quarantine_claim_set_id, attempt_id, ownership_id, owner_generation,
+    state, claim_set_digest, evidence_id, all_required_absent
+  ) ON DELETE RESTRICT,
+  FOREIGN KEY (evidence_id, attempt_id) REFERENCES evidence(evidence_id, attempt_id) ON DELETE RESTRICT,
+  CHECK ((quarantine_stage = 'pre_oracle' AND cleanup_eligibility_record_id IS NULL AND oracle_decision_id IS NULL AND promotion_intent_id IS NULL) OR
+         (quarantine_stage = 'oracle' AND cleanup_eligibility_record_id IS NOT NULL AND oracle_decision_id IS NOT NULL AND promotion_intent_id IS NULL) OR
+         (quarantine_stage = 'promotion' AND cleanup_eligibility_record_id IS NOT NULL AND oracle_decision_id IS NOT NULL AND promotion_intent_id IS NOT NULL))
+) STRICT;
+CREATE UNIQUE INDEX quarantine_records_attempt_uq ON quarantine_records(attempt_id);
+CREATE UNIQUE INDEX quarantine_records_attempt_idempotency_uq ON quarantine_records(attempt_id, idempotency_key);
+CREATE UNIQUE INDEX quarantine_records_digest_uq ON quarantine_records(record_digest);
+
+CREATE TRIGGER target_start_gates_immutable_identity BEFORE UPDATE ON target_start_gates
+WHEN NEW.target_start_gate_id IS NOT OLD.target_start_gate_id OR
+     NEW.attempt_id IS NOT OLD.attempt_id OR NEW.ownership_id IS NOT OLD.ownership_id OR
+     NEW.owner_generation IS NOT OLD.owner_generation OR NEW.phase_execution_id IS NOT OLD.phase_execution_id OR
+     NEW.context_id IS NOT OLD.context_id OR NEW.execution_context_digest IS NOT OLD.execution_context_digest OR
+     NEW.start_authorization_digest IS NOT OLD.start_authorization_digest OR NEW.input_digest IS NOT OLD.input_digest OR
+     NEW.idempotency_key IS NOT OLD.idempotency_key OR NEW.created_at IS NOT OLD.created_at
+BEGIN SELECT RAISE(ABORT, 'target start gate identity is immutable'); END;
+CREATE TRIGGER target_start_gates_state_version BEFORE UPDATE ON target_start_gates
+WHEN NEW.state_version <> OLD.state_version + 1
+BEGIN SELECT RAISE(ABORT, 'target start gate state_version must advance by one'); END;
+CREATE TRIGGER target_start_gates_legal_edge BEFORE UPDATE OF state ON target_start_gates
+WHEN OLD.state <> 'held' OR NEW.state NOT IN ('released','closed_never_released')
+BEGIN SELECT RAISE(ABORT, 'illegal target start gate transition'); END;
+CREATE TRIGGER target_start_gates_no_delete BEFORE DELETE ON target_start_gates
+BEGIN SELECT RAISE(ABORT, 'target start gates cannot be deleted'); END;
+
+CREATE TRIGGER target_start_gates_no_insert_after_proof_seal BEFORE INSERT ON target_start_gates
+WHEN EXISTS (
+  SELECT 1 FROM attempt_target_proof_sets proof
+  WHERE proof.attempt_id = NEW.attempt_id AND proof.state <> 'collecting'
+)
+BEGIN SELECT RAISE(ABORT, 'target start gates cannot append after target proof sealing'); END;
+CREATE TRIGGER target_start_gates_no_update_after_proof_seal BEFORE UPDATE ON target_start_gates
+WHEN EXISTS (
+  SELECT 1 FROM attempt_target_proof_sets proof
+  WHERE proof.attempt_id = NEW.attempt_id AND proof.state <> 'collecting'
+)
+BEGIN SELECT RAISE(ABORT, 'target start gates cannot advance after target proof sealing'); END;
+CREATE TRIGGER attempt_process_launches_no_insert_after_proof_seal BEFORE INSERT ON attempt_process_launches
+WHEN EXISTS (
+  SELECT 1 FROM attempt_target_proof_sets proof
+  WHERE proof.attempt_id = NEW.attempt_id AND proof.state <> 'collecting'
+)
+BEGIN SELECT RAISE(ABORT, 'process launches cannot append after target proof sealing'); END;
+
+CREATE TRIGGER attempt_target_proof_members_collecting_only BEFORE INSERT ON attempt_target_proof_members
+WHEN NOT EXISTS (
+  SELECT 1 FROM attempt_target_proof_sets proof
+  WHERE proof.target_proof_set_id = NEW.target_proof_set_id
+    AND proof.attempt_id = NEW.attempt_id
+    AND proof.ownership_id = NEW.ownership_id
+    AND proof.owner_generation = NEW.owner_generation
+    AND proof.state = 'collecting'
+)
+BEGIN SELECT RAISE(ABORT, 'target proof members require their collecting proof set'); END;
+CREATE TRIGGER attempt_target_proof_members_gate_snapshot BEFORE INSERT ON attempt_target_proof_members
+WHEN NEW.target_start_gate_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM target_start_gates gate
+  WHERE gate.target_start_gate_id = NEW.target_start_gate_id
+    AND gate.attempt_id = NEW.attempt_id
+    AND gate.ownership_id = NEW.ownership_id
+    AND gate.owner_generation = NEW.owner_generation
+    AND gate.phase_execution_id = NEW.phase_execution_id
+    AND gate.context_id = NEW.context_id
+    AND gate.state = NEW.gate_state
+    AND gate.state_version = NEW.gate_state_version
+    AND gate.release_evidence_id IS NEW.gate_release_evidence_id
+    AND gate.never_released_evidence_id IS NEW.gate_never_released_evidence_id
+)
+BEGIN SELECT RAISE(ABORT, 'target proof member gate snapshot is not exact'); END;
+CREATE TRIGGER attempt_target_proof_members_terminal_death_evidence BEFORE INSERT ON attempt_target_proof_members
+WHEN NEW.proof_kind IN ('terminal_process','never_released') AND NEW.launch_id IS NOT NULL AND NOT EXISTS (
+  SELECT 1
+  FROM attempt_process_observations observation
+  JOIN evidence death ON death.evidence_id = observation.evidence_id
+  JOIN attempt_process_launches launch ON launch.launch_id = observation.launch_id
+  WHERE observation.launch_id = NEW.launch_id
+    AND observation.attempt_id = NEW.attempt_id
+    AND observation.kind = 'group_death'
+    AND observation.schema_version = 'rickgent.process-group-death.v1'
+    AND observation.evidence_id = NEW.group_death_evidence_id
+    AND death.attempt_id = NEW.attempt_id
+    AND death.phase_execution_id = NEW.phase_execution_id
+    AND death.context_id = NEW.context_id
+    AND death.producer_service = 'ProcessSupervisor'
+    AND death.schema_version = 'rickgent.process-group-death.v1'
+    AND death.content_digest = observation.payload_digest
+    AND launch.process_receipt_id = NEW.process_receipt_id
+    AND launch.ownership_id = NEW.ownership_id
+    AND launch.owner_generation = NEW.owner_generation
+)
+BEGIN SELECT RAISE(ABORT, 'terminal target proof lacks exact group-death observation evidence'); END;
+CREATE TRIGGER attempt_target_proof_members_no_update BEFORE UPDATE ON attempt_target_proof_members
+BEGIN SELECT RAISE(ABORT, 'target proof members are append-only'); END;
+CREATE TRIGGER attempt_target_proof_members_no_delete BEFORE DELETE ON attempt_target_proof_members
+BEGIN SELECT RAISE(ABORT, 'target proof members are append-only'); END;
+
+CREATE TRIGGER attempt_target_proof_sets_immutable_identity BEFORE UPDATE ON attempt_target_proof_sets
+WHEN NEW.target_proof_set_id IS NOT OLD.target_proof_set_id OR
+     NEW.attempt_id IS NOT OLD.attempt_id OR NEW.ownership_id IS NOT OLD.ownership_id OR
+     NEW.owner_generation IS NOT OLD.owner_generation OR
+     NEW.ownership_context_digest IS NOT OLD.ownership_context_digest OR
+     NEW.target_count IS NOT OLD.target_count OR NEW.input_digest IS NOT OLD.input_digest OR
+     NEW.idempotency_key IS NOT OLD.idempotency_key OR NEW.created_at IS NOT OLD.created_at
+BEGIN SELECT RAISE(ABORT, 'target proof set identity is immutable'); END;
+CREATE TRIGGER attempt_target_proof_sets_state_version BEFORE UPDATE ON attempt_target_proof_sets
+WHEN NEW.state_version <> OLD.state_version + 1
+BEGIN SELECT RAISE(ABORT, 'target proof set state_version must advance by one'); END;
+CREATE TRIGGER attempt_target_proof_sets_legal_edge BEFORE UPDATE OF state ON attempt_target_proof_sets
+WHEN OLD.state <> 'collecting' OR NEW.state NOT IN ('sealed_complete','sealed_incomplete')
+BEGIN SELECT RAISE(ABORT, 'illegal target proof set transition'); END;
+CREATE TRIGGER attempt_target_proof_sets_inventory_complete BEFORE UPDATE OF state ON attempt_target_proof_sets
+WHEN NEW.state IN ('sealed_complete','sealed_incomplete') AND (
+  NEW.target_count <> (
+    SELECT COUNT(*) FROM (
+      SELECT phase_execution_id FROM target_start_gates WHERE attempt_id = NEW.attempt_id
+      UNION
+      SELECT phase_execution_id FROM attempt_process_launches WHERE attempt_id = NEW.attempt_id
+    ) target_phases
+  ) OR
+  NEW.target_count <> (
+    SELECT COUNT(*) FROM attempt_target_proof_members member
+    WHERE member.target_proof_set_id = NEW.target_proof_set_id
+  ) OR
+  (NEW.target_count > 0 AND (
+    (SELECT MIN(ordinal) FROM attempt_target_proof_members WHERE target_proof_set_id = NEW.target_proof_set_id) <> 0 OR
+    (SELECT MAX(ordinal) FROM attempt_target_proof_members WHERE target_proof_set_id = NEW.target_proof_set_id) <> NEW.target_count - 1
+  )) OR
+  EXISTS (
+    SELECT 1 FROM (
+      SELECT phase_execution_id FROM target_start_gates WHERE attempt_id = NEW.attempt_id
+      UNION
+      SELECT phase_execution_id FROM attempt_process_launches WHERE attempt_id = NEW.attempt_id
+    ) target
+    LEFT JOIN attempt_target_proof_members member
+      ON member.target_proof_set_id = NEW.target_proof_set_id
+     AND member.phase_execution_id = target.phase_execution_id
+    WHERE member.phase_execution_id IS NULL
+  )
+)
+BEGIN SELECT RAISE(ABORT, 'target proof set does not inventory every gate or launch phase'); END;
+CREATE TRIGGER attempt_target_proof_sets_complete_semantics BEFORE UPDATE OF state ON attempt_target_proof_sets
+WHEN NEW.state = 'sealed_complete' AND (
+  EXISTS (
+    SELECT 1 FROM attempt_target_proof_members member
+    WHERE member.target_proof_set_id = NEW.target_proof_set_id AND member.proof_kind = 'unproven'
+  ) OR
+  EXISTS (
+    SELECT 1 FROM target_start_gates gate
+    LEFT JOIN attempt_target_proof_members member
+      ON member.target_proof_set_id = NEW.target_proof_set_id
+     AND member.target_start_gate_id = gate.target_start_gate_id
+    WHERE gate.attempt_id = NEW.attempt_id AND (
+      member.target_start_gate_id IS NULL OR
+      (gate.state = 'released' AND member.proof_kind <> 'terminal_process') OR
+      (gate.state = 'closed_never_released' AND member.proof_kind <> 'never_released') OR
+      gate.state = 'held'
+    )
+  ) OR
+  EXISTS (
+    SELECT 1 FROM attempt_process_launches launch
+    LEFT JOIN attempt_target_proof_members member
+      ON member.target_proof_set_id = NEW.target_proof_set_id
+     AND member.phase_execution_id = launch.phase_execution_id
+     AND member.launch_id = launch.launch_id
+     AND member.process_receipt_id = launch.process_receipt_id
+     AND member.proof_kind IN ('terminal_process','never_released')
+    WHERE launch.attempt_id = NEW.attempt_id AND member.launch_id IS NULL
+  )
+)
+BEGIN SELECT RAISE(ABORT, 'complete target proof set contains an unproven, live, or orphan target'); END;
+CREATE TRIGGER attempt_target_proof_sets_incomplete_semantics BEFORE UPDATE OF state ON attempt_target_proof_sets
+WHEN NEW.state = 'sealed_incomplete' AND NOT EXISTS (
+  SELECT 1 FROM attempt_target_proof_members member
+  WHERE member.target_proof_set_id = NEW.target_proof_set_id AND member.proof_kind = 'unproven'
+)
+BEGIN SELECT RAISE(ABORT, 'incomplete target proof set requires an explicit unproven member'); END;
+CREATE TRIGGER attempt_target_proof_sets_no_delete BEFORE DELETE ON attempt_target_proof_sets
+BEGIN SELECT RAISE(ABORT, 'target proof sets cannot be deleted'); END;
+
+CREATE TRIGGER quarantine_claim_members_collecting_only BEFORE INSERT ON quarantine_claim_members
+WHEN NOT EXISTS (
+  SELECT 1 FROM quarantine_claim_sets claims
+  WHERE claims.quarantine_claim_set_id = NEW.quarantine_claim_set_id
+    AND claims.attempt_id = NEW.attempt_id
+    AND claims.ownership_id = NEW.current_ownership_id
+    AND claims.owner_generation = NEW.owner_generation
+    AND claims.state = 'collecting'
+)
+BEGIN SELECT RAISE(ABORT, 'quarantine claim members require their collecting claim set'); END;
+CREATE TRIGGER quarantine_claim_members_no_update BEFORE UPDATE ON quarantine_claim_members
+BEGIN SELECT RAISE(ABORT, 'quarantine claim members are append-only'); END;
+CREATE TRIGGER quarantine_claim_members_no_delete BEFORE DELETE ON quarantine_claim_members
+BEGIN SELECT RAISE(ABORT, 'quarantine claim members are append-only'); END;
+
+CREATE TRIGGER quarantine_claim_sets_immutable_identity BEFORE UPDATE ON quarantine_claim_sets
+WHEN NEW.quarantine_claim_set_id IS NOT OLD.quarantine_claim_set_id OR
+     NEW.attempt_id IS NOT OLD.attempt_id OR NEW.ownership_id IS NOT OLD.ownership_id OR
+     NEW.owner_generation IS NOT OLD.owner_generation OR
+     NEW.ownership_context_digest IS NOT OLD.ownership_context_digest OR
+     NEW.ownership_snapshot_evidence_id IS NOT OLD.ownership_snapshot_evidence_id OR
+     NEW.claim_count IS NOT OLD.claim_count OR NEW.absent_count IS NOT OLD.absent_count OR
+     NEW.retained_count IS NOT OLD.retained_count OR NEW.unknown_count IS NOT OLD.unknown_count OR
+     NEW.not_applicable_count IS NOT OLD.not_applicable_count OR
+     NEW.all_required_absent IS NOT OLD.all_required_absent OR
+     NEW.input_digest IS NOT OLD.input_digest OR NEW.idempotency_key IS NOT OLD.idempotency_key OR
+     NEW.created_at IS NOT OLD.created_at
+BEGIN SELECT RAISE(ABORT, 'quarantine claim set identity is immutable'); END;
+CREATE TRIGGER quarantine_claim_sets_state_version BEFORE UPDATE ON quarantine_claim_sets
+WHEN NEW.state_version <> OLD.state_version + 1
+BEGIN SELECT RAISE(ABORT, 'quarantine claim set state_version must advance by one'); END;
+CREATE TRIGGER quarantine_claim_sets_legal_edge BEFORE UPDATE OF state ON quarantine_claim_sets
+WHEN OLD.state <> 'collecting' OR NEW.state <> 'sealed'
+BEGIN SELECT RAISE(ABORT, 'illegal quarantine claim set transition'); END;
+CREATE TRIGGER quarantine_claim_sets_complete_seal BEFORE UPDATE OF state ON quarantine_claim_sets
+WHEN NEW.state = 'sealed' AND (
+  NEW.claim_count <> (
+    SELECT COUNT(*) FROM quarantine_claim_members member
+    WHERE member.quarantine_claim_set_id = NEW.quarantine_claim_set_id
+  ) OR
+  (SELECT MIN(ordinal) FROM quarantine_claim_members WHERE quarantine_claim_set_id = NEW.quarantine_claim_set_id) <> 0 OR
+  (SELECT MAX(ordinal) FROM quarantine_claim_members WHERE quarantine_claim_set_id = NEW.quarantine_claim_set_id) <> NEW.claim_count - 1 OR
+  NEW.claim_count <> (
+    SELECT COUNT(*) FROM attempt_resource_claims claim
+    WHERE claim.attempt_id = NEW.attempt_id
+      AND claim.current_ownership_id = NEW.ownership_id
+      AND claim.owner_generation = NEW.owner_generation
+      AND claim.state = 'quarantined'
+  ) OR
+  EXISTS (
+    SELECT 1 FROM attempt_resource_claims claim
+    LEFT JOIN quarantine_claim_members member
+      ON member.quarantine_claim_set_id = NEW.quarantine_claim_set_id
+     AND member.resource_claim_id = claim.resource_claim_id
+    WHERE claim.attempt_id = NEW.attempt_id
+      AND claim.current_ownership_id = NEW.ownership_id
+      AND claim.owner_generation = NEW.owner_generation
+      AND claim.state = 'quarantined'
+      AND member.resource_claim_id IS NULL
+  ) OR
+  NEW.absent_count <> (
+    SELECT COUNT(*) FROM quarantine_claim_members WHERE quarantine_claim_set_id = NEW.quarantine_claim_set_id AND physical_disposition = 'absent'
+  ) OR
+  NEW.retained_count <> (
+    SELECT COUNT(*) FROM quarantine_claim_members WHERE quarantine_claim_set_id = NEW.quarantine_claim_set_id AND physical_disposition = 'retained'
+  ) OR
+  NEW.unknown_count <> (
+    SELECT COUNT(*) FROM quarantine_claim_members WHERE quarantine_claim_set_id = NEW.quarantine_claim_set_id AND physical_disposition = 'unknown'
+  ) OR
+  NEW.not_applicable_count <> (
+    SELECT COUNT(*) FROM quarantine_claim_members WHERE quarantine_claim_set_id = NEW.quarantine_claim_set_id AND physical_disposition = 'not_applicable'
+  ) OR
+  NEW.all_required_absent <> CASE WHEN EXISTS (
+    SELECT 1 FROM quarantine_claim_members
+    WHERE quarantine_claim_set_id = NEW.quarantine_claim_set_id
+      AND absence_required = 1 AND physical_disposition <> 'absent'
+  ) THEN 0 ELSE 1 END
+)
+BEGIN SELECT RAISE(ABORT, 'quarantine claim set does not exactly inventory terminal claims'); END;
+CREATE TRIGGER quarantine_claim_sets_no_delete BEFORE DELETE ON quarantine_claim_sets
+BEGIN SELECT RAISE(ABORT, 'quarantine claim sets cannot be deleted'); END;
+
+CREATE TRIGGER cleanup_eligibility_records_target_owner_lineage BEFORE INSERT ON cleanup_eligibility_records
+WHEN NOT EXISTS (
+  WITH RECURSIVE ownership_chain(ownership_id, generation, recovered_from_ownership_id) AS (
+    SELECT ownership_id, generation, recovered_from_ownership_id
+    FROM attempt_ownership_leases
+    WHERE ownership_id = NEW.ownership_id AND attempt_id = NEW.attempt_id AND generation = NEW.owner_generation
+    UNION ALL
+    SELECT parent.ownership_id, parent.generation, parent.recovered_from_ownership_id
+    FROM attempt_ownership_leases parent
+    JOIN ownership_chain child ON child.recovered_from_ownership_id = parent.ownership_id
+    WHERE parent.attempt_id = NEW.attempt_id
+  )
+  SELECT 1 FROM ownership_chain chain
+  JOIN attempt_target_proof_sets proof
+    ON proof.target_proof_set_id = NEW.target_proof_set_id
+   AND proof.attempt_id = NEW.attempt_id
+   AND proof.ownership_id = chain.ownership_id
+   AND proof.owner_generation = chain.generation
+)
+BEGIN SELECT RAISE(ABORT, 'cleanup eligibility target proofs are outside current ownership recovery lineage'); END;
+
+CREATE TRIGGER failure_cleanup_records_target_owner_lineage BEFORE INSERT ON failure_cleanup_records
+WHEN NOT EXISTS (
+  WITH RECURSIVE ownership_chain(ownership_id, generation, recovered_from_ownership_id) AS (
+    SELECT ownership_id, generation, recovered_from_ownership_id FROM attempt_ownership_leases
+    WHERE ownership_id = NEW.ownership_id AND attempt_id = NEW.attempt_id AND generation = NEW.owner_generation
+    UNION ALL
+    SELECT parent.ownership_id, parent.generation, parent.recovered_from_ownership_id
+    FROM attempt_ownership_leases parent JOIN ownership_chain child ON child.recovered_from_ownership_id = parent.ownership_id
+    WHERE parent.attempt_id = NEW.attempt_id
+  )
+  SELECT 1 FROM ownership_chain chain JOIN attempt_target_proof_sets proof
+    ON proof.target_proof_set_id = NEW.target_proof_set_id AND proof.attempt_id = NEW.attempt_id
+   AND proof.ownership_id = chain.ownership_id AND proof.owner_generation = chain.generation
+)
+BEGIN SELECT RAISE(ABORT, 'failure cleanup target proofs are outside current ownership recovery lineage'); END;
+
+CREATE TRIGGER quarantine_records_target_owner_lineage BEFORE INSERT ON quarantine_records
+WHEN NOT EXISTS (
+  WITH RECURSIVE ownership_chain(ownership_id, generation, recovered_from_ownership_id) AS (
+    SELECT ownership_id, generation, recovered_from_ownership_id FROM attempt_ownership_leases
+    WHERE ownership_id = NEW.ownership_id AND attempt_id = NEW.attempt_id AND generation = NEW.owner_generation
+    UNION ALL
+    SELECT parent.ownership_id, parent.generation, parent.recovered_from_ownership_id
+    FROM attempt_ownership_leases parent JOIN ownership_chain child ON child.recovered_from_ownership_id = parent.ownership_id
+    WHERE parent.attempt_id = NEW.attempt_id
+  )
+  SELECT 1 FROM ownership_chain chain JOIN attempt_target_proof_sets proof
+    ON proof.target_proof_set_id = NEW.target_proof_set_id AND proof.attempt_id = NEW.attempt_id
+   AND proof.ownership_id = chain.ownership_id AND proof.owner_generation = chain.generation
+)
+BEGIN SELECT RAISE(ABORT, 'quarantine target proofs are outside current ownership recovery lineage'); END;
+
+${appendOnlyTriggers("cleanup_eligibility_records")}
+${appendOnlyTriggers("failure_cleanup_records")}
+${appendOnlyTriggers("promotion_cleanup_records")}
+${appendOnlyTriggers("quarantine_records")}
+`;
+
 function releasedObjectNames(sql: string, kind: "TABLE" | "INDEX" | "TRIGGER"): readonly string[] {
   const names = [...sql.matchAll(new RegExp(`CREATE (?:UNIQUE )?${kind} ([a-z0-9_]+)`, "g"))]
     .map((match) => match[1])
@@ -1226,7 +2043,8 @@ export const INITIAL_STATE_SCHEMA_OBJECTS = Object.freeze({
 
 const ATTEMPT_OWNERSHIP_STATE_SQL = `${INITIAL_SQL}${ATTEMPT_OWNERSHIP_SQL}`;
 const PROCESS_SUPERVISION_STATE_SQL = `${ATTEMPT_OWNERSHIP_STATE_SQL}${PROCESS_SUPERVISION_SQL}`;
-const LATEST_SQL = `${PROCESS_SUPERVISION_STATE_SQL}${COMMIT_ATTRIBUTION_SQL}`;
+const COMMIT_ATTRIBUTION_STATE_SQL = `${PROCESS_SUPERVISION_STATE_SQL}${COMMIT_ATTRIBUTION_SQL}`;
+const LATEST_SQL = `${COMMIT_ATTRIBUTION_STATE_SQL}${ATTEMPT_CLEANUP_PROOF_SQL}`;
 
 export const ATTEMPT_OWNERSHIP_STATE_SCHEMA_OBJECTS = Object.freeze({
   tables: releasedObjectNames(ATTEMPT_OWNERSHIP_STATE_SQL, "TABLE"),
@@ -1238,6 +2056,12 @@ export const PROCESS_SUPERVISION_STATE_SCHEMA_OBJECTS = Object.freeze({
   tables: releasedObjectNames(PROCESS_SUPERVISION_STATE_SQL, "TABLE"),
   indexes: releasedObjectNames(PROCESS_SUPERVISION_STATE_SQL, "INDEX"),
   triggers: releasedObjectNames(PROCESS_SUPERVISION_STATE_SQL, "TRIGGER"),
+});
+
+export const COMMIT_ATTRIBUTION_STATE_SCHEMA_OBJECTS = Object.freeze({
+  tables: releasedObjectNames(COMMIT_ATTRIBUTION_STATE_SQL, "TABLE"),
+  indexes: releasedObjectNames(COMMIT_ATTRIBUTION_STATE_SQL, "INDEX"),
+  triggers: releasedObjectNames(COMMIT_ATTRIBUTION_STATE_SQL, "TRIGGER"),
 });
 
 export const LATEST_STATE_SCHEMA_OBJECTS = Object.freeze({
@@ -1274,11 +2098,17 @@ export const PROCESS_SUPERVISION_MIGRATION_CHECKSUM =
 export const COMMIT_ATTRIBUTION_MIGRATION_CHECKSUM =
   "sha256:66f819b89e1781ca7fdc7311e269a4991a86706224eaa269b0198ad434ce6469" as const;
 
+export const ATTEMPT_CLEANUP_PROOF_MIGRATION_CHECKSUM =
+  "sha256:e9c6896dd23d8d07127fa8ddb05483ad00ff9a59b2042dc32ce75428371ac6f1" as const;
+
 export const PROCESS_SUPERVISION_STATE_SQLITE_SCHEMA_CHECKSUM =
   "sha256:c208339c0350aae8bd1ee3784da4e4ffc559b41e9c6079530a89da53c08753e3" as const;
 
-export const LATEST_STATE_SQLITE_SCHEMA_CHECKSUM =
+export const COMMIT_ATTRIBUTION_STATE_SQLITE_SCHEMA_CHECKSUM =
   "sha256:af782456d3402bd47cff0ca9fd4e358c52028c14fee3470efcc295cac926542d" as const;
+
+export const LATEST_STATE_SQLITE_SCHEMA_CHECKSUM =
+  "sha256:c91fd35e83d879890dd13ef8f8bb18fa6f8b116e8b85545e4c3e8c65785681c6" as const;
 
 export const STATE_MIGRATIONS: readonly StateMigration[] = Object.freeze([
   Object.freeze({
@@ -1308,6 +2138,13 @@ export const STATE_MIGRATIONS: readonly StateMigration[] = Object.freeze([
     name: "004_durable_commit_attribution",
     sql: COMMIT_ATTRIBUTION_SQL,
     checksum: COMMIT_ATTRIBUTION_MIGRATION_CHECKSUM,
+  }),
+  Object.freeze({
+    version: 5,
+    number: "005",
+    name: "005_attempt_cleanup_proof_model",
+    sql: ATTEMPT_CLEANUP_PROOF_SQL,
+    checksum: ATTEMPT_CLEANUP_PROOF_MIGRATION_CHECKSUM,
   }),
 ]);
 

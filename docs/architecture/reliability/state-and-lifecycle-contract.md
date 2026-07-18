@@ -1,14 +1,15 @@
 # State and lifecycle contract
 
 Status: frozen v1 contract with additive migrations implemented through
-`004_durable_commit_attribution` (`rickgent-state-and-lifecycle-v1`, schema
+`005_attempt_cleanup_proof_model` (`rickgent-state-and-lifecycle-v1`, schema
 `1.0.0`). The normative, closed machine contract is
 [`state-and-lifecycle-contract.json`](./state-and-lifecycle-contract.json).
 The Phase 18 attempt-ownership, Phase 19 process-supervision, and Phase 20
-commit-attribution primitives are implemented internally but are not a
-production dispatch capability: Phase 22 owns caller cutover and Phase 21 owns
-physical cleanup/release proof. Resume, retry, automatic reconciliation, and
-delivery remain unavailable.
+commit-attribution primitives, together with the attempt-cleanup relational
+substrate and oracle v2 reader, are implemented internally but are not a
+production dispatch capability. The disposition writers and finalizers remain
+unavailable; Phase 22 owns that integration and caller cutover. Resume, retry,
+automatic reconciliation, and delivery remain unavailable.
 
 ## Repository identity and state root
 
@@ -102,13 +103,23 @@ and resulting latest `sqlite_schema` checksum
 `sha256:af782456d3402bd47cff0ca9fd4e358c52028c14fee3470efcc295cac926542d`.
 It adds the owner/process/resource/ref-bound CommitService intent and finalization
 bridge without mutating the frozen v1 attribution table.
+Migration `005_attempt_cleanup_proof_model` is implemented by t22 with
+immutable SQL checksum
+`sha256:e9c6896dd23d8d07127fa8ddb05483ad00ff9a59b2042dc32ce75428371ac6f1`
+and resulting latest `sqlite_schema` checksum
+`sha256:c91fd35e83d879890dd13ef8f8bb18fa6f8b116e8b85545e4c3e8c65785681c6`.
+It adds a durable target-start gate, exact per-target proof-set aggregation,
+nonterminal cleanup eligibility, distinct failure/promotion/quarantine records,
+and a normalized quarantine inventory without mutating an earlier released
+table. These are inactive relational authority boundaries until their reserved
+runtime writers and finalizers are connected.
 `schema_migrations` records the immutable version, unique name,
 exact-definition SHA-256, and application time. Its rows and
 `PRAGMA user_version` must agree. Released migrations never change; later
-versions append `005`, `006`, and so on. This release activates only the
-internal attempt-ownership/resource, process-supervision, and commit-attribution
-primitives. Reserved allocation, oracle, promotion, production cutover, public
-recovery, and delivery remain inactive.
+versions append `006`, `007`, and so on. This release activates only the
+internal attempt-ownership/resource, process-supervision, commit-attribution,
+and attempt-cleanup proof primitives. Reserved allocation, oracle, promotion,
+production cutover, public recovery, and delivery remain inactive.
 
 Creation and each migration are atomic. Before use, open checks
 `quick_check`, `foreign_key_check`, migration contiguity/checksums, and the
@@ -168,6 +179,24 @@ Migration 003 adds three append-only `STRICT` tables:
 Migration 004 adds one CAS `STRICT` table:
 
 37. `attempt_commit_intents`
+
+Migration 005 adds nine cleanup-proof `STRICT` tables:
+
+38. `target_start_gates`
+39. `attempt_target_proof_sets`
+40. `attempt_target_proof_members`
+41. `cleanup_eligibility_records`
+42. `failure_cleanup_records`
+43. `promotion_cleanup_records`
+44. `quarantine_claim_sets`
+45. `quarantine_claim_members`
+46. `quarantine_records`
+
+Oracle v2 resolves only the current t18 ownership/claim snapshots and one
+sealed-complete target-proof set. Legacy v1 leases, resources, process receipts,
+and cleanup records remain readable for immutable replay compatibility but are
+not current oracle inputs. Resource absence is a post-oracle disposition fact,
+not an oracle prerequisite.
 
 These tables separate pre-materialization ownership from runnable execution
 contexts. Acquisition inserts one live ownership generation and all eleven fixed

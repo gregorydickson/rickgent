@@ -218,7 +218,7 @@ function makeCorpusFixture(label: string, processes?: PosixProcessController): C
     canonical_manifest_json: manifestJson,
     capability_snapshot_digest: capabilityDigest,
     context_schema_version: "rickgent.execution-context/v1",
-    oracle_version: "rickgent.oracle.v1",
+    oracle_version: "rickgent.oracle.v2",
     created_at: now,
   });
   store.recordTicketContract({
@@ -263,7 +263,7 @@ function makeCorpusFixture(label: string, processes?: PosixProcessController): C
       allocation_owner_digest: sha256(`allocation:${identity}`),
       delivery_baseline_oid: baselineOid,
       context_schema_version: "rickgent.execution-context/v1",
-      oracle_version: "rickgent.oracle.v1",
+      oracle_version: "rickgent.oracle.v2",
       capability_snapshot_digest: capabilityDigest,
       resource_identity_version: "rickgent.attempt-resource-identity/v1",
       state: "planned",
@@ -285,7 +285,7 @@ function makeCorpusFixture(label: string, processes?: PosixProcessController): C
       budget_digest: sha256(`budget:${identity}`),
       scope_digest: sha256(`scope:${identity}`),
       context_schema_version: "rickgent.execution-context/v1",
-      oracle_version: "rickgent.oracle.v1",
+      oracle_version: "rickgent.oracle.v2",
       created_at: now,
     });
     insert(database, "phase_executions", {

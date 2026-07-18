@@ -390,7 +390,7 @@ function createOwnershipFixture(label: string): OwnershipFixture {
     canonical_manifest_json: manifestJson,
     capability_snapshot_digest: capabilityDigest,
     context_schema_version: "rickgent.execution-context/v1",
-    oracle_version: "rickgent.oracle.v1",
+    oracle_version: "rickgent.oracle.v2",
     created_at: now,
   });
   store.recordTicketContract({
@@ -435,7 +435,7 @@ function createOwnershipFixture(label: string): OwnershipFixture {
       allocation_owner_digest: sha256(`allocation:${label}`),
       delivery_baseline_oid: repo.baselineOid,
       context_schema_version: "rickgent.execution-context/v1",
-      oracle_version: "rickgent.oracle.v1",
+      oracle_version: "rickgent.oracle.v2",
       capability_snapshot_digest: capabilityDigest,
       resource_identity_version: "rickgent.attempt-resource-identity/v1",
       state: "planned",

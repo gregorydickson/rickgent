@@ -7,6 +7,8 @@ import { DatabaseSync } from "node:sqlite";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   APPEND_ONLY_STATE_TABLES,
+  ATTEMPT_CLEANUP_PROOF_MIGRATION,
+  ATTEMPT_CLEANUP_PROOF_STATE_TABLES,
   ATTEMPT_OWNERSHIP_MIGRATION,
   ATTEMPT_OWNERSHIP_STATE_TABLES,
   ALL_STATE_TABLES,
@@ -61,7 +63,9 @@ import {
 import {
   ATTEMPT_OWNERSHIP_MIGRATION_CHECKSUM,
   ATTEMPT_OWNERSHIP_STATE_SQLITE_SCHEMA_CHECKSUM,
+  ATTEMPT_CLEANUP_PROOF_MIGRATION_CHECKSUM,
   COMMIT_ATTRIBUTION_MIGRATION_CHECKSUM,
+  COMMIT_ATTRIBUTION_STATE_SQLITE_SCHEMA_CHECKSUM,
   INITIAL_STATE_MIGRATION_CHECKSUM,
   INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM,
   LATEST_STATE_SQLITE_SCHEMA_CHECKSUM,
@@ -145,12 +149,21 @@ describe("frozen state contract parity", () => {
       checksum: COMMIT_ATTRIBUTION_MIGRATION_CHECKSUM,
     });
     expect(COMMIT_ATTRIBUTION_MIGRATION.released_checksum).toBe(COMMIT_ATTRIBUTION_MIGRATION_CHECKSUM);
-    expect(COMMIT_ATTRIBUTION_MIGRATION.sqlite_schema_checksum).toBe(LATEST_STATE_SQLITE_SCHEMA_CHECKSUM);
+    expect(COMMIT_ATTRIBUTION_MIGRATION.sqlite_schema_checksum).toBe(COMMIT_ATTRIBUTION_STATE_SQLITE_SCHEMA_CHECKSUM);
+    expect(EXECUTABLE_STATE_MIGRATIONS[4]).toMatchObject({
+      version: ATTEMPT_CLEANUP_PROOF_MIGRATION.version,
+      number: ATTEMPT_CLEANUP_PROOF_MIGRATION.number,
+      name: ATTEMPT_CLEANUP_PROOF_MIGRATION.name,
+      checksum: ATTEMPT_CLEANUP_PROOF_MIGRATION_CHECKSUM,
+    });
+    expect(ATTEMPT_CLEANUP_PROOF_MIGRATION.released_checksum).toBe(ATTEMPT_CLEANUP_PROOF_MIGRATION_CHECKSUM);
+    expect(ATTEMPT_CLEANUP_PROOF_MIGRATION.sqlite_schema_checksum).toBe(LATEST_STATE_SQLITE_SCHEMA_CHECKSUM);
     expect(new Set(ALL_STATE_TABLES)).toEqual(new Set([
       ...STATE_TABLES,
       ...ATTEMPT_OWNERSHIP_STATE_TABLES,
       ...PROCESS_SUPERVISION_STATE_TABLES,
       ...COMMIT_ATTRIBUTION_STATE_TABLES,
+      ...ATTEMPT_CLEANUP_PROOF_STATE_TABLES,
     ]));
     expect(PROCESS_SUPERVISION_STATE_TABLES).toEqual([
       "attempt_process_launches",
@@ -158,6 +171,17 @@ describe("frozen state contract parity", () => {
       "attempt_process_terminal_receipts",
     ]);
     expect(COMMIT_ATTRIBUTION_STATE_TABLES).toEqual(["attempt_commit_intents"]);
+    expect(ATTEMPT_CLEANUP_PROOF_STATE_TABLES).toEqual([
+      "target_start_gates",
+      "attempt_target_proof_sets",
+      "attempt_target_proof_members",
+      "cleanup_eligibility_records",
+      "failure_cleanup_records",
+      "promotion_cleanup_records",
+      "quarantine_claim_sets",
+      "quarantine_claim_members",
+      "quarantine_records",
+    ]);
     expect(LATEST_STATE_SQLITE_SCHEMA_CHECKSUM).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(contract.entity_model.catalog.map((table: { name: string }) => table.name)).toEqual(STATE_TABLES);
     expect(contract.entity_model.catalog.filter((table: { mutation: { mode: string } }) => table.mutation.mode !== "append_only").map((table: { name: string }) => table.name)).toEqual(CAS_STATE_TABLES);

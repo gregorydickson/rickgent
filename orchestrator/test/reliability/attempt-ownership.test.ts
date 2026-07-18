@@ -118,7 +118,7 @@ function seed(label = "r18", linkedWorktree = false): Fixture {
     canonical_manifest_json: manifestJson,
     capability_snapshot_digest: capabilityDigest,
     context_schema_version: "rickgent.execution-context/v1",
-    oracle_version: "rickgent.oracle.v1",
+    oracle_version: "rickgent.oracle.v2",
     created_at: now,
   });
   store.recordTicketContract({
@@ -163,7 +163,7 @@ function seed(label = "r18", linkedWorktree = false): Fixture {
       allocation_owner_digest: digest(`allocation:${label}`),
       delivery_baseline_oid: baselineOid,
       context_schema_version: "rickgent.execution-context/v1",
-      oracle_version: "rickgent.oracle.v1",
+      oracle_version: "rickgent.oracle.v2",
       capability_snapshot_digest: capabilityDigest,
       resource_identity_version: "rickgent.attempt-resource-identity/v1",
       state: "planned",
@@ -334,7 +334,7 @@ function appendDeathEvidence(
       budget_digest: digest("budget"),
       scope_digest: digest("scope"),
       context_schema_version: "rickgent.execution-context/v1",
-      oracle_version: "rickgent.oracle.v1",
+      oracle_version: "rickgent.oracle.v2",
       created_at: new Date().toISOString(),
     });
     insert(database, "phase_executions", {

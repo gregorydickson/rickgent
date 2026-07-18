@@ -119,7 +119,6 @@ function projection(options: {
     reference("run_manifest", { sealedContent: manifest }),
     contractReference,
     reference("execution_context"),
-    reference("process_receipt"),
     reference("review_record", { sealedContent: {
       cycle: 1,
       verdict: reviewVerdicts[0],
@@ -145,7 +144,50 @@ function projection(options: {
         after_mode: entry.afterMode,
       })),
     } }),
-    reference("cleanup_record"),
+    reference("evidence", {
+      referenceId: "target-proof-set-1",
+      sealedContent: {
+        oracle_input_class: "complete_target_proof_set",
+        target_proof_set_id: "target-proof-set-1",
+        attempt_id: scope.attemptId,
+        ownership_id: "ownership-1",
+        owner_generation: 1,
+        ownership_context_digest: digest("ownership-context"),
+        target_count: 1,
+        target_proof_set_digest: digest("target-proof-set"),
+        target_proofs: [{
+          phase_execution_id: "phase-1",
+          proof_kind: "terminal_process",
+          member_digest: digest("target-proof-member"),
+        }],
+      },
+    }),
+    reference("evidence", {
+      referenceId: "cleanup-eligibility-1",
+      sealedContent: {
+        oracle_input_class: "cleanup_eligibility",
+        eligibility_id: "cleanup-eligibility-1",
+        attempt_id: scope.attemptId,
+        ownership_id: "ownership-1",
+        owner_generation: 1,
+        ownership_state_version: 2,
+        ownership_context_digest: digest("ownership-context"),
+        commit_intent_id: "commit-intent-1",
+        commit_attribution_id: "ref-commit_attribution",
+        candidate_oid: "d".repeat(40),
+        baseline_oid: "b".repeat(40),
+        delivery_ref: "refs/rickgent/runs/run-oracle/delivery",
+        delivery_observed_oid: "b".repeat(40),
+        attempt_ref: "refs/rickgent/runs/run-oracle/attempts/attempt-oracle",
+        attempt_ref_observed_oid: "d".repeat(40),
+        claim_preimage_digest: digest("claim-preimage"),
+        target_proof_set_id: "target-proof-set-1",
+        target_proof_set_digest: digest("target-proof-set"),
+        target_proof_count: 1,
+        ownership_snapshot_evidence_id: "ownership-snapshot-1",
+        claim_snapshot_evidence_ids: Array.from({ length: 11 }, (_, index) => `claim-snapshot-${index + 1}`),
+      },
+    }),
     reference("attempt_resource_snapshot"),
     reference("lease_snapshot"),
   ];
@@ -262,6 +304,21 @@ describe("pure versioned oracle authority", () => {
       "required_gate_missing",
     ]));
   });
+
+  it.each(["process_receipt", "cleanup_record"] as const)(
+    "rejects legacy %s references from a new oracle-v2 evaluation",
+    (referenceKind) => {
+      const baseline = projection();
+      const plan = evaluateAttemptOracle({
+        ...baseline,
+        references: ordered([...baseline.references, reference(referenceKind)]),
+      });
+      expect(plan.result).toBe("rejected");
+      expect(plan.referenceIntegrity).toBe("invalid");
+      expect(plan.reasons.some((reason) => reason.includes(`legacy_reference_kind_forbidden`) && reason.includes(referenceKind)))
+        .toBe(true);
+    },
+  );
 
   it("derives dependency and remediation cardinalities from sealed content", () => {
     const dependencyPlan = evaluateAttemptOracle(projection({ dependencies: ["t14"] }));

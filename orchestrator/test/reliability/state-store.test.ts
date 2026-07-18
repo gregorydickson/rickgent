@@ -179,7 +179,7 @@ function seedLineage(store: StateStore, label: string, sequence: number): Lineag
     canonical_manifest_json: manifestJson,
     capability_snapshot_digest: capabilityDigest,
     context_schema_version: "rickgent.context.v1",
-    oracle_version: "rickgent.oracle.v1",
+    oracle_version: "rickgent.oracle.v2",
     created_at: FIXED_TIME,
   });
   store.recordTicketContract({
@@ -224,7 +224,7 @@ function seedLineage(store: StateStore, label: string, sequence: number): Lineag
       allocation_owner_digest: allocationOwnerDigest,
       delivery_baseline_oid: oid(String(sequence)),
       context_schema_version: "rickgent.context.v1",
-      oracle_version: "rickgent.oracle.v1",
+      oracle_version: "rickgent.oracle.v2",
       capability_snapshot_digest: capabilityDigest,
       resource_identity_version: "rickgent.resource-identity.v1",
       state: "planned",
@@ -255,7 +255,7 @@ function seedLineage(store: StateStore, label: string, sequence: number): Lineag
       budget_digest: digest(`budget:${label}`),
       scope_digest: digest(`scope:${label}`),
       context_schema_version: "rickgent.context.v1",
-      oracle_version: "rickgent.oracle.v1",
+      oracle_version: "rickgent.oracle.v2",
       created_at: FIXED_TIME,
     });
     insert(phaseDatabase, "phase_executions", {
@@ -500,7 +500,7 @@ describe("durable state-store bootstrap and preservation", () => {
         canonical_manifest_json: preservedManifestJson,
         capability_snapshot_digest: digest("v1-capability"),
         context_schema_version: "rickgent.execution-context/v1",
-        oracle_version: "rickgent.oracle.v1",
+        oracle_version: "rickgent.oracle.v2",
         created_at: FIXED_TIME,
       });
       database.exec("PRAGMA user_version = 1");
@@ -551,7 +551,7 @@ describe("durable state-store bootstrap and preservation", () => {
         canonical_manifest_json: preservedManifestJson,
         capability_snapshot_digest: digest("v2-capability"),
         context_schema_version: "rickgent.execution-context/v1",
-        oracle_version: "rickgent.oracle.v1",
+        oracle_version: "rickgent.oracle.v2",
         created_at: FIXED_TIME,
       });
       database.exec("PRAGMA user_version = 2");
@@ -595,6 +595,27 @@ describe("durable state-store bootstrap and preservation", () => {
       expect(count(store.location.databasePath, "attempt_process_launches")).toBe(0);
       expect(count(store.location.databasePath, "attempt_process_observations")).toBe(0);
       expect(count(store.location.databasePath, "attempt_process_terminal_receipts")).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("reserves every t22 disposition evidence producer for its runtime-authorized path", () => {
+    const store = openStateStore({ repoPath: makeRepo("disposition-producer-authority") });
+    try {
+      for (const producer_service of [
+        "TargetStartGateAuthority",
+        "TargetProofService",
+        "CleanupEligibilityService",
+        "FailureCleanupService",
+        "PromotionCleanupService",
+        "QuarantineService",
+      ]) {
+        expect(() => store.appendEvidence({ producer_service } as never)).toThrow(
+          `${producer_service} evidence requires its runtime-authorized producer path`,
+        );
+      }
+      expect(count(store.location.databasePath, "evidence")).toBe(0);
     } finally {
       store.close();
     }
@@ -743,7 +764,7 @@ describe("durable state-store transaction and lineage guarantees", () => {
         canonical_manifest_json: json,
         capability_snapshot_digest: digest("capability:same"),
         context_schema_version: "rickgent.context.v1",
-        oracle_version: "rickgent.oracle.v1",
+        oracle_version: "rickgent.oracle.v2",
         created_at: FIXED_TIME,
       } as const;
       expect(store.recordRunManifest(row)).toEqual(row);
@@ -828,7 +849,7 @@ describe("durable state-store transaction and lineage guarantees", () => {
         canonical_manifest_json: json,
         capability_snapshot_digest: digest("busy-capability"),
         context_schema_version: "rickgent.context.v1",
-        oracle_version: "rickgent.oracle.v1",
+        oracle_version: "rickgent.oracle.v2",
         created_at: FIXED_TIME,
       } as const;
       const started = Date.now();

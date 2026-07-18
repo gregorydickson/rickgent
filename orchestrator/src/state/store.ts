@@ -27,6 +27,7 @@ import { normalizeTicketContracts } from "../contracts/ticket-contract.js";
 import {
   ATTEMPT_OWNERSHIP_STATE_SCHEMA_OBJECTS,
   ATTEMPT_OWNERSHIP_STATE_SQLITE_SCHEMA_CHECKSUM,
+  COMMIT_ATTRIBUTION_STATE_SQLITE_SCHEMA_CHECKSUM,
   INITIAL_STATE_SCHEMA_OBJECTS,
   INITIAL_STATE_SQLITE_SCHEMA_CHECKSUM,
   LATEST_STATE_SCHEMA_OBJECTS,
@@ -44,6 +45,7 @@ import {
   ATTEMPT_TRANSITIONS,
   LEGACY_ARTIFACT_KINDS,
   PROMOTION_TRANSITIONS,
+  RESOURCE_KINDS,
   RUN_TRANSITIONS,
   STATE_SQLITE_MINIMUM_NODE_VERSION,
   TICKET_TRANSITIONS,
@@ -912,6 +914,8 @@ function validateReleasedSchema(db: DatabaseSync, databasePath: string, version:
       ? ATTEMPT_OWNERSHIP_STATE_SQLITE_SCHEMA_CHECKSUM
     : version === 3
       ? PROCESS_SUPERVISION_STATE_SQLITE_SCHEMA_CHECKSUM
+    : version === 4
+      ? COMMIT_ATTRIBUTION_STATE_SQLITE_SCHEMA_CHECKSUM
     : version === LATEST_STATE_SCHEMA_VERSION
       ? LATEST_STATE_SQLITE_SCHEMA_CHECKSUM
       : undefined;
@@ -1713,7 +1717,19 @@ export class StateStore {
   }
 
   appendEvidence(input: StateRowInput): StateRecord {
-    if (["LeaseAuthority", "ProcessSupervisor", "CommitService", "SalvageService", "CleanupService"].includes(String(input.producer_service))) {
+    if ([
+      "LeaseAuthority",
+      "ProcessSupervisor",
+      "CommitService",
+      "SalvageService",
+      "CleanupService",
+      "TargetStartGateAuthority",
+      "TargetProofService",
+      "CleanupEligibilityService",
+      "FailureCleanupService",
+      "PromotionCleanupService",
+      "QuarantineService",
+    ].includes(String(input.producer_service))) {
       throw new TypeError(`${String(input.producer_service)} evidence requires its runtime-authorized producer path`);
     }
     return this.#appendIdempotent(
@@ -2188,15 +2204,6 @@ export class StateStore {
       add("execution_context", String(context.context_id), String(context.context_digest), ticketInstanceId, attemptId, sealed);
     }
 
-    const receipts = db.prepare(`
-      SELECT p.* FROM process_receipts p JOIN phase_executions x ON x.phase_execution_id = p.phase_execution_id
-      WHERE x.attempt_id = ? ORDER BY x.phase_ordinal, x.phase, x.role, p.process_receipt_id
-    `).all(attemptId) as MutableStateRecord[];
-    for (const receipt of receipts) {
-      const sealed = { ...receipt } as Readonly<Record<string, unknown>>;
-      add("process_receipt", String(receipt.process_receipt_id), this.#storedRecordDigest("process_receipts", receipt), ticketInstanceId, attemptId, sealed);
-    }
-
     const verifications = Array.isArray(contract.verifications) ? contract.verifications : [];
     for (const verification of verifications) {
       const value = verification !== null && typeof verification === "object" && !Array.isArray(verification)
@@ -2274,67 +2281,348 @@ export class StateStore {
       add("commit_attribution", String(attribution.commit_attribution_id), String(attribution.evidence_content_digest), ticketInstanceId, attemptId, sealed);
     }
 
-    const cleanup = db.prepare(`
-      SELECT c.*, e.scope AS evidence_scope, e.schema_version AS evidence_schema_version,
-             e.inline_payload_json, e.content_digest AS evidence_content_digest
-      FROM cleanup_records c JOIN evidence e ON e.evidence_id = c.evidence_id
-      WHERE c.attempt_id = ? ORDER BY c.sequence DESC LIMIT 1
+    const targetProofSet = db.prepare(`
+      SELECT proof.*, evidence.producer_service AS evidence_producer_service,
+             evidence.schema_version AS evidence_schema_version,
+             evidence.inline_payload_json, evidence.content_digest AS evidence_content_digest
+      FROM attempt_target_proof_sets proof
+      JOIN evidence ON evidence.evidence_id = proof.evidence_id AND evidence.attempt_id = proof.attempt_id
+      WHERE proof.attempt_id = ? AND proof.state = 'sealed_complete'
     `).get(attemptId) as MutableStateRecord | undefined;
-    if (cleanup !== undefined) {
-      const sealed = this.#parseJsonObject(String(cleanup.inline_payload_json), "oracle cleanup evidence");
-      const recordPayload = {
-        attempt_id: cleanup.attempt_id,
-        sequence: cleanup.sequence,
-        context_id: cleanup.context_id,
-        outcome: cleanup.outcome,
-        group_dead: cleanup.group_dead,
-        worktree_disposition: cleanup.worktree_disposition,
-        index_disposition: cleanup.index_disposition,
-        ref_disposition: cleanup.ref_disposition,
-        context_disposition: cleanup.context_disposition,
-        bundle_disposition: cleanup.bundle_disposition,
-        delivery_ref_observed_oid: cleanup.delivery_ref_observed_oid,
-        resources_absent: cleanup.resources_absent,
-        lease_release_eligible: cleanup.lease_release_eligible,
-        evidence_id: cleanup.evidence_id,
-      };
-      const cleanupEvidenceMatches = [
-        "attempt_id", "sequence", "context_id", "outcome", "group_dead", "worktree_disposition",
-        "index_disposition", "ref_disposition", "context_disposition", "bundle_disposition",
-        "delivery_ref_observed_oid", "resources_absent", "lease_release_eligible",
-      ].every((column) => sealed[column] === cleanup[column]) &&
-        (sealed.evidence_id === undefined || sealed.evidence_id === cleanup.evidence_id);
+    let targetProofSetPayload: Readonly<Record<string, unknown>> | undefined;
+    if (targetProofSet !== undefined) {
+      const members = db.prepare(`
+        SELECT member.*, gate.start_authorization_digest,
+               launch.ownership_context_digest AS launch_ownership_context_digest,
+               launch.phase_execution_id AS launch_phase_execution_id,
+               launch.execution_context_digest AS launch_execution_context_digest,
+               launch.pid, launch.pgid, launch.platform AS launch_platform,
+               launch.boot_identity, launch.process_start_identity, launch.created_at AS launch_created_at,
+               death.producer_service AS death_producer_service,
+               death.schema_version AS death_schema_version,
+               death.inline_payload_json AS death_payload_json,
+               death.content_digest AS death_content_digest,
+               death.created_at AS death_evidence_created_at,
+               observation.schema_version AS death_observation_schema,
+               observation.created_at AS death_observed_at,
+               observation.payload_digest AS death_observation_digest,
+               gate_evidence.producer_service AS gate_evidence_producer,
+               gate_evidence.schema_version AS gate_evidence_schema,
+               gate_evidence.inline_payload_json AS gate_evidence_payload_json,
+               gate_evidence.content_digest AS gate_evidence_content_digest
+        FROM attempt_target_proof_members member
+        LEFT JOIN target_start_gates gate ON gate.target_start_gate_id = member.target_start_gate_id
+        LEFT JOIN attempt_process_launches launch ON launch.launch_id = member.launch_id
+        LEFT JOIN attempt_process_observations observation
+          ON observation.launch_id = member.launch_id
+         AND observation.evidence_id = member.group_death_evidence_id
+         AND observation.kind = 'group_death'
+        LEFT JOIN evidence death ON death.evidence_id = member.group_death_evidence_id
+        LEFT JOIN evidence gate_evidence
+          ON gate_evidence.evidence_id = COALESCE(member.gate_release_evidence_id, member.gate_never_released_evidence_id)
+        WHERE member.target_proof_set_id = ?
+        ORDER BY member.ordinal
+      `).all(String(targetProofSet.target_proof_set_id)) as MutableStateRecord[];
+      const sealedMembers = members.map((member, ordinal) => {
+        const sealedMember = {
+          ordinal: member.ordinal,
+          phase_execution_id: member.phase_execution_id,
+          context_id: member.context_id,
+          target_start_gate_id: member.target_start_gate_id,
+          gate_state: member.gate_state,
+          gate_state_version: member.gate_state_version,
+          proof_kind: member.proof_kind,
+          launch_id: member.launch_id,
+          process_receipt_id: member.process_receipt_id,
+          group_death_evidence_id: member.group_death_evidence_id,
+          unproven_evidence_id: member.unproven_evidence_id,
+        };
+        if (member.ordinal !== ordinal || member.member_digest !== sha256Text(canonicalJson(sealedMember))) {
+          this.#resumeIncompatible("target proof member ordering or digest is invalid");
+        }
+        const gateEvidence = this.#parseJsonObject(
+          String(member.gate_evidence_payload_json),
+          "target start-gate evidence",
+        );
+        if (
+          member.gate_evidence_producer !== "TargetStartGateAuthority" ||
+          member.gate_evidence_content_digest !== sha256Text(canonicalJson(gateEvidence)) ||
+          gateEvidence.target_start_gate_id !== member.target_start_gate_id ||
+          gateEvidence.attempt_id !== attemptId || gateEvidence.phase_execution_id !== member.phase_execution_id ||
+          gateEvidence.state !== member.gate_state || gateEvidence.state_version !== member.gate_state_version ||
+          gateEvidence.start_authorization_digest !== member.start_authorization_digest ||
+          gateEvidence.launch_id !== member.launch_id
+        ) this.#resumeIncompatible("target proof gate evidence does not seal the exact gate transition");
+        let authoritativeDeathExact = false;
+        if (member.launch_id !== null) {
+          const death = this.#parseJsonObject(String(member.death_payload_json), "target proof group-death evidence");
+          const expectedDeath = {
+            schema_version: "rickgent.process-group-death.v1",
+            launch_id: member.launch_id,
+            process_receipt_id: member.process_receipt_id,
+            attempt_id: attemptId,
+            ownership_id: targetProofSet.ownership_id,
+            owner_generation: targetProofSet.owner_generation,
+            ownership_context_digest: member.launch_ownership_context_digest,
+            phase_execution_id: member.launch_phase_execution_id,
+            context_id: member.context_id,
+            execution_context_digest: member.launch_execution_context_digest,
+            pid: member.pid,
+            pgid: member.pgid,
+            platform: member.launch_platform,
+            boot_identity: member.boot_identity,
+            process_start_identity: member.process_start_identity,
+            death_observed_at: member.death_observed_at,
+            group_dead: true,
+            proof_basis: "authoritative_containment",
+            tracked_identities_confirmed_dead: true,
+            descendants_confirmed_dead: true,
+          };
+          const launchMs = Date.parse(String(member.launch_created_at));
+          const deathMs = Date.parse(String(member.death_observed_at));
+          authoritativeDeathExact =
+            member.death_producer_service === "ProcessSupervisor" &&
+            member.death_schema_version === "rickgent.process-group-death.v1" &&
+            member.death_observation_schema === "rickgent.process-group-death.v1" &&
+            member.launch_ownership_context_digest === targetProofSet.ownership_context_digest &&
+            member.death_content_digest === member.death_observation_digest &&
+            member.death_content_digest === sha256Text(canonicalJson(death)) &&
+            member.death_evidence_created_at === member.death_observed_at &&
+            Number.isFinite(launchMs) && Number.isFinite(deathMs) && deathMs >= launchMs &&
+            canonicalJson(death) === canonicalJson(expectedDeath);
+        }
+        if (member.proof_kind === "terminal_process") {
+          if (
+            member.gate_state !== "released" || member.gate_state_version !== 1 ||
+            member.gate_evidence_schema !== "rickgent.target-start-gate-released.v1" ||
+            !authoritativeDeathExact
+          ) this.#resumeIncompatible("terminal target proof is not bound to authoritative containment death");
+        } else if (member.proof_kind === "never_released") {
+          const neverReleasedReasonExact = [
+            "containment_unavailable",
+            "policy_unavailable",
+            "executable_unavailable",
+            "output_unavailable",
+            "spawn_failed",
+          ].includes(String(gateEvidence.reason));
+          const containmentDispositionExact =
+            (gateEvidence.containment_disposition === "not_created" &&
+              member.launch_id === null &&
+              gateEvidence.containment_id === null &&
+              gateEvidence.containment_evidence_digest === null) ||
+            (gateEvidence.containment_disposition === "authoritatively_empty" &&
+              member.launch_id !== null &&
+              gateEvidence.containment_id === member.launch_id &&
+              gateEvidence.containment_evidence_digest === member.death_content_digest);
+          if (
+            member.gate_state !== "closed_never_released" || member.gate_state_version !== 1 ||
+            member.gate_evidence_schema !== "rickgent.target-never-released.v1" ||
+            !neverReleasedReasonExact || !containmentDispositionExact ||
+            (member.launch_id === null
+              ? db.prepare("SELECT 1 FROM attempt_process_launches WHERE attempt_id = ? AND phase_execution_id = ?")
+                .get(attemptId, String(member.phase_execution_id)) !== undefined
+              : !authoritativeDeathExact)
+          ) this.#resumeIncompatible("never-released target proof is not bound to a closed gate and contained bootstrap");
+        } else {
+          this.#resumeIncompatible("complete target proof set contains an unproven member");
+        }
+        return Object.freeze({ ...sealedMember, member_digest: member.member_digest });
+      });
+      const proofSetDigest = sha256Text(canonicalJson(sealedMembers.map((member) => member.member_digest)));
+      targetProofSetPayload = Object.freeze({
+        oracle_input_class: "complete_target_proof_set",
+        target_proof_set_id: targetProofSet.target_proof_set_id,
+        attempt_id: targetProofSet.attempt_id,
+        ownership_id: targetProofSet.ownership_id,
+        owner_generation: targetProofSet.owner_generation,
+        ownership_context_digest: targetProofSet.ownership_context_digest,
+        target_count: targetProofSet.target_count,
+        target_proof_set_digest: targetProofSet.proof_set_digest,
+        target_proofs: Object.freeze(sealedMembers),
+      });
       if (
-        cleanup.evidence_schema_version !== "rickgent.cleanup-record.v1" ||
-        cleanup.record_digest !== sha256Text(canonicalJson(recordPayload)) ||
-        cleanup.evidence_content_digest !== sha256Text(canonicalJson(sealed)) || !cleanupEvidenceMatches
-      ) this.#resumeIncompatible("oracle cleanup row is not bound to exact cleanup evidence");
-      add("cleanup_record", String(cleanup.cleanup_record_id), String(cleanup.evidence_content_digest), ticketInstanceId, attemptId, sealed);
+        targetProofSet.target_count !== members.length || targetProofSet.proof_set_digest !== proofSetDigest ||
+        targetProofSet.evidence_producer_service !== "TargetProofService" ||
+        targetProofSet.evidence_schema_version !== "rickgent.attempt-target-proof-set.v1" ||
+        targetProofSet.inline_payload_json !== canonicalJson(targetProofSetPayload) ||
+        targetProofSet.evidence_content_digest !== sha256Text(canonicalJson(targetProofSetPayload))
+      ) this.#resumeIncompatible("complete target proof set evidence is invalid");
+      add(
+        "evidence",
+        String(targetProofSet.evidence_id),
+        String(targetProofSet.evidence_content_digest),
+        ticketInstanceId,
+        attemptId,
+        targetProofSetPayload,
+      );
     }
 
-    const resources = db.prepare("SELECT * FROM attempt_resource_claims WHERE attempt_id = ? ORDER BY slot, resource_claim_id").all(attemptId) as MutableStateRecord[];
-    for (const resource of resources) {
-      const sealed = { ...resource } as Readonly<Record<string, unknown>>;
-      const evidence = this.#exactSnapshotEvidence(
-        attemptId,
-        "LeaseAuthority",
-        "rickgent.attempt-resource-claim-snapshot.v2",
-        sealed,
-        "attempt resource claim",
+    const eligibility = db.prepare(`
+      SELECT c.*, e.scope AS evidence_scope, e.producer_service AS evidence_producer_service,
+             e.schema_version AS evidence_schema_version, e.inline_payload_json,
+             e.content_digest AS evidence_content_digest
+      FROM cleanup_eligibility_records c JOIN evidence e ON e.evidence_id = c.evidence_id
+      WHERE c.attempt_id = ? ORDER BY c.created_at DESC, c.cleanup_eligibility_record_id DESC LIMIT 1
+    `).get(attemptId) as MutableStateRecord | undefined;
+    if (eligibility !== undefined) {
+      const sealed = this.#parseJsonObject(String(eligibility.inline_payload_json), "oracle cleanup eligibility evidence");
+      const claimSnapshotEvidenceIds = this.#parseJsonArray(
+        String(eligibility.claim_snapshot_evidence_ids_json),
+        "oracle cleanup eligibility claim snapshots",
       );
-      add("attempt_resource_snapshot", String(evidence.evidence_id), String(evidence.content_digest), ticketInstanceId, attemptId, sealed);
-    }
-    const leases = db.prepare("SELECT * FROM attempt_ownership_leases WHERE attempt_id = ? ORDER BY generation, ownership_id").all(attemptId) as MutableStateRecord[];
-    for (const lease of leases) {
-      const sealed = { ...lease } as Readonly<Record<string, unknown>>;
-      const evidence = this.#exactSnapshotEvidence(
+      const expectedPayload = {
+        oracle_input_class: "cleanup_eligibility",
+        eligibility_id: eligibility.cleanup_eligibility_record_id,
+        attempt_id: eligibility.attempt_id,
+        ownership_id: eligibility.ownership_id,
+        owner_generation: eligibility.owner_generation,
+        ownership_state_version: eligibility.ownership_state_version,
+        ownership_context_digest: eligibility.ownership_context_digest,
+        context_id: eligibility.context_id,
+        commit_intent_id: eligibility.commit_intent_id,
+        commit_attribution_id: eligibility.commit_attribution_id,
+        candidate_oid: eligibility.candidate_oid,
+        baseline_oid: eligibility.delivery_baseline_oid,
+        delivery_ref: eligibility.delivery_ref,
+        delivery_observed_oid: eligibility.delivery_observed_oid,
+        attempt_ref: eligibility.attempt_ref,
+        attempt_ref_observed_oid: eligibility.attempt_ref_observed_oid,
+        claim_preimage_digest: eligibility.claim_snapshot_set_digest,
+        target_proof_set_id: eligibility.target_proof_set_id,
+        target_proof_set_digest: eligibility.target_proof_set_digest,
+        target_proof_count: eligibility.target_proof_count,
+        ownership_snapshot_evidence_id: eligibility.ownership_snapshot_evidence_id,
+        claim_snapshot_evidence_ids: claimSnapshotEvidenceIds,
+      };
+      const targetOwnershipInRecoveryLineage = db.prepare(`
+        WITH RECURSIVE ownership_chain(ownership_id, generation, recovered_from_ownership_id) AS (
+          SELECT ownership_id, generation, recovered_from_ownership_id
+          FROM attempt_ownership_leases
+          WHERE ownership_id = ? AND attempt_id = ? AND generation = ?
+          UNION ALL
+          SELECT parent.ownership_id, parent.generation, parent.recovered_from_ownership_id
+          FROM attempt_ownership_leases parent
+          JOIN ownership_chain child ON child.recovered_from_ownership_id = parent.ownership_id
+          WHERE parent.attempt_id = ?
+        )
+        SELECT 1 FROM ownership_chain WHERE ownership_id = ? AND generation = ?
+      `).get(
+        String(eligibility.ownership_id),
         attemptId,
-        "LeaseAuthority",
-        "rickgent.attempt-ownership-lease-snapshot.v2",
+        Number(eligibility.owner_generation),
+        attemptId,
+        String(targetProofSet?.ownership_id ?? ""),
+        Number(targetProofSet?.owner_generation ?? -1),
+      ) !== undefined;
+      if (
+        eligibility.evidence_producer_service !== "CleanupEligibilityService" ||
+        eligibility.evidence_schema_version !== "rickgent.cleanup-eligibility.v1" ||
+        eligibility.inline_payload_json !== canonicalJson(expectedPayload) ||
+        eligibility.evidence_content_digest !== sha256Text(canonicalJson(expectedPayload)) ||
+        eligibility.record_digest !== eligibility.evidence_content_digest ||
+        eligibility.claim_snapshot_set_digest !== sha256Text(canonicalJson(claimSnapshotEvidenceIds)) ||
+        targetProofSet === undefined || targetProofSetPayload === undefined ||
+        eligibility.target_proof_set_id !== targetProofSet.target_proof_set_id ||
+        eligibility.target_proof_set_digest !== targetProofSet.proof_set_digest ||
+        eligibility.target_proof_count !== targetProofSet.target_count ||
+        !targetOwnershipInRecoveryLineage
+      ) this.#resumeIncompatible("oracle cleanup eligibility row is not bound to exact eligibility evidence");
+      add(
+        "evidence",
+        String(eligibility.evidence_id),
+        String(eligibility.evidence_content_digest),
+        ticketInstanceId,
+        attemptId,
         sealed,
-        "attempt ownership lease",
       );
-      add("lease_snapshot", String(evidence.evidence_id), String(evidence.content_digest), ticketInstanceId, attemptId, sealed);
+
+      if (claimSnapshotEvidenceIds.length !== RESOURCE_KINDS.length) {
+        this.#resumeIncompatible("oracle cleanup eligibility does not pin the complete claim set");
+      }
+      const observedClaimSlots = new Set<string>();
+      for (const evidenceId of claimSnapshotEvidenceIds) {
+        if (typeof evidenceId !== "string") this.#resumeIncompatible("oracle cleanup eligibility claim snapshot id is invalid");
+        const evidence = this.#requireDatabase().prepare(`
+          SELECT * FROM evidence WHERE evidence_id = ? AND attempt_id = ?
+            AND producer_service = 'LeaseAuthority'
+            AND schema_version = 'rickgent.attempt-resource-claim-snapshot.v2'
+        `).get(evidenceId, attemptId) as MutableStateRecord | undefined;
+        if (evidence === undefined) this.#resumeIncompatible("oracle cleanup eligibility claim snapshot is unavailable");
+        const snapshot = this.#parseJsonObject(String(evidence.inline_payload_json), "oracle cleanup eligibility claim snapshot");
+        if (evidence.content_digest !== sha256Text(canonicalJson(snapshot))) {
+          this.#resumeIncompatible("oracle cleanup eligibility claim snapshot digest is invalid");
+        }
+        if (
+          snapshot.attempt_id !== attemptId || snapshot.current_ownership_id !== eligibility.ownership_id ||
+          snapshot.owner_generation !== eligibility.owner_generation || snapshot.state !== "cleanup_pending" ||
+          snapshot.slot !== snapshot.kind || typeof snapshot.slot !== "string" ||
+          !RESOURCE_KINDS.includes(snapshot.slot as (typeof RESOURCE_KINDS)[number]) ||
+          observedClaimSlots.has(snapshot.slot)
+        ) this.#resumeIncompatible("oracle cleanup eligibility claim snapshot is not the exact cleanup-pending preimage");
+        const currentClaim = this.#requireDatabase().prepare(`
+          SELECT * FROM attempt_resource_claims
+          WHERE resource_claim_id = ? AND attempt_id = ? AND slot = ?
+            AND current_ownership_id = ? AND owner_generation = ?
+            AND state = 'cleanup_pending' AND state_version = ?
+        `).get(
+          String(snapshot.resource_claim_id),
+          attemptId,
+          String(snapshot.slot),
+          String(eligibility.ownership_id),
+          Number(eligibility.owner_generation),
+          Number(snapshot.state_version),
+        ) as MutableStateRecord | undefined;
+        if (currentClaim === undefined || canonicalJson(currentClaim) !== canonicalJson(snapshot)) {
+          this.#resumeIncompatible("oracle cleanup eligibility claim snapshot differs from current durable truth");
+        }
+        observedClaimSlots.add(snapshot.slot);
+        add("attempt_resource_snapshot", evidenceId, String(evidence.content_digest), ticketInstanceId, attemptId, snapshot);
+      }
+      if (RESOURCE_KINDS.some((slot) => !observedClaimSlots.has(slot))) {
+        this.#resumeIncompatible("oracle cleanup eligibility claim snapshot set is incomplete");
+      }
+      const ownershipEvidence = this.#requireDatabase().prepare(`
+        SELECT * FROM evidence WHERE evidence_id = ? AND attempt_id = ?
+          AND producer_service = 'LeaseAuthority'
+          AND schema_version = 'rickgent.attempt-ownership-lease-snapshot.v2'
+      `).get(eligibility.ownership_snapshot_evidence_id ?? null, attemptId) as MutableStateRecord | undefined;
+      if (ownershipEvidence === undefined) this.#resumeIncompatible("oracle cleanup eligibility ownership snapshot is unavailable");
+      const ownershipSnapshot = this.#parseJsonObject(
+        String(ownershipEvidence.inline_payload_json),
+        "oracle cleanup eligibility ownership snapshot",
+      );
+      if (ownershipEvidence.content_digest !== sha256Text(canonicalJson(ownershipSnapshot))) {
+        this.#resumeIncompatible("oracle cleanup eligibility ownership snapshot digest is invalid");
+      }
+      if (
+        ownershipSnapshot.ownership_id !== eligibility.ownership_id || ownershipSnapshot.attempt_id !== attemptId ||
+        ownershipSnapshot.generation !== eligibility.owner_generation ||
+        ownershipSnapshot.state_version !== eligibility.ownership_state_version ||
+        ownershipSnapshot.context_digest !== eligibility.ownership_context_digest ||
+        ownershipSnapshot.state !== "cleanup_pending"
+      ) this.#resumeIncompatible("oracle cleanup eligibility ownership snapshot is not the exact cleanup-pending preimage");
+      const currentOwnership = this.#requireDatabase().prepare(`
+        SELECT * FROM attempt_ownership_leases
+        WHERE ownership_id = ? AND attempt_id = ? AND generation = ?
+          AND state = 'cleanup_pending' AND state_version = ? AND context_digest = ?
+      `).get(
+        String(eligibility.ownership_id),
+        attemptId,
+        Number(eligibility.owner_generation),
+        Number(eligibility.ownership_state_version),
+        String(eligibility.ownership_context_digest),
+      ) as MutableStateRecord | undefined;
+      if (currentOwnership === undefined || canonicalJson(currentOwnership) !== canonicalJson(ownershipSnapshot)) {
+        this.#resumeIncompatible("oracle cleanup eligibility ownership snapshot differs from current durable truth");
+      }
+      add(
+        "lease_snapshot",
+        String(ownershipEvidence.evidence_id),
+        String(ownershipEvidence.content_digest),
+        ticketInstanceId,
+        attemptId,
+        ownershipSnapshot,
+      );
     }
 
     const dependencies = Array.isArray(contract.depends_on) ? contract.depends_on : [];
@@ -4627,6 +4915,12 @@ export class StateStore {
     return value as Record<string, unknown>;
   }
 
+  #parseJsonArray(text: string, label: string): unknown[] {
+    const value = JSON.parse(text) as unknown;
+    if (!Array.isArray(value)) throw new TypeError(`${label} must be a JSON array`);
+    return value;
+  }
+
   #insertSharedImmutable(
     table: "run_manifests" | "ticket_contracts",
     input: StateRowInput,
@@ -5185,6 +5479,12 @@ export class StateStore {
     }
     if ((kind === "attempt_resource_snapshot" || kind === "lease_snapshot") && target.producer_service !== "LeaseAuthority") {
       throw new StateStoreError("RICKGENT_STATE_RESUME_INCOMPATIBLE", `oracle ${String(kind)} input was not minted by LeaseAuthority`);
+    }
+    if (
+      kind === "evidence" && target.schema_version === "rickgent.cleanup-eligibility.v1" &&
+      target.producer_service !== "CleanupEligibilityService"
+    ) {
+      throw new StateStoreError("RICKGENT_STATE_RESUME_INCOMPATIBLE", "oracle cleanup eligibility was not minted by CleanupEligibilityService");
     }
     const targetDigest = digestColumn === undefined ? this.#storedRecordDigest(targetTable, target) : target[digestColumn];
     if (targetDigest !== reference.content_digest) {

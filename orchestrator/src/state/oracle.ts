@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { canonicalJson } from "../contracts/ticket-contract.js";
-import { GATE_STATUSES, ORACLE_REFERENCE_KINDS } from "./schema.js";
+import { GATE_STATUSES, ORACLE_REFERENCE_KINDS, RESOURCE_KINDS } from "./schema.js";
 
-export const RICKGENT_ORACLE_VERSION = "rickgent.oracle.v1" as const;
+export const RICKGENT_ORACLE_VERSION = "rickgent.oracle.v2" as const;
 
 export type OracleReferenceKind = (typeof ORACLE_REFERENCE_KINDS)[number];
 export type OracleGateStatus = (typeof GATE_STATUSES)[number];
@@ -12,11 +12,11 @@ export const REQUIRED_ORACLE_INPUT_CLASSES = Object.freeze([
   "run_manifest",
   "ticket_contract",
   "execution_context",
-  "process_receipts",
+  "complete_target_proof_set",
   "required_gates",
   "independent_review",
   "commit_attribution",
-  "cleanup_proof",
+  "cleanup_eligibility",
   "attempt_resource_snapshots",
   "lease_snapshots",
 ] as const);
@@ -130,6 +130,7 @@ export interface OraclePersistenceRows {
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const REFERENCE_KINDS = new Set<string>(ORACLE_REFERENCE_KINDS);
+const LEGACY_REFERENCE_KINDS = new Set<string>(["cleanup_record", "process_receipt"]);
 const GATE_STATUS_SET = new Set<string>(GATE_STATUSES);
 const ISSUED_PLANS = new WeakSet<object>();
 
@@ -153,11 +154,9 @@ const REQUIRED_CLASS_KIND = Object.freeze([
   ["run_manifest", "run_manifest"],
   ["ticket_contract", "ticket_contract"],
   ["execution_context", "execution_context"],
-  ["process_receipts", "process_receipt"],
   ["required_gates", "gate_result"],
   ["independent_review", "review_record"],
   ["commit_attribution", "commit_attribution"],
-  ["cleanup_proof", "cleanup_record"],
   ["attempt_resource_snapshots", "attempt_resource_snapshot"],
   ["lease_snapshots", "lease_snapshot"],
 ] as const);
@@ -461,6 +460,10 @@ export function evaluateAttemptOracle(input: AttemptOracleProjection): OraclePer
       integrityExact = false;
       continue;
     }
+    if (LEGACY_REFERENCE_KINDS.has(reference.referenceKind)) {
+      reasons.add(`legacy_reference_kind_forbidden:${label}`);
+      integrityExact = false;
+    }
     observedKinds.add(reference.referenceKind);
     if (reference.referenceId === null || reference.referenceId.length === 0 || reference.referenceId !== reference.referenceId.trim()) {
       reasons.add(`reference_identity_invalid:${label}`);
@@ -548,6 +551,71 @@ export function evaluateAttemptOracle(input: AttemptOracleProjection): OraclePer
 
   for (const [requiredClass, kind] of REQUIRED_CLASS_KIND) {
     if (!observedKinds.has(kind)) reasons.add(`missing_input_class:${requiredClass}`);
+  }
+  const cleanupEligibilityReferences = references.filter((reference) =>
+    reference.referenceKind === "evidence" && reference.sealedContent?.oracle_input_class === "cleanup_eligibility"
+  );
+  const targetProofSetReferences = references.filter((reference) =>
+    reference.referenceKind === "evidence" && reference.sealedContent?.oracle_input_class === "complete_target_proof_set"
+  );
+  if (targetProofSetReferences.length !== 1) {
+    reasons.add(`complete_target_proof_set_cardinality:${targetProofSetReferences.length}`);
+  }
+  const targetProofSet = targetProofSetReferences[0];
+  if (targetProofSet !== undefined) {
+    const content = targetProofSet.sealedContent;
+    const targetProofs = Array.isArray(content?.target_proofs) ? content.target_proofs : null;
+    const normalizedProofs = targetProofs?.map((proof) => objectValue(proof)) ?? null;
+    if (
+      targetProofSet.sealedContentState !== "exact" || content === null ||
+      nullableText(content.target_proof_set_id) === null || content.attempt_id !== scope.attemptId ||
+      nullableText(content.ownership_id) === null || safeInteger(content.owner_generation) === null ||
+      nullableText(content.ownership_context_digest) === null ||
+      !DIGEST.test(nullableText(content.target_proof_set_digest) ?? "") ||
+      safeInteger(content.target_count) === null || safeInteger(content.target_count) !== targetProofs?.length ||
+      normalizedProofs === null || normalizedProofs.length === 0 || normalizedProofs.some((proof) =>
+        proof === null || nullableText(proof.phase_execution_id) === null ||
+        !["terminal_process", "never_released"].includes(nullableText(proof.proof_kind) ?? "") ||
+        !DIGEST.test(nullableText(proof.member_digest) ?? "")
+      ) || new Set(normalizedProofs.map((proof) => nullableText(proof?.phase_execution_id))).size !== normalizedProofs.length
+    ) {
+      reasons.add(`complete_target_proof_set_projection_invalid:${targetProofSet.referenceId ?? "<invalid>"}`);
+      integrityExact = false;
+    }
+  }
+  if (cleanupEligibilityReferences.length !== 1) {
+    reasons.add(`cleanup_eligibility_cardinality:${cleanupEligibilityReferences.length}`);
+  }
+  const cleanupEligibility = cleanupEligibilityReferences[0];
+  if (cleanupEligibility !== undefined) {
+    const content = cleanupEligibility.sealedContent;
+    const claimSnapshots = Array.isArray(content?.claim_snapshot_evidence_ids)
+      ? content.claim_snapshot_evidence_ids
+      : null;
+    if (
+      cleanupEligibility.sealedContentState !== "exact" || content === null ||
+      nullableText(content.eligibility_id) === null || content.attempt_id !== scope.attemptId ||
+      nullableText(content.ownership_id) === null || safeInteger(content.owner_generation) === null ||
+      safeInteger(content.ownership_state_version) === null || nullableText(content.ownership_context_digest) === null ||
+      nullableText(content.commit_intent_id) === null || nullableText(content.commit_attribution_id) === null ||
+      !GIT_OID.test(nullableText(content.candidate_oid) ?? "") ||
+      !GIT_OID.test(nullableText(content.baseline_oid) ?? "") ||
+      content.delivery_observed_oid !== content.baseline_oid || nullableText(content.delivery_ref) === null ||
+      nullableText(content.attempt_ref) === null || content.attempt_ref_observed_oid !== content.candidate_oid ||
+      !DIGEST.test(nullableText(content.claim_preimage_digest) ?? "") ||
+      nullableText(content.ownership_snapshot_evidence_id) === null || claimSnapshots === null ||
+      claimSnapshots.length !== RESOURCE_KINDS.length || claimSnapshots.some((id) => nullableText(id) === null) ||
+      new Set(claimSnapshots).size !== claimSnapshots.length ||
+      nullableText(content.target_proof_set_id) === null ||
+      !DIGEST.test(nullableText(content.target_proof_set_digest) ?? "") ||
+      (safeInteger(content.target_proof_count) ?? -1) < 1 ||
+      content.target_proof_set_id !== targetProofSet?.sealedContent?.target_proof_set_id ||
+      content.target_proof_set_digest !== targetProofSet?.sealedContent?.target_proof_set_digest ||
+      content.target_proof_count !== targetProofSet?.sealedContent?.target_count
+    ) {
+      reasons.add(`cleanup_eligibility_projection_invalid:${cleanupEligibility.referenceId ?? "<invalid>"}`);
+      integrityExact = false;
+    }
   }
   if (requiredGateCount === 0) reasons.add("required_gate_missing");
 
@@ -755,6 +823,18 @@ export function evaluateAttemptOracle(input: AttemptOracleProjection): OraclePer
         contractScope === null || delta.some((entry) => !contractScope!.some((declaration) => deltaMatchesScope(entry, declaration))) ||
         contractScope.some((declaration) => !delta.some((entry) => deltaMatchesScope(entry, declaration)))
       ) reasons.add(`commit_attribution_scope_mismatch:${attributionReference.referenceId ?? "<invalid>"}`);
+    }
+  }
+
+  if (cleanupEligibility !== undefined && attributionReference !== undefined) {
+    const eligibility = cleanupEligibility.sealedContent;
+    const attribution = attributionReference.sealedContent;
+    if (
+      eligibility?.commit_attribution_id !== attributionReference.referenceId ||
+      eligibility?.candidate_oid !== attribution?.commit_oid ||
+      eligibility?.baseline_oid !== attribution?.baseline_oid
+    ) {
+      reasons.add(`cleanup_eligibility_candidate_mismatch:${cleanupEligibility.referenceId ?? "<invalid>"}`);
     }
   }
 

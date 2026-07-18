@@ -70,11 +70,23 @@ export const COMMIT_ATTRIBUTION_MIGRATION = deepFreeze({
   status: "implemented",
 } as const);
 
+/** Additive executable migration metadata for distinct cleanup/promotion proof types. */
+export const ATTEMPT_CLEANUP_PROOF_MIGRATION = deepFreeze({
+  version: 5,
+  number: "005",
+  name: "005_attempt_cleanup_proof_model",
+  sql_owner_ticket: "t22",
+  released_checksum: "sha256:e9c6896dd23d8d07127fa8ddb05483ad00ff9a59b2042dc32ce75428371ac6f1",
+  sqlite_schema_checksum: "sha256:c91fd35e83d879890dd13ef8f8bb18fa6f8b116e8b85545e4c3e8c65785681c6",
+  status: "implemented",
+} as const);
+
 export const STATE_MIGRATIONS = deepFreeze([
   INITIAL_STATE_MIGRATION,
   ATTEMPT_OWNERSHIP_MIGRATION,
   PROCESS_SUPERVISION_MIGRATION,
   COMMIT_ATTRIBUTION_MIGRATION,
+  ATTEMPT_CLEANUP_PROOF_MIGRATION,
 ] as const);
 
 export const STATE_TABLES = deepFreeze([
@@ -167,17 +179,37 @@ export const COMMIT_ATTRIBUTION_STATE_TABLES = deepFreeze([
   "attempt_commit_intents",
 ] as const);
 
+/** Additive v5 non-interchangeable cleanup and promotion proof aggregates. */
+export const ATTEMPT_CLEANUP_PROOF_STATE_TABLES = deepFreeze([
+  "target_start_gates",
+  "attempt_target_proof_sets",
+  "attempt_target_proof_members",
+  "cleanup_eligibility_records",
+  "failure_cleanup_records",
+  "promotion_cleanup_records",
+  "quarantine_claim_sets",
+  "quarantine_claim_members",
+  "quarantine_records",
+] as const);
+
 export const ALL_STATE_TABLES = deepFreeze([
   ...STATE_TABLES,
   ...ATTEMPT_OWNERSHIP_STATE_TABLES,
   ...PROCESS_SUPERVISION_STATE_TABLES,
   ...COMMIT_ATTRIBUTION_STATE_TABLES,
+  ...ATTEMPT_CLEANUP_PROOF_STATE_TABLES,
 ] as const);
 
 export const ALL_APPEND_ONLY_STATE_TABLES = deepFreeze([
   ...APPEND_ONLY_STATE_TABLES,
   "attempt_ownership_operations",
   ...PROCESS_SUPERVISION_APPEND_ONLY_STATE_TABLES,
+  "attempt_target_proof_members",
+  "cleanup_eligibility_records",
+  "failure_cleanup_records",
+  "promotion_cleanup_records",
+  "quarantine_claim_members",
+  "quarantine_records",
 ] as const);
 
 export const SQLITE_PRAGMAS = deepFreeze([

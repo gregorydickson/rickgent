@@ -611,7 +611,7 @@ function freshRunInput(location: StateLocation, contract: TicketContract): Alloc
     git_common_dir_realpath: location.gitCommonDirRealpath,
     object_format: location.objectFormat,
     context_schema_version: DURABLE_EXECUTION_CONTEXT_SCHEMA_VERSION,
-    oracle_version: "rickgent.oracle.v1",
+    oracle_version: "rickgent.oracle.v2",
     resource_identity_version: RESOURCE_IDENTITY_VERSION,
     capability_snapshot: JSON.parse(capabilitySnapshot.canonicalJson) as Record<string, unknown>,
     capability_snapshot_digest: capabilitySnapshot.digest,
@@ -627,7 +627,7 @@ function freshRunInput(location: StateLocation, contract: TicketContract): Alloc
       digest: digest(canonicalManifest),
       capabilitySnapshot,
       contextSchemaVersion: DURABLE_EXECUTION_CONTEXT_SCHEMA_VERSION,
-      oracleVersion: "rickgent.oracle.v1",
+      oracleVersion: "rickgent.oracle.v2",
       resourceIdentityVersion: RESOURCE_IDENTITY_VERSION,
     },
     tickets: [{

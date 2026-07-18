@@ -52,7 +52,7 @@ type SqlValue = null | string | number | bigint | Uint8Array;
 type SqlRow = Record<string, SqlValue>;
 
 const CONTEXT_SCHEMA_VERSION = DURABLE_EXECUTION_CONTEXT_SCHEMA_VERSION;
-const ORACLE_VERSION = "rickgent.oracle.v1";
+const ORACLE_VERSION = "rickgent.oracle.v2";
 const childFixture = join(import.meta.dirname, "../fixtures/identity-allocation/child.mjs");
 const scratchRoots = new Set<string>();
 const children = new Set<ChildProcess>();

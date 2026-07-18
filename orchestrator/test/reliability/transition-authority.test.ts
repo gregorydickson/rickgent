@@ -53,7 +53,7 @@ import {
 type SqlValue = null | string | number | bigint | Uint8Array;
 type SqlRow = Record<string, SqlValue>;
 
-const ORACLE_VERSION = "rickgent.oracle.v1";
+const ORACLE_VERSION = "rickgent.oracle.v2";
 const childFixture = join(import.meta.dirname, "../fixtures/transition-authority/child.mjs");
 const scratchRoots = new Set<string>();
 const children = new Set<ChildProcess>();

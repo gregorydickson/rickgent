@@ -25,7 +25,7 @@ import {
 type SqlValue = null | string | number | bigint | Uint8Array;
 type SqlRow = Record<string, SqlValue>;
 
-const ORACLE_VERSION = "rickgent.oracle.v1";
+const ORACLE_VERSION = "rickgent.oracle.v2";
 const NOW = "2026-07-16T12:00:00.000Z";
 const scratchRoots = new Set<string>();
 const stores = new Set<StateStore>();
@@ -112,23 +112,6 @@ function insertRow(databasePath: string, table: string, row: Readonly<Record<str
   }
 }
 
-/** Isolated oracle fixtures project an already-proved upstream t20 aggregate; t20 has its own authority corpus. */
-function insertUpstreamRowWithoutForeignKeys(
-  databasePath: string,
-  table: string,
-  row: Readonly<Record<string, SqlValue>>,
-): void {
-  const database = new DatabaseSync(databasePath, { enableForeignKeyConstraints: false, timeout: 1_000 });
-  try {
-    const columns = Object.keys(row);
-    database.prepare(
-      `INSERT INTO "${table}" (${columns.map((column) => `"${column}"`).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
-    ).run(...columns.map((column) => row[column] ?? null));
-  } finally {
-    database.close();
-  }
-}
-
 function updateRow(
   databasePath: string,
   table: string,
@@ -204,8 +187,7 @@ interface OracleFixture {
   readonly gateResultIds: readonly string[];
   readonly reviewRecordId: string;
   readonly attributionId: string;
-  readonly cleanupRecordId: string;
-  readonly processReceiptIds: readonly string[];
+  readonly cleanupEligibilityRecordId: string;
   readonly resourceSnapshotEvidenceIds: readonly string[];
   readonly leaseSnapshotEvidenceId: string;
 }
@@ -248,23 +230,7 @@ function appendEvidence(
   scope?: string,
 ): StateRecord {
   const row = evidenceInput(fixture, phase, id, producerService, schemaVersion, payload, scope);
-  if (producerService === "CleanupService") {
-    // Downstream oracle fixtures project already-proved cleanup truth without
-    // reopening the production generic-evidence forgery path.
-    insertRow(fixture.store.location.databasePath, "evidence", row);
-    return Object.freeze({ ...row });
-  }
   return fixture.store.appendEvidence(row);
-}
-
-function snapshotEvidence(
-  fixture: Pick<OracleFixture, "attempt">,
-  phase: ResolvedPhaseContext,
-  evidenceId: string,
-  schemaVersion: "rickgent.lease-snapshot.v1" | "rickgent.attempt-resource-snapshot.v1",
-  postImage: Readonly<Record<string, SqlValue>>,
-): Readonly<Record<string, SqlValue>> {
-  return evidenceInput(fixture, phase, evidenceId, "OracleStoreTest", schemaVersion, postImage);
 }
 
 const T18_RESOURCE_KINDS = [
@@ -272,39 +238,35 @@ const T18_RESOURCE_KINDS = [
   "process_group", "stdout", "stderr", "verification_output", "salvage_archive",
 ] as const;
 
-function insertT18OracleSnapshots(
+function insertT18Ownership(
   fixture: Pick<OracleFixture, "store" | "attempt" | "implement">,
-): { readonly resourceSnapshotEvidenceIds: readonly string[]; readonly leaseSnapshotEvidenceId: string } {
+): {
+  readonly ownershipId: string;
+  readonly ownershipContextDigest: string;
+  readonly resourceClaimIds: Readonly<Record<(typeof T18_RESOURCE_KINDS)[number], string>>;
+} {
   const ownershipId = `ownership-${fixture.attempt.attemptId}`;
-  const releaseProofDigest = digest(`release-proof:${fixture.attempt.attemptId}`);
+  const ownershipContextDigest = fixture.implement.canonical.contextDigest;
   const ownership: Readonly<Record<string, SqlValue>> = {
     ownership_id: ownershipId,
     attempt_id: fixture.attempt.attemptId,
     generation: 1,
     owner_token_digest: digest(`owner-token:${fixture.attempt.attemptId}`),
-    context_digest: fixture.implement.canonical.contextDigest,
+    context_digest: ownershipContextDigest,
     canonical_context_json: canonicalJson({ schema_version: "rickgent.attempt-ownership-context/v1" }),
     recovered_from_ownership_id: null,
     heartbeat_at: NOW,
     expires_at: "2099-07-16T12:10:00.000Z",
-    state: "released",
-    state_version: 2,
+    state: "live",
+    state_version: 0,
     created_at: NOW,
   };
   insertRow(fixture.store.location.databasePath, "attempt_ownership_leases", ownership);
-  const leaseSnapshotEvidenceId = `evidence-ownership-v2-${fixture.attempt.attemptId}`;
-  insertRow(fixture.store.location.databasePath, "evidence", evidenceInput(
-    fixture,
-    fixture.implement,
-    leaseSnapshotEvidenceId,
-    "LeaseAuthority",
-    "rickgent.attempt-ownership-lease-snapshot.v2",
-    ownership,
-    `attempt-ownership-lease:${ownershipId}:version:2`,
-  ));
 
-  const resourceSnapshotEvidenceIds = T18_RESOURCE_KINDS.map((kind) => {
+  const resourceClaimIds = {} as Record<(typeof T18_RESOURCE_KINDS)[number], string>;
+  for (const kind of T18_RESOURCE_KINDS) {
     const resourceClaimId = `claim-${kind}-${fixture.attempt.attemptId}`;
+    resourceClaimIds[kind] = resourceClaimId;
     const resource: Readonly<Record<string, SqlValue>> = {
       resource_claim_id: resourceClaimId,
       attempt_id: fixture.attempt.attemptId,
@@ -315,13 +277,78 @@ function insertT18OracleSnapshots(
       allocation_ownership_id: ownershipId,
       current_ownership_id: ownershipId,
       owner_generation: 1,
-      state: "released",
+      state: "active",
       state_version: 2,
-      release_proof_digest: releaseProofDigest,
+      release_proof_digest: null,
       quarantine_proof_digest: null,
       created_at: NOW,
     };
     insertRow(fixture.store.location.databasePath, "attempt_resource_claims", resource);
+  }
+  return {
+    ownershipId,
+    ownershipContextDigest,
+    resourceClaimIds: Object.freeze(resourceClaimIds),
+  };
+}
+
+function insertT18CleanupSnapshots(
+  fixture: Pick<OracleFixture, "store" | "attempt" | "implement">,
+  ownershipId: string,
+  ownershipContextDigest: string,
+  resourceClaimIds: Readonly<Record<(typeof T18_RESOURCE_KINDS)[number], string>>,
+): { readonly resourceSnapshotEvidenceIds: readonly string[]; readonly leaseSnapshotEvidenceId: string } {
+  updateRow(fixture.store.location.databasePath, "attempt_ownership_leases", "ownership_id", ownershipId, {
+    state: "cleanup_pending",
+    state_version: 1,
+  });
+  const ownership: Readonly<Record<string, SqlValue>> = {
+    ownership_id: ownershipId,
+    attempt_id: fixture.attempt.attemptId,
+    generation: 1,
+    owner_token_digest: digest(`owner-token:${fixture.attempt.attemptId}`),
+    context_digest: ownershipContextDigest,
+    canonical_context_json: canonicalJson({ schema_version: "rickgent.attempt-ownership-context/v1" }),
+    recovered_from_ownership_id: null,
+    heartbeat_at: NOW,
+    expires_at: "2099-07-16T12:10:00.000Z",
+    state: "cleanup_pending",
+    state_version: 1,
+    created_at: NOW,
+  };
+  const leaseSnapshotEvidenceId = `evidence-ownership-v2-${fixture.attempt.attemptId}`;
+  insertRow(fixture.store.location.databasePath, "evidence", evidenceInput(
+    fixture,
+    fixture.implement,
+    leaseSnapshotEvidenceId,
+    "LeaseAuthority",
+    "rickgent.attempt-ownership-lease-snapshot.v2",
+    ownership,
+    `attempt-ownership-lease:${ownershipId}:version:1`,
+  ));
+
+  const resourceSnapshotEvidenceIds = T18_RESOURCE_KINDS.map((kind) => {
+    const resourceClaimId = resourceClaimIds[kind];
+    updateRow(fixture.store.location.databasePath, "attempt_resource_claims", "resource_claim_id", resourceClaimId, {
+      state: "cleanup_pending",
+      state_version: 3,
+    });
+    const resource: Readonly<Record<string, SqlValue>> = {
+      resource_claim_id: resourceClaimId,
+      attempt_id: fixture.attempt.attemptId,
+      slot: kind,
+      kind,
+      canonical_identity: `t18:${kind}:${fixture.attempt.attemptId}`,
+      identity_digest: digest(`t18:${kind}:${fixture.attempt.attemptId}`),
+      allocation_ownership_id: ownershipId,
+      current_ownership_id: ownershipId,
+      owner_generation: 1,
+      state: "cleanup_pending",
+      state_version: 3,
+      release_proof_digest: null,
+      quarantine_proof_digest: null,
+      created_at: NOW,
+    };
     const evidenceId = `evidence-resource-claim-v2-${kind}-${fixture.attempt.attemptId}`;
     insertRow(fixture.store.location.databasePath, "evidence", evidenceInput(
       fixture,
@@ -330,11 +357,195 @@ function insertT18OracleSnapshots(
       "LeaseAuthority",
       "rickgent.attempt-resource-claim-snapshot.v2",
       resource,
-      `attempt-resource-claim:${resourceClaimId}:version:2`,
+      `attempt-resource-claim:${resourceClaimId}:version:3`,
     ));
     return evidenceId;
   });
   return { resourceSnapshotEvidenceIds, leaseSnapshotEvidenceId };
+}
+
+function insertT22TerminalProcess(
+  fixture: Pick<OracleFixture, "store" | "attempt" | "run">,
+  phase: ResolvedPhaseContext,
+  label: string,
+  pid: number,
+  ownershipId: string,
+  ownershipContextDigest: string,
+  invalidateDeathProof = false,
+): {
+  readonly launchId: string;
+  readonly processReceiptId: string;
+  readonly groupDeathEvidenceId: string;
+  readonly targetStartGateId: string;
+  readonly releaseEvidenceId: string;
+} {
+  const attemptId = fixture.attempt.attemptId;
+  const launchId = `launch-${label}-${attemptId}`;
+  const processReceiptId = `terminal-${label}-${attemptId}`;
+  const groupDeathEvidenceId = `evidence-group-death-${label}-${attemptId}`;
+  const exitEvidenceId = `evidence-process-exit-${label}-${attemptId}`;
+  const launchEvidenceId = `evidence-process-launch-${label}-${attemptId}`;
+  const observationId = `observation-group-death-${label}-${attemptId}`;
+  const targetStartGateId = `target-start-gate-${label}-${attemptId}`;
+  const releaseEvidenceId = `evidence-target-start-released-${label}-${attemptId}`;
+  const startAuthorizationDigest = digest(`start-authorization:${label}:${attemptId}`);
+  insertRow(fixture.store.location.databasePath, "target_start_gates", {
+    target_start_gate_id: targetStartGateId,
+    attempt_id: attemptId,
+    ownership_id: ownershipId,
+    owner_generation: 1,
+    phase_execution_id: phase.persisted.phaseExecutionId,
+    context_id: phase.persisted.contextId,
+    execution_context_digest: phase.canonical.contextDigest,
+    start_authorization_digest: startAuthorizationDigest,
+    state: "held",
+    state_version: 0,
+    release_evidence_id: null,
+    never_released_evidence_id: null,
+    input_digest: digest(`target-start-gate:${label}:${attemptId}`),
+    idempotency_key: `target-start-gate:${label}:${attemptId}`,
+    created_at: NOW,
+  });
+  const releasePayload = {
+    target_start_gate_id: targetStartGateId,
+    attempt_id: attemptId,
+    phase_execution_id: phase.persisted.phaseExecutionId,
+    state: "released",
+    state_version: 1,
+    start_authorization_digest: startAuthorizationDigest,
+    launch_id: launchId,
+  } as const;
+  insertRow(fixture.store.location.databasePath, "evidence", evidenceInput(
+    fixture,
+    phase,
+    releaseEvidenceId,
+    "TargetStartGateAuthority",
+    "rickgent.target-start-gate-released.v1",
+    releasePayload,
+    targetStartGateId,
+  ));
+  updateRow(fixture.store.location.databasePath, "target_start_gates", "target_start_gate_id", targetStartGateId, {
+    state: "released",
+    state_version: 1,
+    release_evidence_id: releaseEvidenceId,
+  });
+  const launchPayload = { attempt_id: attemptId, launch_id: launchId, released: true } as const;
+  insertRow(fixture.store.location.databasePath, "evidence", evidenceInput(
+    fixture,
+    phase,
+    launchEvidenceId,
+    "ProcessSupervisor",
+    "rickgent.process-launch.v1",
+    launchPayload,
+    `attempt:${attemptId}:process-launch`,
+  ));
+  insertRow(fixture.store.location.databasePath, "attempt_process_launches", {
+    launch_id: launchId,
+    process_receipt_id: processReceiptId,
+    repository_id: fixture.run.repositoryId,
+    attempt_id: attemptId,
+    ownership_id: ownershipId,
+    owner_generation: 1,
+    ownership_context_digest: ownershipContextDigest,
+    phase_execution_id: phase.persisted.phaseExecutionId,
+    context_id: phase.persisted.contextId,
+    execution_context_digest: phase.canonical.contextDigest,
+    spawn_authorization_digest: digest(`spawn:${label}:${attemptId}`),
+    pid,
+    pgid: pid,
+    platform: process.platform,
+    boot_identity: "boot-oracle-store",
+    process_start_identity: `start:${label}:${attemptId}`,
+    argv_digest: digest(`argv:${label}:${attemptId}`),
+    environment_digest: digest(`environment:${label}:${attemptId}`),
+    stdout_path: `stdout-${label}-${attemptId}.log`,
+    stderr_path: `stderr-${label}-${attemptId}.log`,
+    output_limit_bytes: 1024,
+    tail_limit_bytes: 128,
+    process_group_expected_version: 1,
+    stdout_expected_version: 1,
+    stderr_expected_version: 1,
+    launch_evidence_id: launchEvidenceId,
+    created_at: NOW,
+  });
+  const exitPayload = { attempt_id: attemptId, launch_id: launchId, exit_code: 0, timed_out: false } as const;
+  insertRow(fixture.store.location.databasePath, "evidence", evidenceInput(
+    fixture,
+    phase,
+    exitEvidenceId,
+    "ProcessSupervisor",
+    "rickgent.process-exit.v1",
+    exitPayload,
+    `attempt:${attemptId}:process-exit`,
+  ));
+  insertRow(fixture.store.location.databasePath, "attempt_process_observations", {
+    observation_id: `observation-exit-${label}-${attemptId}`,
+    launch_id: launchId,
+    attempt_id: attemptId,
+    sequence: 1,
+    kind: "exit",
+    evidence_id: exitEvidenceId,
+    schema_version: "rickgent.process-exit.v1",
+    payload_digest: digest(exitPayload),
+    created_at: NOW,
+  });
+  const deathPayload = {
+    schema_version: "rickgent.process-group-death.v1",
+    launch_id: launchId,
+    process_receipt_id: processReceiptId,
+    attempt_id: attemptId,
+    ownership_id: ownershipId,
+    owner_generation: 1,
+    ownership_context_digest: ownershipContextDigest,
+    phase_execution_id: phase.persisted.phaseExecutionId,
+    context_id: phase.persisted.contextId,
+    execution_context_digest: phase.canonical.contextDigest,
+    pid,
+    pgid: pid,
+    platform: process.platform,
+    boot_identity: "boot-oracle-store",
+    process_start_identity: `start:${label}:${attemptId}`,
+    death_observed_at: NOW,
+    group_dead: true,
+    proof_basis: "authoritative_containment",
+    tracked_identities_confirmed_dead: !invalidateDeathProof,
+    descendants_confirmed_dead: true,
+  } as const;
+  insertRow(fixture.store.location.databasePath, "evidence", evidenceInput(
+    fixture,
+    phase,
+    groupDeathEvidenceId,
+    "ProcessSupervisor",
+    "rickgent.process-group-death.v1",
+    deathPayload,
+    `attempt:${attemptId}:process-death`,
+  ));
+  insertRow(fixture.store.location.databasePath, "attempt_process_observations", {
+    observation_id: observationId,
+    launch_id: launchId,
+    attempt_id: attemptId,
+    sequence: 2,
+    kind: "group_death",
+    evidence_id: groupDeathEvidenceId,
+    schema_version: "rickgent.process-group-death.v1",
+    payload_digest: digest(deathPayload),
+    created_at: NOW,
+  });
+  insertRow(fixture.store.location.databasePath, "attempt_process_terminal_receipts", {
+    process_receipt_id: processReceiptId,
+    launch_id: launchId,
+    attempt_id: attemptId,
+    outcome: "exited",
+    exit_code: 0,
+    signal: null,
+    timed_out: 0,
+    group_dead: 1,
+    descendants_confirmed_dead: 1,
+    observation_count: 2,
+    result_digest: digest({ process_receipt_id: processReceiptId, launch_id: launchId, group_dead: true }),
+    created_at: NOW,
+  });
+  return { launchId, processReceiptId, groupDeathEvidenceId, targetStartGateId, releaseEvidenceId };
 }
 
 function advanceLifecycle(fixture: Pick<OracleFixture, "store" | "run" | "attempt">): void {
@@ -364,7 +575,12 @@ function advanceLifecycle(fixture: Pick<OracleFixture, "store" | "run" | "attemp
   }
 }
 
-function completeFixture(gateStatuses: readonly ("passed" | "failed" | "missing" | "null")[] = ["passed"]): OracleFixture {
+function completeFixture(
+  gateStatuses: readonly ("passed" | "failed" | "missing" | "null")[] = ["passed"],
+  omitLastTargetProof = false,
+  mutateDurablePreimage?: "claim" | "ownership",
+  invalidateDeathProof = false,
+): OracleFixture {
   const repo = makeRepo();
   const store = openStateStore({ repoPath: repo });
   stores.add(store);
@@ -387,6 +603,9 @@ function completeFixture(gateStatuses: readonly ("passed" | "failed" | "missing"
   execFileSync("git", ["-C", repo, "add", "src/oracle-store.ts"]);
   execFileSync("git", ["-C", repo, "commit", "-qm", "oracle candidate"]);
   const candidateOid = git(repo, "rev-parse", "HEAD");
+  const attemptRef = `refs/rickgent/runs/${run.runId}/attempts/${attempt.attemptId}`;
+  git(repo, "update-ref", attemptRef, candidateOid);
+  git(repo, "update-ref", run.deliveryRef, attempt.deliveryBaselineOid);
   const candidateTreeOid = git(repo, "rev-parse", `${candidateOid}^{tree}`);
   const baselineTreeOid = git(repo, "rev-parse", `${attempt.deliveryBaselineOid}^{tree}`);
   const normalizedDelta: readonly OracleNormalizedDeltaEntry[] = [{
@@ -397,81 +616,6 @@ function completeFixture(gateStatuses: readonly ("passed" | "failed" | "missing"
     afterMode: "100644",
   }];
   const attributionDigests = deriveOracleAttributionDigests(normalizedDelta);
-
-  const leaseId = `lease-${attempt.attemptId}`;
-  const ownerTokenDigest = digest("owner-token");
-  const leaseAcquisitionEvidenceId = `evidence-lease-0-${attempt.attemptId}`;
-  let lease: StateRecord = {
-    lease_id: leaseId,
-    attempt_id: attempt.attemptId,
-    generation: 1,
-    owner_token_digest: ownerTokenDigest,
-    owner_context_id: implement.persisted.contextId,
-    heartbeat_at: NOW,
-    expires_at: "2026-07-16T12:10:00.000Z",
-    state: "reserved",
-    state_version: 0,
-    acquisition_evidence_id: leaseAcquisitionEvidenceId,
-    release_evidence_id: null,
-    created_at: NOW,
-  };
-  store.appendEvidence(snapshotEvidence(fixtureBase, implement, leaseAcquisitionEvidenceId, "rickgent.lease-snapshot.v1", lease));
-  insertRow(store.location.databasePath, "leases", lease);
-
-  const resourceId = `resource-${attempt.attemptId}`;
-  const resourceAcquisitionEvidenceId = `evidence-resource-0-${attempt.attemptId}`;
-  let resource: StateRecord = {
-    resource_id: resourceId,
-    attempt_id: attempt.attemptId,
-    slot: "worktree",
-    kind: "worktree",
-    canonical_identity: `worktree:${attempt.attemptId}`,
-    identity_digest: digest(`worktree:${attempt.attemptId}`),
-    allocation_lease_id: leaseId,
-    allocation_evidence_id: resourceAcquisitionEvidenceId,
-    owner_generation: 1,
-    owner_context_id: implement.persisted.contextId,
-    state: "reserved",
-    state_version: 0,
-    release_evidence_id: null,
-    quarantine_evidence_id: null,
-    created_at: NOW,
-  };
-  store.appendEvidence(snapshotEvidence(fixtureBase, implement, resourceAcquisitionEvidenceId, "rickgent.attempt-resource-snapshot.v1", resource));
-  insertRow(store.location.databasePath, "attempt_resources", resource);
-
-  const launchEvidenceIds = [implement, review, verification].map((phase, ordinal) => String(appendEvidence(
-    fixtureBase,
-    phase,
-    `evidence-launch-${ordinal}-${attempt.attemptId}`,
-    "AttemptLifecycleService",
-    "rickgent.process-launch.v1",
-    { attempt_id: attempt.attemptId, phase_execution_id: phase.persisted.phaseExecutionId },
-  ).evidence_id));
-  const processReceiptIds = [implement, review, verification].map((phase, ordinal) => {
-    const processReceiptId = `receipt-${ordinal}-${attempt.attemptId}`;
-    insertRow(store.location.databasePath, "process_receipts", {
-      process_receipt_id: processReceiptId,
-      phase_execution_id: phase.persisted.phaseExecutionId,
-      context_id: phase.persisted.contextId,
-      lease_id: leaseId,
-      lease_generation: 1,
-      pid: 100 + ordinal,
-      pgid: 100 + ordinal,
-      boot_identity: "boot-oracle-store",
-      process_start_identity: `process-${ordinal}-oracle-store`,
-      argv_digest: digest(`argv-${ordinal}`),
-      environment_digest: digest(`environment-${ordinal}`),
-      launch_evidence_id: launchEvidenceIds[ordinal]!,
-      exit_evidence_id: launchEvidenceIds[ordinal]!,
-      termination_evidence_id: null,
-      group_death_evidence_id: launchEvidenceIds[ordinal]!,
-      stdout_evidence_id: null,
-      stderr_evidence_id: null,
-      created_at: NOW,
-    });
-    return processReceiptId;
-  });
 
   const reviewRecordId = `review-${attempt.attemptId}`;
   const reviewPayload = {
@@ -592,31 +736,49 @@ function completeFixture(gateStatuses: readonly ("passed" | "failed" | "missing"
     attribution_evidence_id: attributionEvidenceId,
     created_at: NOW,
   });
-  insertUpstreamRowWithoutForeignKeys(store.location.databasePath, "attempt_commit_intents", {
+  const {
+    ownershipId,
+    ownershipContextDigest,
+    resourceClaimIds,
+  } = insertT18Ownership({ store, attempt, implement });
+  const targetProcesses = ([implement, review, verification] as const).map((phase, ordinal) => ({
+    phase,
+    ...insertT22TerminalProcess(
+      { store, attempt, run },
+      phase,
+      ["implement", "review", "verification"][ordinal]!,
+      7001 + ordinal,
+      ownershipId,
+      ownershipContextDigest,
+      invalidateDeathProof && ordinal === 0,
+    ),
+  }));
+  const { launchId, processReceiptId } = targetProcesses[0]!;
+  insertRow(store.location.databasePath, "attempt_commit_intents", {
     commit_intent_id: `intent-${attempt.attemptId}`,
     repository_id: run.repositoryId,
     attempt_id: attempt.attemptId,
-    ownership_id: `fixture-owner-${attempt.attemptId}`,
+    ownership_id: ownershipId,
     owner_generation: 1,
     ownership_state_version: 0,
-    ownership_context_digest: digest(`fixture-owner-context:${attempt.attemptId}`),
+    ownership_context_digest: ownershipContextDigest,
     phase_execution_id: implement.persisted.phaseExecutionId,
     context_id: implement.persisted.contextId,
     execution_context_digest: implement.canonical.contextDigest,
-    launch_id: `fixture-launch-${attempt.attemptId}`,
-    process_receipt_id: `fixture-receipt-${attempt.attemptId}`,
+    launch_id: launchId,
+    process_receipt_id: processReceiptId,
     delivery_ref: run.deliveryRef,
-    attempt_ref: `refs/rickgent/runs/${run.runId}/attempts/${attempt.attemptId}`,
+    attempt_ref: attemptRef,
     baseline_oid: attempt.deliveryBaselineOid,
     contract_digest: attempt.contractDigest,
-    delivery_ref_claim_id: `fixture-delivery-claim-${attempt.attemptId}`,
-    delivery_ref_expected_version: 0,
-    attempt_ref_claim_id: `fixture-attempt-claim-${attempt.attemptId}`,
-    attempt_ref_expected_version: 0,
-    worktree_claim_id: `fixture-worktree-claim-${attempt.attemptId}`,
-    worktree_expected_version: 0,
-    isolated_index_claim_id: `fixture-index-claim-${attempt.attemptId}`,
-    isolated_index_expected_version: 0,
+    delivery_ref_claim_id: resourceClaimIds.delivery_ref,
+    delivery_ref_expected_version: 2,
+    attempt_ref_claim_id: resourceClaimIds.attempt_ref,
+    attempt_ref_expected_version: 2,
+    worktree_claim_id: resourceClaimIds.worktree,
+    worktree_expected_version: 2,
+    isolated_index_claim_id: resourceClaimIds.isolated_index,
+    isolated_index_expected_version: 2,
     tree_before_oid: baselineTreeOid,
     tree_after_oid: candidateTreeOid,
     candidate_diff_digest: attributionDigests.candidateDiffDigest,
@@ -641,76 +803,179 @@ function completeFixture(gateStatuses: readonly ("passed" | "failed" | "missing"
     finalized_at: NOW,
   });
 
-  const releaseEvidenceId = String(appendEvidence(
-    fixtureBase,
-    implement,
-    `evidence-release-${attempt.attemptId}`,
-    "AttemptLifecycleService",
-    "rickgent.resource-release.v1",
-    { attempt_id: attempt.attemptId, released: true },
-  ).evidence_id);
-  for (const [state, version] of [["allocated", 1], ["cleanup_pending", 2], ["released", 3]] as const) {
-    const evidenceId = `evidence-resource-${version}-${attempt.attemptId}`;
-    const desired = { ...resource, state, state_version: version, release_evidence_id: state === "released" ? releaseEvidenceId : null };
-    store.appendEvidence(snapshotEvidence(fixtureBase, implement, evidenceId, "rickgent.attempt-resource-snapshot.v1", desired));
-    updateRow(store.location.databasePath, "attempt_resources", "resource_id", resourceId, {
-      state,
-      state_version: version,
-      release_evidence_id: desired.release_evidence_id,
-    });
-    resource = desired;
-  }
-  const resourceSnapshotEvidenceId = `evidence-resource-3-${attempt.attemptId}`;
-
-  for (const [state, version] of [["live", 1], ["cleanup_pending", 2], ["released", 3]] as const) {
-    const evidenceId = `evidence-lease-${version}-${attempt.attemptId}`;
-    const desired = { ...lease, state, state_version: version, release_evidence_id: state === "released" ? releaseEvidenceId : null };
-    store.appendEvidence(snapshotEvidence(fixtureBase, implement, evidenceId, "rickgent.lease-snapshot.v1", desired));
-    updateRow(store.location.databasePath, "leases", "lease_id", leaseId, {
-      state,
-      state_version: version,
-      release_evidence_id: desired.release_evidence_id,
-    });
-    lease = desired;
-  }
-  const {
-    resourceSnapshotEvidenceIds,
-    leaseSnapshotEvidenceId,
-  } = insertT18OracleSnapshots({ store, attempt, implement });
-
-  const cleanupRecordId = `cleanup-${attempt.attemptId}`;
-  const cleanupEvidenceId = `evidence-cleanup-${attempt.attemptId}`;
-  const cleanupPayload = {
-    attempt_id: attempt.attemptId,
-    sequence: 1,
-    context_id: implement.persisted.contextId,
-    outcome: "verified",
-    group_dead: 1,
-    worktree_disposition: "removed",
-    index_disposition: "removed",
-    ref_disposition: "removed",
-    context_disposition: "retained_immutable",
-    bundle_disposition: "retained_immutable",
-    delivery_ref_observed_oid: run.currentDeliveryOid,
-    resources_absent: 1,
-    lease_release_eligible: 1,
-    evidence_id: cleanupEvidenceId,
-  } as const;
-  appendEvidence(
-    fixtureBase,
-    implement,
-    cleanupEvidenceId,
-    "CleanupService",
-    "rickgent.cleanup-record.v1",
-    cleanupPayload,
-    cleanupRecordId,
+  const { resourceSnapshotEvidenceIds, leaseSnapshotEvidenceId } = insertT18CleanupSnapshots(
+    { store, attempt, implement },
+    ownershipId,
+    ownershipContextDigest,
+    resourceClaimIds,
   );
-  insertRow(store.location.databasePath, "cleanup_records", {
-    cleanup_record_id: cleanupRecordId,
-    ...cleanupPayload,
-    record_digest: digest(cleanupPayload),
+
+  const targetProofSetId = `target-proof-set-${attempt.attemptId}`;
+  const targetProofSetEvidenceId = `evidence-target-proof-set-${attempt.attemptId}`;
+  insertRow(store.location.databasePath, "attempt_target_proof_sets", {
+    target_proof_set_id: targetProofSetId,
+    attempt_id: attempt.attemptId,
+    ownership_id: ownershipId,
+    owner_generation: 1,
+    ownership_context_digest: ownershipContextDigest,
+    target_count: targetProcesses.length,
+    state: "collecting",
+    state_version: 0,
+    proof_set_digest: null,
+    evidence_id: null,
+    input_digest: digest({ attempt_id: attempt.attemptId, target_count: targetProcesses.length }),
+    idempotency_key: `target-proof-set:${attempt.attemptId}`,
+    created_at: NOW,
+    sealed_at: null,
+  });
+  const proofTargets = omitLastTargetProof ? targetProcesses.slice(0, -1) : targetProcesses;
+  const targetProofMembers = proofTargets.map((target, ordinal) => {
+    const sealedMember = {
+      ordinal,
+      phase_execution_id: target.phase.persisted.phaseExecutionId,
+      context_id: target.phase.persisted.contextId,
+      target_start_gate_id: target.targetStartGateId,
+      gate_state: "released",
+      gate_state_version: 1,
+      proof_kind: "terminal_process",
+      launch_id: target.launchId,
+      process_receipt_id: target.processReceiptId,
+      group_death_evidence_id: target.groupDeathEvidenceId,
+      unproven_evidence_id: null,
+    } as const;
+    const memberDigest = digest(sealedMember);
+    insertRow(store.location.databasePath, "attempt_target_proof_members", {
+      target_proof_set_id: targetProofSetId,
+      attempt_id: attempt.attemptId,
+      ordinal,
+      ownership_id: ownershipId,
+      owner_generation: 1,
+      phase_execution_id: target.phase.persisted.phaseExecutionId,
+      context_id: target.phase.persisted.contextId,
+      target_start_gate_id: target.targetStartGateId,
+      gate_state: "released",
+      gate_state_version: 1,
+      gate_release_evidence_id: target.releaseEvidenceId,
+      gate_never_released_evidence_id: null,
+      proof_kind: "terminal_process",
+      launch_id: target.launchId,
+      process_receipt_id: target.processReceiptId,
+      terminal_group_dead: 1,
+      terminal_descendants_confirmed_dead: 1,
+      group_death_evidence_id: target.groupDeathEvidenceId,
+      unproven_evidence_id: null,
+      member_digest: memberDigest,
+      created_at: NOW,
+    });
+    return Object.freeze({ ...sealedMember, member_digest: memberDigest });
+  });
+  const targetProofSetDigest = digest(targetProofMembers.map((member) => member.member_digest));
+  const targetProofSetPayload = {
+    oracle_input_class: "complete_target_proof_set",
+    target_proof_set_id: targetProofSetId,
+    attempt_id: attempt.attemptId,
+    ownership_id: ownershipId,
+    owner_generation: 1,
+    ownership_context_digest: ownershipContextDigest,
+    target_count: targetProofMembers.length,
+    target_proof_set_digest: targetProofSetDigest,
+    target_proofs: targetProofMembers,
+  } as const;
+  insertRow(store.location.databasePath, "evidence", evidenceInput(
+    fixtureBase,
+    implement,
+    targetProofSetEvidenceId,
+    "TargetProofService",
+    "rickgent.attempt-target-proof-set.v1",
+    targetProofSetPayload,
+    targetProofSetId,
+  ));
+  updateRow(store.location.databasePath, "attempt_target_proof_sets", "target_proof_set_id", targetProofSetId, {
+    state: "sealed_complete",
+    state_version: 1,
+    proof_set_digest: targetProofSetDigest,
+    evidence_id: targetProofSetEvidenceId,
+    sealed_at: NOW,
+  });
+
+  const cleanupEligibilityRecordId = `cleanup-eligibility-${attempt.attemptId}`;
+  const cleanupEligibilityEvidenceId = `evidence-cleanup-eligibility-${attempt.attemptId}`;
+  const claimSnapshotSetDigest = digest(resourceSnapshotEvidenceIds);
+  const cleanupEligibilityPayload = {
+    oracle_input_class: "cleanup_eligibility",
+    eligibility_id: cleanupEligibilityRecordId,
+    attempt_id: attempt.attemptId,
+    ownership_id: ownershipId,
+    owner_generation: 1,
+    ownership_state_version: 1,
+    ownership_context_digest: ownershipContextDigest,
+    context_id: implement.persisted.contextId,
+    commit_intent_id: `intent-${attempt.attemptId}`,
+    commit_attribution_id: attributionId,
+    candidate_oid: candidateOid,
+    baseline_oid: attempt.deliveryBaselineOid,
+    delivery_ref: run.deliveryRef,
+    delivery_observed_oid: attempt.deliveryBaselineOid,
+    attempt_ref: attemptRef,
+    attempt_ref_observed_oid: candidateOid,
+    claim_preimage_digest: claimSnapshotSetDigest,
+    target_proof_set_id: targetProofSetId,
+    target_proof_set_digest: targetProofSetDigest,
+    target_proof_count: targetProofMembers.length,
+    ownership_snapshot_evidence_id: leaseSnapshotEvidenceId,
+    claim_snapshot_evidence_ids: resourceSnapshotEvidenceIds,
+  } as const;
+  insertRow(store.location.databasePath, "evidence", evidenceInput(
+    fixtureBase,
+    implement,
+    cleanupEligibilityEvidenceId,
+    "CleanupEligibilityService",
+    "rickgent.cleanup-eligibility.v1",
+    cleanupEligibilityPayload,
+    cleanupEligibilityRecordId,
+  ));
+  insertRow(store.location.databasePath, "cleanup_eligibility_records", {
+    cleanup_eligibility_record_id: cleanupEligibilityRecordId,
+    attempt_id: attempt.attemptId,
+    ownership_id: ownershipId,
+    owner_generation: 1,
+    ownership_state_version: 1,
+    ownership_context_digest: ownershipContextDigest,
+    context_id: implement.persisted.contextId,
+    commit_intent_id: `intent-${attempt.attemptId}`,
+    commit_attribution_id: attributionId,
+    candidate_oid: candidateOid,
+    attempt_ref: cleanupEligibilityPayload.attempt_ref,
+    attempt_ref_observed_oid: candidateOid,
+    delivery_ref: run.deliveryRef,
+    delivery_baseline_oid: attempt.deliveryBaselineOid,
+    delivery_observed_oid: attempt.deliveryBaselineOid,
+    target_proof_set_id: targetProofSetId,
+    target_proof_set_state: "sealed_complete",
+    target_proof_set_digest: targetProofSetDigest,
+    target_proof_set_evidence_id: targetProofSetEvidenceId,
+    target_proof_count: targetProofMembers.length,
+    ownership_snapshot_evidence_id: leaseSnapshotEvidenceId,
+    claim_snapshot_evidence_ids_json: canonicalJson(resourceSnapshotEvidenceIds),
+    claim_snapshot_set_digest: claimSnapshotSetDigest,
+    evidence_id: cleanupEligibilityEvidenceId,
+    input_digest: digest({ attempt_id: attempt.attemptId, purpose: "cleanup_eligibility" }),
+    record_digest: digest(cleanupEligibilityPayload),
+    idempotency_key: `cleanup-eligibility:${attempt.attemptId}`,
     created_at: NOW,
   });
+  if (mutateDurablePreimage === "claim") {
+    updateRow(store.location.databasePath, "attempt_resource_claims", "resource_claim_id", resourceClaimIds.worktree, {
+      state: "released",
+      state_version: 4,
+      release_proof_digest: digest(`late-release:${attempt.attemptId}`),
+    });
+  } else if (mutateDurablePreimage === "ownership") {
+    updateRow(store.location.databasePath, "attempt_ownership_leases", "ownership_id", ownershipId, {
+      state: "released",
+      state_version: 2,
+    });
+  }
 
   const fixture: OracleFixture = {
     ...fixtureBase,
@@ -720,8 +985,7 @@ function completeFixture(gateStatuses: readonly ("passed" | "failed" | "missing"
     gateResultIds,
     reviewRecordId,
     attributionId,
-    cleanupRecordId,
-    processReceiptIds,
+    cleanupEligibilityRecordId,
     resourceSnapshotEvidenceIds,
     leaseSnapshotEvidenceId,
   };
@@ -777,6 +1041,33 @@ function expectStateCode(action: () => unknown, code: string): StateStoreError {
 }
 
 describe("Store-owned attempt oracle integration", () => {
+  it("refuses to seal a target proof set that omits one launched phase", () => {
+    expect(() => completeFixture(["passed"], true)).toThrow(
+      /target proof set does not inventory every gate or launch phase|complete target proof set contains an unproven, live, or orphan target/,
+    );
+  });
+
+  it("rejects a target proof whose group-death payload is not the full authoritative ProcessSupervisor proof", () => {
+    const fixture = completeFixture(["passed"], false, undefined, true);
+    expect(() => fixture.store.evaluateAndPersistAttemptOracle({
+      attemptId: fixture.attempt.attemptId,
+      idempotencyKey: "oracle:invalid-group-death",
+    })).toThrow(
+      /terminal target proof is not bound to authoritative containment death/,
+    );
+  });
+
+  it.each(["claim", "ownership"] as const)(
+    "rejects eligibility when the current durable %s advances beyond its pinned snapshot",
+    (kind) => {
+      const fixture = completeFixture(["passed"], false, kind);
+      expect(() => fixture.store.evaluateAndPersistAttemptOracle({
+        attemptId: fixture.attempt.attemptId,
+        idempotencyKey: `oracle:stale-${kind}`,
+      })).toThrow(/cleanup eligibility .*snapshot|cleanup-pending preimage/);
+    },
+  );
+
   it("resolves the exhaustive reference set itself and persists deterministic contiguous ordering", () => {
     const fixture = completeFixture();
     const result = fixture.store.evaluateAndPersistAttemptOracle({
@@ -795,15 +1086,13 @@ describe("Store-owned attempt oracle integration", () => {
       "run_manifest",
       "ticket_contract",
       "execution_context",
-      "process_receipt",
       "gate_result",
       "review_record",
       "commit_attribution",
-      "cleanup_record",
+      "evidence",
       "attempt_resource_snapshot",
       "lease_snapshot",
       "dependency_edge",
-      "evidence",
     ].map((kind, index) => [kind, index]));
     const ranks = references.map((row) => kindRank.get(String(row.reference_kind)) ?? -1);
     expect(ranks).toEqual([...ranks].sort((left, right) => left - right));
@@ -813,13 +1102,11 @@ describe("Store-owned attempt oracle integration", () => {
       "execution_context",
       "execution_context",
       "execution_context",
-      "process_receipt",
-      "process_receipt",
-      "process_receipt",
       "gate_result",
       "review_record",
       "commit_attribution",
-      "cleanup_record",
+      "evidence",
+      "evidence",
       ...T18_RESOURCE_KINDS.map(() => "attempt_resource_snapshot"),
       "lease_snapshot",
     ]);
@@ -828,16 +1115,17 @@ describe("Store-owned attempt oracle integration", () => {
       fixture.review.persisted.contextId,
       fixture.verification.persisted.contextId,
     ]);
-    expect(references.map((row) => row.process_receipt_id).filter((value) => value !== null))
-      .toEqual(fixture.processReceiptIds);
     expect(references.find((row) => row.reference_kind === "gate_result")?.gate_result_id)
       .toBe(fixture.gateResultIds[0]);
     expect(references.find((row) => row.reference_kind === "review_record")?.review_record_id)
       .toBe(fixture.reviewRecordId);
     expect(references.find((row) => row.reference_kind === "commit_attribution")?.commit_attribution_id)
       .toBe(fixture.attributionId);
-    expect(references.find((row) => row.reference_kind === "cleanup_record")?.cleanup_record_id)
-      .toBe(fixture.cleanupRecordId);
+    expect(references.filter((row) => row.reference_kind === "evidence").map((row) => row.evidence_id))
+      .toEqual([
+        `evidence-target-proof-set-${fixture.attempt.attemptId}`,
+        `evidence-cleanup-eligibility-${fixture.attempt.attemptId}`,
+      ]);
     const resourceSnapshotReferences = references.filter((row) => row.reference_kind === "attempt_resource_snapshot");
     expect(resourceSnapshotReferences).toHaveLength(T18_RESOURCE_KINDS.length);
     expect(resourceSnapshotReferences.map((row) => row.resource_snapshot_evidence_id).sort())

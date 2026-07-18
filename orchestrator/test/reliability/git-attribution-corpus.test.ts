@@ -556,7 +556,7 @@ async function makeFixture(options: FixtureOptions): Promise<CorpusFixture> {
   const run = resolver.allocateFreshRun({
     contracts: [contract],
     initialDeliveryOid: git(repo, ["rev-parse", "HEAD"]),
-    oracleVersion: "rickgent.oracle.v1",
+    oracleVersion: "rickgent.oracle.v2",
   });
   const attempt = resolver.allocateInitialAttempt({ runId: run.runId, ticketId: contract.id });
   const policyRoot = join(store.location.resourceDirectory, "policy-implement");
