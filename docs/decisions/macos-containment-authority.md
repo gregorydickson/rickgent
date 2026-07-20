@@ -171,5 +171,5 @@ This ADR sets the following boundary for the t22B implementation feature:
 
 ## Countersign
 
-- **Reviewer:** pending — this is a proposed decision awaiting user ratification. The M2 feature returns to the orchestrator for user ratification before t22B implementation begins.
+- **Reviewer:** ratified by user on 2026-07-20 — Option A (Docker Desktop / Linux-VM cgroup-v2 backend) with Option D fail-closed fallback adopted as the t22B containment backend. M3 (t22B) implementation may proceed.
 - **Date:** 2026-07-20
