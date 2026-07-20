@@ -89,7 +89,7 @@ if [[ "${RICKGENT_INIT_SKIP_BUILD:-0}" != "1" ]]; then
   #     is a no-op when the file is unmodified, so this is idempotent and safe
   #     to re-source.
   git -C "$__rickgent_init_root" checkout -- \
-    orchestrator/src/build-commit.ts 2>/dev/null || true
+    orchestrator/src/build-commit.ts
 fi
 
 # 7. After the rebuild, re-pin RICKGENT_BUILD_COMMIT to the build-commit the
