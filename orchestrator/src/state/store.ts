@@ -561,6 +561,24 @@ function sealedDispositionPayload(observation: Readonly<Record<string, unknown>>
   return canonicalJson(observation);
 }
 
+/**
+ * The durable preimage for a disposition receipt's idempotency digest.  This
+ * is the full normalized persisted request/postimage input: the observation
+ * AND every request field that participates in the durable preimage.  Any
+ * divergent field produces a divergent digest, so a replay with the same
+ * idempotency key but a divergent request field conflicts instead of silently
+ * returning the prior postimage (VAL-T22A-003).
+ *
+ * The observation is included under a fixed `observation` key so request fields
+ * and observation fields cannot collide or shadow one another.
+ */
+export function dispositionDurablePreimage(
+  observation: Readonly<Record<string, unknown>>,
+  requestFields: Readonly<Record<string, unknown>>,
+): string {
+  return canonicalJson({ observation, request: requestFields });
+}
+
 function dispositionEvidenceRow(
   evidenceId: string,
   attemptId: string,
@@ -2360,6 +2378,15 @@ export class StateStore {
     const receipt = mintCleanupEligibilityReceipt(request.observation, capability);
     const observation = receipt;
     const payload = sealedDispositionPayload(request.observation as unknown as Readonly<Record<string, unknown>>);
+    const durablePreimage = dispositionDurablePreimage(
+      request.observation as unknown as Readonly<Record<string, unknown>>,
+      {
+        target_proof_set_id: request.targetProofSetId,
+        ownership_snapshot_evidence_id: request.ownershipSnapshotEvidenceId,
+        claim_snapshot_evidence_ids: [...request.claimSnapshotEvidenceIds],
+      },
+    );
+    const durableDigest = sha256Text(durablePreimage);
     const evidenceId = `evidence-cleanup-eligibility-${observation.receiptId}`;
     const evidenceRow = dispositionEvidenceRow(
       evidenceId,
@@ -2400,8 +2427,8 @@ export class StateStore {
         claim_snapshot_evidence_ids_json: canonicalJson([...request.claimSnapshotEvidenceIds]),
         claim_snapshot_set_digest: claimSnapshotSetDigest,
         evidence_id: evidenceId,
-        input_digest: sha256Text(payload),
-        record_digest: sha256Text(payload),
+        input_digest: durableDigest,
+        record_digest: durableDigest,
         idempotency_key: `cleanup-eligibility:${observation.receiptId}`,
         created_at: observation.observedAt,
       });
@@ -2412,7 +2439,7 @@ export class StateStore {
         receiptRow,
         evidenceRow,
         evidenceId,
-        payload,
+        durablePreimage,
         () => { /* nonterminal: no state transition */ },
         receipt,
       );
@@ -2433,6 +2460,17 @@ export class StateStore {
     const receipt = mintFailureCleanupReceipt(request.observation, capability);
     const observation = receipt;
     const payload = sealedDispositionPayload(request.observation as unknown as Readonly<Record<string, unknown>>);
+    const durablePreimage = dispositionDurablePreimage(
+      request.observation as unknown as Readonly<Record<string, unknown>>,
+      {
+        target_proof_set_id: request.targetProofSetId,
+        cause_evidence_id: request.causeEvidenceId,
+        cleanup_eligibility_record_id: request.cleanupEligibilityRecordId ?? null,
+        oracle_decision_id: request.oracleDecisionId ?? null,
+        promotion_intent_id: request.promotionIntentId ?? null,
+      },
+    );
+    const durableDigest = sha256Text(durablePreimage);
     const evidenceId = `evidence-failure-cleanup-${observation.receiptId}`;
     const evidenceRow = dispositionEvidenceRow(
       evidenceId,
@@ -2488,8 +2526,8 @@ export class StateStore {
         resources_absent: 1,
         ownership_release_eligible: 1,
         evidence_id: evidenceId,
-        input_digest: sha256Text(payload),
-        record_digest: sha256Text(payload),
+        input_digest: durableDigest,
+        record_digest: durableDigest,
         idempotency_key: `failure-cleanup:${observation.receiptId}`,
         created_at: observation.observedAt,
       });
@@ -2500,7 +2538,7 @@ export class StateStore {
         receiptRow,
         evidenceRow,
         evidenceId,
-        payload,
+        durablePreimage,
         () => { /* terminal transition advanced by FailureFinalizationService */ },
         receipt,
       );
@@ -2521,6 +2559,13 @@ export class StateStore {
     const receipt = mintPromotionCleanupReceipt(request.observation, capability);
     const observation = receipt;
     const payload = sealedDispositionPayload(request.observation as unknown as Readonly<Record<string, unknown>>);
+    const durablePreimage = dispositionDurablePreimage(
+      request.observation as unknown as Readonly<Record<string, unknown>>,
+      {
+        promotion_observation_evidence_id: request.promotionObservationEvidenceId,
+      },
+    );
+    const durableDigest = sha256Text(durablePreimage);
     const evidenceId = `evidence-promotion-cleanup-${observation.receiptId}`;
     const evidenceRow = dispositionEvidenceRow(
       evidenceId,
@@ -2564,8 +2609,8 @@ export class StateStore {
         resources_absent: 1,
         ownership_release_eligible: 1,
         evidence_id: evidenceId,
-        input_digest: sha256Text(payload),
-        record_digest: sha256Text(payload),
+        input_digest: durableDigest,
+        record_digest: durableDigest,
         idempotency_key: `promotion-cleanup:${observation.receiptId}`,
         created_at: observation.observedAt,
       });
@@ -2576,7 +2621,7 @@ export class StateStore {
         receiptRow,
         evidenceRow,
         evidenceId,
-        payload,
+        durablePreimage,
         () => { /* promotion intent finalization advanced by PromotionFinalizationService */ },
         receipt,
       );
@@ -2596,6 +2641,25 @@ export class StateStore {
     const receipt = mintQuarantineReceipt(request.observation, capability);
     const observation = receipt;
     const payload = sealedDispositionPayload(request.observation as unknown as Readonly<Record<string, unknown>>);
+    const durablePreimage = dispositionDurablePreimage(
+      request.observation as unknown as Readonly<Record<string, unknown>>,
+      {
+        target_proof_set_id: request.targetProofSetId,
+        cause_evidence_id: request.causeEvidenceId,
+        ownership_snapshot_evidence_id: request.ownershipSnapshotEvidenceId,
+        cleanup_eligibility_record_id: request.cleanupEligibilityRecordId ?? null,
+        oracle_decision_id: request.oracleDecisionId ?? null,
+        promotion_intent_id: request.promotionIntentId ?? null,
+        claim_members: request.claimMembers.map((member) => ({
+          resource_claim_id: member.resourceClaimId, slot: member.slot,
+          current_ownership_id: member.currentOwnershipId, owner_generation: member.ownerGeneration,
+          claim_state_version: member.claimStateVersion, claim_snapshot_evidence_id: member.claimSnapshotEvidenceId,
+          absence_required: member.absenceRequired, physical_disposition: member.physicalDisposition,
+          disposition_evidence_id: member.dispositionEvidenceId, member_digest: member.memberDigest,
+        })),
+      },
+    );
+    const durableDigest = sha256Text(durablePreimage);
     const evidenceId = `evidence-quarantine-${observation.receiptId}`;
     const evidenceRow = dispositionEvidenceRow(
       evidenceId,
@@ -2615,13 +2679,14 @@ export class StateStore {
     return this.#immediate("mint_quarantine", () => {
       this.#validateCleanupDispositionPreimage(observation, "quarantine");
       const proof = this.#requireSealedTargetProofSet(observation.attemptId, request.targetProofSetId);
-      // Insert the sealed quarantine claim set + normalized members first.
+      const db = this.#requireDatabase();
       const claimSetId = `quarantine-claim-set-${observation.receiptId}`;
       const claimSetEvidenceId = `evidence-quarantine-claim-set-${observation.receiptId}`;
-      const claimSetPayload = canonicalJson(request.claimMembers.map((member) => ({
+      const claimSetMemberInventory = request.claimMembers.map((member) => ({
         resource_claim_id: member.resourceClaimId, slot: member.slot,
         physical_disposition: member.physicalDisposition, member_digest: member.memberDigest,
-      })));
+      }));
+      const claimSetPayload = canonicalJson({ claim_members: claimSetMemberInventory });
       const claimSetEvidenceRow = dispositionEvidenceRow(
         claimSetEvidenceId,
         observation.attemptId,
@@ -2632,56 +2697,87 @@ export class StateStore {
         claimSetPayload,
         observation.observedAt,
       );
-      this.#validateRecordSemantics("evidence", claimSetEvidenceRow);
-      this.#insert("evidence", claimSetEvidenceRow);
       const counts = request.claimMembers.reduce((acc, member) => {
         acc[member.physicalDisposition] += 1;
         return acc;
       }, { absent: 0, retained: 0, unknown: 0, not_applicable: 0 });
       const allRequiredAbsent = counts.absent === request.claimMembers.length - 1 && counts.not_applicable === 1 ? 1 : 0;
       const claimSetDigest = sha256Text(canonicalJson(request.claimMembers.map((member) => member.memberDigest)));
-      const claimSetRow = this.#buildReceiptRow("quarantine_claim_sets", {
-        quarantine_claim_set_id: claimSetId,
-        attempt_id: observation.attemptId,
-        ownership_id: observation.ownershipId,
-        owner_generation: observation.ownerGeneration,
-        ownership_context_digest: observation.ownershipContextDigest,
-        ownership_snapshot_evidence_id: request.ownershipSnapshotEvidenceId,
-        claim_count: request.claimMembers.length,
-        absent_count: counts.absent,
-        retained_count: counts.retained,
-        unknown_count: counts.unknown,
-        not_applicable_count: counts.not_applicable,
-        all_required_absent: allRequiredAbsent,
-        state: "sealed",
-        state_version: 1,
-        claim_set_digest: claimSetDigest,
-        evidence_id: claimSetEvidenceId,
-        input_digest: sha256Text(claimSetPayload),
-        idempotency_key: `quarantine-claim-set:${observation.receiptId}`,
-        created_at: observation.observedAt,
-        sealed_at: observation.observedAt,
-      });
-      this.#insert("quarantine_claim_sets", claimSetRow);
-      for (const [ordinal, member] of request.claimMembers.entries()) {
-        this.#insert("quarantine_claim_members", this.#validatedColumns("quarantine_claim_members", normalizeRow({
+      // Replay: if the quarantine record already exists with the identical
+      // durable preimage, return the identical immutable postimage without
+      // re-inserting the claim set/members.  A divergent durable preimage
+      // conflicts (detected by #persistDispositionReceipt below).
+      const existingQuarantine = db.prepare(
+        "SELECT * FROM quarantine_records WHERE quarantine_record_id = ? AND attempt_id = ?",
+      ).get(observation.receiptId, observation.attemptId) as MutableStateRecord | undefined;
+      if (existingQuarantine !== undefined) {
+        // The claim set/members are already persisted; defer to the uniform
+        // replay/conflict check in #persistDispositionReceipt.
+      } else {
+        // 1. Insert the claim-set evidence first (the sealed state requires a
+        //    non-null evidence_id FK).
+        this.#validateRecordSemantics("evidence", claimSetEvidenceRow);
+        this.#insert("evidence", claimSetEvidenceRow);
+        // 2. Insert the claim set in `collecting` state (state_version 0, no
+        //    digest/evidence/sealed_at) so the collecting-only trigger admits
+        //    member inserts.
+        const collectingClaimSetRow = this.#buildReceiptRow("quarantine_claim_sets", {
           quarantine_claim_set_id: claimSetId,
           attempt_id: observation.attemptId,
-          ordinal,
-          resource_claim_id: member.resourceClaimId,
-          slot: member.slot,
-          kind: member.slot,
-          current_ownership_id: member.currentOwnershipId,
-          owner_generation: member.ownerGeneration,
-          claim_state: "quarantined",
-          claim_state_version: member.claimStateVersion,
-          claim_snapshot_evidence_id: member.claimSnapshotEvidenceId,
-          absence_required: member.absenceRequired ? 1 : 0,
-          physical_disposition: member.physicalDisposition,
-          disposition_evidence_id: member.dispositionEvidenceId,
-          member_digest: member.memberDigest,
+          ownership_id: observation.ownershipId,
+          owner_generation: observation.ownerGeneration,
+          ownership_context_digest: observation.ownershipContextDigest,
+          ownership_snapshot_evidence_id: request.ownershipSnapshotEvidenceId,
+          claim_count: request.claimMembers.length,
+          absent_count: counts.absent,
+          retained_count: counts.retained,
+          unknown_count: counts.unknown,
+          not_applicable_count: counts.not_applicable,
+          all_required_absent: allRequiredAbsent,
+          state: "collecting",
+          state_version: 0,
+          claim_set_digest: null,
+          evidence_id: null,
+          input_digest: sha256Text(claimSetPayload),
+          idempotency_key: `quarantine-claim-set:${observation.receiptId}`,
           created_at: observation.observedAt,
-        })));
+          sealed_at: null,
+        });
+        this.#insert("quarantine_claim_sets", collectingClaimSetRow);
+        // 3. Insert the members while the set is collecting.
+        for (const [ordinal, member] of request.claimMembers.entries()) {
+          this.#insert("quarantine_claim_members", this.#validatedColumns("quarantine_claim_members", normalizeRow({
+            quarantine_claim_set_id: claimSetId,
+            attempt_id: observation.attemptId,
+            ordinal,
+            resource_claim_id: member.resourceClaimId,
+            slot: member.slot,
+            kind: member.slot,
+            current_ownership_id: member.currentOwnershipId,
+            owner_generation: member.ownerGeneration,
+            claim_state: "quarantined",
+            claim_state_version: member.claimStateVersion,
+            claim_snapshot_evidence_id: member.claimSnapshotEvidenceId,
+            absence_required: member.absenceRequired ? 1 : 0,
+            physical_disposition: member.physicalDisposition,
+            disposition_evidence_id: member.dispositionEvidenceId,
+            member_digest: member.memberDigest,
+            created_at: observation.observedAt,
+          })));
+        }
+        // 4. Seal the claim set atomically: collecting -> sealed.  The
+        //    legal-edge and complete-seal triggers verify the members are
+        //    complete and contiguous before the seal commits.
+        const seal = db.prepare(
+          `UPDATE quarantine_claim_sets
+           SET state = 'sealed', state_version = 1,
+               claim_set_digest = ?, evidence_id = ?, sealed_at = ?
+           WHERE quarantine_claim_set_id = ? AND attempt_id = ?
+             AND state = 'collecting' AND state_version = 0`,
+        ).run(claimSetDigest, claimSetEvidenceId, observation.observedAt, claimSetId, observation.attemptId);
+        if (seal.changes !== 1) {
+          throw typedError("RICKGENT_STATE_CONFLICT", "quarantine claim set seal lost its CAS race", this.location.databasePath);
+        }
       }
       const receiptRow = this.#buildReceiptRow("quarantine_records", {
         quarantine_record_id: observation.receiptId,
@@ -2712,8 +2808,8 @@ export class StateStore {
         group_dead: 1,
         resources_absent: allRequiredAbsent,
         evidence_id: evidenceId,
-        input_digest: sha256Text(payload),
-        record_digest: sha256Text(payload),
+        input_digest: durableDigest,
+        record_digest: durableDigest,
         idempotency_key: `quarantine:${observation.receiptId}`,
         created_at: observation.observedAt,
       });
@@ -2724,7 +2820,7 @@ export class StateStore {
         receiptRow,
         evidenceRow,
         evidenceId,
-        payload,
+        durablePreimage,
         () => { /* terminal transition advanced by QuarantineFinalizationService */ },
         receipt,
       );
@@ -2748,11 +2844,11 @@ export class StateStore {
     receiptRow: Readonly<Record<string, SqlValue>>,
     evidenceRow: Readonly<Record<string, SqlValue>>,
     evidenceId: string,
-    payload: string,
+    durablePreimage: string,
     advanceState: (db: DatabaseSync) => void,
     receipt: R,
   ): MintedDispositionReceipt<R> {
-    const recordDigest = sha256Text(payload);
+    const recordDigest = sha256Text(durablePreimage);
     const db = this.#requireDatabase();
     const receiptId = String(receiptRow[idColumn] ?? receipt.receiptId);
     const attemptId = receipt.attemptId;

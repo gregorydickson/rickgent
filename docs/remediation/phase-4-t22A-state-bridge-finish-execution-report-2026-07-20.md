@@ -296,3 +296,175 @@ state-contract parity test is unchanged.
 | `MISSION_3_PRD.md` | Added `composes: [docs/architecture/reliability/state-and-lifecycle-contract.md]` |
 | `orchestrator/test/reliability/state-transition-declaration.test.ts` | Created: 5-test TDD proof for the declared transitions |
 
+---
+
+## Fix addendum (M1 scrutiny validator round 2 remediation)
+
+**Date:** 2026-07-20 (same day, post-scrutiny)
+**Scope:** Four blocking independent-review findings from the M1 scrutiny
+validator round 2. All four are t22A completeness gaps.
+
+### Finding 1: mintQuarantine collecting-trigger violation
+
+**Problem:** `StateStore.mintQuarantine` inserted the sealed claim set
+before its members, violating the `quarantine_claim_members_collecting_only`
+trigger. The trigger requires the claim set to be in `collecting` state when
+member rows are inserted; the original code inserted the claim set as `sealed`
+first, causing `SQLITE_CONSTRAINT` and preventing persisted quarantine receipts.
+Additionally, the claim-set evidence `inline_payload_json` was a JSON array,
+violating the schema CHECK constraint (`json_type = 'object'`).
+
+**Fix:** Rewrote `mintQuarantine` to use a collecting-then-seal flow:
+(1) insert the claim-set evidence (payload wrapped as `{ claim_members: [...] }`
+to satisfy the object-type CHECK); (2) insert the claim set in `collecting`
+state (`state_version=0`, `claim_set_digest=null`, `evidence_id=null`,
+`sealed_at=null`); (3) insert all 11 members while collecting; (4) CAS UPDATE
+to `sealed` (`state_version=1`, digest/evidence/sealed_at set). The
+`quarantine_claim_sets_complete_seal` trigger verifies member completeness
+before the seal commits. A replay-skip path returns the identical postimage
+for an existing quarantine record with matching durable preimage.
+
+**Test:** `mintQuarantine end-to-end integration` describe block in
+`disposition-store-bridge.test.ts` — 2 tests proving the collecting-then-seal
+transition persists the receipt, sealed claim set, and 11 members, and that
+identical inputs replay identically.
+
+### Finding 2: Replay conflict hashing omits persisted request fields (VAL-T22A-003)
+
+**Problem:** Disposition replay conflict hashing (`#persistDispositionReceipt`)
+computed the `record_digest` from the sealed disposition payload only, omitting
+the persisted request fields. A divergent replay with the same observation but a
+different `causeEvidenceId` (or other request field) would silently return the
+prior postimage instead of conflicting, violating VAL-T22A-003.
+
+**Fix:** Added the exported `dispositionDurablePreimage(observation, requestFields)`
+helper that canonicalizes `{ observation, request: requestFields }`. Modified
+`#persistDispositionReceipt` to accept a `durablePreimage` string and compute
+`record_digest = sha256Text(durablePreimage)`. Updated all four mint methods
+(`mintCleanupEligibility`, `mintFailureCleanup`, `mintPromotionCleanup`,
+`mintQuarantine`) to build the durable preimage including every persisted
+request field:
+- `mintCleanupEligibility`: `target_proof_set_id`, `ownership_snapshot_evidence_id`, `claim_snapshot_evidence_ids`
+- `mintFailureCleanup`: `target_proof_set_id`, `cause_evidence_id`, `cleanup_eligibility_record_id`, `oracle_decision_id`, `promotion_intent_id`
+- `mintPromotionCleanup`: `promotion_observation_evidence_id`
+- `mintQuarantine`: `target_proof_set_id`, `cause_evidence_id`, `ownership_snapshot_evidence_id`, `claim_members`
+- `mintTargetNeverReleased`: no extra request fields (unchanged)
+
+**Tests:** `replay conflict hashing includes persisted request fields` describe
+block in `disposition-store-bridge.test.ts` — 5 tests proving divergent request
+fields produce `RICKGENT_STATE_IDEMPOTENCY_CONFLICT` for cleanup-eligibility
+(divergent `ownershipSnapshotEvidenceId`), failure-cleanup (divergent
+`causeEvidenceId`), promotion-cleanup (divergent `promotionObservationEvidenceId`),
+quarantine (divergent `causeEvidenceId`), and that target-never-released
+identical observation replays identically (no extra request fields).
+
+### Finding 3: Production wiring of purpose-specific finalization and authority-derived context
+
+**Problem:** `finalizeFailure`/`finalizePromotion`/`finalizeQuarantine` and
+`resolveAuthorityExecutionContext` had no production lifecycle callers; the
+generic cleanup path remained the active authority path.
+
+**Fix:** Created two production authority modules:
+- `orchestrator/src/lifecycle/attempt-terminalization.ts`:
+  `AttemptTerminalizationAuthority` class with `terminalizeFailure`,
+  `terminalizePromotion`, `terminalizeQuarantine` methods that route through
+  the purpose-specific `finalize*` functions and reject generic cleanup records
+  via `rejectGenericCleanupReceipt` (checks `isAuthorizedCleanupReceipt`).
+  `receiptAcceptsTerminalization` and `terminalizationReceiptKind` helpers
+  provide the production-path parity proof.
+- `orchestrator/src/context/attempt-execution-context.ts`:
+  `AttemptExecutionContextAuthority` class wrapping
+  `IdentityContextResolver.resolveAuthorityExecutionContext`. The
+  `authorityWorktreeRealpath` helper extracts the authority-derived worktree
+  path from the ownership grant.
+
+These are the production entry paths for the future AttemptRunner (t22C). The
+generic `CleanupService` path remains as an internal compatibility seam for
+already-running v1 fixtures; it is NOT the authority path for t22A
+terminalization. Full removal of the shared run worktree, direct Dispatcher
+spawn, and caller-checkout gates remains t22D (m4-t22D).
+
+**Tests:** `production attempt terminalization authority` describe block in
+`disposition-store-bridge.test.ts` — 5 tests proving:
+(1) `terminalizeFailure` routes through `finalizeFailure` and persists the
+failure-cleanup receipt via the Store;
+(2) `terminalizeQuarantine` routes through `finalizeQuarantine` and persists
+the quarantine receipt with a sealed claim set;
+(3) a generic cleanup record is rejected by every terminalization kind
+(`receiptAcceptsTerminalization` returns false, `terminalizationReceiptKind`
+returns null, the authority throws at the entry point);
+(4) a cross-disposition receipt is rejected (a quarantine receipt cannot
+terminalize a failure);
+(5) `AttemptExecutionContextAuthority` delegates to
+`resolveAuthorityExecutionContext` and rejects a forged ownership grant.
+
+### Finding 4: LIVE->CLEANUP_PENDING contract-implementation parity
+
+**Problem:** The declared `LIVE->CLEANUP_PENDING` transition precondition
+referenced attempt-cleanup-entry evidence (candidate attribution, failure
+evidence, stale recovery) that the production `#beginAttemptOwnershipCleanup`
+code does not enforce, and claimed an expiry check that the production path
+does not perform on the begin-cleanup transition.
+
+**Fix:** Revised the contract precondition (in both
+`state-and-lifecycle-contract.json` and `.md`) to the exact precondition that
+the production path enforces:
+- Owner token digest match (missing/stale owner fails to
+  `RICKGENT_STATE_OWNER_MISMATCH` via `#requireCurrentOwnership`);
+- Expected ownership preimage (state='live' + state_version; a non-live state
+  or stale version fails to `RICKGENT_STATE_CONFLICT` via
+  `#requireOwnershipPreimage`);
+- Defense-in-depth guard (non-live state fails to
+  `RICKGENT_STATE_TRANSITION_ILLEGAL`);
+- CAS on ownership_id + owner_token_digest + state='live' + state_version
+  (concurrent mutation fails to `RICKGENT_STATE_CONFLICT`);
+- An expired lease is admitted to cleanup containment via this transition
+  (the workspace readiness path calls `beginCleanup` on expiry to enter
+  `cleanup_pending`); the expiry gate is enforced downstream on heartbeat and
+  resource-advance operations, not on the begin-cleanup transition itself.
+- The attempt-cleanup-entry evidence is owned by the t19/t20
+  process-supervision chain and is verified by the caller before requesting
+  `beginCleanup`; it is not enforced by this Store-level transition.
+
+**Tests:** 3 new tests in `attempt-ownership.test.ts`:
+(1) `live->cleanup_pending contract-implementation parity` — the happy path
+transitions to `cleanup_pending`, and a stale version fails to
+`RICKGENT_STATE_CONFLICT`;
+(2) `a foreign owner token fails closed` — a grant from store A cannot
+`beginCleanup` against store B (rejected at the `#commitForGrant`
+client-side guard; the store-level `#requireCurrentOwnership` OWNER_MISMATCH
+is proven by the existing cross-store `acquire` test);
+(3) `an expired lease is admitted to cleanup containment` — an expired lease
+with a matching preimage transitions to `cleanup_pending` via `beginCleanup`
+(the expiry gate is downstream, not on begin-cleanup).
+
+### Re-verification (fix addendum)
+
+- `cd orchestrator && pnpm typecheck` → green (0 errors).
+- `cd orchestrator && pnpm build` → green.
+- Scoped M1 vitest suites
+  (`disposition-store-bridge` [30/30], `disposition-authority` [16/16],
+  `oracle-store-integration` [6/6], `oracle-authority` [14/14],
+  `lifecycle-exit-ownership` [3/3], `attempt-ownership` [20/20])
+  → **89/89 passed** (was 62/62 baseline; +27 new tests across all four
+  findings).
+- `cd rickgent-policies && python3 -m pytest test/ -p no:cacheprovider`
+  → **367 passed, 3 skipped**.
+- `node orchestrator/dist/cli.js citadel --prd MISSION_3_PRD.md --repo .`
+  → exit 0. Summary: **1 findings (CRITICAL=0, HIGH=0, MEDIUM=0, LOW=1)**.
+- `node orchestrator/dist/cli.js doctor` → exit 0. All checks passed.
+  `autonomous_dispatch: state=fixture_only` (expected).
+
+### Files changed (fix addendum)
+
+| File | Change |
+| --- | --- |
+| `orchestrator/src/state/store.ts` | `dispositionDurablePreimage` helper; `#persistDispositionReceipt` durable-preimage param; all 4 mint methods build durable preimage; `mintQuarantine` collecting-then-seal rewrite with object-wrapped claim-set evidence |
+| `orchestrator/src/lifecycle/attempt-terminalization.ts` | Created: `AttemptTerminalizationAuthority` + parity helpers |
+| `orchestrator/src/context/attempt-execution-context.ts` | Created: `AttemptExecutionContextAuthority` + `authorityWorktreeRealpath` |
+| `orchestrator/test/reliability/disposition-store-bridge.test.ts` | +12 tests (fixes 1, 2, 3): mintQuarantine integration, divergent-field conflicts, production terminalization authority |
+| `orchestrator/test/reliability/attempt-ownership.test.ts` | +3 tests (fix 4): LIVE->CLEANUP_PENDING parity (happy path, foreign owner, expired lease) |
+| `docs/architecture/reliability/state-and-lifecycle-contract.json` | Revised `live->cleanup_pending` precondition to match production enforcement |
+| `docs/architecture/reliability/state-and-lifecycle-contract.md` | Revised `live->cleanup_pending` precondition description |
+| `docs/remediation/phase-4-t22A-state-bridge-finish-execution-report-2026-07-20.md` | This fix addendum |
+

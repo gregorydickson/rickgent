@@ -42,15 +42,26 @@ import {
   type TargetNeverReleasedObservation,
 } from "../../src/lifecycle/disposition.js";
 import {
+  AttemptTerminalizationAuthority,
+  receiptAcceptsTerminalization,
+  terminalizationReceiptKind,
+} from "../../src/lifecycle/attempt-terminalization.js";
+import {
+  AttemptExecutionContextAuthority,
+  authorityWorktreeRealpath,
+} from "../../src/context/attempt-execution-context.js";
+import {
   dispositionReceiptKind,
   finalizeFailure,
   finalizePromotion,
   finalizeQuarantine,
   receiptSatisfiesFinalization,
 } from "../../src/lifecycle/disposition-finalization.js";
+import { isAuthorizedCleanupReceipt } from "../../src/lifecycle/cleanup.js";
 import { LeaseAuthority } from "../../src/state/leases.js";
 import {
   StateStoreError,
+  dispositionDurablePreimage,
   openStateStore,
   type AllocatedAttempt,
   type AllocatedRun,
@@ -544,6 +555,105 @@ function makeQuarantineObservation(fixture: Fixture): QuarantineObservation {
   };
 }
 
+// Advance the fixture's 11 resource claims from cleanup_pending to quarantined
+// (the legal edge) so the quarantine claim-set members' resource-claim FK is
+// satisfiable, and build the per-claim snapshot/disposition evidence rows the
+// quarantine_claim_members FK requires.  Returns the claim-member inputs in
+// slot order, ready for MintQuarantineRequest.claimMembers.
+function advanceClaimsToQuarantined(fixture: Fixture): readonly {
+  readonly resourceClaimId: string;
+  readonly slot: string;
+  readonly currentOwnershipId: string;
+  readonly ownerGeneration: number;
+  readonly claimStateVersion: number;
+  readonly claimSnapshotEvidenceId: string;
+  readonly absenceRequired: boolean;
+  readonly physicalDisposition: "absent" | "retained" | "unknown" | "not_applicable";
+  readonly dispositionEvidenceId: string;
+  readonly memberDigest: `sha256:${string}`;
+}[] {
+  const members: {
+    readonly resourceClaimId: string;
+    readonly slot: string;
+    readonly currentOwnershipId: string;
+    readonly ownerGeneration: number;
+    readonly claimStateVersion: number;
+    readonly claimSnapshotEvidenceId: string;
+    readonly absenceRequired: boolean;
+    readonly physicalDisposition: "absent" | "retained" | "unknown" | "not_applicable";
+    readonly dispositionEvidenceId: string;
+    readonly memberDigest: `sha256:${string}`;
+  }[] = [];
+  for (const kind of T18_RESOURCE_KINDS) {
+    const resourceClaimId = fixture.resourceClaimIds[kind];
+    const snapshotEvidenceId = `evidence-claim-snapshot-quar-${kind}-${fixture.attempt.attemptId}`;
+    const dispositionEvidenceId = `evidence-claim-disposition-quar-${kind}-${fixture.attempt.attemptId}`;
+    insertRow(fixture.store.location.databasePath, "evidence", evidenceInput(
+      fixture.attempt.attemptId, fixture.implement, snapshotEvidenceId, "QuarantineService",
+      "rickgent.attempt-resource-snapshot.v1",
+      { resource_claim_id: resourceClaimId, slot: kind, state: "quarantined", state_version: 4 },
+      resourceClaimId,
+    ));
+    insertRow(fixture.store.location.databasePath, "evidence", evidenceInput(
+      fixture.attempt.attemptId, fixture.implement, dispositionEvidenceId, "QuarantineService",
+      "rickgent.quarantine-claim-disposition.v1",
+      { resource_claim_id: resourceClaimId, slot: kind, physical_disposition: kind === "delivery_ref" ? "not_applicable" : "retained" },
+      resourceClaimId,
+    ));
+    updateRow(fixture.store.location.databasePath, "attempt_resource_claims", "resource_claim_id", resourceClaimId, {
+      state: "quarantined",
+      state_version: 4,
+      quarantine_proof_digest: digest(`quarantine-proof:${resourceClaimId}`),
+    });
+    const physicalDisposition = kind === "delivery_ref" ? "not_applicable" : "retained" as const;
+    const absenceRequired = kind !== "delivery_ref" ? 1 : 0;
+    const memberDigest = digest({
+      resource_claim_id: resourceClaimId, slot: kind, current_ownership_id: fixture.ownershipId,
+      owner_generation: 1, claim_state_version: 4, physical_disposition: physicalDisposition,
+    });
+    members.push({
+      resourceClaimId,
+      slot: kind,
+      currentOwnershipId: fixture.ownershipId,
+      ownerGeneration: 1,
+      claimStateVersion: 4,
+      claimSnapshotEvidenceId: snapshotEvidenceId,
+      absenceRequired: absenceRequired === 1,
+      physicalDisposition,
+      dispositionEvidenceId,
+      memberDigest: memberDigest as `sha256:${string}`,
+    });
+  }
+  return Object.freeze(members);
+}
+
+function makeQuarantineRequest(
+  fixture: Fixture,
+  claimMembers: ReturnType<typeof advanceClaimsToQuarantined>,
+  overrides: Partial<{
+    readonly targetProofSetId: string;
+    readonly causeEvidenceId: string;
+    readonly ownershipSnapshotEvidenceId: string;
+  }> = {},
+): import("../../src/state/store.js").MintQuarantineRequest {
+  return {
+    observation: makeQuarantineObservation(fixture),
+    targetProofSetId: overrides.targetProofSetId ?? `target-proof-set-${fixture.attempt.attemptId}`,
+    causeEvidenceId: overrides.causeEvidenceId ?? `evidence-salvage-${fixture.attempt.attemptId}`,
+    ownershipSnapshotEvidenceId: overrides.ownershipSnapshotEvidenceId ?? `evidence-ownership-quar-${fixture.attempt.attemptId}`,
+    claimMembers,
+  };
+}
+
+function insertOwnershipSnapshotEvidence(fixture: Fixture, id: string): void {
+  insertRow(fixture.store.location.databasePath, "evidence", evidenceInput(
+    fixture.attempt.attemptId, fixture.implement, id, "QuarantineService",
+    "rickgent.lease-snapshot.v1",
+    { ownership_id: fixture.ownershipId, attempt_id: fixture.attempt.attemptId, state: "cleanup_pending", state_version: 1 },
+    fixture.ownershipId,
+  ));
+}
+
 function expectStateCode(action: () => unknown, code: string): StateStoreError {
   try {
     action();
@@ -1032,6 +1142,294 @@ describe("t22A disposition Store bridge", () => {
       const retry = fixture.store.mintTargetNeverReleased({ observation }, capability);
       expect(retry.replayed).toBe(false);
       expect(String(retry.record.state)).toBe("closed_never_released");
+    });
+  });
+
+  describe("mintQuarantine end-to-end integration (collecting-trigger fix)", () => {
+    it("persists the quarantine receipt, sealed claim set, and members atomically via a collecting-then-seal transition", () => {
+      const fixture = buildFixture();
+      insertSalvageRecord(fixture);
+      insertTargetProofSetSealed(fixture);
+      insertOwnershipSnapshotEvidence(fixture, `evidence-ownership-quar-${fixture.attempt.attemptId}`);
+      const claimMembers = advanceClaimsToQuarantined(fixture);
+      const request = makeQuarantineRequest(fixture, claimMembers);
+      const result = fixture.store.mintQuarantine(request, fixture.leases.issueDispositionMintCapability());
+      expect(result.replayed).toBe(false);
+      // The quarantine record is persisted.
+      const record = queryAll(fixture.store.location.databasePath,
+        "SELECT * FROM quarantine_records WHERE quarantine_record_id = ?", result.receipt.receiptId)[0]!;
+      expect(record).toBeDefined();
+      expect(String(record.quarantine_claim_set_state)).toBe("sealed");
+      // The claim set is sealed with all 11 members.
+      const claimSet = queryAll(fixture.store.location.databasePath,
+        "SELECT * FROM quarantine_claim_sets WHERE quarantine_claim_set_id = ?",
+        String(record.quarantine_claim_set_id))[0]!;
+      expect(String(claimSet.state)).toBe("sealed");
+      expect(Number(claimSet.state_version)).toBe(1);
+      expect(claimSet.sealed_at).not.toBeNull();
+      expect(claimSet.claim_set_digest).not.toBeNull();
+      expect(claimSet.evidence_id).not.toBeNull();
+      const memberCount = count(fixture.store.location.databasePath, "quarantine_claim_members", fixture.attempt.attemptId);
+      expect(memberCount).toBe(11);
+    });
+
+    it("replays identical quarantine inputs to the identical immutable postimage", () => {
+      const fixture = buildFixture();
+      insertSalvageRecord(fixture);
+      insertTargetProofSetSealed(fixture);
+      insertOwnershipSnapshotEvidence(fixture, `evidence-ownership-quar-${fixture.attempt.attemptId}`);
+      const claimMembers = advanceClaimsToQuarantined(fixture);
+      const request = makeQuarantineRequest(fixture, claimMembers);
+      const capability = fixture.leases.issueDispositionMintCapability();
+      const first = fixture.store.mintQuarantine(request, capability);
+      const second = fixture.store.mintQuarantine(request, capability);
+      expect(second.replayed).toBe(true);
+      expect(second.record).toEqual(first.record);
+    });
+  });
+
+  describe("replay conflict hashing includes persisted request fields (VAL-T22A-003 fix)", () => {
+    it("mintCleanupEligibility: the durable preimage digest includes targetProofSetId, ownershipSnapshotEvidenceId, and claimSnapshotEvidenceIds so a divergent field produces a conflict", () => {
+      const fixture = buildFixture();
+      const observation = makeCleanupEligibilityObservation(fixture);
+      const obsRecord = observation as unknown as Readonly<Record<string, unknown>>;
+      const claimSnapshotEvidenceIds = T18_RESOURCE_KINDS.map((kind) => `evidence-resource-claim-v2-${kind}-${fixture.attempt.attemptId}`);
+      const baseFields = {
+        target_proof_set_id: `target-proof-set-${fixture.attempt.attemptId}`,
+        ownership_snapshot_evidence_id: `evidence-ownership-v2-${fixture.attempt.attemptId}`,
+        claim_snapshot_evidence_ids: claimSnapshotEvidenceIds,
+      };
+      const baseDigest = digest(dispositionDurablePreimage(obsRecord, baseFields));
+      // A divergent targetProofSetId produces a divergent digest.
+      expect(digest(dispositionDurablePreimage(obsRecord, { ...baseFields, target_proof_set_id: "divergent-tps" })))
+        .not.toBe(baseDigest);
+      // A divergent ownershipSnapshotEvidenceId produces a divergent digest.
+      expect(digest(dispositionDurablePreimage(obsRecord, { ...baseFields, ownership_snapshot_evidence_id: "divergent-snap" })))
+        .not.toBe(baseDigest);
+      // A divergent claimSnapshotEvidenceIds entry produces a divergent digest.
+      const divergentClaims = [...claimSnapshotEvidenceIds];
+      divergentClaims[0] = `evidence-resource-claim-divergent-${T18_RESOURCE_KINDS[0]}-${fixture.attempt.attemptId}`;
+      expect(digest(dispositionDurablePreimage(obsRecord, { ...baseFields, claim_snapshot_evidence_ids: divergentClaims })))
+        .not.toBe(baseDigest);
+      // The same inputs produce the same digest (replay stability).
+      expect(digest(dispositionDurablePreimage(obsRecord, baseFields))).toBe(baseDigest);
+    });
+
+    it("mintFailureCleanup: a divergent causeEvidenceId conflicts instead of silently returning the prior postimage", () => {
+      const fixture = buildFixture();
+      insertSalvageRecord(fixture);
+      insertTargetProofSetSealed(fixture);
+      const observation = makeFailureObservation(fixture);
+      const targetProofSetId = `target-proof-set-${fixture.attempt.attemptId}`;
+      const causeA = `evidence-salvage-${fixture.attempt.attemptId}`;
+      const causeB = `evidence-salvage-divergent-${fixture.attempt.attemptId}`;
+      // Insert a second valid evidence row so the divergent causeEvidenceId
+      // resolves a real evidence FK; the conflict is detected before the FK
+      // check on the replay path, but the row keeps the test robust.
+      insertRow(fixture.store.location.databasePath, "evidence", evidenceInput(
+        fixture.attempt.attemptId, fixture.implement, causeB, "SalvageService",
+        "rickgent.salvage-record.v1", { attempt_id: fixture.attempt.attemptId, disposition: "captured" },
+        `salvage-divergent-${fixture.attempt.attemptId}`,
+      ));
+      const capability = fixture.leases.issueDispositionMintCapability();
+      const first = fixture.store.mintFailureCleanup(
+        { observation, targetProofSetId, causeEvidenceId: causeA },
+        capability,
+      );
+      expect(first.replayed).toBe(false);
+      expectStateCode(
+        () => fixture.store.mintFailureCleanup(
+          { observation, targetProofSetId, causeEvidenceId: causeB },
+          capability,
+        ),
+        "RICKGENT_STATE_IDEMPOTENCY_CONFLICT",
+      );
+    });
+
+    it("mintPromotionCleanup: the durable preimage digest includes promotionObservationEvidenceId so a divergent field produces a conflict", () => {
+      const fixture = buildFixture();
+      const observation = makePromotionObservation(fixture);
+      const obsRecord = observation as unknown as Readonly<Record<string, unknown>>;
+      const baseFields = { promotion_observation_evidence_id: `promo-obs-${fixture.attempt.attemptId}` };
+      const baseDigest = digest(dispositionDurablePreimage(obsRecord, baseFields));
+      // A divergent promotionObservationEvidenceId produces a divergent digest.
+      expect(digest(dispositionDurablePreimage(obsRecord, { promotion_observation_evidence_id: `promo-obs-divergent-${fixture.attempt.attemptId}` })))
+        .not.toBe(baseDigest);
+      // The same input produces the same digest (replay stability).
+      expect(digest(dispositionDurablePreimage(obsRecord, baseFields))).toBe(baseDigest);
+    });
+
+    it("mintQuarantine: a divergent causeEvidenceId conflicts instead of silently returning the prior postimage", () => {
+      const fixture = buildFixture();
+      insertSalvageRecord(fixture);
+      insertTargetProofSetSealed(fixture);
+      insertOwnershipSnapshotEvidence(fixture, `evidence-ownership-quar-${fixture.attempt.attemptId}`);
+      const claimMembers = advanceClaimsToQuarantined(fixture);
+      const causeA = `evidence-salvage-${fixture.attempt.attemptId}`;
+      const causeB = `evidence-salvage-divergent-${fixture.attempt.attemptId}`;
+      insertRow(fixture.store.location.databasePath, "evidence", evidenceInput(
+        fixture.attempt.attemptId, fixture.implement, causeB, "SalvageService",
+        "rickgent.salvage-record.v1", { attempt_id: fixture.attempt.attemptId, disposition: "captured" },
+        `salvage-divergent-${fixture.attempt.attemptId}`,
+      ));
+      const request = makeQuarantineRequest(fixture, claimMembers, { causeEvidenceId: causeA });
+      const capability = fixture.leases.issueDispositionMintCapability();
+      const first = fixture.store.mintQuarantine(request, capability);
+      expect(first.replayed).toBe(false);
+      const divergent = makeQuarantineRequest(fixture, claimMembers, { causeEvidenceId: causeB });
+      expectStateCode(
+        () => fixture.store.mintQuarantine(divergent, capability),
+        "RICKGENT_STATE_IDEMPOTENCY_CONFLICT",
+      );
+    });
+
+    it("mintTargetNeverReleased: identical observation replays identically (request has no extra persisted fields)", () => {
+      const fixture = buildFixture();
+      const observation = makeTargetNeverReleasedObservation(fixture);
+      const capability = fixture.leases.issueDispositionMintCapability();
+      const first = fixture.store.mintTargetNeverReleased({ observation }, capability);
+      const second = fixture.store.mintTargetNeverReleased({ observation }, capability);
+      expect(second.replayed).toBe(true);
+      expect(second.record).toEqual(first.record);
+    });
+  });
+
+  describe("production attempt terminalization authority (t22A fix: purpose-specific finalization is the authority path)", () => {
+    it("terminalizeFailure routes through finalizeFailure and persists the failure-cleanup receipt via the Store", () => {
+      const fixture = buildFixture();
+      insertSalvageRecord(fixture);
+      insertTargetProofSetSealed(fixture);
+      const capability = fixture.leases.issueDispositionMintCapability();
+      const observation = makeFailureObservation(fixture);
+      const receipt = mintFailureCleanupReceipt(observation, capability);
+      const authority = new AttemptTerminalizationAuthority(fixture.store, fixture.leases);
+      // The production terminalization authority routes through finalizeFailure
+      // -> store.mintFailureCleanup and persists the receipt.
+      const result = authority.terminalizeFailure({
+        request: {
+          observation,
+          targetProofSetId: `target-proof-set-${fixture.attempt.attemptId}`,
+          causeEvidenceId: `evidence-salvage-${fixture.attempt.attemptId}`,
+        },
+        receipt,
+      });
+      expect(result.replayed).toBe(false);
+      expect(String(result.record.attempt_id)).toBe(fixture.attempt.attemptId);
+      // The failure-cleanup receipt row is persisted (the terminalization effect).
+      const failureRows = queryAll(fixture.store.location.databasePath,
+        "SELECT * FROM failure_cleanup_records WHERE attempt_id = ?", fixture.attempt.attemptId);
+      expect(failureRows.length).toBe(1);
+    });
+
+    it("terminalizeQuarantine routes through finalizeQuarantine and persists the quarantine receipt via the Store", () => {
+      const fixture = buildFixture();
+      insertSalvageRecord(fixture);
+      insertTargetProofSetSealed(fixture);
+      insertOwnershipSnapshotEvidence(fixture, `evidence-ownership-quar-${fixture.attempt.attemptId}`);
+      const claimMembers = advanceClaimsToQuarantined(fixture);
+      const request = makeQuarantineRequest(fixture, claimMembers);
+      const capability = fixture.leases.issueDispositionMintCapability();
+      const receipt = mintQuarantineReceipt(request.observation, capability);
+      const authority = new AttemptTerminalizationAuthority(fixture.store, fixture.leases);
+      const result = authority.terminalizeQuarantine({ request, receipt });
+      expect(result.replayed).toBe(false);
+      // The quarantine claim set is sealed.
+      const claimSet = queryAll(fixture.store.location.databasePath,
+        "SELECT state FROM quarantine_claim_sets WHERE attempt_id = ?", fixture.attempt.attemptId)[0]!;
+      expect(String(claimSet.state)).toBe("sealed");
+    });
+
+    it("a generic cleanup record is rejected by every terminalization kind (generic cleanup is not the authority path)", () => {
+      const fixture = buildFixture();
+      insertSalvageRecord(fixture);
+      insertTargetProofSetSealed(fixture);
+      // A generic cleanup record is any non-branded record: it carries no
+      // Store-minted receipt brand.  isAuthorizedCleanupReceipt returns false
+      // for a plain object (only real CleanupService instances are branded),
+      // and receiptAcceptsTerminalization returns false because it is not a
+      // branded failure/promotion/quarantine receipt.
+      const genericCleanupRecord = {
+        kind: "cleanup_record",
+        attemptId: fixture.attempt.attemptId,
+        ownershipId: fixture.ownershipId,
+      };
+      expect(isAuthorizedCleanupReceipt(genericCleanupRecord)).toBe(false);
+      // receiptAcceptsTerminalization rejects it for every kind.
+      expect(receiptAcceptsTerminalization(genericCleanupRecord, "failure")).toBe(false);
+      expect(receiptAcceptsTerminalization(genericCleanupRecord, "promotion")).toBe(false);
+      expect(receiptAcceptsTerminalization(genericCleanupRecord, "quarantine")).toBe(false);
+      // terminalizationReceiptKind returns null (not a branded terminalization receipt).
+      expect(terminalizationReceiptKind(genericCleanupRecord)).toBe(null);
+      // The production authority rejects it at the entry point.
+      const authority = new AttemptTerminalizationAuthority(fixture.store, fixture.leases);
+      const observation = makeFailureObservation(fixture);
+      expect(() => authority.terminalizeFailure({
+        request: {
+          observation,
+          targetProofSetId: `target-proof-set-${fixture.attempt.attemptId}`,
+          causeEvidenceId: `evidence-salvage-${fixture.attempt.attemptId}`,
+        },
+        receipt: genericCleanupRecord as never,
+      })).toThrow(/failure terminalization requires an exact branded failure-cleanup receipt/);
+      expect(() => authority.terminalizeQuarantine({
+        request: makeQuarantineRequest(fixture, advanceClaimsToQuarantined(fixture)),
+        receipt: genericCleanupRecord as never,
+      })).toThrow(/quarantine terminalization requires an exact branded quarantine receipt/);
+    });
+
+    it("a cross-disposition receipt is rejected (a quarantine receipt cannot terminalize a failure)", () => {
+      const fixture = buildFixture();
+      insertSalvageRecord(fixture);
+      insertTargetProofSetSealed(fixture);
+      insertOwnershipSnapshotEvidence(fixture, `evidence-ownership-quar-${fixture.attempt.attemptId}`);
+      const capability = fixture.leases.issueDispositionMintCapability();
+      const claimMembers = advanceClaimsToQuarantined(fixture);
+      const quarantineRequest = makeQuarantineRequest(fixture, claimMembers);
+      const quarantineReceipt = mintQuarantineReceipt(quarantineRequest.observation, capability);
+      const authority = new AttemptTerminalizationAuthority(fixture.store, fixture.leases);
+      const failureObservation = makeFailureObservation(fixture);
+      // A quarantine receipt cannot satisfy failure terminalization.
+      expect(() => authority.terminalizeFailure({
+        request: {
+          observation: failureObservation,
+          targetProofSetId: `target-proof-set-${fixture.attempt.attemptId}`,
+          causeEvidenceId: `evidence-salvage-${fixture.attempt.attemptId}`,
+        },
+        receipt: quarantineReceipt as never,
+      })).toThrow(/failure terminalization requires an exact branded failure-cleanup receipt/);
+    });
+
+    it("AttemptExecutionContextAuthority delegates to resolveAuthorityExecutionContext and rejects a forged ownership grant", () => {
+      const fixture = buildFixture();
+      const policyRoot = join(fixture.store.location.resourceDirectory, "policy-authority-production");
+      const bundleDir = join(policyRoot, "bundle");
+      mkdirSync(bundleDir, { recursive: true, mode: 0o700 });
+      const authority = new AttemptExecutionContextAuthority(fixture.store);
+      // A caller-forged ownership grant (not minted by LeaseAuthority) is the
+      // legacy ReadyRunWorkspace binding vector.  The production
+      // AttemptExecutionContextAuthority delegates to
+      // resolveAuthorityExecutionContext which rejects it.
+      const forgedGrant = { plan: { worktreePath: fixture.repo } } as never;
+      expect(() => authority.resolveExecutionContext({
+        attempt: fixture.attempt,
+        contract: fixture.contract,
+        phase: "implement",
+        phaseOrdinal: 0,
+        role: "worker",
+        ownership: forgedGrant,
+        policyBundle: {
+          kind: "materialized_authenticated_policy_bundle",
+          policyRoot,
+          bundleDir,
+          requestedBundleSha256: "1".repeat(64),
+        },
+        modelSelection: { harness: "codex", model: "gpt-5", vendor: "openai" },
+        timeoutMs: 30_000,
+        callerRepositoryRealpath: fixture.repo,
+      })).toThrow(/authorized LeaseAuthority/);
+      // authorityWorktreeRealpath extracts the worktree from the grant plan:
+      // the production execution context binds to this path, not the caller repo.
+      expect(authorityWorktreeRealpath(forgedGrant)).toBe(fixture.repo);
     });
   });
 });

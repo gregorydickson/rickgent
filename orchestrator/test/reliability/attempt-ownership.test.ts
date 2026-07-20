@@ -530,6 +530,81 @@ describe("owner-checked attempt ownership", () => {
     }
   });
 
+  it("live->cleanup_pending contract-implementation parity: the production beginCleanup path enforces the declared precondition (t22A fix)", () => {
+    const fixture = seed("parity");
+    try {
+      const authority = new LeaseAuthority(fixture.store);
+      const grant = authority.acquire(authority.prepareAcquisition({
+        attemptId: fixture.attemptId,
+        idempotencyKey: "acquire",
+      }));
+      // The happy path: a live, unexpired, owner-checked lease transitions to
+      // cleanup_pending via beginCleanup.
+      const cleanup = authority.beginCleanup({ ownership: grant, idempotencyKey: "cleanup" });
+      expect(cleanup.ownership.state).toBe("cleanup_pending");
+
+      // Parity 1: a stale version (preimage mismatch) fails to
+      // RICKGENT_STATE_CONFLICT.  The original grant has stateVersion 0 but
+      // the DB now has stateVersion 1 (cleanup pending).
+      expectCode(() => authority.beginCleanup({ ownership: grant, idempotencyKey: "cleanup:stale" }), "RICKGENT_STATE_CONFLICT");
+    } finally {
+      fixture.store.close();
+    }
+  });
+
+  it("live->cleanup_pending parity: a foreign owner token fails closed (t22A fix)", () => {
+    // Two stores with two authorities.  A grant from the first store cannot
+    // begin cleanup against the second store: the #commitForGrant client-side
+    // guard rejects it (TypeError: ownership grant belongs to another
+    // StateStore repository) before the store-level #requireCurrentOwnership
+    // guard (RICKGENT_STATE_OWNER_MISMATCH) would fire.  The store-level owner
+    // mismatch for the begin-cleanup command path is proven by the cross-store
+    // acquire test (same #requireCurrentOwnership guard).  This test proves the
+    // production beginCleanup path rejects a foreign grant at the entry point.
+    const fixtureA = seed("parity-foreign-a");
+    const fixtureB = seed("parity-foreign-b");
+    try {
+      const authorityA = new LeaseAuthority(fixtureA.store);
+      const authorityB = new LeaseAuthority(fixtureB.store);
+      const grantA = authorityA.acquire(authorityA.prepareAcquisition({
+        attemptId: fixtureA.attemptId,
+        idempotencyKey: "acquire",
+      }));
+      // grantA's repositoryId is fixtureA's; authorityB uses fixtureB's store.
+      // The #commitForGrant guard rejects the foreign grant.
+      expect(() => authorityB.beginCleanup({ ownership: grantA, idempotencyKey: "cleanup:foreign" })).toThrow(TypeError);
+      // The ownership state in fixtureA is unchanged (still live).
+      expect(all(fixtureA.store.location.databasePath, "SELECT state FROM attempt_ownership_leases")).toEqual([{ state: "live" }]);
+    } finally {
+      fixtureA.store.close();
+      fixtureB.store.close();
+    }
+  });
+
+  it("live->cleanup_pending parity: an expired lease is admitted to cleanup containment (the expiry gate is downstream, not on begin-cleanup)", () => {
+    const fixture = seed("parity-expired");
+    try {
+      const authority = new LeaseAuthority(fixture.store);
+      const grant = authority.acquire(authority.prepareAcquisition({
+        attemptId: fixture.attemptId,
+        idempotencyKey: "acquire",
+        ttlMs: 1_000,
+      }));
+      // Wait for the lease to expire naturally (no DB modification needed;
+      // the preimage stays intact so beginCleanup's CAS matches).
+      // Use a synchronous sleep via execFileSync to avoid async test complexity.
+      execFileSync("/bin/sleep", ["1.1"]);
+      // An expired lease is admitted to cleanup containment via beginCleanup
+      // (the workspace readiness path uses this to enter cleanup_pending on
+      // expiry).  The expiry gate is enforced downstream on heartbeat and
+      // resource-advance, not on the begin-cleanup transition itself.
+      const cleanup = authority.beginCleanup({ ownership: grant, idempotencyKey: "cleanup:expired" });
+      expect(cleanup.ownership.state).toBe("cleanup_pending");
+    } finally {
+      fixture.store.close();
+    }
+  });
+
   it("persists authority-bound salvage with replay and lets only a recovered lineage owner consume it", () => {
     const fixture = seed("terminal-cleanup");
     try {
