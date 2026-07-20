@@ -35,7 +35,7 @@ import { execFileSync, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { canonicalJson } from "../contracts/ticket-contract.js";
 
 export const RICKGENT_CONTAINMENT_UNAVAILABLE = "RICKGENT_CONTAINMENT_UNAVAILABLE" as const;
@@ -1242,6 +1242,229 @@ export class UnavailableContainmentBackend implements ContainmentBackend {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ---------------------------------------------------------------------------
+// Fixture containment backend (t22C composition proof).
+// ---------------------------------------------------------------------------
+
+/**
+ * Authority-owned fixture containment backend for the t22C AttemptRunner
+ * composition proof.  This backend mints REAL branded containment receipts
+ * (boundaries, memberships, emptiness observations, death receipts, and
+ * never-released receipts) via the private {@link CONTAINMENT_AUTHORITY}
+ * symbol, exactly like the production Docker/Linux backends.  It launches a
+ * real target subprocess in a new POSIX process group/session and uses
+ * process-group kill plus an authoritative wait-for-exit as the emptiness
+ * observation.
+ *
+ * This backend is NOT selected by {@link probeContainmentBackend}: it is
+ * reachable only through explicit construction in the t22C composition test
+ * (and any future fixture-only proof that needs real branded receipts without
+ * a Docker/cgroup-v2 host).  Production dispatch (t22D) uses the probed
+ * backend; this fixture never becomes the production authority.
+ *
+ * The fixture is honest about its proof basis: it tracks the launched
+ * process group and confirms emptiness by waiting for the group leader to
+ * exit AND verifying no tracked child remains.  It does NOT claim
+ * all-descendant cgroup authority (that is the production Docker/Linux
+ * backend's job, proven by t22B).  The t22C composition proof exercises the
+ * AttemptRunner's ordering, idempotency, state machines, and crash recovery
+ * on top of real branded receipts, not the containment kernel mechanism
+ * itself.
+ */
+export class FixtureContainmentBackend implements ContainmentBackend {
+  readonly backendId = "fixture-process-group";
+  readonly #tracked = new Map<string, { readonly pid: number; readonly pgid: number; exited: boolean }>();
+  readonly #memberships = new Map<string, ContainmentMembership>();
+
+  probe(): ContainmentProbe {
+    return {
+      backendId: this.backendId,
+      status: "available",
+      reason: null,
+      observedAt: nowIso(),
+      capabilities: { cgroupKill: false, cgroupEvents: false, pidsController: false, memoryController: false, cpuController: false },
+    };
+  }
+
+  async createBoundary(lineage: ContainmentLineage): Promise<ContainmentBoundary> {
+    const boundaryName = boundaryNameFor(lineage);
+    const launchId = launchIdFor(lineage);
+    return new ContainmentBoundary(CONTAINMENT_AUTHORITY, {
+      backendId: this.backendId,
+      boundaryName,
+      launchId,
+      runId: lineage.runId,
+      ticketId: lineage.ticketId,
+      attemptId: lineage.attemptId,
+      ownershipId: lineage.ownershipId,
+      ownerGeneration: lineage.ownerGeneration,
+      ownershipContextDigest: lineage.ownershipContextDigest,
+      phaseExecutionId: lineage.phaseExecutionId,
+      contextId: lineage.contextId,
+      executionContextDigest: lineage.executionContextDigest,
+      runtimeHandle: `fixture:${boundaryName}`,
+    });
+  }
+
+  observeMembership(boundary: ContainmentBoundary): ContainmentMembership {
+    if (!isAuthorizedContainmentBoundary(boundary)) {
+      throw new ContainmentUnavailableError(this.backendId, "observeMembership received a forged boundary");
+    }
+    const existing = this.#memberships.get(boundary.launchId);
+    if (existing !== undefined && membershipBindsToLineage(existing, boundary)) {
+      return existing;
+    }
+    const membership = new ContainmentMembership(CONTAINMENT_AUTHORITY, {
+      boundary: { backendId: boundary.backendId, boundaryName: boundary.boundaryName, launchId: boundary.launchId },
+      lineage: {
+        runId: boundary.runId, ticketId: boundary.ticketId, attemptId: boundary.attemptId,
+        ownershipId: boundary.ownershipId, ownerGeneration: boundary.ownerGeneration,
+        ownershipContextDigest: boundary.ownershipContextDigest,
+        phaseExecutionId: boundary.phaseExecutionId, contextId: boundary.contextId,
+        executionContextDigest: boundary.executionContextDigest,
+      },
+      observedAt: nowIso(),
+      membershipDigest: membershipDigestFor(boundary, boundary),
+    });
+    this.#memberships.set(boundary.launchId, membership);
+    return membership;
+  }
+
+  async releaseTarget(
+    boundary: ContainmentBoundary,
+    argv: readonly string[],
+    opts: { readonly stdoutPath?: string; readonly stderrPath?: string; readonly timeoutMs?: number } = {},
+  ): Promise<ContainmentLaunch> {
+    if (!isAuthorizedContainmentBoundary(boundary)) {
+      throw new ContainmentUnavailableError(this.backendId, "releaseTarget received a forged boundary");
+    }
+    if (argv.length === 0 || !isAbsolute(argv[0]!)) {
+      throw new ContainmentUnavailableError(this.backendId, "releaseTarget argv must contain an absolute executable");
+    }
+    const membership = this.observeMembership(boundary);
+    const { spawn } = await import("node:child_process");
+    const { openSync, closeSync, writeSync, mkdirSync, constants } = await import("node:fs");
+    const { dirname } = await import("node:path");
+    const stdoutPath = opts.stdoutPath ?? "/dev/null";
+    const stderrPath = opts.stderrPath ?? "/dev/null";
+    const openOut = (path: string): number | null => {
+      if (path === "/dev/null") return null;
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      return openSync(path, constants.O_CREAT | constants.O_WRONLY | constants.O_APPEND, 0o600);
+    };
+    const stdoutFd = openOut(stdoutPath);
+    const stderrFd = openOut(stderrPath);
+    const child = spawn(argv[0]!, argv.slice(1), {
+      detached: true,
+      stdio: ["ignore", stdoutFd ?? "ignore", stderrFd ?? "ignore"],
+    });
+    if (stdoutFd !== null) closeSync(stdoutFd);
+    if (stderrFd !== null) closeSync(stderrFd);
+    const pid = child.pid ?? 0;
+    if (pid === 0) {
+      throw new ContainmentUnavailableError(this.backendId, "fixture releaseTarget could not observe a pid");
+    }
+    const pgid = pid; // detached child is its own group/session leader
+    this.#tracked.set(boundary.launchId, { pid, pgid, exited: false });
+    child.once("exit", () => {
+      const entry = this.#tracked.get(boundary.launchId);
+      if (entry !== undefined) this.#tracked.set(boundary.launchId, { ...entry, exited: true });
+    });
+    // Do not await exit here; releaseTarget resolves on exec.
+    void child;
+    return Object.freeze({
+      boundary,
+      exitCode: null,
+      timedOut: false,
+      stdoutDigest: sha256(""),
+      stderrDigest: sha256(""),
+      membership,
+    });
+  }
+
+  async kill(boundary: ContainmentBoundary): Promise<void> {
+    if (!isAuthorizedContainmentBoundary(boundary)) {
+      throw new ContainmentUnavailableError(this.backendId, "kill received a forged boundary");
+    }
+    const entry = this.#tracked.get(boundary.launchId);
+    if (entry === undefined) return; // nothing launched
+    if (entry.exited) return;
+    try {
+      process.kill(-entry.pgid, "SIGKILL");
+    } catch {
+      // Process group may have already exited; ignore.
+    }
+  }
+
+  async awaitEmpty(boundary: ContainmentBoundary, deadlineMs: number): Promise<ContainmentEmptinessObservation> {
+    if (!isAuthorizedContainmentBoundary(boundary)) {
+      throw new ContainmentUnavailableError(this.backendId, "awaitEmpty received a forged boundary");
+    }
+    const entry = this.#tracked.get(boundary.launchId);
+    const deadline = Date.now() + deadlineMs;
+    let populated = entry !== undefined && !entry.exited;
+    while (populated && Date.now() < deadline) {
+      await sleep(20);
+      const current = this.#tracked.get(boundary.launchId);
+      populated = current !== undefined && !current.exited;
+    }
+    if (populated) {
+      await this.kill(boundary);
+      await sleep(20);
+      const current = this.#tracked.get(boundary.launchId);
+      populated = current !== undefined && !current.exited;
+    }
+    const events = `populated ${populated ? 1 : 0}\nfrozen 0\nfixture-await\n`;
+    return new ContainmentEmptinessObservation(CONTAINMENT_AUTHORITY, {
+      boundary: { backendId: boundary.backendId, boundaryName: boundary.boundaryName, launchId: boundary.launchId },
+      observedAt: nowIso(),
+      populated,
+      eventsDigest: sha256(events),
+      emptinessConfirmed: !populated,
+    });
+  }
+
+  mintDeathReceipt(boundary: ContainmentBoundary, emptiness: ContainmentEmptinessObservation): ContainmentDeathReceipt {
+    if (!isAuthorizedContainmentBoundary(boundary)) {
+      throw new ContainmentUnavailableError(this.backendId, "mintDeathReceipt received a forged boundary");
+    }
+    if (!isAuthorizedContainmentEmptinessObservation(emptiness)) {
+      throw new ContainmentUnavailableError(this.backendId, "mintDeathReceipt received a forged emptiness observation");
+    }
+    if (
+      emptiness.boundary.launchId !== boundary.launchId ||
+      emptiness.boundary.backendId !== boundary.backendId ||
+      emptiness.boundary.boundaryName !== boundary.boundaryName
+    ) {
+      throw new ContainmentUnavailableError(this.backendId, "emptiness observation does not bind to the exact boundary");
+    }
+    if (!emptiness.emptinessConfirmed || emptiness.populated) {
+      throw new ContainmentUnavailableError(this.backendId, "mintDeathReceipt requires a confirmed-empty observation");
+    }
+    return new ContainmentDeathReceipt(CONTAINMENT_AUTHORITY, {
+      boundary: { backendId: boundary.backendId, boundaryName: boundary.boundaryName, launchId: boundary.launchId },
+      lineage: {
+        runId: boundary.runId, ticketId: boundary.ticketId, attemptId: boundary.attemptId,
+        ownershipId: boundary.ownershipId, ownerGeneration: boundary.ownerGeneration,
+        ownershipContextDigest: boundary.ownershipContextDigest,
+        phaseExecutionId: boundary.phaseExecutionId, contextId: boundary.contextId,
+        executionContextDigest: boundary.executionContextDigest,
+      },
+      observedAt: emptiness.observedAt,
+      deathDigest: deathDigestFor(boundary, boundary, emptiness.eventsDigest, emptiness.observedAt),
+      emptinessConfirmed: emptiness.emptinessConfirmed,
+      eventsDigest: emptiness.eventsDigest,
+    });
+  }
+
+  mintNeverReleasedReceipt(lineage: ContainmentLineage, reason: string): ContainmentNeverReleasedReceipt {
+    return new ContainmentNeverReleasedReceipt(CONTAINMENT_AUTHORITY, {
+      lineage, observedAt: nowIso(), backendId: this.backendId, reason,
+      receiptDigest: neverReleasedDigestFor(lineage, this.backendId, reason, nowIso()),
+    });
+  }
 }
 
 /**

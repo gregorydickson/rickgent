@@ -1719,6 +1719,148 @@ export class StateStore {
     return this.#allocateAttempt(input, "retry");
   }
 
+  /** Returns the current state and state_version of an attempt. */
+  readAttemptState(attemptId: string): { readonly state: string; readonly stateVersion: number } {
+    const row = this.#requireDatabase().prepare(
+      "SELECT state, state_version FROM attempts WHERE attempt_id = ?",
+    ).get(attemptId) as MutableStateRecord | undefined;
+    if (row === undefined) throw typedError("RICKGENT_STATE_RESUME_INCOMPATIBLE", "attempt does not exist", this.location.databasePath);
+    return freezeValue({ state: String(row.state), stateVersion: Number(row.state_version) });
+  }
+
+  /**
+   * Transitions an attempt from a pre-cleanup state to cleanup_pending.
+   * Validates the legal transition chain and records a state_transition row.
+   * This is the AttemptRunner's internal transition for the cleanup boundary;
+   * the full TransitionAuthority guard validation is deferred to t22D.
+   */
+  advanceAttemptToCleanupPending(attemptId: string, idempotencyKey: string): void {
+    this.#immediate("advance_attempt_cleanup_pending", () => {
+      const current = this.#requireDatabase().prepare(
+        "SELECT state, state_version FROM attempts WHERE attempt_id = ?",
+      ).get(attemptId) as MutableStateRecord | undefined;
+      if (current === undefined) throw typedError("RICKGENT_STATE_RESUME_INCOMPATIBLE", "attempt does not exist", this.location.databasePath);
+      const eligible = new Set([
+        "planned", "implementing", "implementation_captured", "reviewing", "remediating",
+        "remediation_captured", "verification_queued", "verifying", "converging",
+      ]);
+      if (!eligible.has(String(current.state))) {
+        throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", `attempt is ${String(current.state)}, not a pre-cleanup state`, this.location.databasePath);
+      }
+      // Check idempotency: if this transition already happened, return silently.
+      const existing = this.#requireDatabase().prepare(
+        "SELECT * FROM state_transitions WHERE attempt_id = ? AND idempotency_key = ?",
+      ).get(attemptId, idempotencyKey) as MutableStateRecord | undefined;
+      if (existing !== undefined) {
+        if (String(existing.to_state) !== "cleanup_pending") {
+          throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "advance_attempt_cleanup_pending idempotency key has different target state", this.location.databasePath);
+        }
+        return; // idempotent replay
+      }
+      const sequenceRow = this.#requireDatabase().prepare(
+        "SELECT COALESCE(MAX(entity_sequence), 0) + 1 AS next_sequence FROM state_transitions WHERE attempt_id = ?",
+      ).get(attemptId) as MutableStateRecord;
+      const entitySequence = Number(sequenceRow.next_sequence);
+      const transitionId = `transition-${randomBytes(16).toString("hex")}`;
+      this.#insert("state_transitions", {
+        transition_id: transitionId,
+        run_id: null,
+        ticket_instance_id: null,
+        attempt_id: attemptId,
+        entity_sequence: entitySequence,
+        from_state: String(current.state),
+        to_state: "cleanup_pending",
+        owner_service: "AttemptLifecycleService",
+        owner_context_digest: "sha256:" + "0".repeat(64),
+        input_digest: `sha256:${createHash("sha256").update(canonicalJson({ attempt_id: attemptId, idempotency_key: idempotencyKey, from_state: String(current.state), to_state: "cleanup_pending" }), "utf8").digest("hex")}`,
+        idempotency_key: idempotencyKey,
+        created_at: new Date().toISOString(),
+      });
+      this.#requireDatabase().prepare(
+        "UPDATE attempts SET state = 'cleanup_pending', state_version = state_version + 1 WHERE attempt_id = ?",
+      ).run(attemptId);
+    });
+  }
+
+  /**
+   * Transition all resource claims for an attempt from cleanup_pending to
+   * quarantined state.  This is required before mintQuarantine because the
+   * quarantine_claim_members FK requires attempt_resource_claims.state =
+   * 'quarantined'.  Returns the updated claims with their new state_version
+   * so the caller can build claim-members with the correct version.
+   */
+  advanceClaimsToQuarantined(
+    attemptId: string,
+    ownershipId: string,
+    ownerGeneration: number,
+    quarantineProofDigest: string,
+  ): readonly { readonly resourceClaimId: string; readonly slot: string; readonly stateVersion: number }[] {
+    return this.#immediate("advance_claims_quarantined", () => {
+      const db = this.#requireDatabase();
+      const claims = db.prepare(
+        "SELECT resource_claim_id, slot, state_version FROM attempt_resource_claims WHERE attempt_id = ? AND current_ownership_id = ? AND owner_generation = ? AND state = 'cleanup_pending'",
+      ).all(attemptId, ownershipId, ownerGeneration) as MutableStateRecord[];
+      if (claims.length === 0) {
+        // Idempotent: if no cleanup_pending claims remain, they may already be quarantined.
+        const existing = db.prepare(
+          "SELECT resource_claim_id, slot, state_version FROM attempt_resource_claims WHERE attempt_id = ? AND current_ownership_id = ? AND owner_generation = ? AND state = 'quarantined'",
+        ).all(attemptId, ownershipId, ownerGeneration) as MutableStateRecord[];
+        return existing.map((c) => ({
+          resourceClaimId: String(c.resource_claim_id),
+          slot: String(c.slot),
+          stateVersion: Number(c.state_version),
+        }));
+      }
+      const updated: { resourceClaimId: string; slot: string; stateVersion: number }[] = [];
+      for (const claim of claims) {
+        const resourceClaimId = String(claim.resource_claim_id);
+        const slot = String(claim.slot);
+        const seal = db.prepare(
+          `UPDATE attempt_resource_claims
+           SET state = 'quarantined', state_version = state_version + 1, quarantine_proof_digest = ?
+           WHERE resource_claim_id = ? AND attempt_id = ? AND current_ownership_id = ?
+             AND owner_generation = ? AND state = 'cleanup_pending' AND state_version = ?`,
+        ).run(quarantineProofDigest, resourceClaimId, attemptId, ownershipId, ownerGeneration, Number(claim.state_version));
+        if (seal.changes !== 1) {
+          throw typedError("RICKGENT_STATE_CONFLICT", `resource claim ${slot} quarantine transition lost its CAS race`, this.location.databasePath);
+        }
+        updated.push({ resourceClaimId, slot, stateVersion: Number(claim.state_version) + 1 });
+      }
+      return updated;
+    });
+  }
+
+  /**
+   * Transition an attempt's ownership lease from cleanup_pending to
+   * quarantined.  Called after mintQuarantine so the ownership lease is
+   * still cleanup_pending when the quarantine receipt is minted (the
+   * preimage validation requires it), then durably terminalized.
+   */
+  finalizeQuarantineOwnership(
+    attemptId: string,
+    ownershipId: string,
+    ownerGeneration: number,
+  ): void {
+    this.#immediate("finalize_quarantine_ownership", () => {
+      const db = this.#requireDatabase();
+      const leaseSeal = db.prepare(
+        `UPDATE attempt_ownership_leases
+         SET state = 'quarantined', state_version = state_version + 1
+         WHERE attempt_id = ? AND ownership_id = ?
+           AND generation = ? AND state = 'cleanup_pending'`,
+      ).run(attemptId, ownershipId, ownerGeneration);
+      if (leaseSeal.changes !== 1) {
+        // Idempotent: lease may already be quarantined.
+        const existing = db.prepare(
+          "SELECT state FROM attempt_ownership_leases WHERE attempt_id = ? AND ownership_id = ? AND generation = ?",
+        ).get(attemptId, ownershipId, ownerGeneration) as MutableStateRecord | undefined;
+        if (existing === undefined || String(existing.state) !== "quarantined") {
+          throw typedError("RICKGENT_STATE_CONFLICT", "ownership lease quarantine finalization lost its CAS race", this.location.databasePath);
+        }
+      }
+    });
+  }
+
   selectCompatibleResume(input: ResumeCompatibilityInput): ResumeSelection {
     return this.#immediate("select_compatible_resume", () => {
       if (typeof input.runId !== "string" || input.runId === "") this.#resumeIncompatible("resume requires an explicit run id");

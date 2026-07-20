@@ -1045,7 +1045,7 @@
         {
           "id": "t22C",
           "title": "Compose one AttemptRunner following the documented acquisition/finalization order",
-          "status": "Todo"
+          "status": "Done"
         },
         {
           "id": "t22D",
