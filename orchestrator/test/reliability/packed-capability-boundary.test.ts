@@ -128,8 +128,15 @@ describe("packed capability boundary", () => {
     };
 
     const build = await import(new URL("dist/lifecycle/build.js", resolvedRoot).href);
-    await expect(Reflect.apply(build.runBuild, undefined, [options, fakeDependencies]))
-      .rejects.toThrow("RICKGENT_AUTONOMOUS_FIXTURE_ONLY");
+    // autonomous_dispatch is activated (t22D); runBuild proceeds past the
+    // capability gate (the injected fakeDependencies are NOT used — runBuild
+    // does not accept a capabilityGate argument) and fails closed at the
+    // PRD/ticket-contract gate on the missing PRD.  The injected
+    // fakeDependencies are never invoked.
+    const buildResult = await Reflect.apply(build.runBuild, undefined, [options, fakeDependencies]) as
+      { outcome: { status: string }; gateHit: string };
+    expect(buildResult.outcome.status).not.toBe("ok");
+    expect(buildResult.gateHit).toBe("ticket-contract-gate");
     expect(injected).toBe(false);
 
     await expect(build.runBuildWithDependenciesForTesting({}, options, fakeDependencies))
@@ -137,10 +144,16 @@ describe("packed capability boundary", () => {
     expect(injected).toBe(false);
 
     const cli = await import(new URL("dist/cli.js", resolvedRoot).href);
-    await expect(Reflect.apply(cli.main, undefined, [
+    // main also ignores the injected capabilityGate; with autonomous_dispatch
+    // activated, `prd --from /missing.md` proceeds past the gate and fails on
+    // the missing file (not on a capability error).  The injected
+    // fakeDependencies are never invoked.
+    const mainError = await Reflect.apply(cli.main, undefined, [
       ["prd", "--from", "/missing.md"],
       fakeDependencies,
-    ])).rejects.toThrow("RICKGENT_AUTONOMOUS_FIXTURE_ONLY");
+    ]).catch((error: unknown) => error);
+    expect(mainError).toBeInstanceOf(Error);
+    expect(String((mainError as Error).message)).not.toContain("RICKGENT_AUTONOMOUS_DISPATCH_ACTIVE");
     expect(injected).toBe(false);
 
     await expect(cli.runCliWithDependenciesForTesting(

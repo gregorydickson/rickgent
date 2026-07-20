@@ -1026,7 +1026,7 @@
         "orchestrator/test/reliability/attempt-critical-section.test.ts"
       ],
       "priority": "P0",
-      "status": "InProgress",
+      "status": "Done",
       "tranches": [
         {
           "id": "t22A",
@@ -1045,17 +1045,25 @@
         {
           "id": "t22C",
           "title": "Compose one AttemptRunner following the documented acquisition/finalization order",
-          "status": "Done"
+          "status": "Done",
+          "completed_at": "2026-07-20",
+          "execution_report": "docs/remediation/phase-4-t22C-attempt-runner-execution-report-2026-07-20.md"
         },
         {
           "id": "t22D",
           "title": "Remove legacy run-worktree/direct-spawn/finally-release path and activate production only after validated platform containment",
-          "status": "Todo"
+          "status": "Done",
+          "completed_at": "2026-07-20",
+          "execution_report": "docs/remediation/phase-4-t22D-production-cutover-execution-report-2026-07-20.md"
         }
       ],
       "depends_on": [
         "t21"
-      ]
+      ],
+      "completed_at": {
+        "commit": "18bfdc8b807495abbc75820f9969524df1e9a605",
+        "phase_report": "docs/remediation/phase-4-t22D-production-cutover-execution-report-2026-07-20.md"
+      }
     },
     {
       "id": "t23",
@@ -1589,7 +1597,7 @@
       "description": "Milestone 6 program release gate. In a protected opt-in CI job, install only packed artifacts, use the `t00` compatible real Omnigent, an explicitly authenticated real selected harness/model, and a dedicated disposable hosted Git repository. Run the full sequential lifecycle, force interruption after persisted work, resume the same run/state directory, prove native policy enforcement, attempt ownership, owned commit, independent review, blocking gates, cleanup, verified push, and PR head equality. Execute twice against the same persistent state root with unique runs and clean all hosted resources even on failure.",
       "acceptance_criteria": [
         "Preflight validates dedicated remote ownership/allowlist, scoped credentials, current-compatible Omnigent behavior, explicit harness/model auth, clean packed install, and safe teardown before mutation.",
-        "The installed runtime—not source fixtures—observes requested/invoked/observed identity equality, real native FunctionPolicy allow/deny behavior, one owned worktree/ref/index/lease/process group, and a scope-clean orchestrator commit.",
+        "The installed runtime\u2014not source fixtures\u2014observes requested/invoked/observed identity equality, real native FunctionPolicy allow/deny behavior, one owned worktree/ref/index/lease/process group, and a scope-clean orchestrator commit.",
         "A forced crash at the configured lifecycle boundary resumes from the same SQLite state directory, allocates/reuses only contractually correct identities, and never replays stale terminal work.",
         "Independent review, remediation if injected, every blocking gate, oracle completion, cleanup, delivery-ref promotion, remote push observation, and PR head OID equality are evidenced end to end.",
         "The complete proof-corpus inventories are asserted; infrastructure errors/skips/mocks fail; the slice completes twice with distinct run IDs and teardown removes/closes branch/PR/repository resources according to the protected-job contract."

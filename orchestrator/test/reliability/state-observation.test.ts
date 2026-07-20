@@ -101,7 +101,7 @@ describe("read-only canonical state observation", () => {
     const observation = observeState(repo);
     expect(observation).toMatchObject({
       state: "present",
-      schemaVersion: 4,
+      schemaVersion: 5,
       latestRun: {
         runId: run.runId,
         runSequence: run.runSequence,

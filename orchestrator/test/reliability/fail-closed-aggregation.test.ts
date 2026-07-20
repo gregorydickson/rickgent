@@ -295,7 +295,7 @@ describe("fail-closed run aggregation", () => {
     expect(source).not.toMatch(/pr-flow|createPullRequest|recordPr|git push|gh pr/);
   });
 
-  it("public unavailable capability fails before state or subprocess side effects", () => {
+  it("activated capability proceeds past the gate and fails closed at evidence without legacy side effects", () => {
     const prd = writePrd(d, ["src/a.ts"]);
     const result = spawnSync(
       process.execPath,
@@ -308,8 +308,15 @@ describe("fail-closed run aggregation", () => {
         timeout: 30000,
       },
     );
-    expect(result.status).toBe(3);
-    expect(result.stderr).toContain("RICKGENT_CAPABILITY_UNAVAILABLE");
+    // autonomous_dispatch is activated (t22D); the build no longer fails at
+    // the capability gate.  It proceeds through the AttemptRunner production
+    // path and fails closed at evidence_unverifiable (exit 6) because the
+    // empty agent dir cannot produce a verified completion.
+    expect(result.status).toBe(6);
+    expect(result.stdout).toContain("RICKGENT_AUTONOMOUS_DISPATCH_ACTIVE");
+    expect(result.stderr).not.toContain("RICKGENT_CAPABILITY_UNAVAILABLE");
+    // The production path uses the canonical StateStore (.git/rickgent/);
+    // the legacy RICKGENT_DIR is not created as a side effect.
     expect(existsSync(d.rickgentDir)).toBe(false);
   });
 });

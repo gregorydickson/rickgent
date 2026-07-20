@@ -13,7 +13,7 @@
 // skip a fresh ticket allocation or manufacture completion.
 
 import { execFileSync } from "child_process";
-import { existsSync } from "fs";
+import { existsSync, realpathSync } from "fs";
 import { join } from "path";
 import {
   Dispatcher,
@@ -88,6 +88,17 @@ import {
 import { LeaseAuthority } from "../state/leases.js";
 import { RICKGENT_ORACLE_VERSION } from "../state/oracle.js";
 import { LegacyDiagnosticService } from "../state/legacy-quarantine.js";
+import { probeContainmentBackend } from "../process/containment.js";
+import {
+  AttemptRunner,
+  type AttemptRunnerRequest,
+  type AttemptRunnerResult,
+} from "./attempt-runner.js";
+import { AttemptTerminalizationService } from "./attempt-terminalization.js";
+import { TargetStartGateAuthority } from "./target-start-gate.js";
+import {
+  AttemptExecutionContextAuthority,
+} from "../context/attempt-execution-context.js";
 
 export interface BuildOptions {
   prdPath: string;
@@ -386,7 +397,429 @@ export function ticketPrompt(ticket: TicketContract): string {
   ].join("\n");
 }
 
-async function executeBuild(
+// ---------------------------------------------------------------------------
+// t22D production cutover — the production `runBuild`/`runPipeline` path.
+//
+// The legacy run-worktree / direct-Dispatcher spawn / caller-checkout gates /
+// TicketLock finally-release / generic cleanup finalization are REMOVED from
+// production.  The production path routes through the single AttemptRunner
+// (t22C), which is the sole owner of execution and terminalization.  The
+// AttemptRunner requires a validated authority-owned containment backend
+// (t22B); when containment is unavailable the production path fails closed
+// with an infrastructure error (target-never-released) BEFORE any spawn or
+// legacy workspace provisioning.  The DispatchQueue remains only as
+// sequential scheduling/diagnostic plumbing feeding tickets to the runner;
+// it cannot convert an unknown runner failure into released ownership.
+//
+// The legacy `executeBuild` (below) is retained ONLY as the package-private
+// fixture-bridge body (`runBuildWithDependenciesForTesting`); it is not a
+// production caller.
+// ---------------------------------------------------------------------------
+
+interface PreparedBuildPlan {
+  readonly env: NodeJS.ProcessEnv;
+  readonly tickets: readonly TicketContract[];
+  readonly allocatedRun: AllocatedRun;
+  readonly stateStore: StateStore;
+  readonly roster: readonly ModelEntry[];
+  readonly costBudgetUsd: number | undefined;
+  readonly softThresholdUsd: number | undefined;
+  readonly implementerVendorByTicket: Map<string, string>;
+  readonly report: string[];
+  readonly base: BuildObservation;
+  readonly issues: RunIssue[];
+}
+
+type PrepareBuildPhaseResult =
+  | { readonly ok: true; readonly plan: PreparedBuildPlan }
+  | { readonly ok: false; readonly result: BuildResult };
+
+/**
+ * Shared pre-dispatch phase for both the production AttemptRunner path and the
+ * fixture bridge: env/capability gates, PRD + strict contract gate, plan gate,
+ * policy-attachment gate, model roster, and canonical StateStore run
+ * allocation.  No workspace provisioning or dispatch happens here.  Returns
+ * either a gate-hit {@link BuildResult} or the prepared plan.
+ */
+async function prepareBuildPhase(
+  opts: BuildOptions,
+  dependencies: InternalBuildDependencies,
+): Promise<PrepareBuildPhaseResult> {
+  const env = opts.env ?? process.env;
+  (dependencies.assertEnvironment ?? assertNoProductionBypasses)(env);
+  const cap = opts.maxConcurrent ?? 1;
+  if (cap !== 1) {
+    throw new InputContractError("maxConcurrent must be exactly 1 for the sequential fixture profile");
+  }
+  if (opts.runId !== undefined) {
+    throw new InputContractError("runId is allocated by the canonical StateStore and cannot be supplied by a caller");
+  }
+  if (opts.resume) RUNTIME_CAPABILITY_GATE.require("resume_retry");
+  if (opts.deliveryConfigured || opts.featureBranch !== undefined || opts.autonomousPrFlow !== undefined) {
+    RUNTIME_CAPABILITY_GATE.require("automatic_delivery");
+  }
+  if (opts.rawShell || env.RICKGENT_RAW_SHELL === "1") RUNTIME_CAPABILITY_GATE.require("raw_shell");
+  RUNTIME_CAPABILITY_GATE.require("autonomous_dispatch");
+
+  const report: string[] = [];
+  const base: BuildObservation = {
+    gateHit: null,
+    ticketsPlanned: 0,
+    ticketsDispatched: 0,
+    ticketsDone: 0,
+    ticketsCaptured: 0,
+    ticketsFailed: 0,
+    ticketsRecovered: 0,
+    interventions: 0,
+    report,
+    dispatchObservations: [],
+    captureReceipts: [],
+    workspaceCleanup: null,
+    terminalizationReceipts: [],
+    authorityExecutionContexts: [],
+  };
+  const issues: RunIssue[] = [];
+
+  let parsed: ReturnType<typeof parseExecutablePrdFile>;
+  try {
+    parsed = parseExecutablePrdFile(opts.prdPath, {
+      repositoryRoot: opts.workingDir,
+      stateRoots: [opts.rickgentDir],
+    });
+  } catch (error) {
+    const contractError = error instanceof TicketContractError ? error : null;
+    const detail = contractError?.message ?? `PRD contract could not be read: ${error instanceof Error ? error.message : String(error)}`;
+    report.push(`build: TICKET CONTRACT GATE hit — ${detail}`);
+    issues.push(runIssue({
+      reason: contractError?.kind === "infrastructure" ? "infrastructure_error" : "input_contract_error",
+      class: contractError?.kind === "infrastructure" ? "infrastructure" : "input_contract",
+      detail,
+      gate: "ticket-contract",
+    }));
+    return { ok: false, result: finishBuild({ ...base, gateHit: "ticket-contract-gate" }, issues) };
+  }
+
+  const tickets = parsed.contracts;
+  base.ticketsPlanned = tickets.length;
+  report.push(
+    `build: parsed PRD "${parsed.prd.title}" — ${tickets.length} normalized ticket contract(s), ` +
+      `${parsed.prd.acceptanceCriteria.length} acceptance criteria`,
+  );
+
+  const prdVerdict = evaluatePrd(parsed.prd);
+  if (!prdVerdict.valid) {
+    report.push(`build: PRD GATE hit — ${prdVerdict.errors.join("; ")} (before run allocation)`);
+    issues.push(runIssue({
+      reason: "input_contract_error",
+      class: "input_contract",
+      detail: `PRD invalid: ${prdVerdict.errors.join("; ")}`,
+      gate: "prd-gate",
+    }));
+    return { ok: false, result: finishBuild({ ...base, gateHit: "prd-gate" }, issues) };
+  }
+
+  if (tickets.length === 0) {
+    report.push("build: PLAN GATE hit — decomposition produced zero tickets (before run allocation)");
+    issues.push(runIssue({
+      reason: "zero_ticket",
+      class: "execution",
+      detail: "decomposition produced zero tickets",
+      gate: "plan-gate",
+    }));
+    return { ok: false, result: finishBuild({ ...base, gateHit: "plan-gate" }, issues) };
+  }
+
+  if (dependencies.skipPolicyAttachment) {
+    report.push("build: policy attachment — skipped by explicit fixture dependency (blocking)");
+    issues.push(runIssue({
+      reason: "required_gate_failed",
+      class: "verification",
+      detail: "required policy attachment gate was skipped",
+      gate: "policy-attachment",
+    }));
+    return { ok: false, result: finishBuild({ ...base, gateHit: "policy-attachment-gate" }, issues) };
+  } else {
+    const attachResult = (dependencies.verifyPolicyAttachment ?? verifyPolicyAttachment)(opts.agentDir, env);
+    if (attachResult.ok) {
+      report.push(
+        `build: policy attachment templates — manager: PASS (structural only), ` +
+          `worker: PASS (${attachResult.managerCount}/${attachResult.workerCount} policies); ` +
+          "configured worker startup is verified per attempt",
+      );
+    } else {
+      report.push(
+        `build: POLICY ATTACHMENT GATE hit — ${attachResult.detail} ` +
+          "(exiting non-zero before lifecycle allocation)",
+      );
+      issues.push(runIssue({
+        reason: "required_gate_failed",
+        class: "verification",
+        detail: attachResult.detail,
+        gate: "policy-attachment",
+      }));
+      return { ok: false, result: finishBuild({ ...base, gateHit: "policy-attachment-gate" }, issues) };
+    }
+  }
+
+  const roster = opts.roster ?? parseRosterEnv(env);
+  const costBudgetUsd = opts.costBudgetUsd ?? parseNumberEnv(env.RICKGENT_COST_BUDGET_USD);
+  const softThresholdUsd = opts.softThresholdUsd ?? parseNumberEnv(env.RICKGENT_SOFT_THRESHOLD_USD);
+  if (roster.length > 0) {
+    report.push(`build: model roster loaded — ${roster.length} model(s), cost budget=$${costBudgetUsd ?? "unbounded"}`);
+  } else {
+    report.push("build: no model roster — router will DENY all dispatches (fail-closed)");
+  }
+  const implementerVendorByTicket = new Map<string, string>();
+
+  let stateStore: StateStore | null = null;
+  let allocatedRun: AllocatedRun;
+  try {
+    stateStore = openStateStore({ repoPath: opts.workingDir });
+    new LegacyDiagnosticService(stateStore).requireMutationClear();
+    const observedTargetHead = execFileSync(
+      "git",
+      ["-C", opts.workingDir, "rev-parse", "--verify", "HEAD^{commit}"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env },
+    ).trim();
+    const resolver = new IdentityContextResolver(stateStore);
+    allocatedRun = resolver.allocateFreshRun({
+      contracts: tickets,
+      initialDeliveryOid: observedTargetHead,
+      oracleVersion: RICKGENT_ORACLE_VERSION,
+    });
+    report.push(`build: allocated canonical planned run ${allocatedRun.runId}`);
+  } catch (error) {
+    try {
+      stateStore?.close();
+    } catch (closeError) {
+      report.push(`build: StateStore close failed — ${closeError instanceof Error ? closeError.message : String(closeError)}`);
+    }
+    const errorCode = typeof error === "object" && error !== null && "code" in error &&
+      typeof (error as { code?: unknown }).code === "string"
+      ? `${(error as { code: string }).code}: `
+      : "";
+    const detail = `canonical run allocation failed: ${errorCode}${error instanceof Error ? error.message : String(error)}`;
+    report.push(`build: STATE AUTHORITY GATE hit — ${detail}`);
+    const failureClass = error instanceof StateStoreError ? error.failureClass : "infrastructure";
+    issues.push(runIssue({
+      reason: failureClass === "input_contract" ? "input_contract_error" : "infrastructure_error",
+      class: failureClass,
+      detail,
+      gate: "state-authority",
+    }));
+    return { ok: false, result: finishBuild({ ...base, gateHit: "state-authority-gate" }, issues) };
+  }
+
+  return {
+    ok: true,
+    plan: {
+      env, tickets, allocatedRun, stateStore, roster, costBudgetUsd, softThresholdUsd,
+      implementerVendorByTicket, report, base, issues,
+    },
+  };
+}
+
+/**
+ * t22D production build path.  Routes through the single AttemptRunner; the
+ * legacy run-worktree/direct-dispatcher/caller-checkout/TicketLock/finally-
+ * release/generic-cleanup path is NOT used.  Probes the authority-owned
+ * containment backend and fails closed with a target-never-released
+ * infrastructure error when containment is unavailable — no legacy fallback.
+ */
+async function executeBuildViaRunner(
+  opts: BuildOptions,
+  dependencies: InternalBuildDependencies,
+): Promise<BuildResult> {
+  const prepared = await prepareBuildPhase(opts, dependencies);
+  if (!prepared.ok) return prepared.result;
+  const { env, tickets, allocatedRun, stateStore, roster, report, base, issues } = prepared.plan;
+
+  // ── Containment probe (t22B/t22D) ──────────────────────────────────────
+  // The AttemptRunner requires a validated authority-owned containment
+  // backend before any target release.  When containment is unavailable the
+  // production path fails closed with an infrastructure error; NO legacy
+  // run-workspace/direct-dispatcher fallback is provisioned.  This is the
+  // cutover: the legacy run-worktree is removed from production execution.
+  let containmentBackend;
+  try {
+    const probeOpts: { dockerImage?: string; probeTimeoutMs?: number; cgroupRoot?: string } = {};
+    if (env.RICKGENT_CONTAINMENT_DOCKER_IMAGE) probeOpts.dockerImage = env.RICKGENT_CONTAINMENT_DOCKER_IMAGE;
+    if (env.RICKGENT_CONTAINMENT_PROBE_TIMEOUT_MS) {
+      const ms = Number(env.RICKGENT_CONTAINMENT_PROBE_TIMEOUT_MS);
+      if (Number.isFinite(ms)) probeOpts.probeTimeoutMs = ms;
+    }
+    containmentBackend = probeContainmentBackend(probeOpts);
+    const probe = containmentBackend.probe();
+    if (probe.status !== "available") {
+      throw new Error(`containment backend ${probe.backendId} unavailable: ${probe.reason ?? "no reason"}`);
+    }
+    report.push(`build: containment backend available (${probe.backendId})`);
+  } catch (error) {
+    const detail = `containment backend unavailable: ${error instanceof Error ? error.message : String(error)}`;
+    report.push(`build: CONTAINMENT GATE hit — ${detail} (fail-closed; no legacy fallback)`);
+    issues.push(runIssue({
+      reason: "infrastructure_error",
+      class: "infrastructure",
+      detail,
+      gate: "containment",
+    }));
+    try { stateStore.close(); } catch { /* fail-closed close */ }
+    return finishBuild({ ...base, gateHit: "containment-gate" }, issues);
+  }
+
+  // ── AttemptRunner composition ──────────────────────────────────────────
+  // The single AttemptRunner owns acquire → context → containment → dispatch
+  // → supervise → attribute → review → verify → oracle → cleanup → finalize.
+  // The DispatchQueue feeds tickets to the runner sequentially (scheduling/
+  // diagnostic plumbing only); it cannot release ownership.  The runner's
+  // phase providers default to fail-closed (RICKGENT_ATTEMPT_*_UNCONFIGURED);
+  // the live ProcessSupervisor/CommitService provider wiring is validated by
+  // the M10 vertical slice.  The runner is the sole owner either way: no
+  // legacy execution/cleanup/workspace owner is invoked on this path.
+  const leases = new LeaseAuthority(stateStore);
+  const targetStartGate = new TargetStartGateAuthority(stateStore, leases, containmentBackend);
+  const terminalization = new AttemptTerminalizationService(stateStore, leases);
+  const executionContext = new AttemptExecutionContextAuthority(stateStore);
+  const runner = new AttemptRunner(
+    stateStore,
+    leases,
+    containmentBackend,
+    targetStartGate,
+    terminalization,
+    executionContext,
+  );
+  const resolver = new IdentityContextResolver(stateStore);
+  const journal = new InMemoryDispatchJournal();
+  const queue = new DispatchQueue(journal, 1);
+  const idByTicket = new Map<string, DispatchId>();
+  const ticketByDispatchId = new Map<string, TicketContract>();
+  const attemptByTicket = new Map<string, AllocatedAttempt>();
+  for (const ticket of tickets) {
+    const attempt = resolver.allocateInitialAttempt({ runId: allocatedRun.runId, ticketId: ticket.id });
+    attemptByTicket.set(ticket.id, attempt);
+    const id: DispatchId = {
+      runId: attempt.runId, ticketId: attempt.ticketId, phase: "implement",
+      attempt: attempt.attemptNumber, role: "worker",
+    };
+    idByTicket.set(ticket.id, id);
+    ticketByDispatchId.set(dispatchIdString(id), ticket);
+    queue.enqueue(id);
+  }
+  report.push(`build: allocated ${attemptByTicket.size} planned initial attempt(s) via AttemptRunner`);
+
+  const runnerResults = new Map<string, AttemptRunnerResult>();
+  const dispatchFn = async (id: DispatchId): Promise<DispatchEntry> => {
+    const ticket = ticketByDispatchId.get(dispatchIdString(id))!;
+    const attempt = attemptByTicket.get(ticket.id)!;
+    let ownership;
+    try {
+      const preparedAcquisition = leases.prepareAcquisition({
+        attemptId: attempt.attemptId,
+        idempotencyKey: `attempt-runner-build:${attempt.attemptId}:acquire`,
+      });
+      ownership = leases.acquire(preparedAcquisition);
+    } catch (error) {
+      const detail = `ownership acquisition failed: ${error instanceof Error ? error.message : String(error)}`;
+      report.push(`  ${ticket.id}: ownership acquisition failed — fail-closed`);
+      return {
+        dispatchId: dispatchIdString(id), state: "failed", pid: null,
+        startedAt: null, completedAt: new Date().toISOString(), exitCode: null,
+        stdout: null, stderr: detail, terminalReason: "infrastructure_error",
+      };
+    }
+    const request: AttemptRunnerRequest = {
+      attempt,
+      run: allocatedRun,
+      contract: ticket,
+      ownership,
+      callerRepositoryRealpath: realpathSync(opts.workingDir),
+      targetStartGateId: `attempt-target-start-gate:${attempt.attemptId}`,
+      supervisedPhase: {
+        phaseExecutionId: `phase-exec:${attempt.attemptId}:implement`,
+        contextId: `ctx:${attempt.attemptId}`,
+        contextDigest: `sha256:${attempt.contractDigest}`,
+        phase: "implement",
+        phaseOrdinal: 1,
+        role: "worker",
+      },
+      supervisedArgv: ["node", "--version"],
+      stdoutPath: join(opts.dataDir, `${attempt.attemptId}.stdout`),
+      stderrPath: join(opts.dataDir, `${attempt.attemptId}.stderr`),
+      timeoutMs: opts.timeout ?? 60000,
+      cancellationRequested: false,
+    };
+    let result: AttemptRunnerResult;
+    try {
+      result = await runner.runAttempt(request);
+    } catch (error) {
+      const detail = `attempt runner failed: ${error instanceof Error ? error.message : String(error)}`;
+      report.push(`  ${ticket.id}: attempt runner threw — fail-closed`);
+      return {
+        dispatchId: dispatchIdString(id), state: "failed", pid: null,
+        startedAt: null, completedAt: new Date().toISOString(), exitCode: null,
+        stdout: null, stderr: detail, terminalReason: "infrastructure_error",
+      };
+    }
+    runnerResults.set(dispatchIdString(id), result);
+    const ok = result.outcome === "succeeded";
+    report.push(`  ${ticket.id}: attempt runner outcome=${result.outcome} failureCode=${result.failureCode ?? "n/a"}`);
+    return {
+      dispatchId: dispatchIdString(id),
+      state: ok ? "completed" : "failed",
+      pid: null, startedAt: null, completedAt: new Date().toISOString(),
+      exitCode: ok ? 0 : null, stdout: null,
+      stderr: ok ? null : (result.failureCode ?? result.outcome),
+      terminalReason: ok ? "evidence_unverifiable" : "infrastructure_error",
+      ownershipReleased: result.outcome === "succeeded" || result.outcome === "failed_clean",
+    };
+  };
+
+  let drain;
+  try {
+    drain = await queue.drain(dispatchFn);
+  } finally {
+    try { stateStore.close(); } catch { /* fail-closed close */ }
+  }
+
+  base.dispatchObservations = journal.observations();
+  for (const ticket of tickets) {
+    const entry = drain.results.get(dispatchIdString(idByTicket.get(ticket.id)!));
+    if (!entry) {
+      base.ticketsFailed++;
+      issues.push(runIssue({
+        reason: "infrastructure_error", class: "infrastructure",
+        detail: "dispatch queue produced no terminal observation", ticketId: ticket.id,
+      }));
+      continue;
+    }
+    base.ticketsDispatched++;
+    if (entry.state === "completed") {
+      base.ticketsDone++;
+    } else {
+      base.ticketsFailed++;
+      issues.push(runIssue({
+        reason: entry.terminalReason === "infrastructure_error" ? "infrastructure_error" : "ticket_failed",
+        class: entry.terminalReason === "infrastructure_error" ? "infrastructure" : "execution",
+        detail: entry.stderr ?? `dispatch terminal state ${entry.state}`, ticketId: ticket.id,
+      }));
+    }
+  }
+  if (base.ticketsDone === 0) {
+    issues.push(runIssue({
+      reason: "zero_completion", class: "execution",
+      detail: "no planned ticket reached verified completion",
+    }));
+  } else if (base.ticketsFailed > 0) {
+    issues.push(runIssue({
+      reason: "partial_failure", class: "execution",
+      detail: `${base.ticketsFailed} of ${base.ticketsPlanned} planned tickets failed`,
+    }));
+  }
+  report.push("build: production AttemptRunner path complete; automatic delivery remains unavailable");
+  return finishBuild({ ...base }, issues);
+}
+
+async function executeBuildLegacy(
   opts: BuildOptions,
   dependencies: InternalBuildDependencies,
 ): Promise<BuildResult> {
@@ -1297,14 +1730,14 @@ export interface PipelineResult extends BuildResult {
   cleanup: CleanupResult;
 }
 
-async function executePipeline(
+async function executePipelineLegacy(
   opts: BuildOptions,
   dependencies: InternalBuildDependencies,
 ): Promise<PipelineResult> {
   // Preflight cleanup before build mutation; unavailable required cleanup can
   // never be discovered only after work has started.
   RUNTIME_CAPABILITY_GATE.require("reconciliation");
-  const build = await executeBuild(opts, dependencies);
+  const build = await executeBuildLegacy(opts, dependencies);
   const cleanup = runCleanup(
     opts.workingDir,
     opts.rickgentDir,
@@ -1319,14 +1752,33 @@ async function executePipeline(
   return { ...build, outcome, report, cleanup };
 }
 
+async function executePipelineViaRunner(
+  opts: BuildOptions,
+  dependencies: InternalBuildDependencies,
+): Promise<PipelineResult> {
+  // The production pipeline runs the AttemptRunner build path followed by the
+  // cleanup chain. Reconciliation remains unavailable; the cleanup chain is
+  // the orphan-reaper sweep only on the production path.
+  RUNTIME_CAPABILITY_GATE.require("reconciliation");
+  const build = await executeBuildViaRunner(opts, dependencies);
+  const cleanup = runCleanup(opts.workingDir, opts.rickgentDir, opts.env);
+  const outcome = aggregateRunOutcome([...build.outcome.issues, ...cleanup.issues]);
+  const report = [...build.report, ...cleanup.report];
+  report.push(
+    `pipeline: outcome=${outcome.status} primary=${outcome.primary} ` +
+      `code=${outcome.stableCode} issues=${outcome.issues.map((issue) => issue.reason).join(",") || "none"}`,
+  );
+  return { ...build, outcome, report, cleanup };
+}
+
 /** Public production build entrypoint. Capability authority is not injectable. */
 export async function runBuild(opts: BuildOptions): Promise<BuildResult> {
-  return executeBuild(opts, {});
+  return executeBuildViaRunner(opts, {});
 }
 
 /** `rickgent pipeline` — the production build followed by the cleanup chain. */
 export async function runPipeline(opts: BuildOptions): Promise<PipelineResult> {
-  return executePipeline(opts, {});
+  return executePipelineViaRunner(opts, {});
 }
 
 async function requireFixtureRuntimeAuthority(authority: object): Promise<void> {
@@ -1341,6 +1793,10 @@ async function requireFixtureRuntimeAuthority(authority: object): Promise<void> 
  * Package-private fixture bridge. It is deliberately absent from the package
  * export map and should only be re-exported by `src/testing/fixture-runtime`.
  *
+ * The fixture bridge routes through the legacy `executeBuildLegacy` path
+ * (deterministic fixture mutation capture); the production `runBuild` path
+ * routes through the AttemptRunner (t22D cutover).
+ *
  * @internal
  */
 export async function runBuildWithDependenciesForTesting(
@@ -1349,7 +1805,7 @@ export async function runBuildWithDependenciesForTesting(
   dependencies: InternalBuildDependencies,
 ): Promise<BuildResult> {
   await requireFixtureRuntimeAuthority(authority);
-  return executeBuild(opts, dependencies);
+  return executeBuildLegacy(opts, dependencies);
 }
 
 /** @internal — see `runBuildWithDependenciesForTesting`. */
@@ -1359,7 +1815,7 @@ export async function runPipelineWithDependenciesForTesting(
   dependencies: InternalBuildDependencies,
 ): Promise<PipelineResult> {
   await requireFixtureRuntimeAuthority(authority);
-  return executePipeline(opts, dependencies);
+  return executePipelineLegacy(opts, dependencies);
 }
 
 // ── Policy attachment verification (B4 gate) ────────────────────────────────

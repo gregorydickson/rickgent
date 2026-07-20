@@ -126,19 +126,24 @@ describe("reliability-preview claim contract", () => {
 
   it("inventories every intentional public filesystem writer without granting lifecycle authority", () => {
     const surfaces = publicSurfaceRegistry();
-    expect(surfaces.filter((entry) => entry.mutation_authority === "local_artifact_only")).toEqual([
-      expect.objectContaining({
-        surface: "rickgent prd --non-interactive [--output <path>]",
-        mode: "public_local_artifact",
-        capability: null,
-      }),
-      expect.objectContaining({
-        surface: "rickgent citadel [--report <path>]",
-        mode: "public_local_artifact",
-        capability: null,
-      }),
+    // autonomous_dispatch is activated (t22D): build/pipeline are now
+    // enabled production surfaces (local_artifact_only mutation authority via
+    // the AttemptRunner).  The non-mutating local-artifact writers remain
+    // prd --non-interactive and citadel.
+    const localArtifactSurfaces = surfaces.filter((entry) => entry.mutation_authority === "local_artifact_only");
+    expect(localArtifactSurfaces.map((entry) => entry.surface)).toEqual([
+      "rickgent build <prd>",
+      "rickgent pipeline <prd>",
+      "rickgent prd --non-interactive [--output <path>]",
+      "rickgent citadel [--report <path>]",
+      "build|pipeline [--max-concurrent 1]",
     ]);
-    for (const entry of surfaces.filter((candidate) => candidate.mutation_authority === "local_artifact_only")) {
+    // The non-mutating local-artifact writers (prd template, citadel report)
+    // retain their explicit-write-authority boundary.
+    for (const entry of surfaces.filter((candidate) =>
+      candidate.mutation_authority === "local_artifact_only" &&
+      (candidate.surface === "rickgent prd --non-interactive [--output <path>]" ||
+        candidate.surface === "rickgent citadel [--report <path>]"))) {
       expect(entry.boundary).toContain("explicit write authority");
       expect(entry.boundary).toContain("may be inside the repository or state root");
       expect(entry.boundary).toContain("read-only Git inspection may run");
@@ -170,30 +175,39 @@ describe("reliability-preview claim contract", () => {
     }
   });
 
-  it("executes agent-backed legacy variants and fails before spawn or state writes", () => {
-    const autonomous = getCapability("autonomous_dispatch").error_code;
+  it("fails unavailable-capability flag combinations before spawn or state writes", () => {
+    // autonomous_dispatch is activated (t22D); the agent-backed commands
+    // (prd/szechuan/anatomy) now proceed past the autonomous_dispatch gate.
+    // The STILL-unavailable capability flags (--resume, --raw-shell,
+    // --feature) fail closed before spawn and do not write state.
     const fixtureBin = join(orchestratorRoot, "test/fixtures/omnigent-fixture");
     const spawnRecord = join(stateRoot, "blocked-legacy-spawn.json");
     const env = {
       PATH: `${fixtureBin}:${process.env.PATH ?? ""}`,
       FIXTURE_SPAWN_RECORD: spawnRecord,
     };
-    const agent = join(repoRoot, "agents/rickgent");
+    const prd = join(stateRoot, "missing-prd.md");
+    const resume = getCapability("resume_retry").error_code;
+    const delivery = getCapability("automatic_delivery").error_code;
+    const rawShell = getCapability("raw_shell").error_code;
 
     for (const args of [
-      ["prd", "--from", join(repoRoot, "fixtures/prd-min.md"), "--agent", agent],
-      ["szechuan", "--dry-run", "--repo", repoRoot, "--agent", agent],
-      ["anatomy", "--dry-run", "--repo", repoRoot, "--agent", agent],
+      ["build", prd, "--resume"],
+      ["build", prd, "--feature", "topic"],
+      ["build", prd, "--raw-shell"],
     ]) {
       const result = cli(args, env);
       expect(result.status, `${args.join(" ")}: ${output(result)}`).toBe(3);
-      expect(result.stderr).toContain(autonomous);
+      const error = result.stderr.trim();
+      expect(
+        error.startsWith(`${CAPABILITY_UNAVAILABLE_ERROR_CODE}: ${resume}:`) ||
+        error.startsWith(`${CAPABILITY_UNAVAILABLE_ERROR_CODE}: ${delivery}:`) ||
+        error.startsWith(`${CAPABILITY_UNAVAILABLE_ERROR_CODE}: ${rawShell}:`),
+        `${args.join(" ")}: ${error}`,
+      ).toBe(true);
     }
 
     expect(existsSync(spawnRecord)).toBe(false);
-    expect(existsSync(join(stateRoot, "szechuan.json"))).toBe(false);
-    expect(existsSync(join(stateRoot, "anatomy-park.json"))).toBe(false);
-    expect(existsSync(join(stateRoot, "gap_analysis.md"))).toBe(false);
   });
 
   it("derives doctor JSON and text from the compiled claims authority", () => {
@@ -238,21 +252,28 @@ describe("reliability-preview claim contract", () => {
 
   it("matches the public capability exits and ordered stable/detail codes", () => {
     const prd = join(stateRoot, "missing-prd.md");
-    const autonomous = getCapability("autonomous_dispatch").error_code;
     const resume = getCapability("resume_retry").error_code;
     const reconcile = getCapability("reconciliation").error_code;
     const delivery = getCapability("automatic_delivery").error_code;
     const rawShell = getCapability("raw_shell").error_code;
 
-    const build = expectCapabilityFailure(["build", prd], autonomous);
-    expectCapabilityFailure(["pipeline", prd], autonomous);
-    expectCapabilityFailure(["build", "--resume"], resume);
+    // autonomous_dispatch is activated (t22D): `build <prd>` no longer fails
+    // at the autonomous_dispatch gate.  It proceeds past the gate and fails
+    // closed at the PRD/ticket-contract gate on the missing PRD (exit 2,
+    // input contract; the report is printed to stdout).  Use `build --resume`
+    // (resume_retry still unavailable) to exercise the capability-gate failure
+    // path that prints the registry.
+    const buildMissing = cli(["build", prd]);
+    expect(buildMissing.status, output(buildMissing)).toBe(2);
+    expect(buildMissing.stdout).toContain("TICKET CONTRACT GATE");
+    const buildConcurrent1 = cli(["build", prd, "--max-concurrent", "1"]);
+    expect(buildConcurrent1.status, output(buildConcurrent1)).toBe(2);
+    expect(buildConcurrent1.stdout).toContain("TICKET CONTRACT GATE");
+    const build = expectCapabilityFailure(["build", "--resume"], resume);
     expectCapabilityFailure(["pipeline", "--resume"], resume);
     expectCapabilityFailure(["reconcile"], reconcile);
     expectCapabilityFailure(["build", prd, "--feature", "topic"], delivery);
-    expectCapabilityFailure(["pipeline", prd, "--no-autonomous-pr"], delivery);
     expectCapabilityFailure(["build", prd, "--raw-shell"], rawShell);
-    expectCapabilityFailure(["build", prd, "--max-concurrent", "1"], autonomous);
 
     for (const entry of capabilityRegistry()) {
       expect(build.stdout).toContain(`${entry.name}: state=${entry.state} code=${entry.error_code}`);

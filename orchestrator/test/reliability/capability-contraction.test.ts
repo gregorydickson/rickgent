@@ -12,18 +12,15 @@ import {
   assertNoProductionBypasses,
   capabilityRegistry,
 } from "../../src/capabilities/registry.js";
-import { Dispatcher, DispatchLedger, TicketLock } from "../../src/dispatch/dispatch.js";
+import { DispatchLedger } from "../../src/dispatch/dispatch.js";
 import { DispatchQueue } from "../../src/dispatch/queue.js";
 import { runBuild, type BuildOptions } from "../../src/lifecycle/build.js";
 import { runConformanceGate } from "../../src/lifecycle/citadel.js";
 import { MicroverseLoop } from "../../src/lifecycle/microverse.js";
 import { runMicroverseCommand } from "../../src/lifecycle/microverse-cli.js";
 import { ensureBranch } from "../../src/lifecycle/pr-flow.js";
-import { runPrdCommand } from "../../src/lifecycle/prd-interview.js";
 import { reconcile } from "../../src/lifecycle/reconcile.js";
 import { routeDispatch, type ModelEntry } from "../../src/lifecycle/routing.js";
-import { runSzechuanCommand } from "../../src/lifecycle/szechuan-cli.js";
-import { runAnatomyCommand } from "../../src/lifecycle/anatomy.js";
 import { main } from "../../src/index.js";
 
 const CLI = join(import.meta.dirname, "../../dist/cli.js");
@@ -64,7 +61,7 @@ describe("M1 capability contraction", () => {
     const entries = capabilityRegistry();
     expect(entries.map((entry) => entry.name)).toEqual(CAPABILITY_NAMES);
     expect(entries.map((entry) => entry.state)).toEqual([
-      "fixture_only",
+      "enabled",
       "unavailable",
       "unavailable",
       "unavailable",
@@ -86,7 +83,11 @@ describe("M1 capability contraction", () => {
     expect(json.terminal_semantics.delivered).toBe("remote_delivery_verified");
     expect(json.toolchain.node.status).toMatch(/pass|fail/);
 
-    const startup = cli(["build", join(tempRoot("cap-startup"), "missing.md")]);
+    // autonomous_dispatch is activated (t22D); `build <prd>` no longer fails
+    // at the autonomous_dispatch gate.  Use `build --resume` (resume_retry is
+    // still unavailable) to exercise the capability-gate failure path that
+    // prints the registry on startup.
+    const startup = cli(["build", "--resume"]);
     expect(startup.status).toBe(3);
     for (const entry of entries) {
       expect(startup.stdout).toContain(`${entry.name}: state=${entry.state}`);
@@ -97,10 +98,13 @@ describe("M1 capability contraction", () => {
   it("returns stable nonzero capability errors before filesystem or subprocess work", async () => {
     const root = tempRoot("cap-boundary");
     const opts = buildOptions(root);
-    await expect(runBuild(opts)).rejects.toMatchObject({
-      exitCode: 3,
-      capability: { name: "autonomous_dispatch", error_code: "RICKGENT_AUTONOMOUS_FIXTURE_ONLY" },
-    });
+    // autonomous_dispatch is now activated (t22D); runBuild proceeds past the
+    // capability gate and fails closed at the PRD/ticket-contract gate (the
+    // missing PRD cannot be parsed) BEFORE any spawn, containment probe, or
+    // legacy run-workspace provisioning.  The rickgentDir is not created.
+    const result = await runBuild(opts);
+    expect(result.outcome.status).not.toBe("ok");
+    expect(result.gateHit).toBe("ticket-contract-gate");
     expect(existsSync(opts.rickgentDir)).toBe(false);
 
     const resume = cli(["build", "--resume"]);
@@ -130,13 +134,12 @@ describe("M1 capability contraction", () => {
     const root = tempRoot("cap-direct");
     const state = join(root, "state");
     const ledger = new DispatchLedger(join(state, "dispatch.jsonl"));
-    const lock = new TicketLock(join(state, "locks"));
-    const dispatcher = new Dispatcher(ledger, lock, state);
-    await expect(dispatcher.dispatch(
-      { runId: "r", ticketId: "t", phase: "implement", attempt: 1, role: "worker" },
-      { agentDir: root, prompt: "x", timeout: 1, maxConcurrent: 1 },
-    )).rejects.toBeInstanceOf(CapabilityUnavailableError);
-
+    // autonomous_dispatch is activated (t22D); the still-UNAVAILABLE
+    // capabilities continue to block their boundaries.  The Dispatcher and
+    // toolbelt commands (prd/szechuan/anatomy) now pass the autonomous_dispatch
+    // gate and are exercised through the fixture bridge / dist-fixture tree,
+    // not here (proceeding past the gate spawns omnigent, which is
+    // non-deterministic in the source-tree test environment).
     expect(() => new DispatchQueue(ledger, 2)).toThrow("maxConcurrent must be exactly 1");
     expect(() => reconcile(root, state)).toThrow("RICKGENT_RECONCILIATION_UNAVAILABLE");
 
@@ -161,28 +164,33 @@ describe("M1 capability contraction", () => {
       maxIterations: 1,
       iterationDeadlineMs: 100,
     }).run()).rejects.toThrow("RICKGENT_RAW_SHELL_UNAVAILABLE");
-    await expect(runPrdCommand([])).rejects.toThrow("RICKGENT_AUTONOMOUS_FIXTURE_ONLY");
-    await expect(runPrdCommand(["--from", join(root, "missing.md")]))
-      .rejects.toThrow("RICKGENT_AUTONOMOUS_FIXTURE_ONLY");
-    await expect(runSzechuanCommand(["--dry-run", "--repo", root]))
-      .rejects.toThrow("RICKGENT_AUTONOMOUS_FIXTURE_ONLY");
-    await expect(runAnatomyCommand(["--dry-run", "--repo", root]))
-      .rejects.toThrow("RICKGENT_AUTONOMOUS_FIXTURE_ONLY");
   });
 
   it("keeps capability authority out of public build and CLI call signatures", async () => {
     const root = tempRoot("cap-public-api");
     const noOpGate = { require(): void {} };
 
-    await expect(Reflect.apply(runBuild, undefined, [
+    // autonomous_dispatch is activated (t22D); runBuild proceeds past the
+    // REAL capability gate (the injected noOpGate is NOT used — runBuild does
+    // not accept a capabilityGate argument) and fails closed at the PRD/
+    // ticket-contract gate on the missing PRD.  The injected fakeDependencies
+    // are ignored.
+    const buildResult = await Reflect.apply(runBuild, undefined, [
       buildOptions(root),
       { capabilityGate: noOpGate, assertEnvironment(): void {} },
-    ])).rejects.toThrow("RICKGENT_AUTONOMOUS_FIXTURE_ONLY");
+    ]) as { outcome: { status: string }; gateHit: string };
+    expect(buildResult.outcome.status).not.toBe("ok");
+    expect(buildResult.gateHit).toBe("ticket-contract-gate");
 
-    await expect(Reflect.apply(main, undefined, [
+    // main also ignores the injected capabilityGate; with autonomous_dispatch
+    // activated, `prd --from <missing>` proceeds past the gate and fails on
+    // the missing file (not on a capability error).
+    const mainError = await Reflect.apply(main, undefined, [
       ["prd", "--from", join(root, "missing.md")],
       { capabilityGate: noOpGate, assertEnvironment(): void {} },
-    ])).rejects.toThrow("RICKGENT_AUTONOMOUS_FIXTURE_ONLY");
+    ]).catch((error: unknown) => error);
+    expect(mainError).toBeInstanceOf(Error);
+    expect(String((mainError as Error).message)).not.toContain("RICKGENT_AUTONOMOUS_DISPATCH_ACTIVE");
 
     const packageJson = JSON.parse(readFileSync(join(import.meta.dirname, "../../package.json"), "utf-8")) as {
       exports: Record<string, string>;
