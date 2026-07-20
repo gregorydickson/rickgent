@@ -366,7 +366,6 @@ LIFECYCLE_TOOL_ACTIONS: Mapping[str, str] = MappingProxyType(
 UNRELATED_NATIVE_TOOLS = frozenset(
     {
         "load_skill",
-        "read_skill_file",
         "sys_session_get_history",
         "sys_session_send",
         "sys_read_inbox",

@@ -48,8 +48,12 @@
       },
       "contract_decision": true,
       "priority": "P0",
-      "status": "Todo",
-      "depends_on": []
+      "status": "Done",
+      "depends_on": [],
+      "completed_at": {
+        "commit": "9c0d47f3a5f9b2bb863bfd84e5edb887d71f7ea0",
+        "phase_report": "docs/remediation/phase-0-baseline-manifest-reconcile-execution-report-2026-07-20.md"
+      }
     },
     {
       "id": "t01",
@@ -82,10 +86,14 @@
         "orchestrator/scripts/validate-evidence-provenance.mjs"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t00"
-      ]
+      ],
+      "completed_at": {
+        "commit": "8738fa02f2b2403c5e63f20b6baf8aab2c31a8ba",
+        "phase_report": "docs/remediation/phase-0-baseline-manifest-reconcile-execution-report-2026-07-20.md"
+      }
     },
     {
       "id": "t02",
@@ -144,10 +152,14 @@
       ],
       "contract_decision": true,
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t01"
-      ]
+      ],
+      "completed_at": {
+        "commit": "7f55ac1d3ee5505b60846d021df0bc9356f12fba",
+        "phase_report": "docs/remediation/phase-0-baseline-manifest-reconcile-execution-report-2026-07-20.md"
+      }
     },
     {
       "id": "t03",
@@ -181,10 +193,14 @@
       "artifact_scope": "minimum_required_outputs_not_changed_path_allowlist",
       "reviewed_change_set_required": true,
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t02"
-      ]
+      ],
+      "completed_at": {
+        "commit": "e1499f3cf5a2cf322b9367a38e3008f67684de5a",
+        "phase_report": "docs/remediation/phase-1-containment-execution-report-2026-07-15.md"
+      }
     },
     {
       "id": "t04",
@@ -215,10 +231,14 @@
       "artifact_scope": "minimum_required_outputs_not_changed_path_allowlist",
       "reviewed_change_set_required": true,
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t03"
-      ]
+      ],
+      "completed_at": {
+        "commit": "092f4f3909f09dafa1cae976e6cc6d67f8fdb82f",
+        "phase_report": "docs/remediation/phase-1-containment-execution-report-2026-07-15.md"
+      }
     },
     {
       "id": "t05",
@@ -257,10 +277,14 @@
       "artifact_scope": "minimum_required_outputs_not_changed_path_allowlist",
       "reviewed_change_set_required": true,
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t04"
-      ]
+      ],
+      "completed_at": {
+        "commit": "8b3f28c4c9b67f894e3b88076d3e91a9b76aa2e9",
+        "phase_report": "docs/remediation/phase-1-containment-execution-report-2026-07-15.md"
+      }
     },
     {
       "id": "t06",
@@ -294,10 +318,14 @@
       "artifact_scope": "minimum_required_outputs_not_changed_path_allowlist",
       "reviewed_change_set_required": true,
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t05"
-      ]
+      ],
+      "completed_at": {
+        "commit": "3690f8c638aa0c733d0dd6d7cd61b6ad4b2d6bd9",
+        "phase_report": "docs/remediation/phase-1-containment-execution-report-2026-07-15.md"
+      }
     },
     {
       "id": "t07",
@@ -329,10 +357,14 @@
       "artifact_scope": "minimum_required_outputs_not_changed_path_allowlist",
       "reviewed_change_set_required": true,
       "priority": "P1",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t06"
-      ]
+      ],
+      "completed_at": {
+        "commit": "4b1bb22c7eba09fe7e9af364a036cc56ede60d1e",
+        "phase_report": "docs/remediation/phase-1-containment-execution-report-2026-07-15.md"
+      }
     },
     {
       "id": "t08",
@@ -380,10 +412,14 @@
         "sha_source": ""
       },
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t07"
-      ]
+      ],
+      "completed_at": {
+        "commit": "827eec9eedc0999357d8c4d3e5f58f388e27d98b",
+        "phase_report": "docs/remediation/phase-2-native-policy-execution-report-2026-07-16.md"
+      }
     },
     {
       "id": "t09",
@@ -432,10 +468,14 @@
         "sha_source": ""
       },
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t08"
-      ]
+      ],
+      "completed_at": {
+        "commit": "a1cc3cecb15d89e9f4de78c96c33e81a8cb9df00",
+        "phase_report": "docs/remediation/phase-2-native-policy-execution-report-2026-07-16.md"
+      }
     },
     {
       "id": "t10",
@@ -481,10 +521,14 @@
         "sha_source": ""
       },
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t09"
-      ]
+      ],
+      "completed_at": {
+        "commit": "dd6ee0d65a10bf22be88c12464f8f5897131ca2c",
+        "phase_report": "docs/remediation/phase-2-native-policy-execution-report-2026-07-16.md"
+      }
     },
     {
       "id": "t11",
@@ -532,10 +576,14 @@
         "sha_source": ""
       },
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t10"
-      ]
+      ],
+      "completed_at": {
+        "commit": "1e97d9b3fc0249aa76bf7dca8f0b967e01c4d6ec",
+        "phase_report": "docs/remediation/phase-2-native-policy-execution-report-2026-07-16.md"
+      }
     },
     {
       "id": "t12",
@@ -563,10 +611,14 @@
       ],
       "contract_decision": true,
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t11"
-      ]
+      ],
+      "completed_at": {
+        "commit": "92b2c4fa9f5da73371ee74e97b5d0153224dc4d0",
+        "phase_report": "docs/remediation/phase-0-baseline-manifest-reconcile-execution-report-2026-07-20.md"
+      }
     },
     {
       "id": "t13",
@@ -591,10 +643,14 @@
         "orchestrator/test/reliability/state-store.test.ts"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t12"
-      ]
+      ],
+      "completed_at": {
+        "commit": "5649db56d165a902495dc3ed6876f26e3929e616",
+        "phase_report": "docs/remediation/phase-0-baseline-manifest-reconcile-execution-report-2026-07-20.md"
+      }
     },
     {
       "id": "t14",
@@ -619,10 +675,14 @@
         "orchestrator/test/reliability/identity-allocation.test.ts"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t13"
-      ]
+      ],
+      "completed_at": {
+        "commit": "b7d11cf644b28b1f77bea41573478d04ba4bb476",
+        "phase_report": "docs/remediation/phase-0-baseline-manifest-reconcile-execution-report-2026-07-20.md"
+      }
     },
     {
       "id": "t15",
@@ -646,10 +706,14 @@
         "orchestrator/test/reliability/transition-authority.test.ts"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t14"
-      ]
+      ],
+      "completed_at": {
+        "commit": "cf9073c8f6a21e38bad7a7a70053162713f45f13",
+        "phase_report": "docs/remediation/phase-0-baseline-manifest-reconcile-execution-report-2026-07-20.md"
+      }
     },
     {
       "id": "t16",
@@ -673,10 +737,14 @@
         "orchestrator/test/reliability/legacy-state-quarantine.test.ts"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t15"
-      ]
+      ],
+      "completed_at": {
+        "commit": "7a402bbd8f6b59a0ff00e1ea335b043ca0b42bbe",
+        "phase_report": "docs/remediation/phase-0-baseline-manifest-reconcile-execution-report-2026-07-20.md"
+      }
     },
     {
       "id": "t17",
@@ -709,10 +777,14 @@
         "orchestrator/test/reliability/state-crash-corpus.test.ts"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t16"
-      ]
+      ],
+      "completed_at": {
+        "commit": "1cecbfe74c9ef25285a4783c8b5f7270971301b0",
+        "phase_report": "docs/remediation/phase-0-baseline-manifest-reconcile-execution-report-2026-07-20.md"
+      }
     },
     {
       "id": "t18",
@@ -750,7 +822,11 @@
       "status": "Done",
       "depends_on": [
         "t17"
-      ]
+      ],
+      "completed_at": {
+        "commit": "5590ca2579f1ecb82c13de8b269a8abde84d1009",
+        "phase_report": "docs/remediation/phase-4-attempt-runner-state-bridge-report-2026-07-18.md"
+      }
     },
     {
       "id": "t19",
@@ -804,7 +880,11 @@
       "status": "Done",
       "depends_on": [
         "t18"
-      ]
+      ],
+      "completed_at": {
+        "commit": "35ab3f78b5d114ac457452d91c7ff0ce9d5ffe6f",
+        "phase_report": "docs/remediation/phase-4-process-supervisor-execution-report-2026-07-17.md"
+      }
     },
     {
       "id": "t20",
@@ -858,7 +938,11 @@
       "status": "Done",
       "depends_on": [
         "t19"
-      ]
+      ],
+      "completed_at": {
+        "commit": "78420f03e352759338b0016578edfc4e4f5e522d",
+        "phase_report": "docs/remediation/phase-4-commit-attribution-execution-report-2026-07-17.md"
+      }
     },
     {
       "id": "t21",
@@ -899,7 +983,11 @@
       "status": "Done",
       "depends_on": [
         "t20"
-      ]
+      ],
+      "completed_at": {
+        "commit": "efcf32c5dc5fda6e8a45550d0050bb9e11a6d2c0",
+        "phase_report": "docs/remediation/phase-4-salvage-cleanup-execution-report-2026-07-18.md"
+      }
     },
     {
       "id": "t22",
