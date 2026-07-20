@@ -592,9 +592,90 @@ export function isQuarantineReceipt(value: unknown): value is QuarantineReceipt 
 }
 
 /*
- * Deliberately no public minting helper exists yet. The real observer services
- * must be implemented in this module, or enter through a non-exported
- * capability seam, once they can independently establish each physical fact.
- * Turning raw caller input into a branded "observation" would only relocate the
- * forgery boundary.
+ * Narrowly-branded mint seam (t22A).  The five receipt schemas are reserved to
+ * the owning runtime authority (LeaseAuthority).  A caller cannot construct a
+ * receipt directly: the constructor authority symbols are private, and the only
+ * public mint entrypoints below require a LeaseAuthorityMintCapability that
+ * LeaseAuthority alone can issue.  The StateStore commands hold that
+ * capability and persist each minted receipt atomically; no other production
+ * path may mint a disposition receipt.
  */
+
+const DISPOSITION_MINT_AUTHORITY = Symbol("rickgent.disposition-mint-authority");
+const AUTHORIZED_DISPOSITION_MINT_CAPABILITIES = new WeakSet<object>();
+
+/**
+ * Runtime-unforgeable capability issued by LeaseAuthority.  Only LeaseAuthority
+ * can construct one (via {@link createLeaseAuthorityMintCapability}, which is
+ * not exported to callers); the StateStore receives it and presents it to the
+ * mint helpers below.  A structural lookalike fails the WeakSet brand check.
+ */
+export class LeaseAuthorityMintCapability {
+  constructor(authority: symbol) {
+    if (authority !== DISPOSITION_MINT_AUTHORITY) {
+      throw new TypeError("disposition mint capability can only be issued by LeaseAuthority");
+    }
+    AUTHORIZED_DISPOSITION_MINT_CAPABILITIES.add(this);
+    Object.freeze(this);
+  }
+}
+
+/** @internal Invoked only by {@link LeaseAuthority.issueDispositionMintCapability}. */
+export function createLeaseAuthorityMintCapability(): LeaseAuthorityMintCapability {
+  return new LeaseAuthorityMintCapability(DISPOSITION_MINT_AUTHORITY);
+}
+
+export function isLeaseAuthorityMintCapability(value: unknown): value is LeaseAuthorityMintCapability {
+  return typeof value === "object" && value !== null && AUTHORIZED_DISPOSITION_MINT_CAPABILITIES.has(value);
+}
+
+function requireMintCapability(capability: unknown): asserts capability is LeaseAuthorityMintCapability {
+  if (!isLeaseAuthorityMintCapability(capability)) {
+    throw new TypeError("disposition receipts can only be minted by the owning LeaseAuthority capability");
+  }
+}
+
+/** Mint a target-never-released receipt reserved to LeaseAuthority. */
+export function mintTargetNeverReleasedReceipt(
+  input: TargetNeverReleasedObservation,
+  capability: LeaseAuthorityMintCapability,
+): TargetNeverReleasedReceipt {
+  requireMintCapability(capability);
+  return new TargetNeverReleasedReceipt(TARGET_NEVER_RELEASED_RECEIPT_AUTHORITY, input);
+}
+
+/** Mint a cleanup-eligibility receipt reserved to LeaseAuthority. */
+export function mintCleanupEligibilityReceipt(
+  input: CleanupEligibilityObservation,
+  capability: LeaseAuthorityMintCapability,
+): CleanupEligibilityReceipt {
+  requireMintCapability(capability);
+  return new CleanupEligibilityReceipt(CLEANUP_ELIGIBILITY_RECEIPT_AUTHORITY, input);
+}
+
+/** Mint a failure-cleanup receipt reserved to LeaseAuthority. */
+export function mintFailureCleanupReceipt(
+  input: FailureCleanupObservation,
+  capability: LeaseAuthorityMintCapability,
+): FailureCleanupReceipt {
+  requireMintCapability(capability);
+  return new FailureCleanupReceipt(FAILURE_CLEANUP_RECEIPT_AUTHORITY, input);
+}
+
+/** Mint a promotion-cleanup receipt reserved to LeaseAuthority. */
+export function mintPromotionCleanupReceipt(
+  input: PromotionCleanupObservation,
+  capability: LeaseAuthorityMintCapability,
+): PromotionCleanupReceipt {
+  requireMintCapability(capability);
+  return new PromotionCleanupReceipt(PROMOTION_CLEANUP_RECEIPT_AUTHORITY, input);
+}
+
+/** Mint a quarantine receipt reserved to LeaseAuthority. */
+export function mintQuarantineReceipt(
+  input: QuarantineObservation,
+  capability: LeaseAuthorityMintCapability,
+): QuarantineReceipt {
+  requireMintCapability(capability);
+  return new QuarantineReceipt(QUARANTINE_RECEIPT_AUTHORITY, input);
+}

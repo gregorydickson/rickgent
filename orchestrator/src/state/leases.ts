@@ -7,6 +7,10 @@ import {
   type FixedAttemptResourceKind,
 } from "../git/attempt-workspace.js";
 import {
+  createLeaseAuthorityMintCapability,
+  type LeaseAuthorityMintCapability,
+} from "../lifecycle/disposition.js";
+import {
   isAuthorizedCleanupReceipt,
   type CleanupDispositionReceipt,
 } from "../lifecycle/cleanup.js";
@@ -329,9 +333,20 @@ function command(payload: AttemptOwnershipCommandPayload): AttemptOwnershipComma
 /** Raw credentials stay in this module; Store receives only authorized digest-bearing commands. */
 export class LeaseAuthority {
   readonly #store: StateStore;
+  readonly #mintCapability: LeaseAuthorityMintCapability;
 
   constructor(store: StateStore) {
     this.#store = store;
+    this.#mintCapability = createLeaseAuthorityMintCapability();
+  }
+
+  /**
+   * Issues the narrowly-branded capability that reserves the five disposition
+   * receipt schemas to LeaseAuthority.  Only the StateStore commands present
+   * this capability to the disposition mint helpers; a caller cannot forge it.
+   */
+  issueDispositionMintCapability(): LeaseAuthorityMintCapability {
+    return this.#mintCapability;
   }
 
   prepareAcquisition(request: PrepareOwnershipAcquisitionRequest): PreparedOwnershipAcquisition {

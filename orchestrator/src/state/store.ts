@@ -25,6 +25,29 @@ import {
 } from "../capabilities/registry.js";
 import { normalizeTicketContracts } from "../contracts/ticket-contract.js";
 import {
+  CLEANUP_ELIGIBILITY_SCHEMA_VERSION,
+  FAILURE_CLEANUP_SCHEMA_VERSION,
+  PROMOTION_CLEANUP_SCHEMA_VERSION,
+  QUARANTINE_SCHEMA_VERSION,
+  TARGET_NEVER_RELEASED_SCHEMA_VERSION,
+  mintCleanupEligibilityReceipt,
+  mintFailureCleanupReceipt,
+  mintPromotionCleanupReceipt,
+  mintQuarantineReceipt,
+  mintTargetNeverReleasedReceipt,
+  type CleanupEligibilityObservation,
+  type CleanupEligibilityReceipt,
+  type FailureCleanupObservation,
+  type FailureCleanupReceipt,
+  type LeaseAuthorityMintCapability,
+  type PromotionCleanupObservation,
+  type PromotionCleanupReceipt,
+  type QuarantineObservation,
+  type QuarantineReceipt,
+  type TargetNeverReleasedObservation,
+  type TargetNeverReleasedReceipt,
+} from "../lifecycle/disposition.js";
+import {
   ATTEMPT_OWNERSHIP_STATE_SCHEMA_OBJECTS,
   ATTEMPT_OWNERSHIP_STATE_SQLITE_SCHEMA_CHECKSUM,
   COMMIT_ATTRIBUTION_STATE_SQLITE_SCHEMA_CHECKSUM,
@@ -466,6 +489,104 @@ export interface EvaluateAttemptOracleRequest {
 export interface PersistedAttemptOracleDecision {
   readonly decision: StateRecord;
   readonly references: readonly StateRecord[];
+}
+
+// ---- t22A: narrowly-branded Store command request/result types.
+//
+// Each request carries the branded observation (minted by the owning runtime
+// authority via the LeaseAuthority capability) plus the durable-preimage
+// references the finalization service independently observed.  The Store
+// validates the preimage and pins the exact durable IDs in the receipt row.
+
+export interface MintTargetNeverReleasedRequest {
+  readonly observation: TargetNeverReleasedObservation;
+}
+
+export interface MintCleanupEligibilityRequest {
+  readonly observation: CleanupEligibilityObservation;
+  /** Durable preimage references independently observed by the finalization service. */
+  readonly targetProofSetId: string;
+  readonly ownershipSnapshotEvidenceId: string;
+  readonly claimSnapshotEvidenceIds: readonly string[];
+}
+
+export interface MintFailureCleanupRequest {
+  readonly observation: FailureCleanupObservation;
+  readonly targetProofSetId: string;
+  readonly causeEvidenceId: string;
+  /** pre_oracle failures omit these; oracle_rejected/promotion_aborted require them. */
+  readonly cleanupEligibilityRecordId?: string;
+  readonly oracleDecisionId?: string;
+  readonly promotionIntentId?: string;
+}
+
+export interface MintPromotionCleanupRequest {
+  readonly observation: PromotionCleanupObservation;
+  readonly promotionObservationEvidenceId: string;
+}
+
+export interface MintQuarantineRequest {
+  readonly observation: QuarantineObservation;
+  readonly targetProofSetId: string;
+  readonly causeEvidenceId: string;
+  readonly ownershipSnapshotEvidenceId: string;
+  readonly cleanupEligibilityRecordId?: string;
+  readonly oracleDecisionId?: string;
+  readonly promotionIntentId?: string;
+  /** Per-claim disposition evidence + claim snapshot evidence, in slot order. */
+  readonly claimMembers: readonly QuarantineClaimMemberInput[];
+}
+
+export interface QuarantineClaimMemberInput {
+  readonly resourceClaimId: string;
+  readonly slot: string;
+  readonly currentOwnershipId: string;
+  readonly ownerGeneration: number;
+  readonly claimStateVersion: number;
+  readonly claimSnapshotEvidenceId: string;
+  readonly absenceRequired: boolean;
+  readonly physicalDisposition: "absent" | "retained" | "unknown" | "not_applicable";
+  readonly dispositionEvidenceId: string;
+  readonly memberDigest: `sha256:${string}`;
+}
+
+export interface MintedDispositionReceipt<R> {
+  readonly receipt: R;
+  readonly record: StateRecord;
+  readonly evidence: StateRecord;
+  readonly replayed: boolean;
+}
+
+function sealedDispositionPayload(observation: Readonly<Record<string, unknown>>): string {
+  return canonicalJson(observation);
+}
+
+function dispositionEvidenceRow(
+  evidenceId: string,
+  attemptId: string,
+  contextId: string,
+  producerService: string,
+  schemaVersion: string,
+  scope: string,
+  payload: string,
+  observedAt: string,
+): Readonly<Record<string, SqlValue>> {
+  return {
+    evidence_id: evidenceId,
+    attempt_id: attemptId,
+    phase_execution_id: null,
+    context_id: contextId,
+    producer_service: producerService,
+    scope,
+    schema_version: schemaVersion,
+    content_digest: sha256Text(payload),
+    inline_payload_json: payload,
+    external_path: null,
+    external_digest: null,
+    external_size: null,
+    idempotency_key: scope,
+    created_at: observedAt,
+  };
 }
 
 function recoveryFor(code: StateErrorCode): string {
@@ -2147,6 +2268,579 @@ export class StateStore {
       for (const reference of references) this.#insert("oracle_input_references", reference);
       return freezeValue({ decision: frozenRow(decision), references: references.map(frozenRow) });
     });
+  }
+
+  // ---- t22A: narrowly-branded Store commands for the five disposition receipts.
+  //
+  // Each command mints its branded receipt through the LeaseAuthority-owned
+  // capability (forged producers are rejected at the mint step) and atomically
+  // persists the receipt, exact evidence, normalized members, the relevant
+  // state transition, and the idempotency result in one immediate transaction.
+  // Replay of identical inputs returns the identical immutable postimage; any
+  // divergent postimage conflicts.  Legacy v1 ownership/process rows and
+  // generic cleanup records cannot authorize any of these commands.
+
+  /**
+   * Mint and atomically persist a target-never-released receipt.  The bound
+   * target start gate transitions `held → closed_never_released` in the same
+   * transaction as the evidence and idempotency result.
+   */
+  mintTargetNeverReleased(
+    request: MintTargetNeverReleasedRequest,
+    capability: LeaseAuthorityMintCapability,
+  ): MintedDispositionReceipt<TargetNeverReleasedReceipt> {
+    const receipt = mintTargetNeverReleasedReceipt(request.observation, capability);
+    const observation = receipt;
+    const payload = sealedDispositionPayload(request.observation as unknown as Readonly<Record<string, unknown>>);
+    const evidenceId = `evidence-target-never-released-${observation.receiptId}`;
+    const evidenceRow = dispositionEvidenceRow(
+      evidenceId,
+      observation.attemptId,
+      observation.contextId,
+      "TargetStartGateAuthority",
+      TARGET_NEVER_RELEASED_SCHEMA_VERSION,
+      observation.receiptId,
+      payload,
+      observation.observedAt,
+    );
+    return this.#immediate("mint_target_never_released", () => {
+      const db = this.#requireDatabase();
+      const gate = db.prepare(
+        "SELECT * FROM target_start_gates WHERE target_start_gate_id = ? AND attempt_id = ?",
+      ).get(observation.gateId, observation.attemptId) as MutableStateRecord | undefined;
+      if (gate === undefined) {
+        throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "target-never-released receipt does not bind an existing target start gate", this.location.databasePath);
+      }
+      // Replay: the gate is already closed-never-released with the exact evidence.
+      if (String(gate.state) === "closed_never_released") {
+        if (String(gate.never_released_evidence_id ?? "") !== evidenceId) {
+          throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "target start gate already closed with a different never-released evidence", this.location.databasePath);
+        }
+        const existingEvidence = db.prepare("SELECT * FROM evidence WHERE evidence_id = ? AND attempt_id = ?").get(evidenceId, observation.attemptId) as MutableStateRecord | undefined;
+        if (existingEvidence === undefined) {
+          throw typedError("RICKGENT_STATE_CORRUPT", "target-never-released replay is missing its evidence", this.location.databasePath);
+        }
+        return freezeValue({ receipt, record: frozenRow(gate), evidence: frozenRow(existingEvidence), replayed: true });
+      }
+      if (String(gate.state) !== "held" || Number(gate.state_version) !== 0) {
+        throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "target start gate is not held by this attempt", this.location.databasePath);
+      }
+      if (
+        String(gate.ownership_id) !== observation.ownershipId ||
+        Number(gate.owner_generation) !== observation.ownerGeneration ||
+        String(gate.phase_execution_id) !== observation.phaseExecutionId ||
+        String(gate.context_id) !== observation.contextId
+      ) {
+        throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "target-never-released receipt does not bind the exact gate lineage", this.location.databasePath);
+      }
+      this.#validateRecordSemantics("evidence", evidenceRow);
+      this.#insert("evidence", evidenceRow);
+      const update = db.prepare(
+        `UPDATE target_start_gates
+         SET state = 'closed_never_released', state_version = 1, never_released_evidence_id = ?
+         WHERE target_start_gate_id = ? AND attempt_id = ? AND state = 'held' AND state_version = 0`,
+      ).run(evidenceId, observation.gateId, observation.attemptId);
+      if (update.changes !== 1) {
+        throw typedError("RICKGENT_STATE_CONFLICT", "target start gate transition lost its CAS race", this.location.databasePath);
+      }
+      const closed = db.prepare("SELECT * FROM target_start_gates WHERE target_start_gate_id = ? AND attempt_id = ?").get(observation.gateId, observation.attemptId) as MutableStateRecord;
+      return freezeValue({ receipt, record: frozenRow(closed), evidence: frozenRow(evidenceRow), replayed: false });
+    });
+  }
+
+  /**
+   * Mint and atomically persist a nonterminal cleanup-eligibility receipt.
+   * No state transition is advanced (cleanup eligibility is nonterminal); the
+   * receipt, evidence, and idempotency result are persisted in one transaction.
+   */
+  mintCleanupEligibility(
+    request: MintCleanupEligibilityRequest,
+    capability: LeaseAuthorityMintCapability,
+  ): MintedDispositionReceipt<CleanupEligibilityReceipt> {
+    const receipt = mintCleanupEligibilityReceipt(request.observation, capability);
+    const observation = receipt;
+    const payload = sealedDispositionPayload(request.observation as unknown as Readonly<Record<string, unknown>>);
+    const evidenceId = `evidence-cleanup-eligibility-${observation.receiptId}`;
+    const evidenceRow = dispositionEvidenceRow(
+      evidenceId,
+      observation.attemptId,
+      observation.contextId,
+      "CleanupEligibilityService",
+      CLEANUP_ELIGIBILITY_SCHEMA_VERSION,
+      observation.receiptId,
+      payload,
+      observation.observedAt,
+    );
+    return this.#immediate("mint_cleanup_eligibility", () => {
+      this.#validateCleanupDispositionPreimage(observation, "cleanup-eligibility");
+      const proof = this.#requireSealedTargetProofSet(observation.attemptId, request.targetProofSetId);
+      const claimSnapshotSetDigest = sha256Text(canonicalJson([...request.claimSnapshotEvidenceIds]));
+      const receiptRow = this.#buildReceiptRow("cleanup_eligibility_records", {
+        cleanup_eligibility_record_id: observation.receiptId,
+        attempt_id: observation.attemptId,
+        ownership_id: observation.ownershipId,
+        owner_generation: observation.ownerGeneration,
+        ownership_state_version: observation.ownershipStateVersion,
+        ownership_context_digest: observation.ownershipContextDigest,
+        context_id: observation.contextId,
+        commit_intent_id: observation.commitIntentId,
+        commit_attribution_id: observation.commitAttributionId,
+        candidate_oid: observation.candidateOid,
+        attempt_ref: observation.attemptRef,
+        attempt_ref_observed_oid: observation.attemptRefObservedOid,
+        delivery_ref: observation.deliveryRef,
+        delivery_baseline_oid: observation.deliveryBaselineOid,
+        delivery_observed_oid: observation.deliveryObservedOid,
+        target_proof_set_id: request.targetProofSetId,
+        target_proof_set_state: "sealed_complete",
+        target_proof_set_digest: String(proof.proof_set_digest ?? ""),
+        target_proof_set_evidence_id: String(proof.evidence_id ?? ""),
+        target_proof_count: Number(proof.target_count ?? 0),
+        ownership_snapshot_evidence_id: request.ownershipSnapshotEvidenceId,
+        claim_snapshot_evidence_ids_json: canonicalJson([...request.claimSnapshotEvidenceIds]),
+        claim_snapshot_set_digest: claimSnapshotSetDigest,
+        evidence_id: evidenceId,
+        input_digest: sha256Text(payload),
+        record_digest: sha256Text(payload),
+        idempotency_key: `cleanup-eligibility:${observation.receiptId}`,
+        created_at: observation.observedAt,
+      });
+      return this.#persistDispositionReceipt(
+        "cleanup_eligibility_records",
+        "cleanup_eligibility_record_id",
+        "record_digest",
+        receiptRow,
+        evidenceRow,
+        evidenceId,
+        payload,
+        () => { /* nonterminal: no state transition */ },
+        receipt,
+      );
+    });
+  }
+
+  /**
+   * Mint and atomically persist a failure-cleanup receipt.  Requires the
+   * attempt to be `cleanup_pending`; the receipt, evidence, and idempotency
+   * result are persisted in one transaction.  The attempt terminal transition
+   * is advanced separately by the purpose-specific finalization service so
+   * that a failure-cleanup receipt can never satisfy promotion.
+   */
+  mintFailureCleanup(
+    request: MintFailureCleanupRequest,
+    capability: LeaseAuthorityMintCapability,
+  ): MintedDispositionReceipt<FailureCleanupReceipt> {
+    const receipt = mintFailureCleanupReceipt(request.observation, capability);
+    const observation = receipt;
+    const payload = sealedDispositionPayload(request.observation as unknown as Readonly<Record<string, unknown>>);
+    const evidenceId = `evidence-failure-cleanup-${observation.receiptId}`;
+    const evidenceRow = dispositionEvidenceRow(
+      evidenceId,
+      observation.attemptId,
+      observation.contextId,
+      "FailureCleanupService",
+      FAILURE_CLEANUP_SCHEMA_VERSION,
+      observation.receiptId,
+      payload,
+      observation.observedAt,
+    );
+    const failureKind = request.cleanupEligibilityRecordId === undefined
+      ? "pre_oracle"
+      : request.promotionIntentId === undefined
+        ? "oracle_rejected"
+        : "promotion_aborted";
+    return this.#immediate("mint_failure_cleanup", () => {
+      this.#validateCleanupDispositionPreimage(observation, "failure-cleanup");
+      const proof = this.#requireSealedTargetProofSet(observation.attemptId, request.targetProofSetId);
+      const claimPreimageDigest = sha256Text(canonicalJson(observation.claims.map((claim) => ({
+        resource_claim_id: claim.resourceClaimId, slot: claim.slot,
+        expected_state: claim.expectedState, expected_version: claim.expectedVersion,
+      }))));
+      const receiptRow = this.#buildReceiptRow("failure_cleanup_records", {
+        failure_cleanup_record_id: observation.receiptId,
+        attempt_id: observation.attemptId,
+        ownership_id: observation.ownershipId,
+        owner_generation: observation.ownerGeneration,
+        ownership_state_version: observation.ownershipStateVersion,
+        ownership_context_digest: observation.ownershipContextDigest,
+        context_id: observation.contextId,
+        failure_kind: failureKind,
+        cause_evidence_id: request.causeEvidenceId,
+        cleanup_eligibility_record_id: request.cleanupEligibilityRecordId ?? null,
+        oracle_decision_id: request.oracleDecisionId ?? null,
+        promotion_intent_id: request.promotionIntentId ?? null,
+        target_proof_set_id: request.targetProofSetId,
+        target_proof_set_state: "sealed_complete",
+        target_proof_set_digest: String(proof.proof_set_digest ?? ""),
+        target_proof_set_evidence_id: String(proof.evidence_id ?? ""),
+        target_proof_count: Number(proof.target_count ?? 0),
+        salvage_record_id: observation.salvageRecordId,
+        delivery_ref: observation.deliveryRef,
+        delivery_baseline_oid: observation.deliveryBaselineOid,
+        delivery_observed_oid: observation.deliveryObservedOid,
+        claim_preimage_digest: claimPreimageDigest,
+        worktree_disposition: "removed",
+        index_disposition: "removed",
+        ref_disposition: "removed",
+        context_disposition: "removed",
+        bundle_disposition: "removed",
+        group_dead: 1,
+        resources_absent: 1,
+        ownership_release_eligible: 1,
+        evidence_id: evidenceId,
+        input_digest: sha256Text(payload),
+        record_digest: sha256Text(payload),
+        idempotency_key: `failure-cleanup:${observation.receiptId}`,
+        created_at: observation.observedAt,
+      });
+      return this.#persistDispositionReceipt(
+        "failure_cleanup_records",
+        "failure_cleanup_record_id",
+        "record_digest",
+        receiptRow,
+        evidenceRow,
+        evidenceId,
+        payload,
+        () => { /* terminal transition advanced by FailureFinalizationService */ },
+        receipt,
+      );
+    });
+  }
+
+  /**
+   * Mint and atomically persist a promotion-cleanup receipt.  Requires the
+   * exact accepted oracle decision, an independently observed candidate/delivery
+   * state, and a promotion-purpose cleanup eligibility receipt.  A failure or
+   * quarantine receipt cannot satisfy this command even with a forged oracle
+   * decision: the receipt brand is reserved to the promotion-cleanup authority.
+   */
+  mintPromotionCleanup(
+    request: MintPromotionCleanupRequest,
+    capability: LeaseAuthorityMintCapability,
+  ): MintedDispositionReceipt<PromotionCleanupReceipt> {
+    const receipt = mintPromotionCleanupReceipt(request.observation, capability);
+    const observation = receipt;
+    const payload = sealedDispositionPayload(request.observation as unknown as Readonly<Record<string, unknown>>);
+    const evidenceId = `evidence-promotion-cleanup-${observation.receiptId}`;
+    const evidenceRow = dispositionEvidenceRow(
+      evidenceId,
+      observation.attemptId,
+      observation.contextId,
+      "PromotionCleanupService",
+      PROMOTION_CLEANUP_SCHEMA_VERSION,
+      observation.receiptId,
+      payload,
+      observation.observedAt,
+    );
+    return this.#immediate("mint_promotion_cleanup", () => {
+      this.#validatePromotionCleanupPreimage(observation);
+      const claimPreimageDigest = sha256Text(canonicalJson(observation.claims.map((claim) => ({
+        resource_claim_id: claim.resourceClaimId, slot: claim.slot,
+        expected_state: claim.expectedState, expected_version: claim.expectedVersion,
+      }))));
+      const receiptRow = this.#buildReceiptRow("promotion_cleanup_records", {
+        promotion_cleanup_record_id: observation.receiptId,
+        attempt_id: observation.attemptId,
+        ownership_id: observation.ownershipId,
+        owner_generation: observation.ownerGeneration,
+        ownership_state_version: observation.ownershipStateVersion,
+        ownership_context_digest: observation.ownershipContextDigest,
+        context_id: observation.contextId,
+        cleanup_eligibility_record_id: observation.cleanupEligibilityReceiptId,
+        oracle_decision_id: observation.oracleDecisionId,
+        promotion_intent_id: observation.promotionIntentId,
+        promotion_observation_evidence_id: request.promotionObservationEvidenceId,
+        delivery_ref: observation.deliveryRef,
+        expected_old_oid: observation.expectedOldOid,
+        candidate_oid: observation.candidateOid,
+        delivery_observed_oid: observation.deliveryObservedOid,
+        claim_preimage_digest: claimPreimageDigest,
+        worktree_disposition: "removed",
+        index_disposition: "removed",
+        ref_disposition: "removed",
+        context_disposition: "removed",
+        bundle_disposition: "removed",
+        group_dead: 1,
+        resources_absent: 1,
+        ownership_release_eligible: 1,
+        evidence_id: evidenceId,
+        input_digest: sha256Text(payload),
+        record_digest: sha256Text(payload),
+        idempotency_key: `promotion-cleanup:${observation.receiptId}`,
+        created_at: observation.observedAt,
+      });
+      return this.#persistDispositionReceipt(
+        "promotion_cleanup_records",
+        "promotion_cleanup_record_id",
+        "record_digest",
+        receiptRow,
+        evidenceRow,
+        evidenceId,
+        payload,
+        () => { /* promotion intent finalization advanced by PromotionFinalizationService */ },
+        receipt,
+      );
+    });
+  }
+
+  /**
+   * Mint and atomically persist a quarantine receipt together with its sealed
+   * claim set and normalized members.  Requires the attempt to be
+   * `cleanup_pending`; the receipt, claim set, members, evidence, and
+   * idempotency result are persisted in one transaction.
+   */
+  mintQuarantine(
+    request: MintQuarantineRequest,
+    capability: LeaseAuthorityMintCapability,
+  ): MintedDispositionReceipt<QuarantineReceipt> {
+    const receipt = mintQuarantineReceipt(request.observation, capability);
+    const observation = receipt;
+    const payload = sealedDispositionPayload(request.observation as unknown as Readonly<Record<string, unknown>>);
+    const evidenceId = `evidence-quarantine-${observation.receiptId}`;
+    const evidenceRow = dispositionEvidenceRow(
+      evidenceId,
+      observation.attemptId,
+      observation.contextId,
+      "QuarantineService",
+      QUARANTINE_SCHEMA_VERSION,
+      observation.receiptId,
+      payload,
+      observation.observedAt,
+    );
+    const quarantineStage = request.cleanupEligibilityRecordId === undefined
+      ? "pre_oracle"
+      : request.promotionIntentId === undefined
+        ? "oracle"
+        : "promotion";
+    return this.#immediate("mint_quarantine", () => {
+      this.#validateCleanupDispositionPreimage(observation, "quarantine");
+      const proof = this.#requireSealedTargetProofSet(observation.attemptId, request.targetProofSetId);
+      // Insert the sealed quarantine claim set + normalized members first.
+      const claimSetId = `quarantine-claim-set-${observation.receiptId}`;
+      const claimSetEvidenceId = `evidence-quarantine-claim-set-${observation.receiptId}`;
+      const claimSetPayload = canonicalJson(request.claimMembers.map((member) => ({
+        resource_claim_id: member.resourceClaimId, slot: member.slot,
+        physical_disposition: member.physicalDisposition, member_digest: member.memberDigest,
+      })));
+      const claimSetEvidenceRow = dispositionEvidenceRow(
+        claimSetEvidenceId,
+        observation.attemptId,
+        observation.contextId,
+        "QuarantineService",
+        QUARANTINE_SCHEMA_VERSION,
+        claimSetId,
+        claimSetPayload,
+        observation.observedAt,
+      );
+      this.#validateRecordSemantics("evidence", claimSetEvidenceRow);
+      this.#insert("evidence", claimSetEvidenceRow);
+      const counts = request.claimMembers.reduce((acc, member) => {
+        acc[member.physicalDisposition] += 1;
+        return acc;
+      }, { absent: 0, retained: 0, unknown: 0, not_applicable: 0 });
+      const allRequiredAbsent = counts.absent === request.claimMembers.length - 1 && counts.not_applicable === 1 ? 1 : 0;
+      const claimSetDigest = sha256Text(canonicalJson(request.claimMembers.map((member) => member.memberDigest)));
+      const claimSetRow = this.#buildReceiptRow("quarantine_claim_sets", {
+        quarantine_claim_set_id: claimSetId,
+        attempt_id: observation.attemptId,
+        ownership_id: observation.ownershipId,
+        owner_generation: observation.ownerGeneration,
+        ownership_context_digest: observation.ownershipContextDigest,
+        ownership_snapshot_evidence_id: request.ownershipSnapshotEvidenceId,
+        claim_count: request.claimMembers.length,
+        absent_count: counts.absent,
+        retained_count: counts.retained,
+        unknown_count: counts.unknown,
+        not_applicable_count: counts.not_applicable,
+        all_required_absent: allRequiredAbsent,
+        state: "sealed",
+        state_version: 1,
+        claim_set_digest: claimSetDigest,
+        evidence_id: claimSetEvidenceId,
+        input_digest: sha256Text(claimSetPayload),
+        idempotency_key: `quarantine-claim-set:${observation.receiptId}`,
+        created_at: observation.observedAt,
+        sealed_at: observation.observedAt,
+      });
+      this.#insert("quarantine_claim_sets", claimSetRow);
+      for (const [ordinal, member] of request.claimMembers.entries()) {
+        this.#insert("quarantine_claim_members", this.#validatedColumns("quarantine_claim_members", normalizeRow({
+          quarantine_claim_set_id: claimSetId,
+          attempt_id: observation.attemptId,
+          ordinal,
+          resource_claim_id: member.resourceClaimId,
+          slot: member.slot,
+          kind: member.slot,
+          current_ownership_id: member.currentOwnershipId,
+          owner_generation: member.ownerGeneration,
+          claim_state: "quarantined",
+          claim_state_version: member.claimStateVersion,
+          claim_snapshot_evidence_id: member.claimSnapshotEvidenceId,
+          absence_required: member.absenceRequired ? 1 : 0,
+          physical_disposition: member.physicalDisposition,
+          disposition_evidence_id: member.dispositionEvidenceId,
+          member_digest: member.memberDigest,
+          created_at: observation.observedAt,
+        })));
+      }
+      const receiptRow = this.#buildReceiptRow("quarantine_records", {
+        quarantine_record_id: observation.receiptId,
+        attempt_id: observation.attemptId,
+        ownership_id: observation.ownershipId,
+        owner_generation: observation.ownerGeneration,
+        ownership_state_version: observation.ownershipStateVersion,
+        ownership_context_digest: observation.ownershipContextDigest,
+        context_id: observation.contextId,
+        quarantine_stage: quarantineStage,
+        reason_code: observation.reasonCode,
+        cause_evidence_id: request.causeEvidenceId,
+        cleanup_eligibility_record_id: request.cleanupEligibilityRecordId ?? null,
+        oracle_decision_id: request.oracleDecisionId ?? null,
+        promotion_intent_id: request.promotionIntentId ?? null,
+        target_proof_set_id: request.targetProofSetId,
+        target_proof_set_state: "sealed_complete",
+        target_proof_set_digest: String(proof.proof_set_digest ?? ""),
+        target_proof_set_evidence_id: String(proof.evidence_id ?? ""),
+        target_proof_count: Number(proof.target_count ?? 0),
+        quarantine_claim_set_id: claimSetId,
+        quarantine_claim_set_state: "sealed",
+        quarantine_claim_set_digest: claimSetDigest,
+        quarantine_claim_set_evidence_id: claimSetEvidenceId,
+        delivery_ref: observation.deliveryRef,
+        expected_delivery_oid: null,
+        observed_delivery_oid: observation.deliveryObservedOid,
+        group_dead: 1,
+        resources_absent: allRequiredAbsent,
+        evidence_id: evidenceId,
+        input_digest: sha256Text(payload),
+        record_digest: sha256Text(payload),
+        idempotency_key: `quarantine:${observation.receiptId}`,
+        created_at: observation.observedAt,
+      });
+      return this.#persistDispositionReceipt(
+        "quarantine_records",
+        "quarantine_record_id",
+        "record_digest",
+        receiptRow,
+        evidenceRow,
+        evidenceId,
+        payload,
+        () => { /* terminal transition advanced by QuarantineFinalizationService */ },
+        receipt,
+      );
+    });
+  }
+
+  #requireSealedTargetProofSet(attemptId: string, targetProofSetId: string): MutableStateRecord {
+    const proof = this.#requireDatabase().prepare(
+      "SELECT * FROM attempt_target_proof_sets WHERE target_proof_set_id = ? AND attempt_id = ? AND state = 'sealed_complete'",
+    ).get(targetProofSetId, attemptId) as MutableStateRecord | undefined;
+    if (proof === undefined) {
+      throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "disposition receipt requires a sealed-complete target proof set", this.location.databasePath);
+    }
+    return proof;
+  }
+
+  #persistDispositionReceipt<R extends { readonly receiptId: string; readonly attemptId: string; readonly observedAt: string }>(
+    table: StateTableName,
+    idColumn: string,
+    digestColumn: string,
+    receiptRow: Readonly<Record<string, SqlValue>>,
+    evidenceRow: Readonly<Record<string, SqlValue>>,
+    evidenceId: string,
+    payload: string,
+    advanceState: (db: DatabaseSync) => void,
+    receipt: R,
+  ): MintedDispositionReceipt<R> {
+    const recordDigest = sha256Text(payload);
+    const db = this.#requireDatabase();
+    const receiptId = String(receiptRow[idColumn] ?? receipt.receiptId);
+    const attemptId = receipt.attemptId;
+    // Replay: an existing receipt under the same idempotency key must return the
+    // identical immutable postimage; any divergent postimage conflicts.
+    const existing = db.prepare(
+      `SELECT * FROM ${quoteIdentifier(table)} WHERE ${quoteIdentifier(idColumn)} = ? AND attempt_id = ?`,
+    ).get(receiptId, attemptId) as MutableStateRecord | undefined;
+    if (existing !== undefined) {
+      const existingDigest = String(existing[digestColumn] ?? "");
+      if (existingDigest !== recordDigest) {
+        throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", `disposition receipt ${receiptId} has a different immutable postimage`, this.location.databasePath);
+      }
+      const existingEvidence = db.prepare("SELECT * FROM evidence WHERE evidence_id = ? AND attempt_id = ?").get(evidenceId, attemptId) as MutableStateRecord | undefined;
+      if (existingEvidence === undefined) {
+        throw typedError("RICKGENT_STATE_CORRUPT", `disposition receipt ${receiptId} replay is missing its evidence`, this.location.databasePath);
+      }
+      return freezeValue({ receipt, record: frozenRow(existing), evidence: frozenRow(existingEvidence), replayed: true });
+    }
+    this.#validateRecordSemantics("evidence", evidenceRow);
+    this.#insert("evidence", evidenceRow);
+    advanceState(db);
+    this.#insert(table, receiptRow);
+    return freezeValue({ receipt, record: frozenRow(receiptRow), evidence: frozenRow(evidenceRow), replayed: false });
+  }
+
+  #buildReceiptRow(
+    table: StateTableName,
+    columns: Readonly<Record<string, SqlValue>>,
+  ): Readonly<Record<string, SqlValue>> {
+    const row = this.#validatedColumns(table, normalizeRow(columns));
+    this.#requireCompleteRow(table, row);
+    return row;
+  }
+
+  #validateCleanupDispositionPreimage(
+    observation: { readonly attemptId: string; readonly ownershipId: string; readonly ownerGeneration: number; readonly ownershipContextDigest: string; readonly ownershipStateVersion: number },
+    label: string,
+  ): void {
+    const db = this.#requireDatabase();
+    const ownership = db.prepare(
+      `SELECT * FROM attempt_ownership_leases
+       WHERE ownership_id = ? AND attempt_id = ? AND generation = ? AND context_digest = ?`,
+    ).get(observation.ownershipId, observation.attemptId, observation.ownerGeneration,
+      observation.ownershipContextDigest) as MutableStateRecord | undefined;
+    if (ownership === undefined) {
+      throw typedError("RICKGENT_STATE_OWNER_MISMATCH", `${label} receipt does not bind an existing attempt ownership lease`, this.location.databasePath);
+    }
+    if (String(ownership.state) !== "cleanup_pending" || Number(ownership.state_version) !== observation.ownershipStateVersion) {
+      throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", `${label} receipt requires a cleanup_pending ownership preimage at the exact version`, this.location.databasePath);
+    }
+    const attempt = db.prepare("SELECT * FROM attempts WHERE attempt_id = ?").get(observation.attemptId) as MutableStateRecord | undefined;
+    if (attempt === undefined) {
+      throw typedError("RICKGENT_STATE_RESUME_INCOMPATIBLE", `${label} receipt does not bind an existing attempt`, this.location.databasePath);
+    }
+    if (String(attempt.state) !== "cleanup_pending") {
+      throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", `${label} receipt requires a cleanup_pending attempt`, this.location.databasePath);
+    }
+  }
+
+  #validatePromotionCleanupPreimage(observation: PromotionCleanupReceipt): void {
+    this.#validateCleanupDispositionPreimage(observation, "promotion-cleanup");
+    const db = this.#requireDatabase();
+    // The exact accepted oracle decision must exist and be accepted.
+    const oracle = db.prepare(
+      "SELECT * FROM oracle_decisions WHERE oracle_decision_id = ? AND attempt_id = ? AND result = 'accepted'",
+    ).get(observation.oracleDecisionId, observation.attemptId) as MutableStateRecord | undefined;
+    if (oracle === undefined) {
+      throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "promotion-cleanup receipt requires the exact accepted oracle decision", this.location.databasePath);
+    }
+    // The promotion-purpose cleanup eligibility receipt must exist.
+    const eligibility = db.prepare(
+      "SELECT * FROM cleanup_eligibility_records WHERE cleanup_eligibility_record_id = ? AND attempt_id = ?",
+    ).get(observation.cleanupEligibilityReceiptId, observation.attemptId) as MutableStateRecord | undefined;
+    if (eligibility === undefined) {
+      throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "promotion-cleanup receipt requires a promotion-purpose cleanup eligibility receipt", this.location.databasePath);
+    }
+    // The independently observed candidate/delivery state must equal the oracle's candidate.
+    if (String(eligibility.candidate_oid) !== observation.candidateOid || observation.deliveryObservedOid !== observation.candidateOid) {
+      throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "promotion-cleanup receipt must observe the exact candidate and delivery state", this.location.databasePath);
+    }
+    // The promotion intent must exist and reference the same oracle decision.
+    const intent = db.prepare(
+      "SELECT * FROM promotion_intents WHERE promotion_intent_id = ? AND attempt_id = ? AND oracle_decision_id = ?",
+    ).get(observation.promotionIntentId, observation.attemptId, observation.oracleDecisionId) as MutableStateRecord | undefined;
+    if (intent === undefined) {
+      throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "promotion-cleanup receipt requires the exact promotion intent", this.location.databasePath);
+    }
   }
 
   #resolveAttemptOracleProjection(attemptId: string): { readonly attemptState: string; readonly projection: AttemptOracleProjection } {

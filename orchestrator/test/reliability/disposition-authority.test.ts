@@ -2,17 +2,25 @@ import { describe, expect, it } from "vitest";
 import {
   CleanupEligibilityReceipt,
   FailureCleanupReceipt,
+  LeaseAuthorityMintCapability,
   PromotionCleanupReceipt,
   QuarantineReceipt,
   TargetNeverReleasedReceipt,
   assertCleanupEligibilityObservation,
   assertQuarantineObservation,
   assertTargetNeverReleasedObservation,
+  createLeaseAuthorityMintCapability,
   isCleanupEligibilityReceipt,
   isFailureCleanupReceipt,
+  isLeaseAuthorityMintCapability,
   isPromotionCleanupReceipt,
   isQuarantineReceipt,
   isTargetNeverReleasedReceipt,
+  mintCleanupEligibilityReceipt,
+  mintFailureCleanupReceipt,
+  mintPromotionCleanupReceipt,
+  mintQuarantineReceipt,
+  mintTargetNeverReleasedReceipt,
   type AttemptResourceSlot,
   type CleanupEligibilityObservation,
   type FailureCleanupObservation,
@@ -245,7 +253,7 @@ describe("attempt disposition runtime authority", () => {
     })).toThrow(/containment identity must equal/i);
     expect(() => assertTargetNeverReleasedObservation({
       ...killedBootstrap,
-      containmentDisposition: "forged" as never,
+      containmentDisposition: "forged" as TargetNeverReleasedObservation["containmentDisposition"],
     })).toThrow(/containment disposition is invalid/i);
   });
 
@@ -265,8 +273,14 @@ describe("attempt disposition runtime authority", () => {
     [PromotionCleanupReceipt, promotion],
     [QuarantineReceipt, quarantine],
   ] as const)("does not let callers construct %s", (Receipt, input) => {
-    expect(() => new Receipt(Symbol("caller"), input as never)).toThrow(/require/i);
-    expect(() => new Receipt(Symbol.for("rickgent.disposition"), input as never)).toThrow(/require/i);
+    // The Receipt constructor's input parameter is the specific observation
+    // type for that receipt; the it.each payload is the union of all five.
+    // Cast through the receipt's own constructor input type so no `as never`
+    // escape hatch is needed.
+    type ConstructorInput<I> = I extends new (authority: symbol, input: infer T) => unknown ? T : never;
+    const forgedInput = input as unknown as ConstructorInput<typeof Receipt>;
+    expect(() => new Receipt(Symbol("caller"), forgedInput)).toThrow(/require/i);
+    expect(() => new Receipt(Symbol.for("rickgent.disposition"), forgedInput)).toThrow(/require/i);
   });
 
   it("rejects structural and prototype forgeries across all five proof types", () => {
@@ -301,6 +315,78 @@ describe("attempt disposition runtime authority", () => {
     for (const input of [neverReleased, eligibility, failure, promotion, quarantine]) {
       const serialized = JSON.parse(JSON.stringify(input)) as unknown;
       for (const predicate of predicates) expect(predicate(serialized)).toBe(false);
+    }
+  });
+
+  it("rejects every cross-type prototype forgery across all five receipt classes", () => {
+    const realInputs: readonly Readonly<Record<string, unknown>>[] = [
+      neverReleased, eligibility, failure, promotion, quarantine,
+    ];
+    const prototypes = [
+      TargetNeverReleasedReceipt.prototype,
+      CleanupEligibilityReceipt.prototype,
+      FailureCleanupReceipt.prototype,
+      PromotionCleanupReceipt.prototype,
+      QuarantineReceipt.prototype,
+    ] as const;
+    // A receipt minted under one authority must not satisfy any other
+    // receipt's predicate, even when its prototype is reassigned to a
+    // different receipt class.  This closes the cross-type forgery vector.
+    for (const input of realInputs) {
+      for (const foreignPrototype of prototypes) {
+        const forged = Object.assign(Object.create(foreignPrototype) as object, input);
+        for (const predicate of predicates) expect(predicate(forged)).toBe(false);
+      }
+    }
+  });
+
+  it("rejects a forged LeaseAuthorityMintCapability constructed with a foreign symbol", () => {
+    expect(() => new LeaseAuthorityMintCapability(Symbol("rickgent.disposition-mint-authority"))).toThrow(/LeaseAuthority/);
+    expect(() => new LeaseAuthorityMintCapability(Symbol.for("rickgent.disposition-mint-authority"))).toThrow(/LeaseAuthority/);
+    expect(isLeaseAuthorityMintCapability({})).toBe(false);
+    expect(isLeaseAuthorityMintCapability(null)).toBe(false);
+    expect(isLeaseAuthorityMintCapability(Object.create(LeaseAuthorityMintCapability.prototype))).toBe(false);
+  });
+
+  it("mints each receipt type only via the LeaseAuthority capability and rejects a forged capability", () => {
+    const minters = [
+      (capability: unknown) => mintTargetNeverReleasedReceipt(neverReleased, capability as never),
+      (capability: unknown) => mintCleanupEligibilityReceipt(eligibility, capability as never),
+      (capability: unknown) => mintFailureCleanupReceipt(failure, capability as never),
+      (capability: unknown) => mintPromotionCleanupReceipt(promotion, capability as never),
+      (capability: unknown) => mintQuarantineReceipt(quarantine, capability as never),
+    ] as const;
+    const predicatesByIndex = [
+      isTargetNeverReleasedReceipt,
+      isCleanupEligibilityReceipt,
+      isFailureCleanupReceipt,
+      isPromotionCleanupReceipt,
+      isQuarantineReceipt,
+    ] as const;
+
+    // A forged capability (not issued by LeaseAuthority) cannot mint any receipt.
+    for (const mint of minters) {
+      expect(() => mint({})).toThrow(/LeaseAuthority/);
+      expect(() => mint(null)).toThrow(/LeaseAuthority/);
+      expect(() => mint(Object.create(LeaseAuthorityMintCapability.prototype))).toThrow(/LeaseAuthority/);
+      expect(() => mint(new LeaseAuthorityMintCapability(Symbol("forged")))).toThrow(/LeaseAuthority/);
+    }
+
+    // The real factory-issued capability mints exactly one branded receipt of
+    // its own type; the receipt does not satisfy any other receipt's predicate.
+    const capability = createLeaseAuthorityMintCapability();
+    expect(isLeaseAuthorityMintCapability(capability)).toBe(true);
+    const minted = [
+      mintTargetNeverReleasedReceipt(neverReleased, capability),
+      mintCleanupEligibilityReceipt(eligibility, capability),
+      mintFailureCleanupReceipt(failure, capability),
+      mintPromotionCleanupReceipt(promotion, capability),
+      mintQuarantineReceipt(quarantine, capability),
+    ] as const;
+    for (let index = 0; index < minted.length; index += 1) {
+      for (let predicate = 0; predicate < predicatesByIndex.length; predicate += 1) {
+        expect(predicatesByIndex[predicate]!(minted[index]!)).toBe(predicate === index);
+      }
     }
   });
 });

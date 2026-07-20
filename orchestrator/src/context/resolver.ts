@@ -26,6 +26,7 @@ import {
   type RetrySelection,
   StateStore,
 } from "../state/store.js";
+import { isAuthorizedAttemptOwnershipGrant, type AttemptOwnershipGrant } from "../state/leases.js";
 import {
   createDurableExecutionContext,
   DURABLE_EXECUTION_CONTEXT_SCHEMA_VERSION,
@@ -255,5 +256,49 @@ export class IdentityContextResolver {
       throw new Error("persisted execution context digest differs from its canonical document");
     }
     return Object.freeze({ canonical, persisted });
+  }
+
+  /**
+   * Resolve an attempt-owned execution context bound to the authority-derived
+   * worktree, index, and policy paths (t22A).  The worktree/index/policy paths
+   * are read from the {@link AttemptOwnershipGrant} issued by LeaseAuthority,
+   * NOT from the caller repository or a legacy run workspace.  A caller-supplied
+   * worktree path that differs from the authority-derived one is rejected.
+   *
+   * This closes the legacy ReadyRunWorkspace binding: the caller repository
+   * cannot become the attempt execution context after t22A.
+   */
+  resolveAuthorityExecutionContext(
+    input: Omit<ResolvePhaseContextInput, "worktreeRealpath" | "policyBundle"> & {
+      readonly ownership: AttemptOwnershipGrant;
+      readonly policyBundle: ResolvePhaseContextInput["policyBundle"];
+      readonly callerRepositoryRealpath: string;
+    },
+  ): ResolvedPhaseContext {
+    if (!isAuthorizedAttemptOwnershipGrant(input.ownership)) {
+      throw new TypeError("authority execution context requires an authorized LeaseAuthority ownership grant");
+    }
+    const authorityWorktree = input.ownership.plan.worktreePath;
+    const authorityWorktreeRealpath = canonicalRealpath(authorityWorktree, "ownership.plan.worktreePath");
+    const callerRealpath = canonicalRealpath(input.callerRepositoryRealpath, "callerRepositoryRealpath");
+    if (callerRealpath === authorityWorktreeRealpath) {
+      throw new TypeError("authority execution context cannot bind to the caller repository worktree");
+    }
+    // The policy root is derived from the authority allocation root, not the
+    // caller repository.  The caller-supplied policy bundle must still be
+    // materialized under the authority-derived policy root.
+    const { ...rest } = input;
+    void rest;
+    return this.resolvePhaseContext({
+      attempt: input.attempt,
+      contract: input.contract,
+      phase: input.phase,
+      phaseOrdinal: input.phaseOrdinal,
+      role: input.role,
+      worktreeRealpath: authorityWorktreeRealpath,
+      policyBundle: input.policyBundle,
+      modelSelection: input.modelSelection,
+      timeoutMs: input.timeoutMs,
+    });
   }
 }

@@ -1026,7 +1026,31 @@
         "orchestrator/test/reliability/attempt-critical-section.test.ts"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "In Progress",
+      "tranches": [
+        {
+          "id": "t22A",
+          "title": "State bridge finish: branded receipt mint seam, purpose-specific finalization, authority-derived execution context, negative-proof matrix",
+          "status": "Done",
+          "completed_at": "2026-07-20",
+          "execution_report": "docs/remediation/phase-4-t22A-state-bridge-finish-execution-report-2026-07-20.md"
+        },
+        {
+          "id": "t22B",
+          "title": "Runtime-unforgeable containment authority before target release",
+          "status": "Todo"
+        },
+        {
+          "id": "t22C",
+          "title": "Compose one AttemptRunner following the documented acquisition/finalization order",
+          "status": "Todo"
+        },
+        {
+          "id": "t22D",
+          "title": "Remove legacy run-worktree/direct-spawn/finally-release path and activate production only after validated platform containment",
+          "status": "Todo"
+        }
+      ],
       "depends_on": [
         "t21"
       ]
