@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "contract_id": "rickgent-state-and-lifecycle-v1",
   "decision_status": "frozen_decision_only",
-  "decision_digest": "sha256:45e628692fbb9c490103654e212dc6356cf43dbdaf1dbaccc412b122bcff28ce",
+  "decision_digest": "sha256:f4007706ada579b8a5b25e7a0415d228601d59f2e225b888fcba2e75edaf4e59",
   "parent_authority": {
     "contract_id": "rickgent-trust-spine-v1",
     "path": "docs/architecture/reliability/trust-spine-contract.json"
@@ -4566,6 +4566,11 @@
       "code": "RICKGENT_PROMOTION_CONFLICT",
       "class": "infrastructure",
       "condition": "delivery ref independently observed at a third OID"
+    },
+    {
+      "code": "RICKGENT_CONTAINMENT_UNAVAILABLE",
+      "class": "infrastructure",
+      "condition": "containment backend probe failed or a containment membership is not authority-owned or not bound to the exact attempt lineage"
     }
   ]
 }

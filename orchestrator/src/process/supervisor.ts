@@ -32,6 +32,12 @@ import {
   type ProcessSignalObservation,
   type TrackedSignalResult,
 } from "./posix.js";
+import {
+  ContainmentUnavailableError,
+  assertContainmentMembershipForLaunch,
+  type ContainmentLineage,
+  type ContainmentMembership,
+} from "./containment.js";
 
 const PROCESS_SUPERVISOR_COMMAND_AUTHORITY = Symbol("rickgent.process-supervisor-command");
 const AUTHORIZED_PROCESS_SUPERVISOR_COMMANDS = new WeakSet<object>();
@@ -194,6 +200,17 @@ export interface SupervisedProcessRequest {
   readonly deathObservationMs?: number;
   readonly outputLimitBytes?: number;
   readonly tailLimitBytes?: number;
+  /**
+   * t22B: authority-owned containment membership proof.  When supplied, the
+   * supervisor asserts it (brand + lineage) BEFORE spawn; a forged or
+   * foreign-lineage membership fails closed to a `spawn_error` with
+   * `RICKGENT_CONTAINMENT_UNAVAILABLE` and the gate is not released.  When
+   * absent, the legacy fixture path continues (the production cutover that
+   * makes this field mandatory is t22D).
+   */
+  readonly containmentMembership?: ContainmentMembership;
+  /** The exact attempt lineage the membership must bind to (t22B). */
+  readonly containmentLineage?: ContainmentLineage;
 }
 
 export interface BoundedOutputReceipt {
@@ -439,6 +456,38 @@ export class ProcessSupervisor {
 
   async run(request: SupervisedProcessRequest): Promise<ProcessSupervisorResult> {
     validateRequest(request);
+    // t22B: when a containment membership is supplied, assert it is
+    // authority-owned and bound to the exact attempt lineage BEFORE any
+    // spawn or platform work.  A structurally-correct membership from an
+    // injected controller is rejected (VAL-T22B-002, VAL-T22B-005).  When
+    // the membership is absent, the legacy fixture path continues; the
+    // production cutover that makes this mandatory is t22D.
+    if (request.containmentMembership !== undefined) {
+      if (request.containmentLineage === undefined) {
+        throw new TypeError("containmentLineage is required when containmentMembership is supplied");
+      }
+      try {
+        assertContainmentMembershipForLaunch(request.containmentMembership, request.containmentLineage);
+      } catch (error) {
+        let ownership = request.ownership;
+        try {
+          ownership = this.#leases.beginCleanup({
+            ownership,
+            idempotencyKey: `process-containment-unavailable:${request.phase.phaseExecutionId}`,
+          });
+        } catch {
+          // The containment error remains the authoritative failure.
+        }
+        return Object.freeze({
+          outcome: "spawn_error", launchId: null, processReceiptId: null, pid: null, pgid: null,
+          exitCode: null, signal: null, timedOut: false, groupDead: true, descendantsConfirmedDead: true,
+          ownership, stdout: null, stderr: null,
+          detail: error instanceof ContainmentUnavailableError
+            ? `${error.code}: ${error.backendId}: ${error.reason}`
+            : `RICKGENT_CONTAINMENT_UNAVAILABLE: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    }
     const timeoutMs = request.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const graceMs = request.terminationGraceMs ?? DEFAULT_TERMINATION_GRACE_MS;
     const deathObservationMs = request.deathObservationMs ?? DEFAULT_DEATH_OBSERVATION_MS;

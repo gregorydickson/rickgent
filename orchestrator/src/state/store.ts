@@ -48,6 +48,11 @@ import {
   type TargetNeverReleasedReceipt,
 } from "../lifecycle/disposition.js";
 import {
+  CONTAINMENT_RELEASE_SCHEMA_VERSION,
+  isAuthorizedContainmentMembership,
+  type ContainmentMembership,
+} from "../process/containment.js";
+import {
   ATTEMPT_OWNERSHIP_STATE_SCHEMA_OBJECTS,
   ATTEMPT_OWNERSHIP_STATE_SQLITE_SCHEMA_CHECKSUM,
   COMMIT_ATTRIBUTION_STATE_SQLITE_SCHEMA_CHECKSUM,
@@ -502,6 +507,32 @@ export interface MintTargetNeverReleasedRequest {
   readonly observation: TargetNeverReleasedObservation;
 }
 
+/**
+ * t22B: request to transition a held target start gate `held -> released`
+ * after observing an authority-owned containment membership bound to the
+ * exact attempt lineage.  The membership is brand-checked (WeakSet); a
+ * structurally-correct membership from an injected controller is rejected.
+ */
+export interface MintTargetReleasedRequest {
+  readonly gateId: string;
+  readonly attemptId: string;
+  readonly ownershipId: string;
+  readonly ownerGeneration: number;
+  readonly phaseExecutionId: string;
+  readonly contextId: string;
+  /** Authority-owned containment membership proof (brand-checked). */
+  readonly membership: ContainmentMembership;
+  /** Launch id from the containment boundary (content-pinned into evidence). */
+  readonly launchId: string;
+  /** Backend id of the containment authority (e.g. "docker-cgroup-v2"). */
+  readonly backendId: string;
+  /** Boundary name (cgroup path / container name) derived from lineage. */
+  readonly boundaryName: string;
+  /** Membership digest pinned into the release evidence. */
+  readonly membershipDigest: `sha256:${string}`;
+  readonly observedAt: string;
+}
+
 export interface MintCleanupEligibilityRequest {
   readonly observation: CleanupEligibilityObservation;
   /** Durable preimage references independently observed by the finalization service. */
@@ -552,6 +583,18 @@ export interface QuarantineClaimMemberInput {
 
 export interface MintedDispositionReceipt<R> {
   readonly receipt: R;
+  readonly record: StateRecord;
+  readonly evidence: StateRecord;
+  readonly replayed: boolean;
+}
+
+/**
+ * t22B: result of `mintTargetReleased`.  The release evidence row and the
+ * updated target start gate row are persisted atomically; the brand-checked
+ * containment membership is returned for the caller's death-receipt flow.
+ */
+export interface MintedContainmentReleaseReceipt {
+  readonly membership: ContainmentMembership;
   readonly record: StateRecord;
   readonly evidence: StateRecord;
   readonly replayed: boolean;
@@ -2363,6 +2406,126 @@ export class StateStore {
       }
       const closed = db.prepare("SELECT * FROM target_start_gates WHERE target_start_gate_id = ? AND attempt_id = ?").get(observation.gateId, observation.attemptId) as MutableStateRecord;
       return freezeValue({ receipt, record: frozenRow(closed), evidence: frozenRow(evidenceRow), replayed: false });
+    });
+  }
+
+  /**
+   * t22B: Mint and atomically persist a containment-release evidence row and
+   * transition the bound target start gate `held -> released` in one
+   * immediate transaction.  The release is gated on an authority-owned
+   * containment membership (WeakSet brand-checked) bound to the exact
+   * attempt/owner/generation/phase lineage.  A structurally-correct
+   * membership from an injected controller is rejected (VAL-T22B-005).
+   *
+   * This is the durable target start gate's `held -> released` edge: target
+   * code cannot begin before containment membership is authoritative
+   * (VAL-T22B-002).  Replay of identical inputs returns the identical
+   * immutable postimage; a divergent membership digest conflicts.
+   */
+  mintTargetReleased(request: MintTargetReleasedRequest): MintedContainmentReleaseReceipt {
+    // Brand-check the membership FIRST: a forged membership from an injected
+    // controller never reaches the database transaction.
+    if (!isAuthorizedContainmentMembership(request.membership)) {
+      throw typedError(
+        "RICKGENT_CONTAINMENT_UNAVAILABLE",
+        "target release requires an authority-owned containment membership; a structural membership is not trusted",
+        this.location.databasePath,
+      );
+    }
+    // The membership must bind to the exact lineage of the gate.
+    const m = request.membership;
+    if (
+      m.lineage.attemptId !== request.attemptId ||
+      m.lineage.ownershipId !== request.ownershipId ||
+      m.lineage.ownerGeneration !== request.ownerGeneration ||
+      m.lineage.phaseExecutionId !== request.phaseExecutionId ||
+      m.lineage.contextId !== request.contextId
+    ) {
+      throw typedError(
+        "RICKGENT_CONTAINMENT_UNAVAILABLE",
+        "containment membership is not bound to the exact attempt/owner/generation/phase lineage of the target start gate",
+        this.location.databasePath,
+      );
+    }
+    if (
+      m.boundary.backendId !== request.backendId ||
+      m.boundary.boundaryName !== request.boundaryName ||
+      m.boundary.launchId !== request.launchId ||
+      m.membershipDigest !== request.membershipDigest
+    ) {
+      throw typedError(
+        "RICKGENT_STATE_CONFLICT",
+        "containment membership boundary/digest does not match the release request",
+        this.location.databasePath,
+      );
+    }
+    const evidenceId = `evidence-containment-release-${request.launchId}`;
+    const payload = sealedDispositionPayload({
+      schema_version: CONTAINMENT_RELEASE_SCHEMA_VERSION,
+      gate_id: request.gateId,
+      attempt_id: request.attemptId,
+      ownership_id: request.ownershipId,
+      owner_generation: request.ownerGeneration,
+      phase_execution_id: request.phaseExecutionId,
+      context_id: request.contextId,
+      launch_id: request.launchId,
+      backend_id: request.backendId,
+      boundary_name: request.boundaryName,
+      membership_digest: request.membershipDigest,
+      observed_at: request.observedAt,
+    });
+    const evidenceRow = dispositionEvidenceRow(
+      evidenceId,
+      request.attemptId,
+      request.contextId,
+      "TargetStartGateAuthority",
+      CONTAINMENT_RELEASE_SCHEMA_VERSION,
+      request.launchId,
+      payload,
+      request.observedAt,
+    );
+    return this.#immediate("mint_target_released", () => {
+      const db = this.#requireDatabase();
+      const gate = db.prepare(
+        "SELECT * FROM target_start_gates WHERE target_start_gate_id = ? AND attempt_id = ?",
+      ).get(request.gateId, request.attemptId) as MutableStateRecord | undefined;
+      if (gate === undefined) {
+        throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "target-released receipt does not bind an existing target start gate", this.location.databasePath);
+      }
+      // Replay: the gate is already released with the exact evidence.
+      if (String(gate.state) === "released") {
+        if (String(gate.release_evidence_id ?? "") !== evidenceId) {
+          throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "target start gate already released with a different release evidence", this.location.databasePath);
+        }
+        const existingEvidence = db.prepare("SELECT * FROM evidence WHERE evidence_id = ? AND attempt_id = ?").get(evidenceId, request.attemptId) as MutableStateRecord | undefined;
+        if (existingEvidence === undefined) {
+          throw typedError("RICKGENT_STATE_CORRUPT", "target-released replay is missing its evidence", this.location.databasePath);
+        }
+        return freezeValue({ membership: m, record: frozenRow(gate), evidence: frozenRow(existingEvidence), replayed: true });
+      }
+      if (String(gate.state) !== "held" || Number(gate.state_version) !== 0) {
+        throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "target start gate is not held by this attempt", this.location.databasePath);
+      }
+      if (
+        String(gate.ownership_id) !== request.ownershipId ||
+        Number(gate.owner_generation) !== request.ownerGeneration ||
+        String(gate.phase_execution_id) !== request.phaseExecutionId ||
+        String(gate.context_id) !== request.contextId
+      ) {
+        throw typedError("RICKGENT_STATE_OWNER_MISMATCH", "target-released receipt does not bind the exact gate lineage", this.location.databasePath);
+      }
+      this.#validateRecordSemantics("evidence", evidenceRow);
+      this.#insert("evidence", evidenceRow);
+      const update = db.prepare(
+        `UPDATE target_start_gates
+         SET state = 'released', state_version = 1, release_evidence_id = ?
+         WHERE target_start_gate_id = ? AND attempt_id = ? AND state = 'held' AND state_version = 0`,
+      ).run(evidenceId, request.gateId, request.attemptId);
+      if (update.changes !== 1) {
+        throw typedError("RICKGENT_STATE_CONFLICT", "target start gate transition lost its CAS race", this.location.databasePath);
+      }
+      const released = db.prepare("SELECT * FROM target_start_gates WHERE target_start_gate_id = ? AND attempt_id = ?").get(request.gateId, request.attemptId) as MutableStateRecord;
+      return freezeValue({ membership: m, record: frozenRow(released), evidence: frozenRow(evidenceRow), replayed: false });
     });
   }
 

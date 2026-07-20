@@ -1026,7 +1026,7 @@
         "orchestrator/test/reliability/attempt-critical-section.test.ts"
       ],
       "priority": "P0",
-      "status": "In Progress",
+      "status": "InProgress",
       "tranches": [
         {
           "id": "t22A",
@@ -1038,7 +1038,9 @@
         {
           "id": "t22B",
           "title": "Runtime-unforgeable containment authority before target release",
-          "status": "Todo"
+          "status": "Done",
+          "completed_at": "2026-07-20",
+          "execution_report": "docs/remediation/phase-4-t22B-containment-execution-report-2026-07-20.md"
         },
         {
           "id": "t22C",

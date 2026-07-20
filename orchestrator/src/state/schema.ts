@@ -511,6 +511,7 @@ export const STABLE_STATE_ERRORS = deepFreeze([
   { code: "RICKGENT_STATE_RESUME_INCOMPATIBLE", class: "input_contract", condition: "explicit run is incompatible with repository, contract, context, oracle, capability, or resource identity" },
   { code: "RICKGENT_LEGACY_STATE_QUARANTINED", class: "infrastructure", condition: "legacy lifecycle state blocks mutation open pending explicit quarantine" },
   { code: "RICKGENT_PROMOTION_CONFLICT", class: "infrastructure", condition: "delivery ref independently observed at a third OID" },
+  { code: "RICKGENT_CONTAINMENT_UNAVAILABLE", class: "infrastructure", condition: "containment backend probe failed or a containment membership is not authority-owned or not bound to the exact attempt lineage" },
 ] as const);
 
 export const STATE_ERROR_CODES = deepFreeze(STABLE_STATE_ERRORS.map((entry) => entry.code));
