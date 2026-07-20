@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Local development launcher. init.sh prepends this repository to PATH so
+# validation exercises the freshly built artifact, never a global shim.
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$repo_root/orchestrator/dist/cli.js" "$@"

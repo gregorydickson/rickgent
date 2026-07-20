@@ -21,8 +21,14 @@ set -euo pipefail
 # of the caller's CWD.
 __rickgent_init_root="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
-# 1. PATH — prepend the verified nvm node + pnpm locations so node/pnpm resolve
-#    deterministically (CLAUDE.md pins Node v24.13.1, pnpm 10.22.0).
+# 1. PATH — prepend the local CLI launcher plus the verified nvm node + pnpm
+#    locations so `rickgent`, node, and pnpm resolve deterministically
+#    (CLAUDE.md pins Node v24.13.1, pnpm 10.22.0). The launcher delegates to
+#    the freshly-built dist CLI, rather than a potentially stale global shim.
+case ":${PATH:-}:" in
+  *":$__rickgent_init_root:"*) ;;
+  *) PATH="$__rickgent_init_root:$PATH" ;;
+esac
 __rickgent_node_bin="/Users/gregorydickson/.nvm/versions/node/v24.13.1/bin"
 __rickgent_pnpm_bin="/Users/gregorydickson/.local/share/pnpm"
 case ":${PATH:-}:" in
