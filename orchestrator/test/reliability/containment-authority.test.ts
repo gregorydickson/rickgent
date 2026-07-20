@@ -26,6 +26,7 @@ import {
   assertContainmentMembershipForLaunch,
   isAuthorizedContainmentBoundary,
   isAuthorizedContainmentDeathReceipt,
+  isAuthorizedContainmentEmptinessObservation,
   isAuthorizedContainmentMembership,
   isAuthorizedContainmentNeverReleasedReceipt,
   membershipBindsToLineage,
@@ -702,5 +703,149 @@ describe("VAL-T22B-002: ProcessSupervisor rejects launch where membership is unp
     expect((result.record as StateRecord).state).toBe("closed_never_released");
     expect((result.record as StateRecord).release_evidence_id).toBeNull();
     expect((result.record as StateRecord).never_released_evidence_id).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M3 fix: awaitEmpty / mintDeathReceipt fail-closed.
+//
+// The M3 scrutiny validator found that the Docker and Linux awaitEmpty paths
+// synthesized cgroup.events populated=0 after failed reads, and
+// mintDeathReceipt accepted that result without requiring an
+// authority-owned successful confirmed-emptiness observation.  A stopped or
+// unreadable boundary could therefore mint a terminal death receipt instead
+// of failing closed (violating invariant 6 and containment contract
+// obligations 5 and 6).
+//
+// These proofs exercise the Linux backend against a synthetic cgroup root so
+// they run on any host; the Docker stopped-boundary proof lives in
+// containment-corpus.test.ts (skipped when Docker is unavailable).
+// ---------------------------------------------------------------------------
+
+describe("M3 fix: awaitEmpty / mintDeathReceipt fail-closed for stopped/unreadable boundaries", () => {
+  function makeSyntheticCgroupRoot(): string {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "rickgent-cg-root-")));
+    repos.add(root);
+    writeFileSync(join(root, "cgroup.kill"), "1");
+    writeFileSync(join(root, "cgroup.controllers"), "pids memory cpu");
+    writeFileSync(join(root, "cgroup.events"), "populated 1\nfrozen 0\n");
+    return root;
+  }
+
+  function syntheticLineage(suffix: string): ContainmentLineage {
+    return {
+      runId: `fix-run-${suffix}`,
+      ticketId: "t22",
+      attemptId: `fix-attempt-${suffix}`,
+      ownershipId: `ownership-${suffix}`,
+      ownerGeneration: 1,
+      ownershipContextDigest: digest(`ownership-context:${suffix}`),
+      phaseExecutionId: `phase-exec-${suffix}`,
+      contextId: `ctx-${suffix}`,
+      executionContextDigest: digest(`exec-context:${suffix}`),
+    };
+  }
+
+  it("Linux awaitEmpty throws ContainmentUnavailableError when cgroup.events is missing (stopped boundary)", async () => {
+    const root = makeSyntheticCgroupRoot();
+    const backend = new LinuxCgroupV2ContainmentBackend({ cgroupRoot: root, pollIntervalMs: 5 });
+    expect(backend.probe().status).toBe("available");
+    const boundary = await backend.createBoundary(syntheticLineage("missing"));
+    // The child cgroup exists but has no cgroup.events file: the boundary is
+    // stopped / unreadable.  awaitEmpty must fail closed (throw), never
+    // synthesize populated=0 from the failed read.
+    await expect(backend.awaitEmpty(boundary, 500)).rejects.toThrow(ContainmentUnavailableError);
+  });
+
+  it("Linux awaitEmpty throws ContainmentUnavailableError when cgroup.events is removed mid-wait (stopped boundary)", async () => {
+    const root = makeSyntheticCgroupRoot();
+    const backend = new LinuxCgroupV2ContainmentBackend({ cgroupRoot: root, pollIntervalMs: 5 });
+    const boundary = await backend.createBoundary(syntheticLineage("removed"));
+    writeFileSync(join(boundary.runtimeHandle, "cgroup.events"), "populated 1\nfrozen 0\n");
+    // Remove the file to simulate the boundary becoming unreadable.
+    rmSync(join(boundary.runtimeHandle, "cgroup.events"), { force: true });
+    await expect(backend.awaitEmpty(boundary, 500)).rejects.toThrow(ContainmentUnavailableError);
+  });
+
+  it("Linux awaitEmpty throws ContainmentUnavailableError when cgroup.events is malformed", async () => {
+    const root = makeSyntheticCgroupRoot();
+    const backend = new LinuxCgroupV2ContainmentBackend({ cgroupRoot: root, pollIntervalMs: 5 });
+    const boundary = await backend.createBoundary(syntheticLineage("malformed"));
+    writeFileSync(join(boundary.runtimeHandle, "cgroup.events"), "garbage content\nno populated field here\n");
+    await expect(backend.awaitEmpty(boundary, 500)).rejects.toThrow(ContainmentUnavailableError);
+  });
+
+  it("Linux awaitEmpty returns a brand-authorized confirmed-empty observation on a successful populated=0 read", async () => {
+    const root = makeSyntheticCgroupRoot();
+    const backend = new LinuxCgroupV2ContainmentBackend({ cgroupRoot: root, pollIntervalMs: 5 });
+    const boundary = await backend.createBoundary(syntheticLineage("empty-ok"));
+    writeFileSync(join(boundary.runtimeHandle, "cgroup.events"), "populated 0\nfrozen 0\n");
+    const emptiness = await backend.awaitEmpty(boundary, 2_000);
+    expect(emptiness.emptinessConfirmed).toBe(true);
+    expect(emptiness.populated).toBe(false);
+    expect(isAuthorizedContainmentEmptinessObservation(emptiness)).toBe(true);
+  });
+
+  it("mintDeathReceipt refuses a forged (unbranded) emptiness observation", async () => {
+    const root = makeSyntheticCgroupRoot();
+    const backend = new LinuxCgroupV2ContainmentBackend({ cgroupRoot: root, pollIntervalMs: 5 });
+    const boundary = await backend.createBoundary(syntheticLineage("forged-emptiness"));
+    // A structurally-identical but unbranded observation from an injected
+    // controller: it claims confirmed emptiness but is not authority-owned.
+    const forged = {
+      schemaVersion: CONTAINMENT_SCHEMA_VERSION,
+      boundary: { backendId: boundary.backendId, boundaryName: boundary.boundaryName, launchId: boundary.launchId },
+      observedAt: NOW,
+      populated: false,
+      proofBasis: "authoritative_containment",
+      eventsDigest: digest("forged-events"),
+      emptinessConfirmed: true,
+    } as unknown as ContainmentEmptinessObservation;
+    expect(() => backend.mintDeathReceipt(boundary, forged)).toThrow(ContainmentUnavailableError);
+  });
+
+  it("mintDeathReceipt refuses an authority-owned observation with emptinessConfirmed=false (deadline exhausted)", async () => {
+    const root = makeSyntheticCgroupRoot();
+    const backend = new LinuxCgroupV2ContainmentBackend({ cgroupRoot: root, pollIntervalMs: 5 });
+    const boundary = await backend.createBoundary(syntheticLineage("deadline"));
+    // cgroup.events stays populated=1; the bounded wait exhausts and returns
+    // an honest "not confirmed" observation (populated=1, emptinessConfirmed=false).
+    writeFileSync(join(boundary.runtimeHandle, "cgroup.events"), "populated 1\nfrozen 0\n");
+    const emptiness = await backend.awaitEmpty(boundary, 200);
+    expect(emptiness.emptinessConfirmed).toBe(false);
+    expect(emptiness.populated).toBe(true);
+    // mintDeathReceipt must refuse to mint a terminal receipt from a
+    // not-confirmed observation (target-never-released / containment-unavailable
+    // outcome instead).
+    expect(() => backend.mintDeathReceipt(boundary, emptiness)).toThrow(ContainmentUnavailableError);
+  });
+
+  it("mintDeathReceipt mints a terminal receipt only for an authority-owned confirmed-empty observation", async () => {
+    const root = makeSyntheticCgroupRoot();
+    const backend = new LinuxCgroupV2ContainmentBackend({ cgroupRoot: root, pollIntervalMs: 5 });
+    const boundary = await backend.createBoundary(syntheticLineage("mint-ok"));
+    writeFileSync(join(boundary.runtimeHandle, "cgroup.events"), "populated 0\nfrozen 0\n");
+    const emptiness = await backend.awaitEmpty(boundary, 2_000);
+    const death = backend.mintDeathReceipt(boundary, emptiness);
+    expect(isAuthorizedContainmentDeathReceipt(death)).toBe(true);
+    expect(death.emptinessConfirmed).toBe(true);
+  });
+
+  it("isAuthorizedContainmentEmptinessObservation rejects structural / prototype / serialized forgeries", () => {
+    const structural = {
+      schemaVersion: CONTAINMENT_SCHEMA_VERSION,
+      boundary: { backendId: "linux-cgroup-v2", boundaryName: "x", launchId: "y" },
+      observedAt: NOW,
+      populated: false,
+      proofBasis: "authoritative_containment",
+      eventsDigest: digest("structural"),
+      emptinessConfirmed: true,
+    };
+    expect(isAuthorizedContainmentEmptinessObservation(structural)).toBe(false);
+    const proto = Object.create(ContainmentUnavailableError.prototype);
+    Object.assign(proto, { proofBasis: "authoritative_containment", emptinessConfirmed: true });
+    expect(isAuthorizedContainmentEmptinessObservation(proto)).toBe(false);
+    const serialized = JSON.parse(JSON.stringify(structural));
+    expect(isAuthorizedContainmentEmptinessObservation(serialized)).toBe(false);
   });
 });

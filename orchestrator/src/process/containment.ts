@@ -49,6 +49,7 @@ export const CONTAINMENT_RELEASE_SCHEMA_VERSION = "rickgent.containment-release.
 const CONTAINMENT_AUTHORITY = Symbol("rickgent.containment-authority");
 const AUTHORIZED_CONTAINMENT_BOUNDARIES = new WeakSet<object>();
 const AUTHORIZED_CONTAINMENT_MEMBERSHIPS = new WeakSet<object>();
+const AUTHORIZED_CONTAINMENT_EMPTINESS_OBSERVATIONS = new WeakSet<object>();
 const AUTHORIZED_CONTAINMENT_DEATH_RECEIPTS = new WeakSet<object>();
 const AUTHORIZED_CONTAINMENT_NEVER_RELEASED_RECEIPTS = new WeakSet<object>();
 
@@ -184,14 +185,44 @@ export function isAuthorizedContainmentMembership(value: unknown): value is Cont
   return typeof value === "object" && value !== null && AUTHORIZED_CONTAINMENT_MEMBERSHIPS.has(value);
 }
 
-export interface ContainmentEmptinessObservation {
+export interface ContainmentEmptinessObservationFields {
   readonly boundary: ContainmentBoundaryId;
   readonly observedAt: string;
   readonly populated: boolean;
-  readonly proofBasis: "authoritative_containment";
   readonly eventsDigest: Sha256Digest;
   /** True when `cgroup.events populated=0` was observed within the deadline. */
   readonly emptinessConfirmed: boolean;
+}
+
+/**
+ * Authority-owned emptiness observation.  Only a `ContainmentBackend`'s
+ * `awaitEmpty` can construct one; the WeakSet brand rejects
+ * structural/prototype/serialized forgeries from an injected controller.
+ * `mintDeathReceipt` requires a brand-authorized, confirmed-empty
+ * observation before minting a terminal death receipt (M3 fix: a failed or
+ * absent observation must not produce a terminal receipt).
+ */
+export class ContainmentEmptinessObservation {
+  readonly schemaVersion = CONTAINMENT_SCHEMA_VERSION;
+  readonly boundary!: ContainmentBoundaryId;
+  readonly observedAt!: string;
+  readonly populated!: boolean;
+  readonly proofBasis = "authoritative_containment" as const;
+  readonly eventsDigest!: Sha256Digest;
+  readonly emptinessConfirmed!: boolean;
+
+  constructor(authority: symbol, input: ContainmentEmptinessObservationFields) {
+    if (authority !== CONTAINMENT_AUTHORITY) {
+      throw new TypeError("ContainmentEmptinessObservation can only be minted by a ContainmentBackend");
+    }
+    Object.assign(this, Object.freeze({ ...input }));
+    AUTHORIZED_CONTAINMENT_EMPTINESS_OBSERVATIONS.add(this);
+    Object.freeze(this);
+  }
+}
+
+export function isAuthorizedContainmentEmptinessObservation(value: unknown): value is ContainmentEmptinessObservation {
+  return typeof value === "object" && value !== null && AUTHORIZED_CONTAINMENT_EMPTINESS_OBSERVATIONS.has(value);
 }
 
 /**
@@ -480,6 +511,22 @@ function dockerExecSilent(argv: readonly string[], opts: DockerExecOptions = {})
 }
 
 /**
+ * Parse the `populated` field from a `cgroup.events` body.  Throws on
+ * malformed / missing content — a failed parse is a fail-closed
+ * containment-unavailable condition, never a synthesized emptiness signal
+ * (M3 fix: invariant 6, containment contract obligations 5 and 6).
+ */
+function parseCgroupEventsPopulated(content: string): boolean {
+  const match = content.match(/^populated\s+(\d+)\s*$/m);
+  if (match === null) {
+    throw new Error(
+      `cgroup.events malformed or missing populated field: ${JSON.stringify(content.slice(0, 160))}`,
+    );
+  }
+  return match[1] === "1";
+}
+
+/**
  * Option A backend: Docker Desktop / Linux-VM cgroup-v2.
  *
  * Per attempt, it requests a Docker container with `--cgroupns=private`,
@@ -743,39 +790,68 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
     if (!isAuthorizedContainmentBoundary(boundary)) {
       throw new ContainmentUnavailableError(this.backendId, "awaitEmpty received a forged boundary");
     }
-    const root = this.#rootCgroupPath();
+    // Docker emptiness observation: the Docker daemon is the authority for
+    // container process state.  We cannot read `cgroup.events populated=0`
+    // via `docker exec` because the exec process itself is a member of the
+    // container's root cgroup (keeping it populated for the duration of the
+    // read); the only way the old path ever observed "empty" was by
+    // synthesizing populated=0 from a FAILED docker exec after the container
+    // was stopped — the fail-open the M3 scrutiny validator identified.
+    //
+    // Instead we observe the container's authoritative state via
+    // `docker inspect`: `State.Status=exited` and `State.Pid=0` means no
+    // processes remain in the container's cgroup (the cgroup is gone or
+    // empty).  This is fail-closed: if the inspect fails (container gone,
+    // daemon error) or the output is malformed, we throw
+    // ContainmentUnavailableError — never synthesize populated=0 from a
+    // failed observation (M3 fix: invariant 6, contract obligations 5/6).
     const deadline = Date.now() + deadlineMs;
-    let lastEvents = "";
-    let populated = true;
-    while (Date.now() < deadline) {
+    let lastObservation = "";
+    let confirmedEmpty = false;
+    const inspectContainer = (): { status: string; pid: number; raw: string } => {
       const result = dockerExecSilent(
-        ["exec", boundary.runtimeHandle, "sh", "-c", `cat ${root}/cgroup.events 2>/dev/null || echo 'populated 1\\nfrozen 0'`],
+        ["inspect", "--format", "{{.State.Status}} {{.State.Pid}}", boundary.runtimeHandle],
         { timeoutMs: this.probeTimeoutMs },
       );
-      lastEvents = result.stdout;
-      populated = /populated\s+1/.test(result.stdout);
-      if (!populated) {
+      if (result.status !== 0) {
+        throw new ContainmentUnavailableError(
+          this.backendId,
+          `container state observation failed (docker inspect status ${result.status}): ${result.stderr.trim() || "container is gone or daemon unavailable"}`,
+        );
+      }
+      const raw = result.stdout.trim();
+      const parts = raw.split(/\s+/);
+      const status = parts[0] ?? "";
+      const pid = Number.parseInt(parts[1] ?? "-1", 10);
+      if (status === "" || Number.isNaN(pid)) {
+        throw new ContainmentUnavailableError(
+          this.backendId,
+          `container state observation malformed: ${JSON.stringify(raw)}`,
+        );
+      }
+      return { status, pid, raw };
+    };
+    while (Date.now() < deadline) {
+      const obs = inspectContainer();
+      lastObservation = obs.raw;
+      if (obs.status === "exited" && obs.pid === 0) {
+        confirmedEmpty = true;
         break;
       }
       await sleep(this.pollIntervalMs);
     }
-    if (populated) {
+    if (!confirmedEmpty) {
       await this.kill(boundary);
-      const result = dockerExecSilent(
-        ["exec", boundary.runtimeHandle, "sh", "-c", `cat ${root}/cgroup.events 2>/dev/null || echo 'populated 0\\nfrozen 0'`],
-        { timeoutMs: this.probeTimeoutMs },
-      );
-      lastEvents = result.stdout;
-      populated = /populated\s+1/.test(result.stdout);
+      const obs = inspectContainer();
+      lastObservation = obs.raw;
+      confirmedEmpty = obs.status === "exited" && obs.pid === 0;
     }
-    const eventsDigest = sha256(lastEvents);
-    return Object.freeze({
+    return new ContainmentEmptinessObservation(CONTAINMENT_AUTHORITY, {
       boundary: { backendId: boundary.backendId, boundaryName: boundary.boundaryName, launchId: boundary.launchId },
       observedAt: nowIso(),
-      populated,
-      proofBasis: "authoritative_containment",
-      eventsDigest,
-      emptinessConfirmed: !populated,
+      populated: !confirmedEmpty,
+      eventsDigest: sha256(lastObservation),
+      emptinessConfirmed: confirmedEmpty,
     });
   }
 
@@ -783,8 +859,25 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
     if (!isAuthorizedContainmentBoundary(boundary)) {
       throw new ContainmentUnavailableError(this.backendId, "mintDeathReceipt received a forged boundary");
     }
+    if (!isAuthorizedContainmentEmptinessObservation(emptiness)) {
+      throw new ContainmentUnavailableError(
+        this.backendId,
+        "mintDeathReceipt received a forged (unbranded) emptiness observation; only the authority-owned backend can mint one",
+      );
+    }
     if (emptiness.boundary.launchId !== boundary.launchId) {
       throw new ContainmentUnavailableError(this.backendId, "emptiness observation does not bind to the boundary");
+    }
+    // A terminal death receipt requires an authority-owned, confirmed-empty
+    // (populated=0) observation.  A failed, absent, or not-confirmed
+    // observation must not produce a terminal receipt — the caller produces
+    // a target-never-released / containment-unavailable outcome instead
+    // (M3 fix: contract obligations 5 and 6).
+    if (!emptiness.emptinessConfirmed || emptiness.populated) {
+      throw new ContainmentUnavailableError(
+        this.backendId,
+        "mintDeathReceipt requires a confirmed-empty (populated=0) observation; a failed or absent observation must not produce a terminal receipt",
+      );
     }
     return new ContainmentDeathReceipt(CONTAINMENT_AUTHORITY, {
       boundary: { backendId: boundary.backendId, boundaryName: boundary.boundaryName, launchId: boundary.launchId },
@@ -981,13 +1074,26 @@ export class LinuxCgroupV2ContainmentBackend implements ContainmentBackend {
     const deadline = Date.now() + deadlineMs;
     let lastEvents = "";
     let populated = true;
-    while (Date.now() < deadline) {
+    // Fail-closed read: a stopped / unreadable / malformed boundary throws
+    // ContainmentUnavailableError; we never synthesize populated=0 from a
+    // failed read (M3 fix: invariant 6, contract obligations 5 and 6).
+    const readCgroupEvents = (): string => {
       try {
-        lastEvents = readFileSync(join(boundary.runtimeHandle, "cgroup.events"), "utf8");
-      } catch {
-        lastEvents = "populated 0\nfrozen 0\n";
+        return readFileSync(join(boundary.runtimeHandle, "cgroup.events"), "utf8");
+      } catch (error) {
+        throw new ContainmentUnavailableError(
+          this.backendId,
+          `cgroup.events read failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
-      populated = /populated\s+1/.test(lastEvents);
+    };
+    while (Date.now() < deadline) {
+      lastEvents = readCgroupEvents();
+      try {
+        populated = parseCgroupEventsPopulated(lastEvents);
+      } catch (error) {
+        throw new ContainmentUnavailableError(this.backendId, error instanceof Error ? error.message : String(error));
+      }
       if (!populated) {
         break;
       }
@@ -995,23 +1101,40 @@ export class LinuxCgroupV2ContainmentBackend implements ContainmentBackend {
     }
     if (populated) {
       await this.kill(boundary);
+      lastEvents = readCgroupEvents();
       try {
-        lastEvents = readFileSync(join(boundary.runtimeHandle, "cgroup.events"), "utf8");
-      } catch {
-        lastEvents = "populated 0\nfrozen 0\n";
+        populated = parseCgroupEventsPopulated(lastEvents);
+      } catch (error) {
+        throw new ContainmentUnavailableError(this.backendId, error instanceof Error ? error.message : String(error));
       }
-      populated = /populated\s+1/.test(lastEvents);
     }
-    return Object.freeze({
+    return new ContainmentEmptinessObservation(CONTAINMENT_AUTHORITY, {
       boundary: { backendId: boundary.backendId, boundaryName: boundary.boundaryName, launchId: boundary.launchId },
-      observedAt: nowIso(), populated, proofBasis: "authoritative_containment",
-      eventsDigest: sha256(lastEvents), emptinessConfirmed: !populated,
+      observedAt: nowIso(), populated, eventsDigest: sha256(lastEvents), emptinessConfirmed: !populated,
     });
   }
 
   mintDeathReceipt(boundary: ContainmentBoundary, emptiness: ContainmentEmptinessObservation): ContainmentDeathReceipt {
     if (!isAuthorizedContainmentBoundary(boundary)) {
       throw new ContainmentUnavailableError(this.backendId, "mintDeathReceipt received a forged boundary");
+    }
+    if (!isAuthorizedContainmentEmptinessObservation(emptiness)) {
+      throw new ContainmentUnavailableError(
+        this.backendId,
+        "mintDeathReceipt received a forged (unbranded) emptiness observation; only the authority-owned backend can mint one",
+      );
+    }
+    if (emptiness.boundary.launchId !== boundary.launchId) {
+      throw new ContainmentUnavailableError(this.backendId, "emptiness observation does not bind to the boundary");
+    }
+    // A terminal death receipt requires an authority-owned, confirmed-empty
+    // (populated=0) observation.  A failed, absent, or not-confirmed
+    // observation must not produce a terminal receipt (M3 fix).
+    if (!emptiness.emptinessConfirmed || emptiness.populated) {
+      throw new ContainmentUnavailableError(
+        this.backendId,
+        "mintDeathReceipt requires a confirmed-empty (populated=0) observation; a failed or absent observation must not produce a terminal receipt",
+      );
     }
     return new ContainmentDeathReceipt(CONTAINMENT_AUTHORITY, {
       boundary: { backendId: boundary.backendId, boundaryName: boundary.boundaryName, launchId: boundary.launchId },

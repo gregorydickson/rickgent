@@ -242,3 +242,153 @@ green after `kill` was made fail-closed to throw
 | `orchestrator/test/reliability/containment-corpus.test.ts` | Created: 11-test real Docker cgroup-v2 corpus |
 | `docs/remediation/trust-spine-manifest.json` | t22B tranche status → Done with completion reference |
 | `docs/remediation/phase-4-t22B-containment-execution-report-2026-07-20.md` | This report |
+
+---
+
+## Fix Addendum (M3 scrutiny remediation): awaitEmpty / mintDeathReceipt fail-open
+
+**Date:** 2026-07-20
+**Trigger:** M3 scrutiny validator identified the awaitEmpty/mintDeathReceipt
+fail-open as blocking (violating invariant 6 and containment contract
+obligations 5 and 6).
+**Scope:** `orchestrator/src/process/containment.ts` (Docker and Linux
+`awaitEmpty` paths + `mintDeathReceipt` in both backends +
+`ContainmentEmptinessObservation` brand class); negative-proof tests in
+`containment-authority.test.ts` and `containment-corpus.test.ts`.
+
+### The fail-open
+
+The M3 scrutiny validator found that the Docker and Linux `awaitEmpty` paths
+synthesized `cgroup.events populated=0` after failed reads, and
+`mintDeathReceipt` accepted that result without requiring an
+authority-owned successful confirmed-emptiness observation.  A stopped or
+unreadable boundary could therefore mint a terminal death receipt instead
+of failing closed.
+
+**Docker `awaitEmpty`**: after `kill` (which calls `docker stop`), the
+container is stopped and `docker exec` fails.  The shell fallback
+`` `cat ... 2>/dev/null || echo 'populated 0\nfrozen 0'` `` synthesized
+`populated 0` from the failed read; and when `docker exec` itself failed
+(stopped container), `dockerExecSilent` returned empty stdout, the
+`/populated\s+1/` regex did not match, and `populated` was set to `false`
+(`emptinessConfirmed: true`) — synthesized emptiness from a failed read.
+The corpus was green only because of this fail-open: `docker exec cat
+cgroup.events` can never observe `populated 0` because the exec process
+itself is a member of the container's root cgroup (keeping it populated
+for the duration of the read).
+
+**Linux `awaitEmpty`**: the `catch { lastEvents = "populated 0\nfrozen
+0\n"; }` block synthesized `populated 0` from a failed `readFileSync`
+(missing or unreadable `cgroup.events`), making `populated = false` and
+returning `emptinessConfirmed: true`.
+
+**`mintDeathReceipt`** (both backends): accepted the `emptiness` parameter
+without (a) verifying it was authority-owned (brand-checked) or (b)
+requiring `emptiness.emptinessConfirmed === true`.  A controller-forged
+`ContainmentEmptinessObservation` plain object with
+`emptinessConfirmed: true` could mint a terminal death receipt.
+
+### The fix
+
+1. **`ContainmentEmptinessObservation` brand class.** Converted from a
+   plain interface to a WeakSet-branded class (like
+   `ContainmentMembership`), minted only by the authority-owned backend's
+   `awaitEmpty`.  Added `isAuthorizedContainmentEmptinessObservation`
+   predicate that rejects structural, prototype, and serialized forgeries.
+
+2. **Docker `awaitEmpty` — `docker inspect` observation (fail-closed).**
+   Replaced the broken `docker exec cat cgroup.events` path with
+   `docker inspect --format '{{.State.Status}} {{.State.Pid}}'`.
+   `State.Status=exited` and `State.Pid=0` is the Docker daemon's
+   authoritative observation that no processes remain in the container's
+   cgroup.  If the inspect fails (container gone, daemon error) or the
+   output is malformed, `awaitEmpty` throws `ContainmentUnavailableError`
+   — never synthesizes `populated=0` from a failed observation.  The
+   Docker daemon is the authority for container process state; the
+   `eventsDigest` content-pins the inspect output.
+
+3. **Linux `awaitEmpty` — fail-closed `cgroup.events` read.** Removed the
+   `catch { lastEvents = "populated 0\nfrozen 0\n"; }` synthesis.  If
+   `readFileSync` throws (missing/unreadable `cgroup.events`), `awaitEmpty`
+   throws `ContainmentUnavailableError`.  Added `parseCgroupEventsPopulated`
+   helper that throws on malformed content (no `populated N` line).  A
+   stopped/unreadable/malformed boundary fails closed.
+
+4. **`mintDeathReceipt` — authority-owned confirmed-empty requirement
+   (both backends).** Added `isAuthorizedContainmentEmptinessObservation`
+   brand check (rejects forged/unbranded observations) AND requires
+   `emptiness.emptinessConfirmed === true` and `emptiness.populated ===
+   false`.  A failed, absent, or not-confirmed observation throws
+   `ContainmentUnavailableError` — no terminal receipt is minted.  The
+   caller must produce a target-never-released / containment-unavailable
+   outcome instead.
+
+### Red-then-green proof
+
+**Red** (against the unfixed code, after the mechanical brand-class
+refactor but before the behavioral fix):
+
+```
+pnpm vitest run test/reliability/containment-authority.test.ts -t "M3 fix" ...
+Tests  5 failed | 3 passed | 20 skipped (28)
+```
+
+Five tests failed (the fail-open):
+- "Linux awaitEmpty throws when cgroup.events is missing" — promise
+  resolved `ContainmentEmptinessObservation{ emptinessConfirmed: true,
+  populated: false }` instead of rejecting (synthesized populated=0 from
+  missing file).
+- "Linux awaitEmpty throws when cgroup.events is removed mid-wait" — same.
+- "Linux awaitEmpty throws when cgroup.events is malformed" — same
+  (synthesized emptiness from garbage content).
+- "mintDeathReceipt refuses a forged (unbranded) emptiness observation" —
+  expected function to throw, but it didn't (minted from forged
+  observation).
+- "mintDeathReceipt refuses an authority-owned observation with
+  emptinessConfirmed=false" — expected function to throw, but it didn't
+  (minted from not-confirmed observation).
+
+**Green** (after the behavioral fix):
+
+```
+pnpm vitest run test/reliability/containment-authority.test.ts test/reliability/containment-corpus.test.ts ...
+Tests  40 passed (40)
+```
+
+### Negative-proof matrix (M3 fix)
+
+| Proof | Description |
+| --- | --- |
+| Linux missing cgroup.events | `awaitEmpty` throws `ContainmentUnavailableError` (stopped boundary) |
+| Linux removed-mid-wait cgroup.events | `awaitEmpty` throws (boundary became unreadable) |
+| Linux malformed cgroup.events | `awaitEmpty` throws (no `populated` field) |
+| Linux confirmed-empty happy path | `awaitEmpty` returns brand-authorized `emptinessConfirmed: true` |
+| Forged (unbranded) emptiness observation | `mintDeathReceipt` throws `ContainmentUnavailableError` |
+| Authority-owned `emptinessConfirmed=false` | `mintDeathReceipt` throws (deadline exhausted; no terminal receipt) |
+| Authority-owned confirmed-empty | `mintDeathReceipt` mints terminal receipt |
+| Structural / prototype / serialized forgery | `isAuthorizedContainmentEmptinessObservation` rejects all three |
+| Docker stopped boundary (container gone) | `awaitEmpty` throws `ContainmentUnavailableError` (corpus case 10) |
+| Docker forged emptiness observation | `mintDeathReceipt` throws (corpus case 10) |
+
+### Verification (fix tranche)
+
+| Check | Result |
+| --- | --- |
+| `pnpm typecheck` | exit 0, clean |
+| `pnpm build` | exit 0, `dist/cli.js` regenerated |
+| `containment-authority.test.ts` | 28 passed (20 original + 8 M3 fix) |
+| `containment-corpus.test.ts` | 12 passed (11 original + 1 M3 fix case 10) |
+| Scoped M3 regression (11 suites) | 241 passed |
+| `process-supervisor-corpus.test.ts` (isolation) | 11 passed |
+| `python3 -m pytest test/ -p no:cacheprovider -q` | 367 passed, 3 skipped |
+| `citadel --prd MISSION_3_PRD.md --repo .` | exit 0; 0 CRITICAL, 0 HIGH, 9 MEDIUM (crossfile-behavior-drift heuristic false positives), 1 LOW |
+| `doctor` | exit 0; `autonomous_dispatch: state=fixture_only` (unchanged) |
+
+### Files changed (fix tranche)
+
+| File | Change |
+| --- | --- |
+| `orchestrator/src/process/containment.ts` | `ContainmentEmptinessObservation` → brand class + `isAuthorizedContainmentEmptinessObservation`; `parseCgroupEventsPopulated` helper; Docker `awaitEmpty` → `docker inspect` fail-closed observation; Linux `awaitEmpty` → fail-closed read (no synthesis); `mintDeathReceipt` (both backends) → brand check + require `emptinessConfirmed` |
+| `orchestrator/test/reliability/containment-authority.test.ts` | 8 M3 fix negative-proof tests (Linux stopped/unreadable/malformed + mintDeathReceipt refusal + brand forgery) |
+| `orchestrator/test/reliability/containment-corpus.test.ts` | case 10: Docker stopped boundary fail-closed + forged emptiness refusal |
+| `docs/remediation/phase-4-t22B-containment-execution-report-2026-07-20.md` | This fix addendum |

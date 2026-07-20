@@ -36,6 +36,7 @@ import {
   isAuthorizedContainmentDeathReceipt,
   isAuthorizedContainmentMembership,
   type ContainmentBoundary,
+  type ContainmentEmptinessObservation,
   type ContainmentLineage,
 } from "../../src/process/containment.js";
 
@@ -226,6 +227,36 @@ describe.skipIf(!backendAvailable)("VAL-T22B-003: real platform corpus (Docker c
     expect(death.lineage.ownershipId).toBe(lineage.ownershipId);
     expect(death.proofBasis).toBe("authoritative_containment");
     expect(death.deathDigest).toMatch(/^sha256:/);
+  });
+
+  // M3 fix: a stopped / unreadable Docker boundary must cause awaitEmpty to
+  // throw ContainmentUnavailableError (fail closed), never synthesize
+  // populated=0 from a failed read.  mintDeathReceipt must refuse a forged
+  // (unbranded) emptiness observation even if it claims confirmed emptiness.
+  it("case 10: stopped boundary — awaitEmpty throws ContainmentUnavailableError when the container is gone (fail closed)", async () => {
+    const lineage = makeLineage("stopped-boundary");
+    const boundary = await backend.createBoundary(lineage);
+    // Stop + remove the container out-of-band to simulate a stopped boundary
+    // whose cgroup.events is unreadable.
+    try {
+      execFileSync("docker", ["rm", "-f", boundary.runtimeHandle], { encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "pipe"] });
+    } catch { /* ignore */ }
+    boundaries.push({ dispose: () => backend.dispose(boundary) });
+    // awaitEmpty must throw (fail closed), never synthesize populated=0.
+    await expect(backend.awaitEmpty(boundary, 2_000)).rejects.toThrow(ContainmentUnavailableError);
+    // mintDeathReceipt must refuse a forged (unbranded) emptiness observation
+    // even when it claims confirmed emptiness — no terminal receipt from a
+    // failed / absent observation.
+    const forged = {
+      schemaVersion: "rickgent.containment.v1",
+      boundary: { backendId: boundary.backendId, boundaryName: boundary.boundaryName, launchId: boundary.launchId },
+      observedAt: new Date().toISOString(),
+      populated: false,
+      proofBasis: "authoritative_containment",
+      eventsDigest: sha256("forged-stopped"),
+      emptinessConfirmed: true,
+    } as unknown as ContainmentEmptinessObservation;
+    expect(() => backend.mintDeathReceipt(boundary, forged)).toThrow(ContainmentUnavailableError);
   });
 });
 
