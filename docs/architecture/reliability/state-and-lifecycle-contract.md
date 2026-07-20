@@ -398,6 +398,36 @@ terminal. Only `DeliveryService` can advance it to terminal `delivered` or
 `delivery_failed`. `Done` is never stored; it is a presentation-only alias for
 run `delivered`.
 
+The attempt ownership lease and target start gate state machines are:
+
+```text
+reserved -> live -> cleanup_pending -> released
+cleanup_pending -> quarantined
+held -> released
+held -> closed_never_released
+```
+
+The `live -> cleanup_pending` edge is owned by `LeaseService` and requires a
+live owner-checked lease whose attempt has entered cleanup (candidate
+attribution or failure evidence recorded, or stale recovery under exact
+process-group death plus authoritative containment proof of every contained
+descendant); the owner remains live and unexpired until the cleanup-pending
+transition commits, and a missing or stale owner fails closed to
+`RICKGENT_STATE_OWNER_MISMATCH`. The `held -> released` edge is owned by
+`TargetStartGateAuthority` and requires a validated containment authority
+authorizing target release, binding a held target start gate (`state_version`
+0) to the exact attempt ownership/generation/context lineage; unavailable
+containment fails closed without manufacturing a terminal receipt. The
+`held -> closed_never_released` edge is owned by `TargetStartGateAuthority`
+and requires a target-never-released disposition receipt minted by the
+`LeaseAuthority`-branded mint capability, binding a held target start gate
+(`state_version` 0) to the exact attempt ownership/generation/context lineage;
+unavailable containment or a pre-release failure fails closed without
+manufacturing a terminal receipt, and missing evidence is
+`RICKGENT_STATE_TRANSITION_ILLEGAL`. Both target start gate edges are
+compare-and-set transitions from held version 0 to a terminal version 1 and
+remain unavailable until the t22 disposition writers are connected.
+
 ## Pure oracle and fast-forward promotion
 
 The versioned oracle consumes an ordered, content-pinned set of immutable
