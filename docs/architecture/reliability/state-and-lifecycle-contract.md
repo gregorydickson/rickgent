@@ -405,6 +405,7 @@ reserved -> live -> cleanup_pending -> released
 cleanup_pending -> quarantined
 held -> released
 held -> closed_never_released
+collecting -> sealed
 ```
 
 The `live -> cleanup_pending` edge is owned by `LeaseService` and requires a
@@ -437,6 +438,16 @@ manufacturing a terminal receipt, and missing evidence is
 `RICKGENT_STATE_TRANSITION_ILLEGAL`. Both target start gate edges are
 compare-and-set transitions from held version 0 to a terminal version 1 and
 remain unavailable until the t22 disposition writers are connected.
+
+The quarantine claim-set edge `collecting -> sealed` is owned by the
+LeaseAuthority-branded `StateStore.mintQuarantine` command. It atomically
+inserts all normalized member snapshots while the exact claim-set parent is at
+`collecting` version 0, then compare-and-set seals that same parent at version
+1 with its content digest and immutable evidence. The database's
+collecting-only and complete-seal triggers reject a missing, partial,
+non-contiguous, or post-seal member set. Any lost compare-and-set race or
+missing authority-minted evidence fails closed to `RICKGENT_STATE_CONFLICT` or
+`RICKGENT_STATE_TRANSITION_ILLEGAL`.
 
 ## Pure oracle and fast-forward promotion
 

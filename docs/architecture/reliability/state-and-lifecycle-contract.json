@@ -4171,6 +4171,14 @@
       "quarantine_claim_sets": {
         "mode": "cas_aggregate",
         "seal": "exactly all eleven terminal quarantined claims with coherent absent, retained, unknown, or not-applicable physical disposition",
+        "edges": [
+          {
+            "from": "collecting",
+            "to": "sealed",
+            "owner": "LeaseAuthority-branded StateStore.mintQuarantine",
+            "precondition": "the exact claim-set parent is collecting at state_version 0; all normalized member snapshots are inserted before the parent is sealed in the same transaction; complete-seal and collecting-only triggers validate the member set; the CAS writes the exact content digest and immutable evidence, while missing authority evidence and lost CAS races fail closed"
+          }
+        ],
         "writer_status": "unavailable"
       },
       "resource_mutation_authority": "t21 provides an internal physical cleanup primitive; migration 005 provides only the inactive disposition schema and runtime proof boundary, with no authorized disposition writer or finalizer yet",
