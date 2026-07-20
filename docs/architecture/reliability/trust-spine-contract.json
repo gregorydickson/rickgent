@@ -240,6 +240,35 @@
     },
     "missing_tool_result": "RICKGENT_TOOLCHAIN_INFRASTRUCTURE_ERROR"
   },
+  "containment": {
+    "decision_doc": "docs/decisions/macos-containment-authority.md",
+    "status": "proposed_pending_user_ratification",
+    "platform_matrix": [
+      {
+        "platform": "darwin",
+        "production_execution": "supported_via_docker_desktop",
+        "mechanism": "Docker container --cgroupns=private + delegated child cgroup; cgroup.kill + cgroup.events populated=0",
+        "probe": "docker info CgroupVersion=2 + docker run --rm --cgroupns=private alpine:latest cgroup.kill/cgroup.events/controllers",
+        "fail_closed_result": "RICKGENT_CONTAINMENT_UNAVAILABLE + target-never-released"
+      },
+      {
+        "platform": "linux",
+        "production_execution": "supported_native",
+        "mechanism": "Native cgroup-v2 subtree; cgroup.kill + cgroup.events populated=0",
+        "probe": "/sys/fs/cgroup/cgroup.controllers (pids+memory+cpu) + /sys/fs/cgroup/cgroup.kill writable",
+        "fail_closed_result": "RICKGENT_CONTAINMENT_UNAVAILABLE + target-never-released"
+      },
+      {
+        "platform": "darwin_without_docker_desktop",
+        "production_execution": "pre_release_only",
+        "mechanism": "none_fail_closed",
+        "probe": "docker info absent or cgroup-v2 probe fails",
+        "fail_closed_result": "RICKGENT_CONTAINMENT_UNAVAILABLE + target-never-released"
+      }
+    ],
+    "injected_controller_authoritative_containment_trusted": false,
+    "unavailable_result": "RICKGENT_CONTAINMENT_UNAVAILABLE"
+  },
   "doctor_json_contract": {
     "schema_version": "1.0.0",
     "release_channel": "reliability_preview",

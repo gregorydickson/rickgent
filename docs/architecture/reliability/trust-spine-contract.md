@@ -126,6 +126,19 @@ Lifecycle modules do not call `process.exit`. Missing sandbox/toolchain and unsu
 
 The frozen repository toolchain is Node `>=24.0.0 <25.0.0`, Python `>=3.12.0 <3.15.0`, and pnpm `10.22.0` with lockfile format 9. Supported remediation platforms are POSIX macOS and Linux. Package metadata is the machine-owned copy and the validator rejects drift.
 
+## Supported platforms for production execution
+
+Production attempt execution requires a validated all-descendant containment authority (the t22B backend; see `docs/decisions/macos-containment-authority.md`). The platform matrix is:
+
+| Platform | Production execution | Containment mechanism | Fail-closed result |
+|---|---|---|---|
+| macOS (Docker Desktop running, cgroup-v2 probe passes) | Supported | Docker container `--cgroupns=private` + delegated child cgroup; `cgroup.kill` + `cgroup.events populated=0` | `RICKGENT_CONTAINMENT_UNAVAILABLE` + `target-never-released` |
+| Linux (native cgroup-v2, `cgroup.kill` present) | Supported | Native cgroup-v2 subtree; same kill/events mechanics | `RICKGENT_CONTAINMENT_UNAVAILABLE` + `target-never-released` |
+| macOS without Docker Desktop (or probe fails) | Pre-release only | None — fail closed | `RICKGENT_CONTAINMENT_UNAVAILABLE` + `target-never-released` |
+| Windows | Unsupported (unchanged) | None | `RICKGENT_PLATFORM_UNSUPPORTED` |
+
+The macOS production path depends on Docker Desktop (or an equivalent validated cgroup-v2-bearing Linux VM). The probe is read-only and is the sole authority for backend availability. A host that fails the probe fails closed with a `target-never-released` disposition receipt before any user code is released; no terminal receipt is manufactured.
+
 Planning verification uses installed repository-local binaries through `npm exec --offline` and `npm run`; it does not assume a globally installed pnpm or Corepack activation. Release/package workflows remain bound to the pinned pnpm metadata and lockfile.
 
 `doctor --json` must emit parseable JSON with schema version `1.0.0`, release channel `reliability_preview`, the complete capability registry, toolchain status, and terminal semantics identifying `ready_for_delivery` as `local_oracle_complete` and delivered as `remote_delivery_verified`. Merely exiting zero is not proof of this contract.
