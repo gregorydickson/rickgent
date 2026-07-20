@@ -176,3 +176,97 @@ manifest-validator: OK — 40 tickets, 22 Done, no missing deps, no cycles, no s
   writers to the five disposition receipt types and replace generic cleanup
   finalization with purpose-specific transactions. `t22A` must complete before
   `t22B` (containment, which depends on the M2 ADR ratification).
+
+## Fix addendum (2026-07-20): init.sh non-mutation
+
+**Feature:** `m0-fix-initsh-non-mutation`
+**Trigger:** M0 scrutiny validator identified a blocking defect — the repo-root
+`init.sh` (committed in M0) unconditionally runs `pnpm build`, which regenerates
+the tracked `orchestrator/src/build-commit.ts` to the current git HEAD, leaving
+the tracked working tree dirty after a fresh checkout. This violates
+architecture.md invariant 7 (caller checkout/index non-mutation).
+
+### Defect
+
+`pnpm build` runs `scripts/generate-build-commit.cjs`, which writes the current
+`git rev-parse HEAD` into `orchestrator/src/build-commit.ts`. After the M0
+commit (`11d15fb`), the committed `build-commit.ts` still carries the prior
+HEAD (`bee1591`). Sourcing `init.sh` in a clean checkout therefore produced:
+
+```
+diff --git a/orchestrator/src/build-commit.ts b/orchestrator/src/build-commit.ts
+-export const BUILD_COMMIT = "bee15919d48dba86ce0186d8f85f2930e622c676";
++export const BUILD_COMMIT = "11d15fbe333f8ffe07a303455125fa7fa2a50b3f";
+```
+
+### Fix
+
+`init.sh` step 6 now restores `orchestrator/src/build-commit.ts` to its
+committed value immediately after `pnpm build`, via
+`git checkout -- orchestrator/src/build-commit.ts`. The restore is inside the
+`RICKGENT_INIT_SKIP_BUILD` guard, so it only runs when the build runs.
+`dist/cli.js` (untracked, gitignored) stays freshly built; the compiled
+`dist/build-commit.js` still reflects the current HEAD, so TS/Python
+`build_commit` parity (step 7 re-pins `RICKGENT_BUILD_COMMIT` from the built
+artifact) is unaffected. `git checkout` is a no-op when the file is unmodified,
+so the restore is idempotent and safe to re-source.
+
+The fix does NOT change `build-commit.ts` generation logic, does NOT gitignore
+`build-commit.ts` (intentionally tracked per repo convention), and does NOT
+remove `pnpm build` from `init.sh` (`dist/cli.js` must remain fresh for Python
+conformance tests and CLI validation).
+
+### Regression proof
+
+A new regression proof was added at
+`orchestrator/scripts/verify-initsh-non-mutation.sh`. It sources `init.sh` in a
+clean `orchestrator/src/` baseline and asserts
+`git diff --exit-code -- orchestrator/src/` exits 0 (no tracked-file
+mutations).
+
+**Red (pre-fix):**
+```
+$ bash orchestrator/scripts/verify-initsh-non-mutation.sh
+diff --git a/orchestrator/src/build-commit.ts b/orchestrator/src/build-commit.ts
+-export const BUILD_COMMIT = "bee15919d48dba86ce0186d8f85f2930e622c676";
++export const BUILD_COMMIT = "11d15fbe333f8ffe07a303455125fa7fa2a50b3f";
+FAIL: sourcing init.sh mutated tracked files under orchestrator/src/
+ M orchestrator/src/build-commit.ts
+EXIT_CODE=1
+```
+
+**Green (post-fix):**
+```
+$ bash orchestrator/scripts/verify-initsh-non-mutation.sh
+PASS: sourcing init.sh left orchestrator/src/ clean (no tracked-file mutations)
+EXIT_CODE=0
+```
+
+The proof is deterministic and re-runnable: it restores
+`build-commit.ts` to its committed value before sourcing, skips (exit 2) if
+`orchestrator/src/` has unrelated pre-existing modifications, and cleans up on
+failure so re-runs do not accumulate. Idempotency was verified by sourcing
+`init.sh` twice in succession and confirming `git diff --exit-code --
+orchestrator/src/` remains clean. `dist/cli.js` remains freshly built after
+sourcing (`node $RICKGENT_CLI_REALPATH --build-commit` returns the current
+HEAD).
+
+### M0 re-verification after the fix
+
+| Check | Command | Result |
+|---|---|---|
+| init.sh non-mutation | `bash orchestrator/scripts/verify-initsh-non-mutation.sh` | PASS (exit 0); `orchestrator/src/` clean |
+| Python policy suite | `source ./init.sh && cd rickgent-policies && python3 -m pytest test/ -p no:cacheprovider -q` | 367 passed, 3 skipped, 0 failed |
+| TS typecheck | `cd orchestrator && pnpm typecheck` | exit 0 |
+| TS build | `cd orchestrator && pnpm build` | exit 0; `dist/cli.js` regenerated |
+| Manifest validator | `node orchestrator/scripts/validate-trust-spine-manifest.mjs` | exit 0; 40 tickets, 22 Done, no missing deps / cycles / contradictions |
+| Citadel | `node orchestrator/dist/cli.js citadel --prd MISSION_3_PRD.md --repo .` | exit 0; CRITICAL=0, HIGH=0, MEDIUM=5 (pre-existing in `validate-trust-spine-manifest.mjs`), LOW=2 |
+| Doctor | `node orchestrator/dist/cli.js doctor` | exit 0; capability matrix unchanged |
+| Master-plan current-boundary | `grep` of the Current-boundary section | states `t00`-`t21` Done, `t22A` active |
+
+All M0 assertions still hold after the fix. The 5 MEDIUM citadel findings are
+pre-existing `banned-construct:brace-free-if` findings in
+`orchestrator/scripts/validate-trust-spine-manifest.mjs` (committed in M0), not
+introduced by this fix tranche. The fix touches only `init.sh` and adds the
+regression proof script; no production TypeScript or Python policy behavior was
+changed.

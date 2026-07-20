@@ -70,6 +70,20 @@ fi
 #    current and wants to avoid the rebuild cost).
 if [[ "${RICKGENT_INIT_SKIP_BUILD:-0}" != "1" ]]; then
   ( cd "$__rickgent_init_root/orchestrator" && pnpm build >/dev/null )
+
+  # 6a. Non-mutation restore (architecture.md invariant 7). `pnpm build`
+  #     regenerates the tracked orchestrator/src/build-commit.ts to the current
+  #     git HEAD; if HEAD has moved since build-commit.ts was committed, the
+  #     tracked working tree is left dirty after a fresh checkout, violating
+  #     the caller checkout/index non-mutation invariant. dist/cli.js is
+  #     untracked (gitignored) and stays freshly built; build-commit.ts is
+  #     tracked and is restored to its committed value. The compiled
+  #     dist/build-commit.js still reflects the current HEAD (built above), so
+  #     TS/Python build_commit parity (step 7) is unaffected. `git checkout`
+  #     is a no-op when the file is unmodified, so this is idempotent and safe
+  #     to re-source.
+  git -C "$__rickgent_init_root" checkout -- \
+    orchestrator/src/build-commit.ts 2>/dev/null || true
 fi
 
 # 7. After the rebuild, re-pin RICKGENT_BUILD_COMMIT to the build-commit the
