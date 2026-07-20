@@ -26,8 +26,8 @@ __rickgent_init_root="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 #    (CLAUDE.md pins Node v24.13.1, pnpm 10.22.0). The launcher delegates to
 #    the freshly-built dist CLI, rather than a potentially stale global shim.
 case ":${PATH:-}:" in
-  *":$__rickgent_init_root:"*) ;;
-  *) PATH="$__rickgent_init_root:$PATH" ;;
+  ":$__rickgent_init_root:"*) ;;
+  *) PATH="$__rickgent_init_root${PATH:+:$PATH}" ;;
 esac
 __rickgent_node_bin="/Users/gregorydickson/.nvm/versions/node/v24.13.1/bin"
 __rickgent_pnpm_bin="/Users/gregorydickson/.local/share/pnpm"
@@ -75,6 +75,14 @@ fi
 #    Skipped when RICKGENT_INIT_SKIP_BUILD=1 (e.g. when the caller knows dist is
 #    current and wants to avoid the rebuild cost).
 if [[ "${RICKGENT_INIT_SKIP_BUILD:-0}" != "1" ]]; then
+  # `pnpm build` rewrites this tracked source. Refuse to discard a caller's
+  # existing edit, rather than attempting a lossy restore after the build.
+  if ! git -C "$__rickgent_init_root" diff --quiet -- \
+    orchestrator/src/build-commit.ts; then
+    echo "init.sh: refusing to overwrite caller edit to orchestrator/src/build-commit.ts" >&2
+    exit 1
+  fi
+
   ( cd "$__rickgent_init_root/orchestrator" && pnpm build >/dev/null )
 
   # 6a. Non-mutation restore (architecture.md invariant 7). `pnpm build`

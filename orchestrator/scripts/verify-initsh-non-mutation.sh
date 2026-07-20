@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Regression proof: sourcing init.sh must NOT mutate tracked files under
-# orchestrator/src/ (architecture.md invariant 7 — caller checkout/index
-# non-mutation).
+# Regression proof: sourcing init.sh must preserve the caller checkout and
+# resolve the freshly built local CLI (architecture.md invariant 7).
 #
 # Background: `pnpm build` (run by init.sh) regenerates the tracked
 # orchestrator/src/build-commit.ts to the current git HEAD. If HEAD has moved
@@ -17,47 +16,65 @@
 #   bash orchestrator/scripts/verify-initsh-non-mutation.sh
 #
 # Exit codes:
-#   0 — PASS: sourcing init.sh left orchestrator/src/ clean
-#   1 — FAIL: sourcing init.sh mutated tracked files under orchestrator/src/
-#   2 — SKIP: orchestrator/src/ had pre-existing modifications unrelated to init.sh
+#   0 — PASS: initialization preserves the checkout and resolves the local CLI
+#   1 — FAIL: initialization violates either invariant
+#   2 — SKIP: the target file has a pre-existing caller edit
 
 set -euo pipefail
 
 # Resolve the repo root from this script's location so it works regardless of CWD.
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../.." && pwd)"
 
-# Precondition: establish a clean orchestrator/src/ baseline. Restore
-# build-commit.ts to its committed value so the proof is deterministic and
-# re-runnable (the proof must hold regardless of prior state).
-git -C "$REPO_ROOT" checkout -- orchestrator/src/build-commit.ts 2>/dev/null || true
-
-# Sanity: confirm the baseline is clean before sourcing. If there are other
-# pre-existing tracked modifications under orchestrator/src/ unrelated to
-# init.sh, skip rather than report a false failure.
-if ! git -C "$REPO_ROOT" diff --exit-code -- orchestrator/src/ >/dev/null 2>&1; then
-  echo "SKIP: orchestrator/src/ has pre-existing tracked modifications unrelated to init.sh." >&2
-  git -C "$REPO_ROOT" status --porcelain -- orchestrator/src/ >&2
+# Never normalize a caller's checkout. The proof itself must not discard an
+# existing edit, so it only runs when the generated target starts clean.
+TARGET="$REPO_ROOT/orchestrator/src/build-commit.ts"
+if ! git -C "$REPO_ROOT" diff --quiet -- orchestrator/src/build-commit.ts ||
+  ! git -C "$REPO_ROOT" diff --cached --quiet -- orchestrator/src/build-commit.ts; then
+  echo "SKIP: build-commit.ts has a pre-existing caller edit." >&2
   exit 2
 fi
 
-# Production entrypoint under test: source init.sh. This rebuilds
-# orchestrator/dist/cli.js (untracked, stays fresh) and regenerates
-# orchestrator/src/build-commit.ts (tracked) to the current git HEAD.
+# Production entrypoint under test, clean-caller case.
 # shellcheck disable=SC1091
 source "$REPO_ROOT/init.sh"
 
-# Assertion (architecture.md invariant 7): sourcing init.sh must leave NO
-# tracked-file modifications under orchestrator/src/. dist/cli.js is untracked
-# (gitignored) and is expected to be freshly built; build-commit.ts is tracked
-# and must be restored to its committed value.
-if git -C "$REPO_ROOT" diff --exit-code -- orchestrator/src/; then
-  echo "PASS: sourcing init.sh left orchestrator/src/ clean (no tracked-file mutations)"
-  exit 0
-else
+# Assertion: a clean caller remains clean.
+if ! git -C "$REPO_ROOT" diff --quiet -- orchestrator/src/; then
   echo "FAIL: sourcing init.sh mutated tracked files under orchestrator/src/" >&2
   git -C "$REPO_ROOT" status --porcelain -- orchestrator/src/ >&2
-  # Cleanup so re-running doesn't accumulate: restore build-commit.ts to its
-  # committed value before exiting.
-  git -C "$REPO_ROOT" checkout -- orchestrator/src/build-commit.ts 2>/dev/null || true
   exit 1
 fi
+
+# Assertion: a caller edit is rejected rather than discarded.
+SENTINEL="// verify-initsh-non-mutation caller sentinel"
+cleanup() {
+  git -C "$REPO_ROOT" checkout -- orchestrator/src/build-commit.ts
+  rm -rf "${STALE_DIR:-}"
+}
+trap cleanup EXIT
+printf "\n%s\n" "$SENTINEL" >> "$TARGET"
+if ( source "$REPO_ROOT/init.sh" ); then
+  echo "FAIL: init.sh accepted a caller edit to build-commit.ts" >&2
+  exit 1
+fi
+if ! grep -Fqx "$SENTINEL" "$TARGET"; then
+  echo "FAIL: init.sh discarded a caller edit to build-commit.ts" >&2
+  exit 1
+fi
+git -C "$REPO_ROOT" checkout -- orchestrator/src/build-commit.ts
+
+# Assertion: the repository-local launcher wins even when the repository path
+# already appears later than a stale executable in PATH.
+STALE_DIR="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$STALE_DIR/rickgent"
+chmod +x "$STALE_DIR/rickgent"
+PATH="$STALE_DIR:$REPO_ROOT:$PATH"
+export PATH
+hash -r
+source "$REPO_ROOT/init.sh"
+if [[ "$(command -v rickgent)" != "$REPO_ROOT/rickgent" ]]; then
+  echo "FAIL: init.sh did not prioritize the repository-local rickgent launcher" >&2
+  exit 1
+fi
+
+echo "PASS: init.sh preserves caller state and resolves the local CLI"
