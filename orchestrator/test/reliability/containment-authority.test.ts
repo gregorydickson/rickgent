@@ -849,3 +849,170 @@ describe("M3 fix: awaitEmpty / mintDeathReceipt fail-closed for stopped/unreadab
     expect(isAuthorizedContainmentEmptinessObservation(serialized)).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// M3 scrutiny round 2 fix: mintDeathReceipt exact backend/boundary binding.
+//
+// The M3 scrutiny round 2 validator found that both Docker and Linux
+// mintDeathReceipt implementations only checked launchId equality but not
+// backendId or boundaryName.  A genuine authority-branded confirmed-empty
+// observation from a different boundary or backend with the same launchId
+// could mint a terminal death receipt for the requested boundary, violating
+// containment contract obligation 6 (exact backend/boundary receipt binding).
+//
+// The cross-boundary vector exploits the fact that launchIdFor() does NOT
+// incorporate runId or ticketId, while boundaryNameFor() DOES.  Two lineages
+// that differ only in runId produce the same launchId but different
+// boundaryName — a genuine same-backend observation from one can be
+// substituted for the other if only launchId is checked.
+//
+// The cross-backend vector exploits the fact that launchIdFor() and
+// boundaryNameFor() are backend-independent.  The same lineage produces the
+// same launchId and boundaryName on both Docker and Linux backends; only
+// backendId differs.  A genuine Docker-branded observation can be
+// substituted for a Linux boundary (and vice versa) if only launchId is
+// checked.
+//
+// These proofs exercise the Linux backend against a synthetic cgroup root so
+// the cross-boundary and same-boundary-positive tests run on any host.  The
+// Linux cross-backend test requires a Docker-branded observation and is
+// guarded by Docker availability.  The Docker cross-boundary and
+// cross-backend proofs live in containment-corpus.test.ts.
+// ---------------------------------------------------------------------------
+
+describe("M3 fix round 2: mintDeathReceipt exact backend/boundary binding (cross-boundary / cross-backend)", () => {
+  function makeSyntheticCgroupRoot(): string {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "rickgent-cg-root-r2-")));
+    repos.add(root);
+    writeFileSync(join(root, "cgroup.kill"), "1");
+    writeFileSync(join(root, "cgroup.controllers"), "pids memory cpu");
+    writeFileSync(join(root, "cgroup.events"), "populated 1\nfrozen 0\n");
+    return root;
+  }
+
+  // Lineages that differ ONLY in runId: launchIdFor() does not use runId, so
+  // both produce the same launchId; boundaryNameFor() uses runId in the path
+  // prefix, so they produce different boundary names.  This is the
+  // cross-boundary substitution vector (same backend, same launchId,
+  // different boundaryName).
+  function crossBoundaryLineages(tag: string): { lineage1: ContainmentLineage; lineage2: ContainmentLineage } {
+    const base = {
+      ticketId: "t22",
+      attemptId: `xboundary-attempt-${tag}`,
+      ownershipId: `ownership-xboundary-${tag}`,
+      ownerGeneration: 1,
+      ownershipContextDigest: digest(`ownership-context:xboundary:${tag}`),
+      phaseExecutionId: `phase-exec-xboundary-${tag}`,
+      contextId: `ctx-xboundary-${tag}`,
+      executionContextDigest: digest(`exec-context:xboundary:${tag}`),
+    };
+    return {
+      lineage1: { runId: `run-A-${tag}`, ...base },
+      lineage2: { runId: `run-B-${tag}`, ...base },
+    };
+  }
+
+  // A lineage shared across Docker and Linux backends: launchIdFor() and
+  // boundaryNameFor() are backend-independent, so both backends produce the
+  // same launchId and boundaryName; only backendId differs.  This is the
+  // cross-backend substitution vector.
+  function sharedLineage(tag: string): ContainmentLineage {
+    return {
+      runId: `xbackend-run-${tag}`,
+      ticketId: "t22",
+      attemptId: `xbackend-attempt-${tag}`,
+      ownershipId: `ownership-xbackend-${tag}`,
+      ownerGeneration: 1,
+      ownershipContextDigest: digest(`ownership-context:xbackend:${tag}`),
+      phaseExecutionId: `phase-exec-xbackend-${tag}`,
+      contextId: `ctx-xbackend-${tag}`,
+      executionContextDigest: digest(`exec-context:xbackend:${tag}`),
+    };
+  }
+
+  it("Linux mintDeathReceipt rejects a same-backend cross-boundary observation (same launchId, different boundaryName)", async () => {
+    const root = makeSyntheticCgroupRoot();
+    const backend = new LinuxCgroupV2ContainmentBackend({ cgroupRoot: root, pollIntervalMs: 5 });
+    const { lineage1, lineage2 } = crossBoundaryLineages("linux");
+    const boundary1 = await backend.createBoundary(lineage1);
+    const boundary2 = await backend.createBoundary(lineage2);
+    // Verify the cross-boundary vector: same launchId, different boundaryName.
+    expect(boundary1.launchId).toBe(boundary2.launchId);
+    expect(boundary1.boundaryName).not.toBe(boundary2.boundaryName);
+    expect(boundary1.backendId).toBe(boundary2.backendId);
+
+    // Produce a genuine authority-branded confirmed-empty observation from
+    // boundary2 (the wrong boundary).
+    writeFileSync(join(boundary2.runtimeHandle, "cgroup.events"), "populated 0\nfrozen 0\n");
+    const observation2 = await backend.awaitEmpty(boundary2, 2_000);
+    expect(isAuthorizedContainmentEmptinessObservation(observation2)).toBe(true);
+    expect(observation2.emptinessConfirmed).toBe(true);
+    expect(observation2.boundary.launchId).toBe(boundary1.launchId);
+    expect(observation2.boundary.boundaryName).not.toBe(boundary1.boundaryName);
+
+    // mintDeathReceipt for boundary1 must reject boundary2's genuine
+    // observation (cross-boundary substitution).  Only checking launchId
+    // would accept this (defect); exact backendId + boundaryName + launchId
+    // binding rejects it.
+    expect(() => backend.mintDeathReceipt(boundary1, observation2)).toThrow(ContainmentUnavailableError);
+  });
+
+  it("Linux mintDeathReceipt rejects a cross-backend observation (genuine Docker-branded, different backendId)", async () => {
+    const dockerBackend = new DockerCgroupV2ContainmentBackend({ probeTimeoutMs: 60_000 });
+    if (dockerBackend.probe().status !== "available") {
+      // Skip on hosts without Docker; the Docker cross-backend proof in
+      // containment-corpus.test.ts covers the reverse direction.
+      return;
+    }
+    const root = makeSyntheticCgroupRoot();
+    const linuxBackend = new LinuxCgroupV2ContainmentBackend({ cgroupRoot: root, pollIntervalMs: 5 });
+    const lineage = sharedLineage("linux-rejects-docker");
+    const dockerBoundary = await dockerBackend.createBoundary(lineage);
+    const linuxBoundary = await linuxBackend.createBoundary(lineage);
+    try {
+      // Verify the cross-backend vector: same launchId + boundaryName,
+      // different backendId.
+      expect(dockerBoundary.launchId).toBe(linuxBoundary.launchId);
+      expect(dockerBoundary.boundaryName).toBe(linuxBoundary.boundaryName);
+      expect(dockerBoundary.backendId).not.toBe(linuxBoundary.backendId);
+
+      // Produce a genuine Docker-branded confirmed-empty observation.
+      await dockerBackend.kill(dockerBoundary);
+      const dockerObservation = await dockerBackend.awaitEmpty(dockerBoundary, 10_000);
+      expect(isAuthorizedContainmentEmptinessObservation(dockerObservation)).toBe(true);
+      expect(dockerObservation.emptinessConfirmed).toBe(true);
+      expect(dockerObservation.boundary.backendId).toBe("docker-cgroup-v2");
+
+      // Linux mintDeathReceipt must reject the Docker-branded observation
+      // (cross-backend substitution).  Only checking launchId would accept
+      // this (defect); exact backendId binding rejects it.
+      expect(() => linuxBackend.mintDeathReceipt(linuxBoundary, dockerObservation)).toThrow(ContainmentUnavailableError);
+    } finally {
+      await dockerBackend.dispose(dockerBoundary);
+    }
+  });
+
+  it("Linux mintDeathReceipt mints successfully for a same-boundary same-backend confirmed-empty observation (positive path)", async () => {
+    const root = makeSyntheticCgroupRoot();
+    const backend = new LinuxCgroupV2ContainmentBackend({ cgroupRoot: root, pollIntervalMs: 5 });
+    const boundary = await backend.createBoundary({
+      runId: "positive-run",
+      ticketId: "t22",
+      attemptId: "positive-attempt",
+      ownershipId: "ownership-positive",
+      ownerGeneration: 1,
+      ownershipContextDigest: digest("ownership-context:positive"),
+      phaseExecutionId: "phase-exec-positive",
+      contextId: "ctx-positive",
+      executionContextDigest: digest("exec-context:positive"),
+    });
+    writeFileSync(join(boundary.runtimeHandle, "cgroup.events"), "populated 0\nfrozen 0\n");
+    const emptiness = await backend.awaitEmpty(boundary, 2_000);
+    const death = backend.mintDeathReceipt(boundary, emptiness);
+    expect(isAuthorizedContainmentDeathReceipt(death)).toBe(true);
+    expect(death.boundary.backendId).toBe(boundary.backendId);
+    expect(death.boundary.boundaryName).toBe(boundary.boundaryName);
+    expect(death.boundary.launchId).toBe(boundary.launchId);
+    expect(death.emptinessConfirmed).toBe(true);
+  });
+});

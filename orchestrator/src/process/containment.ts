@@ -865,8 +865,26 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
         "mintDeathReceipt received a forged (unbranded) emptiness observation; only the authority-owned backend can mint one",
       );
     }
-    if (emptiness.boundary.launchId !== boundary.launchId) {
-      throw new ContainmentUnavailableError(this.backendId, "emptiness observation does not bind to the boundary");
+    // Exact boundary binding (M3 scrutiny round 2 fix: contract obligation 6).
+    // A genuine authority-branded confirmed-empty observation from a different
+    // boundary or backend with the same launchId must not mint a terminal
+    // death receipt for this boundary.  Require exact equality of backendId,
+    // boundaryName, AND launchId before minting.  launchIdFor() does not
+    // incorporate runId/ticketId while boundaryNameFor() does, so two
+    // lineages differing only in runId produce the same launchId but
+    // different boundaryName; and launchIdFor()/boundaryNameFor() are
+    // backend-independent, so the same lineage on Docker and Linux produces
+    // the same launchId/boundaryName but different backendId.  Checking only
+    // launchId would accept both substitution vectors (fail-open).
+    if (
+      emptiness.boundary.launchId !== boundary.launchId ||
+      emptiness.boundary.backendId !== boundary.backendId ||
+      emptiness.boundary.boundaryName !== boundary.boundaryName
+    ) {
+      throw new ContainmentUnavailableError(
+        this.backendId,
+        "emptiness observation does not bind to the exact boundary (backendId + boundaryName + launchId must all match)",
+      );
     }
     // A terminal death receipt requires an authority-owned, confirmed-empty
     // (populated=0) observation.  A failed, absent, or not-confirmed
@@ -1124,8 +1142,26 @@ export class LinuxCgroupV2ContainmentBackend implements ContainmentBackend {
         "mintDeathReceipt received a forged (unbranded) emptiness observation; only the authority-owned backend can mint one",
       );
     }
-    if (emptiness.boundary.launchId !== boundary.launchId) {
-      throw new ContainmentUnavailableError(this.backendId, "emptiness observation does not bind to the boundary");
+    // Exact boundary binding (M3 scrutiny round 2 fix: contract obligation 6).
+    // A genuine authority-branded confirmed-empty observation from a different
+    // boundary or backend with the same launchId must not mint a terminal
+    // death receipt for this boundary.  Require exact equality of backendId,
+    // boundaryName, AND launchId before minting.  launchIdFor() does not
+    // incorporate runId/ticketId while boundaryNameFor() does, so two
+    // lineages differing only in runId produce the same launchId but
+    // different boundaryName; and launchIdFor()/boundaryNameFor() are
+    // backend-independent, so the same lineage on Docker and Linux produces
+    // the same launchId/boundaryName but different backendId.  Checking only
+    // launchId would accept both substitution vectors (fail-open).
+    if (
+      emptiness.boundary.launchId !== boundary.launchId ||
+      emptiness.boundary.backendId !== boundary.backendId ||
+      emptiness.boundary.boundaryName !== boundary.boundaryName
+    ) {
+      throw new ContainmentUnavailableError(
+        this.backendId,
+        "emptiness observation does not bind to the exact boundary (backendId + boundaryName + launchId must all match)",
+      );
     }
     // A terminal death receipt requires an authority-owned, confirmed-empty
     // (populated=0) observation.  A failed, absent, or not-confirmed

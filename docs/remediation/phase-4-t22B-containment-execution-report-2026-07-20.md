@@ -392,3 +392,134 @@ Tests  40 passed (40)
 | `orchestrator/test/reliability/containment-authority.test.ts` | 8 M3 fix negative-proof tests (Linux stopped/unreadable/malformed + mintDeathReceipt refusal + brand forgery) |
 | `orchestrator/test/reliability/containment-corpus.test.ts` | case 10: Docker stopped boundary fail-closed + forged emptiness refusal |
 | `docs/remediation/phase-4-t22B-containment-execution-report-2026-07-20.md` | This fix addendum |
+
+---
+
+## Fix Addendum 2 (M3 scrutiny round 2 remediation): mintDeathReceipt exact backend/boundary binding
+
+**Date:** 2026-07-20
+**Trigger:** M3 scrutiny round 2 validator identified the
+cross-boundary/cross-backend emptiness-observation substitution in
+`mintDeathReceipt` as blocking (violating containment contract obligation 6:
+exact backend/boundary receipt binding).
+**Scope:** `orchestrator/src/process/containment.ts` (both Docker and Linux
+`mintDeathReceipt` binding checks); negative-proof tests in
+`containment-authority.test.ts` and `containment-corpus.test.ts`.
+
+### The fail-open
+
+Both Docker and Linux `mintDeathReceipt` implementations checked only
+`emptiness.boundary.launchId !== boundary.launchId` before minting a terminal
+death receipt.  They did NOT check `backendId` or `boundaryName`.  A genuine
+authority-branded confirmed-empty observation from a different boundary or
+backend with the same `launchId` could mint a terminal death receipt for the
+requested boundary, violating contract obligation 6 (exact backend/boundary
+receipt binding).
+
+**Cross-boundary vector:** `launchIdFor(lineage)` does NOT incorporate `runId`
+or `ticketId`, while `boundaryNameFor(lineage)` DOES (the path prefix is
+`rickgent/<runId>/<ticketId>/...`).  Two lineages that differ only in `runId`
+produce the same `launchId` but different `boundaryName`.  A genuine
+same-backend authority-branded observation from one boundary could be
+substituted for the other if only `launchId` is checked.
+
+**Cross-backend vector:** `launchIdFor()` and `boundaryNameFor()` are
+backend-independent.  The same lineage on Docker and Linux produces the same
+`launchId` and `boundaryName`; only `backendId` differs.  A genuine
+Docker-branded observation could be substituted for a Linux boundary (and vice
+versa) if only `launchId` is checked.
+
+In both cases the observation is GENUINELY authority-branded (the brand check
+passes) and GENUINELY confirmed-empty — the defect is that the boundary
+identity binding is incomplete, not that the observation is forged.
+
+### The fix
+
+Replaced the single `launchId` equality check in both `mintDeathReceipt`
+implementations with an exact three-field binding check:
+
+```ts
+if (
+  emptiness.boundary.launchId !== boundary.launchId ||
+  emptiness.boundary.backendId !== boundary.backendId ||
+  emptiness.boundary.boundaryName !== boundary.boundaryName
+) {
+  throw new ContainmentUnavailableError(
+    this.backendId,
+    "emptiness observation does not bind to the exact boundary (backendId + boundaryName + launchId must all match)",
+  );
+}
+```
+
+This enforces contract obligation 6: a death receipt for a boundary can only
+be minted from an observation that binds to the EXACT same boundary identity
+(backendId + boundaryName + launchId), not just the same launchId.
+
+### Red-then-green proof
+
+**Red** (against the unfixed code, 4 tests failed):
+
+```
+pnpm vitest run test/reliability/containment-authority.test.ts -t "M3 fix round 2" ...
+Tests  2 failed | 1 passed | 28 skipped (31)
+  × Linux mintDeathReceipt rejects a same-backend cross-boundary observation
+    (same launchId, different boundaryName)
+    → expected function to throw an error, but it didn't
+  × Linux mintDeathReceipt rejects a cross-backend observation
+    (genuine Docker-branded, different backendId)
+    → expected function to throw an error, but it didn't
+
+pnpm vitest run test/reliability/containment-corpus.test.ts -t "case 1[123]" ...
+Tests  2 failed | 1 passed | 12 skipped (15)
+  × case 11: cross-boundary — Docker mintDeathReceipt rejects a genuine
+    same-backend observation with a different boundaryName (same launchId)
+    → expected function to throw an error, but it didn't
+  × case 12: cross-backend — Docker mintDeathReceipt rejects a genuine
+    Linux-branded observation (same launchId, different backendId)
+    → expected function to throw an error, but it didn't
+```
+
+All 4 negative tests failed because `mintDeathReceipt` accepted the
+cross-boundary/cross-backend observation (only `launchId` was checked, and it
+matched).  The 2 positive-path tests passed (same-boundary minting was
+unaffected).
+
+**Green** (after the fix):
+
+```
+pnpm vitest run test/reliability/containment-authority.test.ts test/reliability/containment-corpus.test.ts ...
+Tests  46 passed (46)
+```
+
+### Negative-proof matrix (M3 fix round 2)
+
+| Proof | Backend | Description |
+| --- | --- | --- |
+| Cross-boundary (same backend, different boundaryName) | Linux | `mintDeathReceipt` throws for a genuine same-backend observation with same `launchId` but different `boundaryName` |
+| Cross-backend (different backendId) | Linux | `mintDeathReceipt` throws for a genuine Docker-branded observation with same `launchId`/`boundaryName` but different `backendId` |
+| Same-boundary positive | Linux | `mintDeathReceipt` mints successfully for a genuine same-backend same-boundary confirmed-empty observation |
+| Cross-boundary (same backend, different boundaryName) | Docker | `mintDeathReceipt` throws for a genuine same-backend observation with same `launchId` but different `boundaryName` (corpus case 11) |
+| Cross-backend (different backendId) | Docker | `mintDeathReceipt` throws for a genuine Linux-branded observation with same `launchId`/`boundaryName` but different `backendId` (corpus case 12) |
+| Same-boundary positive | Docker | `mintDeathReceipt` mints successfully for a genuine same-backend same-boundary confirmed-empty observation (corpus case 13) |
+
+### Verification (fix tranche 2)
+
+| Check | Result |
+| --- | --- |
+| `pnpm typecheck` | exit 0, clean |
+| `pnpm build` | exit 0, `dist/cli.js` regenerated |
+| `containment-authority.test.ts` | 31 passed (28 prior + 3 M3 round 2) |
+| `containment-corpus.test.ts` | 15 passed (12 prior + 3 M3 round 2 cases 11-13) |
+| Scoped M3 regression (12 suites) | 258 passed |
+| `python3 -m pytest test/ -p no:cacheprovider -q` | 367 passed, 3 skipped |
+| `citadel --prd MISSION_3_PRD.md --repo .` | exit 0; 0 CRITICAL, 0 HIGH, 1 MEDIUM (crossfile-behavior-drift heuristic false positive), 1 LOW |
+| `doctor` | exit 0; `autonomous_dispatch: state=fixture_only` (unchanged) |
+
+### Files changed (fix tranche 2)
+
+| File | Change |
+| --- | --- |
+| `orchestrator/src/process/containment.ts` | Both `mintDeathReceipt` implementations: replaced single `launchId` check with exact three-field binding (backendId + boundaryName + launchId) |
+| `orchestrator/test/reliability/containment-authority.test.ts` | 3 M3 round 2 tests: Linux cross-boundary, Linux cross-backend, Linux same-boundary positive |
+| `orchestrator/test/reliability/containment-corpus.test.ts` | 3 M3 round 2 corpus cases: Docker cross-boundary (case 11), Docker cross-backend (case 12), Docker same-boundary positive (case 13) |
+| `docs/remediation/phase-4-t22B-containment-execution-report-2026-07-20.md` | This fix addendum 2 |

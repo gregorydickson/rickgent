@@ -24,7 +24,7 @@
  * unavailable fail-closed path is covered in `containment-authority.test.ts`).
  */
 import { createHash } from "node:crypto";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -32,8 +32,10 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import {
   ContainmentUnavailableError,
   DockerCgroupV2ContainmentBackend,
+  LinuxCgroupV2ContainmentBackend,
   isAuthorizedContainmentBoundary,
   isAuthorizedContainmentDeathReceipt,
+  isAuthorizedContainmentEmptinessObservation,
   isAuthorizedContainmentMembership,
   type ContainmentBoundary,
   type ContainmentEmptinessObservation,
@@ -257,6 +259,122 @@ describe.skipIf(!backendAvailable)("VAL-T22B-003: real platform corpus (Docker c
       emptinessConfirmed: true,
     } as unknown as ContainmentEmptinessObservation;
     expect(() => backend.mintDeathReceipt(boundary, forged)).toThrow(ContainmentUnavailableError);
+  });
+
+  // M3 scrutiny round 2 fix: mintDeathReceipt must require exact equality of
+  // backendId, boundaryName, AND launchId before minting.  A genuine
+  // authority-branded confirmed-empty observation from a different boundary
+  // or backend with the same launchId must not mint a terminal death receipt
+  // for the requested boundary (contract obligation 6: exact backend/boundary
+  // receipt binding).
+
+  it("case 11: cross-boundary — Docker mintDeathReceipt rejects a genuine same-backend observation with a different boundaryName (same launchId)", async () => {
+    // Two lineages differing only in runId: launchIdFor() does not use runId,
+    // so both produce the same launchId; boundaryNameFor() uses runId in the
+    // path prefix, so they produce different boundary names.  A genuine
+    // Docker-branded observation from boundary2 has the same launchId as
+    // boundary1 but a different boundaryName.
+    const base = {
+      ticketId: "t22",
+      attemptId: "corpus-xboundary-attempt",
+      ownershipId: "ownership-corpus-xboundary",
+      ownerGeneration: 1,
+      ownershipContextDigest: sha256("ownership-context:corpus-xboundary"),
+      phaseExecutionId: "phase-exec-corpus-xboundary",
+      contextId: "ctx-corpus-xboundary",
+      executionContextDigest: sha256("exec-context:corpus-xboundary"),
+    };
+    const lineage1: ContainmentLineage = { runId: "corpus-run-A", ...base };
+    const lineage2: ContainmentLineage = { runId: "corpus-run-B", ...base };
+
+    const boundary1 = await backend.createBoundary(lineage1);
+    const boundary2 = await backend.createBoundary(lineage2);
+    boundaries.push({ dispose: () => backend.dispose(boundary1) });
+    boundaries.push({ dispose: () => backend.dispose(boundary2) });
+
+    // Verify the cross-boundary vector: same launchId, different boundaryName.
+    expect(boundary1.launchId).toBe(boundary2.launchId);
+    expect(boundary1.boundaryName).not.toBe(boundary2.boundaryName);
+    expect(boundary1.backendId).toBe(boundary2.backendId);
+
+    // Produce a genuine Docker-branded confirmed-empty observation from
+    // boundary2 (the wrong boundary).
+    await backend.kill(boundary2);
+    const observation2 = await backend.awaitEmpty(boundary2, 10_000);
+    expect(isAuthorizedContainmentEmptinessObservation(observation2)).toBe(true);
+    expect(observation2.emptinessConfirmed).toBe(true);
+    expect(observation2.boundary.launchId).toBe(boundary1.launchId);
+    expect(observation2.boundary.boundaryName).not.toBe(boundary1.boundaryName);
+
+    // mintDeathReceipt for boundary1 must reject boundary2's genuine
+    // observation (cross-boundary substitution).  Only checking launchId
+    // would accept this (defect); exact boundaryName binding rejects it.
+    expect(() => backend.mintDeathReceipt(boundary1, observation2)).toThrow(ContainmentUnavailableError);
+  });
+
+  it("case 12: cross-backend — Docker mintDeathReceipt rejects a genuine Linux-branded observation (same launchId, different backendId)", async () => {
+    // A synthetic Linux cgroup root produces a genuine Linux-branded
+    // confirmed-empty observation with the same launchId and boundaryName as
+    // a Docker boundary for the same lineage (launchIdFor and
+    // boundaryNameFor are backend-independent); only backendId differs.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "rickgent-cg-root-xbackend-")));
+    rmSync(root, { recursive: true, force: true });
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "cgroup.kill"), "1");
+    writeFileSync(join(root, "cgroup.controllers"), "pids memory cpu");
+    writeFileSync(join(root, "cgroup.events"), "populated 1\nfrozen 0\n");
+    try {
+      const linuxBackend = new LinuxCgroupV2ContainmentBackend({ cgroupRoot: root, pollIntervalMs: 5 });
+      const lineage: ContainmentLineage = {
+        runId: "corpus-xbackend-run",
+        ticketId: "t22",
+        attemptId: "corpus-xbackend-attempt",
+        ownershipId: "ownership-corpus-xbackend",
+        ownerGeneration: 1,
+        ownershipContextDigest: sha256("ownership-context:corpus-xbackend"),
+        phaseExecutionId: "phase-exec-corpus-xbackend",
+        contextId: "ctx-corpus-xbackend",
+        executionContextDigest: sha256("exec-context:corpus-xbackend"),
+      };
+      const linuxBoundary = await linuxBackend.createBoundary(lineage);
+      writeFileSync(join(linuxBoundary.runtimeHandle, "cgroup.events"), "populated 0\nfrozen 0\n");
+      const linuxObservation = await linuxBackend.awaitEmpty(linuxBoundary, 2_000);
+      expect(isAuthorizedContainmentEmptinessObservation(linuxObservation)).toBe(true);
+      expect(linuxObservation.emptinessConfirmed).toBe(true);
+      expect(linuxObservation.boundary.backendId).toBe("linux-cgroup-v2");
+
+      const dockerBoundary = await backend.createBoundary(lineage);
+      boundaries.push({ dispose: () => backend.dispose(dockerBoundary) });
+
+      // Verify the cross-backend vector: same launchId + boundaryName,
+      // different backendId.
+      expect(dockerBoundary.launchId).toBe(linuxBoundary.launchId);
+      expect(dockerBoundary.boundaryName).toBe(linuxBoundary.boundaryName);
+      expect(dockerBoundary.backendId).not.toBe(linuxBoundary.backendId);
+
+      // Docker mintDeathReceipt must reject the Linux-branded observation
+      // (cross-backend substitution).  Only checking launchId would accept
+      // this (defect); exact backendId binding rejects it.
+      expect(() => backend.mintDeathReceipt(dockerBoundary, linuxObservation)).toThrow(ContainmentUnavailableError);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("case 13: same-boundary positive — Docker mintDeathReceipt mints for a genuine same-backend same-boundary confirmed-empty observation", async () => {
+    const lineage = makeLineage("positive-mint");
+    const boundary = await backend.createBoundary(lineage);
+    boundaries.push({ dispose: () => backend.dispose(boundary) });
+    await backend.releaseTarget(boundary, ["sh", "-c", "exit 0"], { timeoutMs: 5_000 });
+    await backend.kill(boundary);
+    const emptiness = await backend.awaitEmpty(boundary, 10_000);
+    expect(emptiness.emptinessConfirmed).toBe(true);
+    const death = backend.mintDeathReceipt(boundary, emptiness);
+    expect(isAuthorizedContainmentDeathReceipt(death)).toBe(true);
+    expect(death.boundary.backendId).toBe(boundary.backendId);
+    expect(death.boundary.boundaryName).toBe(boundary.boundaryName);
+    expect(death.boundary.launchId).toBe(boundary.launchId);
+    expect(death.emptinessConfirmed).toBe(true);
   });
 });
 
