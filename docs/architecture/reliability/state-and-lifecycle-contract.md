@@ -408,23 +408,27 @@ held -> closed_never_released
 collecting -> sealed
 ```
 
-The `live -> cleanup_pending` edge is owned by `LeaseService` and requires a
-live owner-checked lease: the caller must present the exact `owner_token_digest`
-for the ownership row (a missing or stale owner fails closed to
-`RICKGENT_STATE_OWNER_MISMATCH`); the caller must present the expected ownership
-preimage (`state='live'` + `state_version`), so a non-live state or stale
-version fails to `RICKGENT_STATE_CONFLICT`; a defense-in-depth guard
-additionally rejects a non-live state with `RICKGENT_STATE_TRANSITION_ILLEGAL`;
-the transition commits via a CAS on `ownership_id` + `owner_token_digest` +
-`state='live'` + `state_version` (a concurrent mutation fails to
-`RICKGENT_STATE_CONFLICT`). An expired lease is admitted to cleanup containment
-via this transition (the workspace readiness path calls `beginCleanup` on expiry
-to enter `cleanup_pending`); the expiry gate is enforced downstream on heartbeat
-and resource-advance operations, not on the begin-cleanup transition itself. The
-attempt-cleanup-entry evidence (candidate attribution or failure evidence, or
-stale recovery under exact process-group death) is owned by the t19/t20
-process-supervision chain and is not enforced by this Store-level transition;
-it is verified by the caller before requesting `beginCleanup`. The `held -> released` edge is owned by
+The `live -> cleanup_pending` edge is owned by `LeaseService` and requires
+exactly a live owner-checked lease enforced by the Store-level
+`StateStore.beginCleanup` transition: the caller must present the exact
+`owner_token_digest` for the ownership row (a missing or stale owner fails
+closed to `RICKGENT_STATE_OWNER_MISMATCH`); the caller must present the
+expected ownership preimage (`state='live'` + `state_version`), so a non-live
+state or stale version fails to `RICKGENT_STATE_CONFLICT`; a defense-in-depth
+guard additionally rejects a non-live state with
+`RICKGENT_STATE_TRANSITION_ILLEGAL`; the transition commits via a CAS on
+`ownership_id` + `owner_token_digest` + `state='live'` + `state_version` (a
+concurrent mutation fails to `RICKGENT_STATE_CONFLICT`). An expired lease is
+admitted to cleanup containment via this transition (the workspace readiness
+path and the process supervisor call `beginCleanup` on expiry or
+infrastructure failure to enter `cleanup_pending`); the expiry gate is
+enforced downstream on heartbeat and resource-advance operations, not on the
+begin-cleanup transition itself. No attempt-cleanup-entry evidence is
+required or verified by this transition: `ProcessSupervisor` calls
+`beginCleanup` on infrastructure failures before any cleanup-entry evidence
+exists, so the Store-level precondition matches exactly the
+owner-token/live-state/version CAS it enforces and declares nothing about
+caller-verified cleanup-entry evidence. The `held -> released` edge is owned by
 `TargetStartGateAuthority` and requires a validated containment authority
 authorizing target release, binding a held target start gate (`state_version`
 0) to the exact attempt ownership/generation/context lineage; unavailable

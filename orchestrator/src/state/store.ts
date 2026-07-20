@@ -5581,9 +5581,14 @@ export class StateStore {
     ] as const) {
       if (!isAbsolute(value) || realpathSync.native(value) !== value) throw new TypeError(`execution context ${field} must be an existing canonical absolute path`);
     }
-    if (input.worktreeRealpath !== this.location.repoRealpath) {
-      throw new TypeError("production execution contexts remain on the selected repository until t22 cuts over the attempt-workspace primitive");
-    }
+    // t22A fix round 2: the attempt-owned execution context binds to the
+    // authority-derived worktree (the LeaseAuthority ownership grant's
+    // plan.worktreePath), which is NOT the caller repository.  The
+    // resolveAuthorityExecutionContext entrypoint rejects a binding that
+    // resolves to the caller repository, so the prior blanket "remain on the
+    // selected repository" guard is relaxed to permit the authority-derived
+    // worktree.  The legacy resolvePhaseContext path continues to pass the
+    // caller repository as the worktree (unchanged behavior).
     for (const [field, value] of [
       ["policyRootRealpath", input.policyRootRealpath],
       ["bundleRootRealpath", input.bundleRootRealpath],

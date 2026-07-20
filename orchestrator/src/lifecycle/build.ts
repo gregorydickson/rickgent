@@ -69,12 +69,23 @@ import {
 import type { ImplementationCapturedReceipt } from "../git/mutation-capture.js";
 import { IdentityContextResolver } from "../context/resolver.js";
 import {
+  resolveAttemptExecutionContext,
+  type ResolveAttemptExecutionContextInput,
+} from "../context/attempt-execution-context.js";
+import {
+  terminalizeAttemptDisposition,
+  type AttemptTerminalizationInput,
+  type AttemptTerminalizationResult,
+} from "./attempt-terminalization.js";
+import type { ResolvedPhaseContext } from "../context/resolver.js";
+import {
   openStateStore,
   StateStoreError,
   type AllocatedAttempt,
   type AllocatedRun,
   type StateStore,
 } from "../state/store.js";
+import { LeaseAuthority } from "../state/leases.js";
 import { RICKGENT_ORACLE_VERSION } from "../state/oracle.js";
 import { LegacyDiagnosticService } from "../state/legacy-quarantine.js";
 
@@ -112,6 +123,23 @@ export interface BuildOptions {
   rawShell?: boolean;
   /** True when a CLI/caller supplied any delivery-related configuration. */
   deliveryConfigured?: boolean;
+  /**
+   * Per-attempt t22A authority substrate provider (t22A fix round 2).  When
+   * supplied, the build path routes each attempt's execution-context
+   * resolution and terminalization through the production authority APIs
+   * ({@link resolveAttemptExecutionContext} /
+   * {@link terminalizeAttemptDisposition}) so the authority-derived worktree
+   * is the execution context and the purpose-specific disposition receipt is
+   * minted.  When absent, the legacy run-workspace path remains in effect
+   * (the t22C/t22D cutover removes that fallback).  The
+   * {@link autonomous_dispatch} capability remains `fixture_only` regardless;
+   * this routes the authority APIs on the production path without activating
+   * production dispatch.
+   */
+  attemptAuthoritySubstrateProvider?: (
+    attempt: AllocatedAttempt,
+    outcome: "failure" | "promotion" | "quarantine" | "nonterminal",
+  ) => AttemptAuthoritySubstrate | null;
 }
 
 /**
@@ -132,10 +160,52 @@ export interface InternalBuildDependencies {
   finalizeRunWorkspace?: typeof finalizeRunWorkspace;
   /** Deterministic fixture materialization; production always uses the authenticated bundle. */
   dispatcherDependencies?: DispatcherDependencies;
+  /**
+   * Production attempt terminalization route (t22A fix round 2).  The build
+   * path calls this for each attempt's terminal outcome; it routes through
+   * {@link AttemptTerminalizationAuthority} (the purpose-specific route) and
+   * mints the branded disposition receipt.  The generic {@link CleanupService}
+   * path is NOT the authority route.  Defaults to the production
+   * {@link terminalizeAttemptDisposition} entrypoint.  When no substrate is
+   * supplied for an attempt (the legacy build path before the t22C/t22D
+   * cutover provides the ownership grant + branded receipt), the build path
+   * does not invoke this route for that attempt; the physical workspace
+   * finalization ({@link finalizeRunWorkspace}) remains as a non-authority
+   * physical effect.
+   */
+  terminalizeAttemptDisposition?: typeof terminalizeAttemptDisposition;
+  /**
+   * Production attempt execution-context route (t22A fix round 2).  The build
+   * path calls this to bind an attempt's execution context to the
+   * authority-derived worktree (NOT the caller repository or the legacy run
+   * workspace).  Defaults to the production
+   * {@link resolveAttemptExecutionContext} entrypoint.  When no ownership
+   * grant is supplied for an attempt, the build path uses the legacy
+   * {@link ReadyRunWorkspace} worktree for that attempt (the t22D cutover
+   * removes that fallback).
+   */
+  resolveAttemptExecutionContext?: typeof resolveAttemptExecutionContext;
   /** Explicit fixture-only omissions; production entrypoints never set these. */
   skipPolicyAttachment?: boolean;
   skipConformance?: boolean;
   skipDeslop?: boolean;
+}
+
+/**
+ * A per-attempt substrate that routes the build path's terminalization and
+ * execution-context resolution through the t22A authority APIs.  When supplied
+ * (by the future AttemptRunner (t22C) or a production-path test), the build
+ * path calls {@link terminalizeAttemptDisposition} and
+ * {@link resolveAttemptExecutionContext} for that attempt; the
+ * authority-derived worktree is the execution context and the purpose-specific
+ * disposition receipt is minted.  When absent, the legacy run-workspace path
+ * remains in effect for that attempt (the t22D cutover removes it).
+ */
+export interface AttemptAuthoritySubstrate {
+  /** The authority-derived execution-context input (ownership grant + policy bundle). */
+  readonly executionContext: ResolveAttemptExecutionContextInput;
+  /** The terminalization input for the attempt's outcome, or null if non-terminal. */
+  readonly terminalization: AttemptTerminalizationInput | null;
 }
 
 export interface BuildResult {
@@ -153,6 +223,23 @@ export interface BuildResult {
   dispatchObservations: readonly DispatchEntry[];
   captureReceipts: ImplementationCapturedReceipt[];
   workspaceCleanup: RunWorkspaceCleanupEvidence | null;
+  /**
+   * Purpose-specific disposition receipts minted by the production
+   * terminalization authority route ({@link terminalizeAttemptDisposition})
+   * for attempts whose t22A substrate was supplied.  Empty when no substrate
+   * is supplied (the legacy build path before the t22C/t22D cutover).  The
+   * generic {@link CleanupService} path is NOT the authority route; only
+   * branded Store-minted receipts appear here.
+   */
+  terminalizationReceipts: readonly AttemptTerminalizationResult[];
+  /**
+   * Authority-derived execution contexts resolved by the production
+   * execution-context route ({@link resolveAttemptExecutionContext}) for
+   * attempts whose t22A substrate was supplied.  Empty when no substrate is
+   * supplied.  Each entry's worktree is the authority-derived worktree, NOT
+   * the caller repository or the legacy run workspace.
+   */
+  authorityExecutionContexts: ReadonlyArray<Readonly<{ readonly attemptId: string; readonly worktreeRealpath: string }>>;
 }
 
 type BuildObservation = Omit<BuildResult, "outcome">;
@@ -334,6 +421,8 @@ async function executeBuild(
     dispatchObservations: [],
     captureReceipts: [],
     workspaceCleanup: null,
+    terminalizationReceipts: [],
+    authorityExecutionContexts: [],
   };
   const issues: RunIssue[] = [];
 
@@ -721,6 +810,35 @@ async function executeBuild(
       try {
         const attempt = attemptByTicket.get(ticket.id);
         if (attempt === undefined) throw new Error(`canonical attempt missing for ${ticket.id}`);
+
+        // ── Production execution-context route (t22A fix round 2) ──────────
+        // When a t22A authority substrate is supplied for this attempt, bind
+        // its execution context to the authority-derived worktree via the
+        // production resolveAttemptExecutionContext entrypoint (which routes
+        // through AttemptExecutionContextAuthority).  The authority-derived
+        // worktree is the production execution context, NOT the caller
+        // repository or the legacy run workspace.  When no substrate is
+        // supplied (the legacy build path before the t22C/t22D cutover), the
+        // legacy run-workspace worktree remains the dispatch cwd for this
+        // attempt.  The durable execution context row is persisted by the
+        // authority route either way when a substrate is supplied.
+        const substrate = opts.attemptAuthoritySubstrateProvider?.(attempt, "nonterminal") ?? null;
+        if (substrate !== null) {
+          const resolveCtx = dependencies.resolveAttemptExecutionContext ?? resolveAttemptExecutionContext;
+          const resolved: ResolvedPhaseContext = resolveCtx(stateStore, substrate.executionContext);
+          base.authorityExecutionContexts = Object.freeze([
+            ...base.authorityExecutionContexts,
+            Object.freeze({
+              attemptId: attempt.attemptId,
+              worktreeRealpath: resolved.canonical.context.worktree_realpath,
+            }),
+          ]);
+          report.push(
+            `  ${ticket.id}: execution context bound to authority-derived worktree ` +
+              `(${resolved.canonical.context.worktree_realpath}) via AttemptExecutionContextAuthority`,
+          );
+        }
+
         entry = await dispatcher.dispatch(id, {
           agentDir: opts.agentDir,
           prompt: ticketPrompt(ticket),
@@ -827,6 +945,35 @@ async function executeBuild(
           detail: entry.stderr ?? `dispatch terminal state ${entry.state}`,
           ticketId: ticket.id,
         }));
+      }
+
+      // ── Production terminalization route (t22A fix round 2) ────────────
+      // When a t22A authority substrate is supplied for this attempt's
+      // terminal outcome, route the disposition terminalization through the
+      // production terminalizeAttemptDisposition entrypoint (which routes
+      // through AttemptTerminalizationAuthority).  The purpose-specific
+      // branded disposition receipt is minted on the production path; the
+      // generic CleanupService path is NOT the authority route.  When no
+      // substrate is supplied (the legacy build path before the t22C/t22D
+      // cutover), no authority terminalization is performed for this attempt
+      // and the physical workspace finalization remains a non-authority
+      // physical effect.
+      const terminalAttempt = attemptByTicket.get(ticket.id);
+      if (terminalAttempt !== undefined && opts.attemptAuthoritySubstrateProvider !== undefined) {
+        const outcome: "failure" | "promotion" | "quarantine" | "nonterminal" =
+          entry.terminalReason === "infrastructure_error" ? "quarantine"
+          : entry.state === "completed" || entry.exitCode === 0 ? "promotion"
+          : "failure";
+        const terminalSubstrate = opts.attemptAuthoritySubstrateProvider(terminalAttempt, outcome) ?? null;
+        if (terminalSubstrate !== null && terminalSubstrate.terminalization !== null) {
+          const terminalize = dependencies.terminalizeAttemptDisposition ?? terminalizeAttemptDisposition;
+          const receipt = terminalize(stateStore, new LeaseAuthority(stateStore), terminalSubstrate.terminalization);
+          base.terminalizationReceipts = Object.freeze([...base.terminalizationReceipts, receipt]);
+          report.push(
+            `  ${ticket.id}: disposition terminalized via AttemptTerminalizationAuthority ` +
+              `(kind=${terminalSubstrate.terminalization.kind}, replayed=${"replayed" in receipt && receipt.replayed})`,
+          );
+        }
       }
     }
 

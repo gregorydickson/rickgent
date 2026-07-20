@@ -43,12 +43,15 @@ import {
 } from "../../src/lifecycle/disposition.js";
 import {
   AttemptTerminalizationAuthority,
+  AttemptTerminalizationService,
   receiptAcceptsTerminalization,
   terminalizationReceiptKind,
+  terminalizeAttemptDisposition,
 } from "../../src/lifecycle/attempt-terminalization.js";
 import {
   AttemptExecutionContextAuthority,
   authorityWorktreeRealpath,
+  resolveAttemptExecutionContext,
 } from "../../src/context/attempt-execution-context.js";
 import {
   dispositionReceiptKind,
@@ -1430,6 +1433,175 @@ describe("t22A disposition Store bridge", () => {
       // authorityWorktreeRealpath extracts the worktree from the grant plan:
       // the production execution context binds to this path, not the caller repo.
       expect(authorityWorktreeRealpath(forgedGrant)).toBe(fixture.repo);
+    });
+  });
+
+  describe("production-path authority wiring (t22A fix round 2: authority APIs are the production route, not test wrappers)", () => {
+    it("the production terminalizeAttemptDisposition entrypoint mints the purpose-specific failure receipt on the production path", () => {
+      const fixture = buildFixture();
+      insertSalvageRecord(fixture);
+      insertTargetProofSetSealed(fixture);
+      const capability = fixture.leases.issueDispositionMintCapability();
+      const observation = makeFailureObservation(fixture);
+      const receipt = mintFailureCleanupReceipt(observation, capability);
+      // Drive the PRODUCTION terminalizeAttemptDisposition entrypoint (not the
+      // AttemptTerminalizationAuthority class directly).  This is the function
+      // the production build path (build.ts) imports and calls.
+      const result = terminalizeAttemptDisposition(fixture.store, fixture.leases, {
+        kind: "failure",
+        failure: {
+          request: {
+            observation,
+            targetProofSetId: `target-proof-set-${fixture.attempt.attemptId}`,
+            causeEvidenceId: `evidence-salvage-${fixture.attempt.attemptId}`,
+          },
+          receipt,
+        },
+      });
+      expect(result.replayed).toBe(false);
+      expect(String(result.record.attempt_id)).toBe(fixture.attempt.attemptId);
+      // The purpose-specific failure-cleanup receipt is minted on the production path.
+      const failureRows = queryAll(fixture.store.location.databasePath,
+        "SELECT * FROM failure_cleanup_records WHERE attempt_id = ?", fixture.attempt.attemptId);
+      expect(failureRows.length).toBe(1);
+    });
+
+    it("the production AttemptTerminalizationService.terminalize routes through the authority and mints the quarantine receipt", () => {
+      const fixture = buildFixture();
+      insertSalvageRecord(fixture);
+      insertTargetProofSetSealed(fixture);
+      insertOwnershipSnapshotEvidence(fixture, `evidence-ownership-quar-${fixture.attempt.attemptId}`);
+      const claimMembers = advanceClaimsToQuarantined(fixture);
+      const request = makeQuarantineRequest(fixture, claimMembers);
+      const capability = fixture.leases.issueDispositionMintCapability();
+      const receipt = mintQuarantineReceipt(request.observation, capability);
+      // Drive the PRODUCTION AttemptTerminalizationService (the production
+      // entrypoint the build path constructs), not the authority class.
+      const service = new AttemptTerminalizationService(fixture.store, fixture.leases);
+      const result = service.terminalize({ kind: "quarantine", quarantine: { request, receipt } });
+      expect(result.replayed).toBe(false);
+      const claimSet = queryAll(fixture.store.location.databasePath,
+        "SELECT state FROM quarantine_claim_sets WHERE attempt_id = ?", fixture.attempt.attemptId)[0]!;
+      expect(String(claimSet.state)).toBe("sealed");
+    });
+
+    it("the production terminalizeAttemptDisposition entrypoint rejects a generic cleanup record (the generic path is not the authority route)", () => {
+      const fixture = buildFixture();
+      insertSalvageRecord(fixture);
+      insertTargetProofSetSealed(fixture);
+      const genericCleanupRecord = {
+        kind: "cleanup_record",
+        attemptId: fixture.attempt.attemptId,
+        ownershipId: fixture.ownershipId,
+      };
+      // A generic cleanup record is not a branded receipt; the production
+      // entrypoint rejects it for every terminalization kind.
+      expect(terminalizationReceiptKind(genericCleanupRecord)).toBe(null);
+      expect(receiptAcceptsTerminalization(genericCleanupRecord, "failure")).toBe(false);
+      expect(receiptAcceptsTerminalization(genericCleanupRecord, "promotion")).toBe(false);
+      expect(receiptAcceptsTerminalization(genericCleanupRecord, "quarantine")).toBe(false);
+      // The production entrypoint throws at the entry point for a generic record.
+      expect(() => terminalizeAttemptDisposition(fixture.store, fixture.leases, {
+        kind: "failure",
+        failure: {
+          request: {
+            observation: makeFailureObservation(fixture),
+            targetProofSetId: `target-proof-set-${fixture.attempt.attemptId}`,
+            causeEvidenceId: `evidence-salvage-${fixture.attempt.attemptId}`,
+          },
+          receipt: genericCleanupRecord as never,
+        },
+      })).toThrow(/failure terminalization requires an exact branded failure-cleanup receipt/);
+    });
+
+    it("the production resolveAttemptExecutionContext entrypoint binds to the authority-derived worktree, not the caller repository", () => {
+      // Build a minimal fresh fixture (separate store/repo/run/attempt) so we
+      // can acquire a real LeaseAuthority ownership grant on a planned attempt
+      // without colliding with the buildFixture's pre-seeded cleanup_pending
+      // ownership row.  The run/ticket are activated (active) and the attempt
+      // stays planned so LeaseAuthority.acquire accepts it.
+      const repo = makeRepo();
+      const store = openStateStore({ repoPath: repo });
+      stores.add(store);
+      const sealedContract = contract(repo);
+      const resolver = new IdentityContextResolver(store);
+      const leases = new LeaseAuthority(store);
+      const run = resolver.allocateFreshRun({
+        contracts: [sealedContract],
+        initialDeliveryOid: git(repo, "rev-parse", "HEAD"),
+        oracleVersion: ORACLE_VERSION,
+      });
+      const attempt = resolver.allocateInitialAttempt({ runId: run.runId, ticketId: sealedContract.id });
+      // Activate the run and ticket (the legal activation transition) so
+      // LeaseAuthority.acquire accepts the planned attempt.
+      updateRow(store.location.databasePath, "runs", "run_id", run.runId, { state: "active", state_version: 1 });
+      updateRow(store.location.databasePath, "run_tickets", "ticket_instance_id", attempt.ticketInstanceId, { state: "active", state_version: 1 });
+      const grant = leases.acquire(leases.prepareAcquisition({
+        attemptId: attempt.attemptId,
+        idempotencyKey: "acquire-authority-wiring",
+      }));
+      const authorityWorktree = authorityWorktreeRealpath(grant);
+      // The authority-derived worktree is NOT the caller repository.
+      expect(authorityWorktree).not.toBe(repo);
+      // The authority-derived worktree path is allocated by the ownership plan
+      // but not yet created on disk; materialize it so the canonical-realpath
+      // resolution in resolveAuthorityExecutionContext succeeds.
+      mkdirSync(authorityWorktree, { recursive: true, mode: 0o700 });
+      const policyRoot = join(store.location.resourceDirectory, "policy-authority-wiring");
+      const bundleDir = join(policyRoot, "bundle");
+      mkdirSync(bundleDir, { recursive: true, mode: 0o700 });
+      // Drive the PRODUCTION resolveAttemptExecutionContext entrypoint (not the
+      // AttemptExecutionContextAuthority class directly).  This is the function
+      // the production build path (build.ts) imports and calls.
+      const resolved = resolveAttemptExecutionContext(store, {
+        attempt,
+        contract: sealedContract,
+        phase: "implement",
+        phaseOrdinal: 0,
+        role: "worker",
+        ownership: grant,
+        policyBundle: {
+          kind: "materialized_authenticated_policy_bundle",
+          policyRoot,
+          bundleDir,
+          requestedBundleSha256: "1".repeat(64),
+        },
+        modelSelection: { harness: "codex", model: "gpt-5", vendor: "openai" },
+        timeoutMs: 30_000,
+        callerRepositoryRealpath: repo,
+      });
+      // The production execution context binds to the authority-derived
+      // worktree, NOT the caller repository.
+      expect(resolved.canonical.context.worktree_realpath).toBe(authorityWorktree);
+      expect(resolved.canonical.context.worktree_realpath).not.toBe(repo);
+    });
+
+    it("the production resolveAttemptExecutionContext entrypoint rejects a binding that resolves to the caller repository", () => {
+      const fixture = buildFixture();
+      const policyRoot = join(fixture.store.location.resourceDirectory, "policy-caller-reject");
+      const bundleDir = join(policyRoot, "bundle");
+      mkdirSync(bundleDir, { recursive: true, mode: 0o700 });
+      // A forged grant whose worktree equals the caller repository is the
+      // legacy ReadyRunWorkspace binding vector; the production entrypoint
+      // rejects it.
+      const forgedGrant = { plan: { worktreePath: fixture.repo } } as never;
+      expect(() => resolveAttemptExecutionContext(fixture.store, {
+        attempt: fixture.attempt,
+        contract: fixture.contract,
+        phase: "implement",
+        phaseOrdinal: 0,
+        role: "worker",
+        ownership: forgedGrant,
+        policyBundle: {
+          kind: "materialized_authenticated_policy_bundle",
+          policyRoot,
+          bundleDir,
+          requestedBundleSha256: "1".repeat(64),
+        },
+        modelSelection: { harness: "codex", model: "gpt-5", vendor: "openai" },
+        timeoutMs: 30_000,
+        callerRepositoryRealpath: fixture.repo,
+      })).toThrow(/authorized LeaseAuthority/);
     });
   });
 });

@@ -159,3 +159,108 @@ export function terminalizationReceiptKind(value: unknown): DispositionFinalizat
   if (kind === "failure" || kind === "promotion" || kind === "quarantine") return kind;
   return null;
 }
+
+/**
+ * Production attempt terminalization service (t22A fix round 2).
+ *
+ * The single production entrypoint for terminalizing an attempt's cleanup
+ * disposition.  The production build/dispatch path calls this service (not the
+ * authority class directly) so the purpose-specific
+ * {@link AttemptTerminalizationAuthority.terminalizeFailure}/
+ * {@link AttemptTerminalizationAuthority.terminalizePromotion}/
+ * {@link AttemptTerminalizationAuthority.terminalizeQuarantine} routes are the
+ * authority route on the real production path.  A generic cleanup record
+ * cannot authorize any terminalization: it is rejected at the entry point by
+ * the underlying authority.
+ *
+ * This is the production route the future AttemptRunner (t22C) and the current
+ * build path's outcome-handling call.  The generic {@link CleanupService} path
+ * remains only as a physical workspace-removal seam; it is NOT the authority
+ * route for disposition terminalization.
+ */
+export interface AttemptTerminalizationFailureInput
+  extends Omit<FailureFinalizationInput, "store" | "leases"> {
+  readonly receipt: FailureCleanupReceipt;
+}
+export interface AttemptTerminalizationPromotionInput
+  extends Omit<PromotionFinalizationInput, "store" | "leases"> {
+  readonly receipt: PromotionCleanupReceipt;
+}
+export interface AttemptTerminalizationQuarantineInput
+  extends Omit<QuarantineFinalizationInput, "store" | "leases"> {
+  readonly receipt: QuarantineReceipt;
+}
+
+/**
+ * Discriminated production terminalization input.  Exactly one of
+ * {@link AttemptTerminalizationInput.failure}/
+ * {@link AttemptTerminalizationInput.promotion}/
+ * {@link AttemptTerminalizationInput.quarantine} must be present, matching
+ * {@link AttemptTerminalizationInput.kind}.
+ */
+export interface AttemptTerminalizationInput {
+  readonly kind: DispositionFinalizationKind;
+  readonly failure?: AttemptTerminalizationFailureInput;
+  readonly promotion?: AttemptTerminalizationPromotionInput;
+  readonly quarantine?: AttemptTerminalizationQuarantineInput;
+}
+
+/** The minted disposition receipt union returned by the production route. */
+export type AttemptTerminalizationResult =
+  | MintedDispositionReceipt<FailureCleanupReceipt>
+  | MintedDispositionReceipt<PromotionCleanupReceipt>
+  | MintedDispositionReceipt<QuarantineReceipt>;
+
+export class AttemptTerminalizationService {
+  readonly #authority: AttemptTerminalizationAuthority;
+
+  constructor(store: StateStore, leases: LeaseAuthority) {
+    this.#authority = new AttemptTerminalizationAuthority(store, leases);
+  }
+
+  /**
+   * Terminalizes an attempt's cleanup disposition through the purpose-specific
+   * authority route.  A generic cleanup record is rejected by the underlying
+   * authority; the generic path is not the authority route.
+   */
+  terminalize(input: AttemptTerminalizationInput): AttemptTerminalizationResult {
+    switch (input.kind) {
+      case "failure": {
+        if (input.failure === undefined) {
+          throw new TypeError("failure terminalization requires a failure input");
+        }
+        return this.#authority.terminalizeFailure(input.failure);
+      }
+      case "promotion": {
+        if (input.promotion === undefined) {
+          throw new TypeError("promotion terminalization requires a promotion input");
+        }
+        return this.#authority.terminalizePromotion(input.promotion);
+      }
+      case "quarantine": {
+        if (input.quarantine === undefined) {
+          throw new TypeError("quarantine terminalization requires a quarantine input");
+        }
+        return this.#authority.terminalizeQuarantine(input.quarantine);
+      }
+    }
+  }
+}
+
+/**
+ * Production terminalization entrypoint.  The build/dispatch path calls this
+ * function to terminalize an attempt's disposition through the purpose-specific
+ * authority route.  A generic cleanup record is rejected at the entry point.
+ *
+ * This is the real production terminalization entrypoint (not a test wrapper):
+ * it constructs the production {@link AttemptTerminalizationService} and routes
+ * through {@link AttemptTerminalizationAuthority}.  The generic
+ * {@link CleanupService} path is not the authority route.
+ */
+export function terminalizeAttemptDisposition(
+  store: StateStore,
+  leases: LeaseAuthority,
+  input: AttemptTerminalizationInput,
+): AttemptTerminalizationResult {
+  return new AttemptTerminalizationService(store, leases).terminalize(input);
+}

@@ -80,3 +80,25 @@ export class AttemptExecutionContextAuthority {
 export function authorityWorktreeRealpath(ownership: AttemptOwnershipGrant): string {
   return ownership.plan.worktreePath;
 }
+
+/**
+ * Production attempt execution-context entrypoint (t22A fix round 2).
+ *
+ * The single production entrypoint for binding an attempt-owned execution
+ * context to the authority-derived worktree.  The production build/dispatch
+ * path calls this function (not the authority class directly) so the
+ * authority-derived worktree is the production execution context, NOT the
+ * caller repository or a legacy run workspace.  A caller-supplied worktree
+ * path that differs from the authority-derived one, or a binding that
+ * resolves to the caller repository, is rejected.
+ *
+ * This is the real production execution-context entrypoint (not a test
+ * wrapper): it constructs the production {@link AttemptExecutionContextAuthority}
+ * and routes through {@link IdentityContextResolver.resolveAuthorityExecutionContext}.
+ */
+export function resolveAttemptExecutionContext(
+  store: StateStore,
+  input: ResolveAttemptExecutionContextInput,
+): ResolvedPhaseContext {
+  return new AttemptExecutionContextAuthority(store).resolveExecutionContext(input);
+}

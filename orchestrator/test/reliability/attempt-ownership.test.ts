@@ -605,6 +605,91 @@ describe("owner-checked attempt ownership", () => {
     }
   });
 
+  it("live->cleanup_pending parity (t22A fix round 2): beginCleanup enforces exactly the declared owner-token/live-state/version CAS (passes valid; fails closed on owner mismatch, non-live state, and version mismatch)", () => {
+    // The declared contract precondition (state-and-lifecycle-contract.json
+    // attempt_ownership_leases.edges[0]) is EXACTLY the owner-token/live-state/
+    // version CAS that StateStore.beginCleanup enforces — nothing about
+    // caller-verified cleanup-entry evidence.  This test proves the production
+    // beginCleanup path enforces exactly that precondition.
+    const fixture = seed("parity-cas");
+    try {
+      const authority = new LeaseAuthority(fixture.store);
+      const grant = authority.acquire(authority.prepareAcquisition({
+        attemptId: fixture.attemptId,
+        idempotencyKey: "acquire",
+      }));
+
+      // (a) Passes on valid owner + live state + version: transitions to
+      // cleanup_pending.
+      const cleanup = authority.beginCleanup({ ownership: grant, idempotencyKey: "cleanup" });
+      expect(cleanup.ownership.state).toBe("cleanup_pending");
+
+      // (b) Fails closed on version mismatch (stale preimage): a second
+      // beginCleanup with the original (now-stale) grant fails to
+      // RICKGENT_STATE_CONFLICT.
+      expectCode(() => authority.beginCleanup({ ownership: grant, idempotencyKey: "cleanup:stale" }), "RICKGENT_STATE_CONFLICT");
+
+      // (c) Fails closed on non-live state: the ownership is now
+      // cleanup_pending (non-live).  beginCleanup requires state='live', so a
+      // further beginCleanup against the updated (cleanup_pending) grant fails
+      // closed — the preimage check rejects a non-live state because the
+      // command's expected state is 'live'.  The defense-in-depth guard
+      // (RICKGENT_STATE_TRANSITION_ILLEGAL) is a separate code path that fires
+      // for a command whose expected state matches the non-live current state;
+      // beginCleanup always sets expected state to 'live', so the preimage
+      // check fires first.  Either way, a non-live state fails closed.
+      expectCode(() => authority.beginCleanup({ ownership: cleanup, idempotencyKey: "cleanup:again" }), "RICKGENT_STATE_CONFLICT");
+
+      // (d) Fails closed on owner mismatch: a foreign owner token fails closed.
+      // Use a second fixture's authority to mint a grant, then attempt
+      // beginCleanup against the first store with the foreign grant.
+      const foreignFixture = seed("parity-cas-foreign");
+      try {
+        const foreignAuthority = new LeaseAuthority(foreignFixture.store);
+        const foreignGrant = foreignAuthority.acquire(foreignAuthority.prepareAcquisition({
+          attemptId: foreignFixture.attemptId,
+          idempotencyKey: "acquire-foreign",
+        }));
+        // The foreign grant belongs to a different store/repository; the
+        // #commitForGrant client-side guard rejects it (TypeError) before the
+        // store-level owner-mismatch guard.  The store-level owner mismatch is
+        // proven by the cross-store acquire test (same #requireCurrentOwnership
+        // guard).  This confirms a foreign owner cannot beginCleanup.
+        expect(() => authority.beginCleanup({ ownership: foreignGrant, idempotencyKey: "cleanup:foreign" })).toThrow(TypeError);
+      } finally {
+        foreignFixture.store.close();
+      }
+    } finally {
+      fixture.store.close();
+    }
+  });
+
+  it("live->cleanup_pending parity (t22A fix round 2): the declared contract precondition declares nothing about caller-verified cleanup-entry evidence", () => {
+    // The declared precondition in
+    // docs/architecture/reliability/state-and-lifecycle-contract.json must
+    // match exactly what StateStore.beginCleanup enforces: the
+    // owner-token/live-state/version CAS.  It must NOT reference
+    // caller-verified cleanup-entry evidence (ProcessSupervisor calls
+    // beginCleanup on infrastructure failures before any cleanup-entry
+    // evidence exists).
+    const contractJson = JSON.parse(readFileSync(
+      join(import.meta.dirname, "../../../docs/architecture/reliability/state-and-lifecycle-contract.json"),
+      "utf8",
+    )) as { resource_identity: { ownership_table_contract: { attempt_ownership_leases: { edges: Array<{ precondition: string }> } } } };
+    const precondition = contractJson.resource_identity.ownership_table_contract.attempt_ownership_leases.edges[0]!.precondition;
+    // The precondition must declare the CAS components.
+    expect(precondition).toContain("owner_token_digest");
+    expect(precondition).toContain("state='live'");
+    expect(precondition).toContain("state_version");
+    // The precondition must NOT reference caller-verified cleanup-entry
+    // evidence (the sentence that was removed in this fix).
+    expect(precondition).not.toContain("it is verified by the caller before requesting beginCleanup");
+    expect(precondition).not.toMatch(/attempt-cleanup-entry evidence is.*verified by the caller/);
+    // The precondition must explicitly state that no cleanup-entry evidence is
+    // required (the parity statement).
+    expect(precondition).toContain("No attempt-cleanup-entry evidence is required or verified by this transition");
+  });
+
   it("persists authority-bound salvage with replay and lets only a recovered lineage owner consume it", () => {
     const fixture = seed("terminal-cleanup");
     try {
