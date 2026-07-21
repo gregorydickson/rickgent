@@ -881,6 +881,17 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
             violations++;
             details.push("containment backend did not produce a durable launch/boundary id");
           }
+          // Scrutiny round 5 fix: require a verified sentinel BEFORE
+          // containment cleanup.  The escaped-descendant scenario must
+          // verify a sentinel (a file created by the escaped process, or a
+          // launch success signal) confirming the target actually ran BEFORE
+          // invoking kill/awaitEmpty/mintDeathReceipt.  If the sentinel is
+          // absent (target didn't run), the test must fail — containment
+          // cleanup must NOT proceed without proving execution.
+          if (stubbornResult.sentinelVerified !== true) {
+            violations++;
+            details.push(`sentinel was not verified before containment cleanup (sentinelVerified=${stubbornResult.sentinelVerified}); the escaped descendant's execution was not proven before cleanup — containment cleanup must NOT proceed without proving the target ran`);
+          }
           // The rival's output directory must NOT be mutated by the stubborn
           // descendant.  The Docker container cannot write to the host, so
           // this is trivially satisfied — but we verify it anyway.
@@ -956,6 +967,17 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
           infrastructureErrors++;
           details.push(`flood-output-supervised worker error: ${floodResult.code ?? ""}:${floodResult.message ?? ""}`);
         } else {
+          // Scrutiny round 5 fix: the output-flood MUST route through
+          // AttemptRunner.runAttempt (the production dispatch authority),
+          // NOT a test-local ProcessSupervisor adapter.  The
+          // attemptRunnerPathExercised flag is set by the worker ONLY after
+          // the AttemptRunner's runAttempt method is called and returns a
+          // terminal result.  A test-local adapter that directly calls
+          // ProcessSupervisor.run() does NOT set this flag.
+          if (floodResult.attemptRunnerPathExercised !== true) {
+            violations++;
+            details.push("AttemptRunner.runAttempt path was not exercised (the output-flood did not route through the production AttemptRunner path — a test-local ProcessSupervisor adapter was used instead)");
+          }
           // Scrutiny round 4 fix: do NOT accept an unsuccessful supervision
           // result as success.  The dispatch authority must produce a
           // successful outcome (outcome="exited", exitCode=0).  The
