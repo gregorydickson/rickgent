@@ -668,8 +668,9 @@ async function executeBuildViaRunner(
   }
 
   // ── AttemptRunner composition ──────────────────────────────────────────
-  // The single AttemptRunner owns acquire → context → containment → dispatch
-  // → supervise → attribute → review → verify → oracle → cleanup → finalize.
+  // The single AttemptRunner owns acquisition, context, containment, dispatch,
+  // supervision, attribution, review, verification, oracle evaluation,
+  // cleanup, and finalization.
   // The DispatchQueue feeds tickets to the runner sequentially (scheduling/
   // diagnostic plumbing only); it cannot release ownership.  The runner's
   // phase providers default to fail-closed (RICKGENT_ATTEMPT_*_UNCONFIGURED);
