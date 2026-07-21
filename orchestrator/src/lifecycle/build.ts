@@ -154,6 +154,20 @@ export interface BuildOptions {
 }
 
 /**
+ * t22D-fix: Build the real `omnigent run <agentDir> -p <prompt>` dispatch
+ * argv from the configured agent bundle and ticket prompt.  This is NOT a
+ * placeholder command (e.g. `node --version`); it is the real omnigent
+ * dispatch path that the AttemptRunner's containment-backed dispatch
+ * provider spawns inside the containment boundary.
+ *
+ * The argv is `["omnigent", "run", <agentDir>, "--no-session", "-p", <prompt>]`.
+ * The containment backend's `releaseTarget` spawns this inside the boundary.
+ */
+function buildOmnigentDispatchArgv(agentDir: string, prompt: string): readonly string[] {
+  return Object.freeze(["omnigent", "run", agentDir, "--no-session", "-p", prompt]);
+}
+
+/**
  * Test-harness dependencies for the contained lifecycle implementation.
  *
  * This type is intentionally not accepted by the public `runBuild` and
@@ -200,6 +214,24 @@ export interface InternalBuildDependencies {
   skipPolicyAttachment?: boolean;
   skipConformance?: boolean;
   skipDeslop?: boolean;
+  /**
+   * t22D-fix: Override the containment backend probe for the production
+   * AttemptRunner path.  When supplied, `executeBuildViaRunner` uses this
+   * backend instead of probing for Docker/cgroup.  Production never sets
+   * this (the probe determines the backend); the integration test injects
+   * a `FixtureContainmentBackend` to exercise the full runner critical
+   * section deterministically.
+   */
+  containmentBackendOverride?: import("../process/containment.js").ContainmentBackend;
+  /**
+   * t22D-fix: Phase-result providers for the AttemptRunner.  When supplied,
+   * `executeBuildViaRunner` constructs the AttemptRunner with these
+   * providers.  Production omits this (the runner's default dispatch
+   * provider uses the containment backend's `releaseTarget` and the real
+   * `omnigent run` argv); the integration test injects fixture providers
+   * that seed durable receipt rows deterministically.
+   */
+  attemptRunnerProviders?: import("./attempt-runner.js").AttemptRunnerPhaseProviders;
 }
 
 /**
@@ -641,30 +673,48 @@ async function executeBuildViaRunner(
   // run-workspace/direct-dispatcher fallback is provisioned.  This is the
   // cutover: the legacy run-worktree is removed from production execution.
   let containmentBackend;
-  try {
-    const probeOpts: { dockerImage?: string; probeTimeoutMs?: number; cgroupRoot?: string } = {};
-    if (env.RICKGENT_CONTAINMENT_DOCKER_IMAGE) probeOpts.dockerImage = env.RICKGENT_CONTAINMENT_DOCKER_IMAGE;
-    if (env.RICKGENT_CONTAINMENT_PROBE_TIMEOUT_MS) {
-      const ms = Number(env.RICKGENT_CONTAINMENT_PROBE_TIMEOUT_MS);
-      if (Number.isFinite(ms)) probeOpts.probeTimeoutMs = ms;
-    }
-    containmentBackend = probeContainmentBackend(probeOpts);
+  if (dependencies.containmentBackendOverride !== undefined) {
+    containmentBackend = dependencies.containmentBackendOverride;
     const probe = containmentBackend.probe();
     if (probe.status !== "available") {
-      throw new Error(`containment backend ${probe.backendId} unavailable: ${probe.reason ?? "no reason"}`);
+      const detail = `containment backend ${probe.backendId} unavailable: ${probe.reason ?? "no reason"}`;
+      report.push(`build: CONTAINMENT GATE hit — ${detail} (fail-closed; no legacy fallback)`);
+      issues.push(runIssue({
+        reason: "infrastructure_error",
+        class: "infrastructure",
+        detail,
+        gate: "containment",
+      }));
+      try { stateStore.close(); } catch { /* fail-closed close */ }
+      return finishBuild({ ...base, gateHit: "containment-gate" }, issues);
     }
     report.push(`build: containment backend available (${probe.backendId})`);
-  } catch (error) {
-    const detail = `containment backend unavailable: ${error instanceof Error ? error.message : String(error)}`;
-    report.push(`build: CONTAINMENT GATE hit — ${detail} (fail-closed; no legacy fallback)`);
-    issues.push(runIssue({
-      reason: "infrastructure_error",
-      class: "infrastructure",
-      detail,
-      gate: "containment",
-    }));
-    try { stateStore.close(); } catch { /* fail-closed close */ }
-    return finishBuild({ ...base, gateHit: "containment-gate" }, issues);
+  } else {
+    try {
+      const probeOpts: { dockerImage?: string; probeTimeoutMs?: number; cgroupRoot?: string } = {};
+      if (env.RICKGENT_CONTAINMENT_DOCKER_IMAGE) probeOpts.dockerImage = env.RICKGENT_CONTAINMENT_DOCKER_IMAGE;
+      if (env.RICKGENT_CONTAINMENT_PROBE_TIMEOUT_MS) {
+        const ms = Number(env.RICKGENT_CONTAINMENT_PROBE_TIMEOUT_MS);
+        if (Number.isFinite(ms)) probeOpts.probeTimeoutMs = ms;
+      }
+      containmentBackend = probeContainmentBackend(probeOpts);
+      const probe = containmentBackend.probe();
+      if (probe.status !== "available") {
+        throw new Error(`containment backend ${probe.backendId} unavailable: ${probe.reason ?? "no reason"}`);
+      }
+      report.push(`build: containment backend available (${probe.backendId})`);
+    } catch (error) {
+      const detail = `containment backend unavailable: ${error instanceof Error ? error.message : String(error)}`;
+      report.push(`build: CONTAINMENT GATE hit — ${detail} (fail-closed; no legacy fallback)`);
+      issues.push(runIssue({
+        reason: "infrastructure_error",
+        class: "infrastructure",
+        detail,
+        gate: "containment",
+      }));
+      try { stateStore.close(); } catch { /* fail-closed close */ }
+      return finishBuild({ ...base, gateHit: "containment-gate" }, issues);
+    }
   }
 
   // ── AttemptRunner composition ──────────────────────────────────────────
@@ -688,6 +738,7 @@ async function executeBuildViaRunner(
     targetStartGate,
     terminalization,
     executionContext,
+    dependencies.attemptRunnerProviders,
   );
   const resolver = new IdentityContextResolver(stateStore);
   const journal = new InMemoryDispatchJournal();
@@ -712,29 +763,23 @@ async function executeBuildViaRunner(
   const dispatchFn = async (id: DispatchId): Promise<DispatchEntry> => {
     const ticket = ticketByDispatchId.get(dispatchIdString(id))!;
     const attempt = attemptByTicket.get(ticket.id)!;
-    let ownership;
-    try {
-      const preparedAcquisition = leases.prepareAcquisition({
-        attemptId: attempt.attemptId,
-        idempotencyKey: `attempt-runner-build:${attempt.attemptId}:acquire`,
-      });
-      ownership = leases.acquire(preparedAcquisition);
-    } catch (error) {
-      const detail = `ownership acquisition failed: ${error instanceof Error ? error.message : String(error)}`;
-      report.push(`  ${ticket.id}: ownership acquisition failed — fail-closed`);
-      return {
-        dispatchId: dispatchIdString(id), state: "failed", pid: null,
-        startedAt: null, completedAt: new Date().toISOString(), exitCode: null,
-        stdout: null, stderr: detail, terminalReason: "infrastructure_error",
-      };
-    }
+    // t22D-fix: Acquisition is INSIDE AttemptRunner (VAL-T22CD-001).  The
+    // build path does NOT acquire ownership before calling the runner — the
+    // runner is the single critical-section owner.  No pre-acquired ownership
+    // is passed; the runner activates run/ticket rows and acquires internally.
+    // The supervised argv is the real `omnigent run <agentDir> -p <prompt>`
+    // dispatch path derived from the configured agent bundle and ticket
+    // prompt — not a placeholder command.
+    const prompt = `Implement ticket ${ticket.id}: ${ticket.title}\n${ticket.description}`;
+    const supervisedArgv = buildOmnigentDispatchArgv(opts.agentDir, prompt);
     const request: AttemptRunnerRequest = {
       attempt,
       run: allocatedRun,
       contract: ticket,
-      ownership,
       callerRepositoryRealpath: realpathSync(opts.workingDir),
       targetStartGateId: `attempt-target-start-gate:${attempt.attemptId}`,
+      acquisitionIdempotencyKey: `attempt-runner-build:${attempt.attemptId}:acquire`,
+      ticketInstanceId: attempt.ticketInstanceId,
       supervisedPhase: {
         phaseExecutionId: `phase-exec:${attempt.attemptId}:implement`,
         contextId: `ctx:${attempt.attemptId}`,
@@ -743,7 +788,7 @@ async function executeBuildViaRunner(
         phaseOrdinal: 1,
         role: "worker",
       },
-      supervisedArgv: ["node", "--version"],
+      supervisedArgv,
       stdoutPath: join(opts.dataDir, `${attempt.attemptId}.stdout`),
       stderrPath: join(opts.dataDir, `${attempt.attemptId}.stderr`),
       timeoutMs: opts.timeout ?? 60000,
@@ -755,10 +800,15 @@ async function executeBuildViaRunner(
     } catch (error) {
       const detail = `attempt runner failed: ${error instanceof Error ? error.message : String(error)}`;
       report.push(`  ${ticket.id}: attempt runner threw — fail-closed`);
+      // t22D-fix: An unknown runner failure (opaque throw) cannot prove
+      // ownership release.  ownershipReleased MUST be false so the
+      // DispatchQueue cannot continue with later tickets despite unproven
+      // closure (VAL-T22CD-005).
       return {
         dispatchId: dispatchIdString(id), state: "failed", pid: null,
         startedAt: null, completedAt: new Date().toISOString(), exitCode: null,
         stdout: null, stderr: detail, terminalReason: "infrastructure_error",
+        ownershipReleased: false,
       };
     }
     runnerResults.set(dispatchIdString(id), result);
@@ -1817,6 +1867,24 @@ export async function runPipelineWithDependenciesForTesting(
 ): Promise<PipelineResult> {
   await requireFixtureRuntimeAuthority(authority);
   return executePipelineLegacy(opts, dependencies);
+}
+
+/**
+ * Package-private fixture bridge for the AttemptRunner production path.
+ * Routes through `executeBuildViaRunner` (the single AttemptRunner) with
+ * injectable dependencies (containment backend override, phase providers).
+ * This is the integration-test entrypoint for verifying the production wiring
+ * (t22D-fix) with a FixtureContainmentBackend and fixture providers.
+ *
+ * @internal
+ */
+export async function runBuildViaRunnerForTesting(
+  authority: object,
+  opts: BuildOptions,
+  dependencies: InternalBuildDependencies,
+): Promise<BuildResult> {
+  await requireFixtureRuntimeAuthority(authority);
+  return executeBuildViaRunner(opts, dependencies);
 }
 
 // ── Policy attachment verification (B4 gate) ────────────────────────────────

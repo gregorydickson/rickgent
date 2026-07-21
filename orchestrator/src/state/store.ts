@@ -508,6 +508,27 @@ export interface MintTargetNeverReleasedRequest {
 }
 
 /**
+ * t22D-fix: request to create the durable held target-start gate row through
+ * the production authority.  The AttemptRunner calls this after acquire +
+ * context preparation, before containment release.  Idempotent: replaying
+ * the same request returns the existing held row; a divergent lineage
+ * conflicts.
+ */
+export interface MintHeldTargetStartGateRequest {
+  readonly gateId: string;
+  readonly attemptId: string;
+  readonly ownershipId: string;
+  readonly ownerGeneration: number;
+  readonly phaseExecutionId: string;
+  readonly contextId: string;
+  readonly executionContextDigest: `sha256:${string}`;
+  readonly startAuthorizationDigest: `sha256:${string}`;
+  readonly inputDigest: `sha256:${string}`;
+  readonly idempotencyKey: string;
+  readonly createdAt: string;
+}
+
+/**
  * t22B: request to transition a held target start gate `held -> released`
  * after observing an authority-owned containment membership bound to the
  * exact attempt lineage.  The membership is brand-checked (WeakSet); a
@@ -1719,6 +1740,95 @@ export class StateStore {
     return this.#allocateAttempt(input, "retry");
   }
 
+  /**
+   * t22D-fix: Activate a run from `planned` to `active` through the production
+   * store authority (not raw SQL).  The AttemptRunner calls this before
+   * acquiring ownership (the LeaseAuthority requires an active run).  Records
+   * a durable `state_transitions` row.  Idempotent: a replay returns silently
+   * if the run is already active with the same idempotency key.
+   */
+  activateRunForRunner(runId: string, attemptId: string, idempotencyKey: string): void {
+    this.#immediate("activate_run_for_runner", () => {
+      const db = this.#requireDatabase();
+      const current = db.prepare(
+        "SELECT state, state_version FROM runs WHERE run_id = ?",
+      ).get(runId) as MutableStateRecord | undefined;
+      if (current === undefined) throw typedError("RICKGENT_STATE_RESUME_INCOMPATIBLE", "run does not exist", this.location.databasePath);
+      if (String(current.state) === "active") return; // idempotent replay
+      if (String(current.state) !== "planned") {
+        throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", `run is ${String(current.state)}, not planned`, this.location.databasePath);
+      }
+      const existing = db.prepare(
+        "SELECT * FROM state_transitions WHERE run_id = ? AND idempotency_key = ?",
+      ).get(runId, idempotencyKey) as MutableStateRecord | undefined;
+      if (existing !== undefined) return; // idempotent replay
+      const sequenceRow = db.prepare(
+        "SELECT COALESCE(MAX(entity_sequence), 0) + 1 AS next_sequence FROM state_transitions WHERE run_id = ?",
+      ).get(runId) as MutableStateRecord;
+      const entitySequence = Number(sequenceRow.next_sequence);
+      const transitionId = `transition-${randomBytes(16).toString("hex")}`;
+      this.#insert("state_transitions", {
+        transition_id: transitionId,
+        run_id: runId,
+        ticket_instance_id: null,
+        attempt_id: null,
+        entity_sequence: entitySequence,
+        from_state: "planned",
+        to_state: "active",
+        owner_service: "RunAllocationService",
+        owner_context_digest: `sha256:${createHash("sha256").update(`activate-run:${runId}:${attemptId}`, "utf8").digest("hex")}`,
+        input_digest: `sha256:${createHash("sha256").update(canonicalJson({ run_id: runId, attempt_id: attemptId, idempotency_key: idempotencyKey }), "utf8").digest("hex")}`,
+        idempotency_key: idempotencyKey,
+        created_at: new Date().toISOString(),
+      });
+      db.prepare("UPDATE runs SET state = 'active', state_version = state_version + 1 WHERE run_id = ?").run(runId);
+    });
+  }
+
+  /**
+   * t22D-fix: Activate a ticket from `planned` to `active` through the
+   * production store authority (not raw SQL).  The AttemptRunner calls this
+   * before acquiring ownership (the LeaseAuthority requires an active ticket).
+   * Records a durable `state_transitions` row.  Idempotent.
+   */
+  activateTicketForRunner(ticketInstanceId: string, attemptId: string, idempotencyKey: string): void {
+    this.#immediate("activate_ticket_for_runner", () => {
+      const db = this.#requireDatabase();
+      const current = db.prepare(
+        "SELECT state, state_version FROM run_tickets WHERE ticket_instance_id = ?",
+      ).get(ticketInstanceId) as MutableStateRecord | undefined;
+      if (current === undefined) throw typedError("RICKGENT_STATE_RESUME_INCOMPATIBLE", "ticket does not exist", this.location.databasePath);
+      if (String(current.state) === "active") return; // idempotent replay
+      if (String(current.state) !== "planned") {
+        throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", `ticket is ${String(current.state)}, not planned`, this.location.databasePath);
+      }
+      const existing = db.prepare(
+        "SELECT * FROM state_transitions WHERE ticket_instance_id = ? AND idempotency_key = ?",
+      ).get(ticketInstanceId, idempotencyKey) as MutableStateRecord | undefined;
+      if (existing !== undefined) return; // idempotent replay
+      const sequenceRow = db.prepare(
+        "SELECT COALESCE(MAX(entity_sequence), 0) + 1 AS next_sequence FROM state_transitions WHERE ticket_instance_id = ?",
+      ).get(ticketInstanceId) as MutableStateRecord;
+      const entitySequence = Number(sequenceRow.next_sequence);
+      const transitionId = `transition-${randomBytes(16).toString("hex")}`;
+      this.#insert("state_transitions", {
+        transition_id: transitionId,
+        run_id: null,
+        ticket_instance_id: ticketInstanceId,
+        attempt_id: null,
+        entity_sequence: entitySequence,
+        from_state: "planned",
+        to_state: "active",
+        owner_service: "RunAllocationService",
+        owner_context_digest: `sha256:${createHash("sha256").update(`activate-ticket:${ticketInstanceId}:${attemptId}`, "utf8").digest("hex")}`,
+        input_digest: `sha256:${createHash("sha256").update(canonicalJson({ ticket_instance_id: ticketInstanceId, attempt_id: attemptId, idempotency_key: idempotencyKey }), "utf8").digest("hex")}`,
+        idempotency_key: idempotencyKey,
+        created_at: new Date().toISOString(),
+      });
+      db.prepare("UPDATE run_tickets SET state = 'active', state_version = state_version + 1 WHERE ticket_instance_id = ?").run(ticketInstanceId);
+    });
+  }
+
   /** Returns the current state and state_version of an attempt. */
   readAttemptState(attemptId: string): { readonly state: string; readonly stateVersion: number } {
     const row = this.#requireDatabase().prepare(
@@ -2482,6 +2592,63 @@ export class StateStore {
   // Replay of identical inputs returns the identical immutable postimage; any
   // divergent postimage conflicts.  Legacy v1 ownership/process rows and
   // generic cleanup records cannot authorize any of these commands.
+
+  /**
+   * t22D-fix: Create the durable held target-start gate row through the
+   * production authority (not raw SQL).  The AttemptRunner calls this after
+   * acquire + context preparation, before containment release.  The gate is
+   * created in the `held` state with `state_version = 0`; `releaseTarget` or
+   * `closeNeverReleased` transitions it to `released` / `closed_never_released`.
+   *
+   * Idempotent: if a gate with the same `gateId` + `attemptId` already exists
+   * in the `held` state with the exact lineage, the existing row is returned
+   * as a replay.  A divergent lineage (different ownership/generation/phase/
+   * context) conflicts.  A gate already transitioned to `released` or
+   * `closed_never_released` cannot be re-created (conflict).
+   */
+  createHeldTargetStartGate(request: MintHeldTargetStartGateRequest): StateRecord {
+    return this.#immediate("create_held_target_start_gate", () => {
+      const db = this.#requireDatabase();
+      const existing = db.prepare(
+        "SELECT * FROM target_start_gates WHERE target_start_gate_id = ? AND attempt_id = ?",
+      ).get(request.gateId, request.attemptId) as MutableStateRecord | undefined;
+      if (existing !== undefined) {
+        if (String(existing.state) !== "held") {
+          throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "target start gate already transitioned past held", this.location.databasePath);
+        }
+        if (
+          String(existing.ownership_id) !== request.ownershipId ||
+          Number(existing.owner_generation) !== request.ownerGeneration ||
+          String(existing.phase_execution_id) !== request.phaseExecutionId ||
+          String(existing.context_id) !== request.contextId
+        ) {
+          throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "target start gate held replay has a divergent lineage", this.location.databasePath);
+        }
+        return frozenRow(existing);
+      }
+      this.#insert("target_start_gates", {
+        target_start_gate_id: request.gateId,
+        attempt_id: request.attemptId,
+        ownership_id: request.ownershipId,
+        owner_generation: request.ownerGeneration,
+        phase_execution_id: request.phaseExecutionId,
+        context_id: request.contextId,
+        execution_context_digest: request.executionContextDigest,
+        start_authorization_digest: request.startAuthorizationDigest,
+        state: "held",
+        state_version: 0,
+        release_evidence_id: null,
+        never_released_evidence_id: null,
+        input_digest: request.inputDigest,
+        idempotency_key: request.idempotencyKey,
+        created_at: request.createdAt,
+      });
+      const created = db.prepare(
+        "SELECT * FROM target_start_gates WHERE target_start_gate_id = ? AND attempt_id = ?",
+      ).get(request.gateId, request.attemptId) as MutableStateRecord;
+      return frozenRow(created);
+    });
+  }
 
   /**
    * Mint and atomically persist a target-never-released receipt.  The bound

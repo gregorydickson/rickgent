@@ -45,6 +45,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { canonicalJson } from "../contracts/ticket-contract.js";
 import {
@@ -87,6 +88,7 @@ import {
   type LeaseAuthority,
 } from "../state/leases.js";
 import { TransitionAuthority } from "../state/transitions.js";
+import { provisionAttemptWorkspace } from "../git/attempt-workspace.js";
 import type {
   AllocatedAttempt,
   AllocatedRun,
@@ -374,7 +376,21 @@ export interface AttemptRunnerRequest {
   readonly attempt: AllocatedAttempt;
   readonly run: AllocatedRun;
   readonly contract: TicketContract;
-  readonly ownership: AttemptOwnershipGrant;
+  /**
+   * Pre-acquired ownership grant.  When supplied (the t22C composition proof
+   * path), the runner revalidates it and skips internal acquisition.  When
+   * absent (the t22D production path), the runner activates the run/ticket
+   * rows through the TransitionAuthority and acquires the ownership internally
+   * — the runner is the single critical-section owner (VAL-T22CD-001).
+   */
+  readonly ownership?: AttemptOwnershipGrant;
+  /**
+   * Idempotency key for internal acquisition.  Required when `ownership` is
+   * absent (the production path); ignored when `ownership` is supplied.
+   */
+  readonly acquisitionIdempotencyKey?: string;
+  /** Ticket instance id (required for the production path's ticket activation). */
+  readonly ticketInstanceId?: string;
   readonly callerRepositoryRealpath: string;
   readonly targetStartGateId: string;
   readonly supervisedPhase: SupervisedPhaseIdentity;
@@ -560,7 +576,6 @@ export class AttemptRunner {
    * idempotency key derived from the attempt id and step name.
    */
   async runAttempt(request: AttemptRunnerRequest): Promise<AttemptRunnerResult> {
-    requireAuthorizedOwnership(request.ownership);
     const attemptId = request.attempt.attemptId;
     const keys: { readonly step: AttemptRunnerStep; readonly key: string }[] = [];
     const noteKey = (step: AttemptRunnerStep): string => {
@@ -569,11 +584,80 @@ export class AttemptRunner {
       return key;
     };
 
-    // 1. Acquire: revalidate the owner-checked lease immediately before any
-    //    external side effect.  The ownership grant is authority; a caller
-    //    state claim is not truth.
-    const acquired = this.#leases.assertFresh(request.ownership);
+    // 1. Acquire: the runner is the single critical-section owner.  When a
+    //    pre-acquired ownership grant is supplied (the t22C composition proof
+    //    path), the runner revalidates it.  When no grant is supplied (the
+    //    t22D production path), the runner activates the run/ticket rows
+    //    through the TransitionAuthority and acquires the ownership internally
+    //    — no external caller owns acquisition (VAL-T22CD-001).
+    let acquired: AttemptOwnershipGrant;
+    if (request.ownership !== undefined) {
+      requireAuthorizedOwnership(request.ownership);
+      acquired = this.#leases.assertFresh(request.ownership);
+    } else {
+      if (request.acquisitionIdempotencyKey === undefined || request.acquisitionIdempotencyKey.length === 0) {
+        throw new AttemptRunnerError(
+          "RICKGENT_ATTEMPT_ACQUIRE_KEY_REQUIRED",
+          "production-path runAttempt requires an acquisitionIdempotencyKey when no pre-acquired ownership is supplied",
+        );
+      }
+      if (request.ticketInstanceId === undefined) {
+        throw new AttemptRunnerError(
+          "RICKGENT_ATTEMPT_TICKET_INSTANCE_REQUIRED",
+          "production-path runAttempt requires a ticketInstanceId for run/ticket activation",
+        );
+      }
+      // Activate the run and ticket rows through the production store
+      // authority (not raw SQL).  The run transitions planned -> active;
+      // the ticket transitions planned -> active.  Both are required
+      // before the LeaseAuthority can acquire (the Store validates
+      // run_state/ticket_state).  These store-level activation methods
+      // record durable state_transitions rows without requiring phase-
+      // execution-grounded evidence (the phase execution is created AFTER
+      // acquisition, during context preparation).
+      this.#store.activateRunForRunner(
+        request.run.runId,
+        attemptId,
+        `attempt-runner-activate-run:${request.run.runId}`,
+      );
+      this.#store.activateTicketForRunner(
+        request.ticketInstanceId,
+        attemptId,
+        `attempt-runner-activate-ticket:${request.ticketInstanceId}`,
+      );
+      const prepared = this.#leases.prepareAcquisition({
+        attemptId,
+        idempotencyKey: request.acquisitionIdempotencyKey,
+      });
+      acquired = this.#leases.acquire(prepared);
+    }
     noteKey("acquire");
+
+    // Durable timestamp for mint observations: use the ownership's heartbeat
+    // time so a replay after a crash returns the identical immutable postimage
+    // (a divergent nowIso() would make completed retries divergent).
+    const durableObservedAt = acquired.ownership.heartbeatAt;
+
+    // 1b. Provision the attempt-owned worktree from the authority-derived
+    //     ownership plan.  The worktree is the execution context's
+    //     worktreePath; it must exist on disk before context preparation
+    //     can resolve it.  This is the real production worktree provisioning
+    //     (not the legacy run-workspace path).  Only provision on the
+    //     production path (no pre-acquired ownership); the composition proof
+    //     path pre-provisions the worktree before calling the runner.
+    if (request.ownership === undefined) {
+      const provisioned = provisionAttemptWorkspace(this.#leases, acquired);
+      if (!provisioned.ok) {
+        throw new AttemptRunnerError(
+          "RICKGENT_ATTEMPT_WORKTREE_PROVISION_FAILED",
+          `attempt worktree provisioning failed: ${provisioned.code}: ${provisioned.detail}`,
+        );
+      }
+      // The production policy-materialization step creates the bundle directory
+      // under the provisioned workspace's policy root; the runner must do the
+      // same so the context-preparation step resolves canonical paths.
+      mkdirSync(acquired.plan.policyBundlePath, { recursive: true, mode: 0o700 });
+    }
 
     // 2. Context/policy preparation: bind the attempt-owned execution context
     //    to the authority-derived worktree.  The caller repository cannot
@@ -596,7 +680,33 @@ export class AttemptRunner {
       callerRepositoryRealpath: request.callerRepositoryRealpath,
     });
     noteKey("prepare-context");
-    void context; // context is bound; downstream phases receive the supervised phase identity.
+
+    // 2b. Mint the durable held target-start gate through the production
+    //     authority (not raw SQL).  The gate is created in the `held` state
+    //     before containment release; releaseTarget/closeNeverReleased
+    //     transitions it.  Idempotent: a replay after a crash returns the
+    //     existing held row; a divergent lineage conflicts.  The gate's
+    //     phaseExecutionId and contextId come from the RESOLVED execution
+    //     context (not the request's supervisedPhase), so the FK constraints
+    //     on target_start_gates are satisfied.
+    this.#targetStartGate.createHeldGate({
+      gateId: request.targetStartGateId,
+      lineage: containmentLineageFromAttempt({
+        runId: request.run.runId,
+        ticketId: request.attempt.ticketId,
+        attemptId,
+        ownershipId: acquired.ownership.ownershipId,
+        ownerGeneration: acquired.ownership.generation,
+        ownershipContextDigest: acquired.ownership.contextDigest as `sha256:${string}`,
+        phaseExecutionId: context.persisted.phaseExecutionId,
+        contextId: context.persisted.contextId,
+        executionContextDigest: context.persisted.contextDigest as `sha256:${string}`,
+      }),
+      phaseExecutionId: context.persisted.phaseExecutionId,
+      contextId: context.persisted.contextId,
+      executionContextDigest: context.persisted.contextDigest as `sha256:${string}`,
+      createdAt: durableObservedAt,
+    });
 
     // 3. Containment: create the authority-owned boundary, observe membership,
     //    and release the target.  Unavailable containment fails closed to the
@@ -608,9 +718,9 @@ export class AttemptRunner {
       ownershipId: acquired.ownership.ownershipId,
       ownerGeneration: acquired.ownership.generation,
       ownershipContextDigest: acquired.ownership.contextDigest as `sha256:${string}`,
-      phaseExecutionId: request.supervisedPhase.phaseExecutionId,
-      contextId: request.supervisedPhase.contextId,
-      executionContextDigest: request.supervisedPhase.contextDigest,
+      phaseExecutionId: context.persisted.phaseExecutionId,
+      contextId: context.persisted.contextId,
+      executionContextDigest: context.persisted.contextDigest as `sha256:${string}`,
     });
     noteKey("containment");
     let boundary: ContainmentBoundary | null = null;
@@ -645,6 +755,7 @@ export class AttemptRunner {
           processReceiptId: `process-receipt-${attemptId}-infra`,
           groupDeathEvidenceId: `evidence-death-${attemptId}-infra`,
           containmentDeathReceipt: null, detail: reason } as SupervisedDispatchResult,
+        durableObservedAt,
       );
       return this.#result("infrastructure_failed", "finalized", cleanupOwnership, {
         boundary: null, membership: null, deathReceipt: null,
@@ -668,7 +779,7 @@ export class AttemptRunner {
       cancellationRequested: request.cancellationRequested,
     };
     noteKey("dispatch");
-    const supervised = await (this.#providers.dispatch ?? defaultDispatch)(dispatchInput);
+    const supervised = await (this.#providers.dispatch ?? this.#defaultDispatch.bind(this))(dispatchInput);
     noteKey("supervise");
 
     // Cancellation state machine: a caller cancellation request before
@@ -679,6 +790,7 @@ export class AttemptRunner {
       const { failureReceipt, terminal } = this.#failureTerminalize(
         request, cleanupOwnership, { kind: "cancellation", requestedAt: nowIso() },
         boundary, deathReceipt, null, supervised,
+        durableObservedAt,
       );
       return this.#result("cancelled", "finalized", cleanupOwnership, {
         boundary, membership, deathReceipt,
@@ -697,6 +809,7 @@ export class AttemptRunner {
       const { failureReceipt, terminal } = this.#failureTerminalize(
         request, cleanupOwnership, { kind: "timeout", deadlineMs: request.timeoutMs },
         boundary, deathReceipt, null, supervised,
+        durableObservedAt,
       );
       return this.#result("timed_out", "finalized", cleanupOwnership, {
         boundary, membership, deathReceipt,
@@ -715,6 +828,7 @@ export class AttemptRunner {
       const { failureReceipt, terminal } = this.#failureTerminalize(
         request, cleanupOwnership, { kind: "infrastructure", reason: supervised.detail },
         boundary, deathReceipt, null, supervised,
+        durableObservedAt,
       );
       return this.#result("infrastructure_failed", "finalized", cleanupOwnership, {
         boundary, membership, deathReceipt,
@@ -748,6 +862,7 @@ export class AttemptRunner {
       const { failureReceipt, terminal } = this.#failureTerminalize(
         request, cleanupOwnership, { kind: "ordinary", reason: "review_rejected" },
         boundary, deathReceipt, null, supervised,
+        durableObservedAt,
       );
       return this.#result("failed_clean", "finalized", cleanupOwnership, {
         boundary, membership, deathReceipt,
@@ -774,6 +889,7 @@ export class AttemptRunner {
         : { kind: "ordinary", reason: "verification_failed" };
       const { failureReceipt, terminal } = this.#failureTerminalize(
         request, cleanupOwnership, cause, boundary, deathReceipt, null, supervised,
+        durableObservedAt,
       );
       const outcome = verification.status === "infrastructure_error" ? "infrastructure_failed" : "failed_clean";
       return this.#result(outcome, "finalized", cleanupOwnership, {
@@ -823,7 +939,7 @@ export class AttemptRunner {
       attemptRef: `refs/rickgent/runs/${request.run.runId}/attempts/${attemptId}`,
       claims,
       targetProofs: Object.freeze(preimage.targetProofs),
-      observedAt: nowIso(),
+      observedAt: durableObservedAt,
     };
     const eligibilityRequest: MintCleanupEligibilityRequest = {
       observation: eligibilityObservation,
@@ -854,6 +970,7 @@ export class AttemptRunner {
       const { failureReceipt, terminal } = this.#failureTerminalize(
         request, cleanupOwnership, { kind: "oracle_rejected", oracleDecisionId: oracle.oracleDecisionId },
         boundary, deathReceipt, null, supervised,
+        durableObservedAt,
         { cleanupEligibilityRecordId: eligibilityReceipt.record.cleanup_eligibility_record_id as string, oracleDecisionId: oracle.oracleDecisionId },
       );
       return this.#result("failed_clean", "finalized", cleanupOwnership, {
@@ -892,7 +1009,7 @@ export class AttemptRunner {
       absentResourceSlots: absentSlotsFromClaims(claims),
       callerBeforeDigest: sha256("attempt-runner-caller-before"),
       callerAfterDigest: sha256("attempt-runner-caller-before"),
-      observedAt: nowIso(),
+      observedAt: durableObservedAt,
     };
     const promotionReceipt = this.#store.mintPromotionCleanup(
       { observation: promotionObservation, promotionObservationEvidenceId: promotionObservation.promotionObservationEvidenceId },
@@ -926,6 +1043,12 @@ export class AttemptRunner {
    * ownership is NOT released; quarantine is not a failed deletion.
    */
   quarantineAttempt(request: AttemptRunnerRequest, reasonCode: string): AttemptRunnerResult {
+    if (request.ownership === undefined) {
+      throw new AttemptRunnerError(
+        "RICKGENT_ATTEMPT_QUARANTINE_REQUIRES_OWNERSHIP",
+        "quarantineAttempt requires a pre-acquired ownership grant",
+      );
+    }
     requireAuthorizedOwnership(request.ownership);
     const attemptId = request.attempt.attemptId;
     const keys: { readonly step: AttemptRunnerStep; readonly key: string }[] = [];
@@ -936,6 +1059,7 @@ export class AttemptRunner {
     };
     const acquired = this.#leases.assertFresh(request.ownership);
     noteKey("acquire");
+    const durableObservedAt = acquired.ownership.heartbeatAt;
     // Close the target start gate as never-released; quarantine does not
     // release the target (no terminal process receipt exists).
     const quarantineLineage: ContainmentLineage = containmentLineageFromAttempt({
@@ -987,7 +1111,7 @@ export class AttemptRunner {
       inventory: quarantineInventoryFromClaims(claims, { physicalDisposition: "retained" }),
       callerBeforeDigest: sha256("attempt-runner-caller-before"),
       callerAfterDigest: sha256("attempt-runner-caller-before"),
-      observedAt: nowIso(),
+      observedAt: durableObservedAt,
     };
     // Transition resource claims from cleanup_pending to quarantined so the
     // quarantine_claim_members FK on attempt_resource_claims.state is satisfied.
@@ -1180,6 +1304,91 @@ export class AttemptRunner {
 
   // --- private helpers -----------------------------------------------------
 
+  /**
+   * t22D-fix: Real production dispatch provider.  Uses the authority-owned
+   * containment backend's `releaseTarget` to spawn the configured argv inside
+   * the containment boundary (the real `omnigent run <agentDir> -p <prompt>`
+   * dispatch path, not a placeholder command).  Waits for the process to exit,
+   * observes the containment death receipt, and returns the durable
+   * SupervisedDispatchResult.  Fail-closed on any containment/spawn error.
+   */
+  async #defaultDispatch(input: DispatchInput): Promise<SupervisedDispatchResult> {
+    const attemptId = input.ownership.attemptId;
+    try {
+      const launch = await this.#containment.releaseTarget(
+        input.boundary,
+        input.argv,
+        {
+          stdoutPath: input.stdoutPath,
+          stderrPath: input.stderrPath,
+          timeoutMs: input.timeoutMs,
+        },
+      );
+      // Observe the containment death receipt after the launch completes.
+      let deathReceipt: ContainmentDeathReceipt | null = null;
+      try {
+        const emptiness = await this.#containment.awaitEmpty(input.boundary, 5_000);
+        deathReceipt = this.#containment.mintDeathReceipt(input.boundary, emptiness);
+      } catch {
+        // Best-effort death receipt; the failure-cleanup observation records
+        // whatever proof was available.
+        deathReceipt = null;
+      }
+      const processReceiptId = `process-receipt-${attemptId}`;
+      const groupDeathEvidenceId = `evidence-death-${attemptId}`;
+      if (launch.timedOut) {
+        return {
+          outcome: "timed_out",
+          exitCode: launch.exitCode,
+          processReceiptId,
+          groupDeathEvidenceId,
+          containmentDeathReceipt: deathReceipt,
+          detail: "dispatch timed out",
+        };
+      }
+      if (launch.exitCode === null) {
+        return {
+          outcome: "infrastructure_error",
+          exitCode: null,
+          processReceiptId,
+          groupDeathEvidenceId,
+          containmentDeathReceipt: deathReceipt,
+          detail: "dispatch produced no exit code",
+        };
+      }
+      if (launch.exitCode !== 0) {
+        return {
+          outcome: "exited",
+          exitCode: launch.exitCode,
+          processReceiptId,
+          groupDeathEvidenceId,
+          containmentDeathReceipt: deathReceipt,
+          detail: `worker exited with code ${launch.exitCode}`,
+        };
+      }
+      return {
+        outcome: "exited",
+        exitCode: launch.exitCode,
+        processReceiptId,
+        groupDeathEvidenceId,
+        containmentDeathReceipt: deathReceipt,
+        detail: "worker exited cleanly",
+      };
+    } catch (error) {
+      const detail = error instanceof ContainmentUnavailableError
+        ? error.reason
+        : (error instanceof Error ? error.message : String(error));
+      return {
+        outcome: "spawn_error",
+        exitCode: null,
+        processReceiptId: `process-receipt-${attemptId}-spawn-error`,
+        groupDeathEvidenceId: `evidence-death-${attemptId}-spawn-error`,
+        containmentDeathReceipt: null,
+        detail,
+      };
+    }
+  }
+
   async #killAndMintDeath(boundary: ContainmentBoundary): Promise<ContainmentDeathReceipt | null> {
     try {
       await this.#containment.kill(boundary);
@@ -1211,6 +1420,7 @@ export class AttemptRunner {
     deathReceipt: ContainmentDeathReceipt | null,
     neverReleasedReceipt: TargetNeverReleasedReceipt | null,
     supervised: SupervisedDispatchResult,
+    durableObservedAt: string,
     durableRefs?: { readonly cleanupEligibilityRecordId?: string; readonly oracleDecisionId?: string },
   ): { readonly failureReceipt: MintedDispositionReceipt<FailureCleanupReceipt>; readonly terminal: AttemptTerminalizationResult } {
     const claims = deriveClaimsFromOwnership(cleanupOwnership);
@@ -1224,7 +1434,7 @@ export class AttemptRunner {
       kind: "failure",
     });
     const { receipt: failureReceipt, request: failureRequest } = this.#mintFailureCleanup(
-      request, cleanupOwnership, claims, preimage.targetProofs, cause, preimage, durableRefs,
+      request, cleanupOwnership, claims, preimage.targetProofs, cause, preimage, durableObservedAt, durableRefs,
     );
     const terminal = this.#finalizeFailure(failureRequest, preimage, failureReceipt);
     return { failureReceipt, terminal };
@@ -1237,6 +1447,7 @@ export class AttemptRunner {
     targetProofs: CleanupEligibilityObservation["targetProofs"],
     cause: AttemptFailureCause,
     preimage: CleanupPreimageResult,
+    durableObservedAt: string,
     durableRefs?: { readonly cleanupEligibilityRecordId?: string; readonly oracleDecisionId?: string },
   ): { readonly receipt: MintedDispositionReceipt<FailureCleanupReceipt>; readonly request: MintFailureCleanupRequest } {
     const attemptId = request.attempt.attemptId;
@@ -1262,7 +1473,7 @@ export class AttemptRunner {
       absentResourceSlots: absentSlotsFromClaims(claims),
       callerBeforeDigest: sha256("attempt-runner-caller-before"),
       callerAfterDigest: sha256("attempt-runner-caller-before"),
-      observedAt: nowIso(),
+      observedAt: durableObservedAt,
     };
     const failureRequest: MintFailureCleanupRequest = {
       observation,
@@ -1326,19 +1537,10 @@ export class AttemptRunner {
 // Default phase-result providers (production route).
 // ---------------------------------------------------------------------------
 
-/**
- * Default dispatch provider: throws to indicate the production
- * ProcessSupervisor wiring is not yet provided to the runner.  t22D wires
- * the real supervisor; the t22C composition proof injects a fixture
- * provider.  A runner constructed without a dispatch provider cannot
- * dispatch — fail closed.
- */
-async function defaultDispatch(_input: DispatchInput): Promise<SupervisedDispatchResult> {
-  throw new AttemptRunnerError(
-    "RICKGENT_ATTEMPT_DISPATCH_UNCONFIGURED",
-    "attempt runner has no dispatch provider; the production ProcessSupervisor wiring is t22D scope",
-  );
-}
+// The default dispatch provider is now a method on AttemptRunner
+// (`#defaultDispatch`) that uses the containment backend's `releaseTarget`
+// to spawn the configured argv inside the containment boundary — the real
+// `omnigent run <agentDir> -p <prompt>` dispatch path.
 
 function defaultAttribution(_input: AttributionInput): CommitAttributionResult {
   throw new AttemptRunnerError(

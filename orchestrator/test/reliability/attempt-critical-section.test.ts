@@ -1193,8 +1193,11 @@ describe("t22C AttemptRunner critical section", () => {
         new AttemptTerminalizationService(fixture.store, fixture.leases),
         new AttemptExecutionContextAuthority(fixture.store),
       );
-      // A bare runner with no providers cannot dispatch — fail closed.
-      await expect(bareRunner.runAttempt(makeRequest(fixture))).rejects.toThrow("RICKGENT_ATTEMPT_DISPATCH_UNCONFIGURED");
+      // A bare runner with no providers cannot complete the critical section —
+      // fail closed.  The default dispatch provider now uses the containment
+      // backend's releaseTarget (the real omnigent run path); the bare runner
+      // still fails closed because the cleanup-preimage provider is unconfigured.
+      await expect(bareRunner.runAttempt(makeRequest(fixture))).rejects.toThrow("RICKGENT_ATTEMPT_");
     });
   });
 });

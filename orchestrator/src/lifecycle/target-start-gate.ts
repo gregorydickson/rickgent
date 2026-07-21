@@ -23,9 +23,12 @@ import {
   type ContainmentNeverReleasedReceipt,
 } from "../process/containment.js";
 import { LeaseAuthority } from "../state/leases.js";
+import { createHash } from "node:crypto";
 import type {
+  MintHeldTargetStartGateRequest,
   MintTargetReleasedRequest,
   MintedContainmentReleaseReceipt,
+  StateRecord,
   StateStore,
 } from "../state/store.js";
 import type { TargetNeverReleasedObservation } from "./disposition.js";
@@ -69,6 +72,43 @@ export class TargetStartGateAuthority {
 
   /** The bound containment backend (for probe inspection by callers). */
   get backend(): ContainmentBackend { return this.#backend; }
+
+  /**
+   * t22D-fix: Create the durable held target-start gate row through the
+   * production authority (not raw SQL).  The AttemptRunner calls this after
+   * acquire + context preparation, before containment release.  Idempotent:
+   * replaying the same request returns the existing held row; a divergent
+   * lineage conflicts.  Returns the durable gate state record.
+   */
+  createHeldGate(input: {
+    readonly gateId: string;
+    readonly lineage: ContainmentLineage;
+    readonly phaseExecutionId: string;
+    readonly contextId: string;
+    readonly executionContextDigest: `sha256:${string}`;
+    readonly createdAt: string;
+  }): StateRecord {
+    const request: MintHeldTargetStartGateRequest = {
+      gateId: input.gateId,
+      attemptId: input.lineage.attemptId,
+      ownershipId: input.lineage.ownershipId,
+      ownerGeneration: input.lineage.ownerGeneration,
+      phaseExecutionId: input.phaseExecutionId,
+      contextId: input.contextId,
+      executionContextDigest: input.executionContextDigest,
+      startAuthorizationDigest: `sha256:${createHash("sha256").update(
+        `start-auth:${input.lineage.attemptId}:${input.lineage.ownershipId}:${input.lineage.ownerGeneration}`,
+        "utf8",
+      ).digest("hex")}` as `sha256:${string}`,
+      inputDigest: `sha256:${createHash("sha256").update(
+        `target-start-gate:${input.gateId}:${input.lineage.attemptId}`,
+        "utf8",
+      ).digest("hex")}` as `sha256:${string}`,
+      idempotencyKey: `target-start-gate:${input.lineage.attemptId}`,
+      createdAt: input.createdAt,
+    };
+    return this.#store.createHeldTargetStartGate(request);
+  }
 
   /**
    * Transition `held -> released` after observing an authority-owned
