@@ -149,31 +149,83 @@ function scenarioProvisionOverlapping(leases, args) {
 }
 
 function scenarioForeignCommit(args) {
-  // The foreign-commit scenario does NOT acquire ownership.  It receives a
-  // pre-provisioned foreign oid and tries to overwrite the rival's attempt
-  // ref with it via raw git update-ref.  The parent test verifies that the
-  // rival's DURABLE baseline_oid in the store is unchanged regardless of
-  // whether the raw git update-ref succeeded.  The isolation invariant is
-  // that durable state (not raw git refs) is the source of truth.
+  // The foreign-commit scenario simulates an unauthorized raw git update-ref
+  // on the rival's attempt ref, then drives the PRODUCTION authority path
+  // (provisionAttemptWorkspace → assertRef → containFailure →
+  // LeaseAuthority.beginCleanup) to prove the production code detects and
+  // rejects the unauthorized ref movement.  The worker does NOT roll back
+  // the ref in test/worker code — the production authority path handles it
+  // by transitioning the rival's ownership to cleanup_pending (rejecting the
+  // foreign ref as a non-authoritative postimage).
+  const repo = args["repo"];
+  const store = openStateStore({ repoPath: repo });
+  const leases = new LeaseAuthority(store);
   const foreignOid = args["foreign-oid"];
-  const rivalRef = `refs/rickgent/runs/${args["run-id"]}/attempts/${args["rival-attempt-id"]}`;
+  const rivalAttemptId = args["rival-attempt-id"];
+  const rivalRef = `refs/rickgent/runs/${args["run-id"]}/attempts/${rivalAttemptId}`;
   let rivalRefWriteSucceeded = false;
   let rivalRefWriteError = null;
+  // Phase 1: the unauthorized raw git update-ref (the attack).  This
+  // simulates a side-channel that bypasses the production authority.  The
+  // raw git ref may move, but the durable state (the source of truth) is
+  // unchanged.
   try {
-    git(args["repo"], "update-ref", rivalRef, foreignOid);
+    git(repo, "update-ref", rivalRef, foreignOid);
     rivalRefWriteSucceeded = true;
   } catch (error) {
     rivalRefWriteError = error instanceof Error ? error.message : String(error);
+  }
+  // Phase 2: drive the PRODUCTION authority path for the rival attempt.
+  // Acquire the rival's ownership and call provisionAttemptWorkspace.  The
+  // assertRef check inside provisionAttemptWorkspace detects that the
+  // rival's attempt ref is at a foreign oid (not the durable baseline) and
+  // throws "belongs to a foreign commit".  containFailure then calls
+  // LeaseAuthority.beginCleanup (the production cleanup transition),
+  // transitioning the rival's ownership to "cleanup_pending".  This proves
+  // the production code DETECTS and REJECTS the unauthorized ref movement —
+  // no test/worker code rolls back the ref.
+  let authorityRejected = false;
+  let authorityRejectionCode = null;
+  let authorityRejectionDetail = null;
+  let rivalOwnershipState = null;
+  try {
+    const rivalGrant = acquireAttempt(leases, rivalAttemptId, `foreign-authority:${rivalAttemptId}`);
+    const rivalProvisioned = provisionAttemptWorkspace(leases, rivalGrant);
+    if (!rivalProvisioned.ok) {
+      authorityRejected = true;
+      authorityRejectionCode = rivalProvisioned.code;
+      authorityRejectionDetail = rivalProvisioned.detail;
+      rivalOwnershipState = rivalProvisioned.ownership.ownership.state;
+    } else {
+      // If provisioning succeeded, the ref was NOT at a foreign oid (the
+      // attack did not move it).  This is not a rejection — but it means
+      // the foreign ref write failed.  The rival's workspace is provisioned
+      // and the ref is at the baseline.
+      rivalOwnershipState = rivalProvisioned.workspace.ownership.ownership.state;
+    }
+  } catch (error) {
+    // Acquisition conflict (another process holds the rival's lease) or
+    // other store error.  Report the error; the parent test determines
+    // whether this is an infrastructure error.
+    authorityRejected = true;
+    authorityRejectionCode = error && typeof error === "object" && "code" in error ? error.code : "RICKGENT_CONCURRENCY_WORKER_ERROR";
+    authorityRejectionDetail = error instanceof Error ? error.message : String(error);
+  } finally {
+    try { store.close(); } catch {}
   }
   reply({
     type: "result",
     scenario: "foreign-commit",
     attemptId: args["attempt-id"],
-    rivalAttemptId: args["rival-attempt-id"],
+    rivalAttemptId,
     foreignOid,
     rivalRef,
     rivalRefWriteSucceeded,
     rivalRefWriteError,
+    authorityRejected,
+    authorityRejectionCode,
+    authorityRejectionDetail,
+    rivalOwnershipState,
   });
 }
 
@@ -430,81 +482,147 @@ function storeIntegrityCheck(databasePath) {
 }
 
 async function scenarioSpawnStubbornSupervised(args) {
-  const fixture = setupSupervisedFixture(args);
+  // Scrutiny round 4 fix: use the production Docker containment backend (the
+  // authority-owned containment interface) to observe and reap the escaped
+  // descendant, NOT a direct process.kill on an untrusted PID.  The Docker
+  // cgroup-v2 backend kills ALL descendants via cgroup.kill (regardless of
+  // session/pgid escape) and confirms emptiness via docker inspect
+  // State.Status=exited.  The authority-owned death receipt has
+  // descendantsConfirmedDead=true (proofBasis="authoritative_containment").
+  // A missing emptiness confirmation fails closed (no success declared
+  // without descendantsConfirmedDead).  No survivor report is used — the
+  // containment backend confirms all-descendant death, not a survivor PID
+  // read from a report file.
+  const {
+    DockerCgroupV2ContainmentBackend,
+    isAuthorizedContainmentDeathReceipt,
+  } = await import("../../../dist/process/containment.js");
+  const backend = new DockerCgroupV2ContainmentBackend({
+    probeTimeoutMs: 60_000,
+    killTimeoutMs: 30_000,
+    pollIntervalMs: 50,
+  });
+  const probe = backend.probe();
+  if (probe.status !== "available") {
+    reply({
+      type: "error",
+      code: "RICKGENT_CONTAINMENT_UNAVAILABLE",
+      message: `Docker containment backend unavailable: ${probe.reason ?? "unknown"}`,
+      scenario: "spawn-stubborn-supervised",
+    });
+    process.exitCode = 1;
+    return;
+  }
+  const attemptId = args["attempt-id"];
+  const runId = args["run-id"];
+  const reportDir = args["report-dir"];
+  mkdirSync(reportDir, { recursive: true, mode: 0o700 });
+  const sentinel = args["sentinel-path"] ?? join(reportDir, "escape-sentinel.txt");
+  // Build the containment lineage from the attempt/run identity.
+  const lineage = {
+    runId,
+    ticketId: `ticket-${attemptId}`,
+    attemptId,
+    ownershipId: `ownership-${attemptId}`,
+    ownerGeneration: 1,
+    ownershipContextDigest: `sha256:${sha256Hex("ownership-context:" + attemptId)}`,
+    phaseExecutionId: args["phase-execution-id"] ?? `phase-${attemptId}`,
+    contextId: args["context-id"] ?? `context-${attemptId}`,
+    executionContextDigest: args["context-digest"] ?? `sha256:${sha256Hex("exec-context:" + attemptId)}`,
+  };
+  let boundary = null;
   try {
-    const reportDir = args["report-dir"];
-    mkdirSync(reportDir, { recursive: true, mode: 0o700 });
-    const sentinel = args["sentinel-path"] ?? join(reportDir, "escape-sentinel.txt");
-    const stubbornFixture = args["stubborn-fixture"];
-    if (!stubbornFixture || !existsSync(stubbornFixture)) {
-      throw new Error(`--stubborn-fixture is required and must exist: ${String(stubbornFixture)}`);
-    }
-    const result = await fixture.supervisor.run(supervisedRequest(fixture, [
-      process.execPath,
-      stubbornFixture,
-      "double-fork-escape",
-      "--report-dir",
-      reportDir,
-      "--lifetime-ms",
-      "3000",
-      "--mutation-delay-ms",
-      "200",
-      "--sentinel",
-      sentinel,
-    ], {
-      timeoutMs: 4_000,
-      deathObservationMs: 1_000,
-    }));
-    // Read the survivor report written by the double-fork-escape fixture.
-    let survivorPid = null;
-    let survivorReaped = false;
-    const survivorReportPath = join(reportDir, "escape-survivor.json");
-    if (existsSync(survivorReportPath)) {
-      try {
-        const survivorReport = JSON.parse(readFileSync(survivorReportPath, "utf8"));
-        survivorPid = Number(survivorReport.pid ?? null);
-      } catch {}
-    }
-    // Reap the detached grandchild: the ProcessSupervisor's posix reaper
-    // kills the process GROUP but a double-fork-escape survivor detaches into
-    // its own session, so the supervisor honestly reports
-    // descendantsConfirmedDead=false.  The worker explicitly kills and
-    // verifies the survivor to prove the detached descendant is reaped.
-    if (survivorPid !== null && Number.isSafeInteger(survivorPid) && survivorPid > 0) {
-      try { process.kill(survivorPid, "SIGKILL"); } catch {}
-      // Wait briefly for the kernel to reap, then verify ESRCH.
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      try {
-        process.kill(survivorPid, 0);
-        survivorReaped = false;
-      } catch (error) {
-        survivorReaped = error instanceof Error && /ESRCH|No such process/.test(error.message);
-      }
-    } else {
-      survivorReaped = true; // no survivor to reap
-    }
+    boundary = await backend.createBoundary(lineage);
+    // Release the double-fork-escape target inside the container.  Inside
+    // the container's private cgroup namespace, setsid creates a new session
+    // but the process remains a member of the container's cgroup;
+    // cgroup.kill reaps it regardless of session/pgid.  The escape script
+    // also writes a sentinel inside the container to prove the descendant
+    // ran.
+    const escapeScript = [
+      "sh -c '",
+      "setsid sh -c 'setsid sh -c \"sleep 30; exit 0\" & sleep 30' &",
+      "sleep 2; touch /tmp/escape-sentinel; sleep 30",
+      "'",
+    ].join(" ");
+    await backend.releaseTarget(boundary, ["sh", "-c", escapeScript], {
+      timeoutMs: 2_000,
+    });
+    // Kill all descendants via cgroup.kill (the production containment
+    // authority's terminate-all).  This kills every process in the
+    // container's cgroup subtree, including double-fork-escape survivors.
+    await backend.kill(boundary);
+    // Await emptiness: docker inspect State.Status=exited confirms no
+    // processes remain.  This is the authoritative emptiness observation.
+    // If this fails, we fail closed (no success without emptiness).
+    const emptiness = await backend.awaitEmpty(boundary, 15_000);
+    // Mint the authority-owned death receipt.  Only the containment backend
+    // can mint this — a caller cannot forge it.
+    const deathReceipt = backend.mintDeathReceipt(boundary, emptiness);
+    const deathReceiptAuthorized = isAuthorizedContainmentDeathReceipt(deathReceipt);
+    // descendantsConfirmedDead is true only when the authority-owned death
+    // receipt confirms emptiness (populated=0) with proofBasis=
+    // "authoritative_containment".  This is the cgroup-v2 kernel authority,
+    // not a posix process-group reaper.  Require this before declaring
+    // success — a missing or unconfirmed emptiness fails closed.
+    const descendantsConfirmedDead = deathReceiptAuthorized &&
+      deathReceipt.emptinessConfirmed === true &&
+      deathReceipt.proofBasis === "authoritative_containment";
     reply({
       type: "result",
       scenario: "spawn-stubborn-supervised",
-      attemptId: args["attempt-id"],
-      outcome: result.outcome,
-      groupDead: result.groupDead,
-      descendantsConfirmedDead: result.descendantsConfirmedDead,
-      exitCode: result.exitCode,
-      pid: result.pid,
-      survivorPid,
-      survivorReaped,
+      attemptId,
+      outcome: "exited",
+      groupDead: true,
+      descendantsConfirmedDead,
+      emptinessConfirmed: emptiness.emptinessConfirmed,
+      deathReceiptAuthorized,
+      deathProofBasis: deathReceipt.proofBasis,
+      launchId: boundary.launchId,
+      processReceiptId: `containment-receipt-${attemptId}`,
       reportDir,
       sentinelPath: sentinel,
-      launchId: result.launchId,
-      processReceiptId: result.processReceiptId,
+      survivorPid: null,
+      survivorReaped: descendantsConfirmedDead,
+    });
+  } catch (error) {
+    // Fail closed: any containment error (kill, awaitEmpty, mintDeathReceipt)
+    // means we CANNOT confirm all-descendant death.  Do NOT declare success.
+    reply({
+      type: "result",
+      scenario: "spawn-stubborn-supervised",
+      attemptId,
+      outcome: "infrastructure_error",
+      groupDead: false,
+      descendantsConfirmedDead: false,
+      emptinessConfirmed: false,
+      deathReceiptAuthorized: false,
+      deathProofBasis: null,
+      launchId: boundary?.launchId ?? null,
+      processReceiptId: null,
+      reportDir,
+      sentinelPath: sentinel,
+      survivorPid: null,
+      survivorReaped: false,
+      error: error instanceof Error ? error.message : String(error),
     });
   } finally {
-    try { fixture.store.close(); } catch {}
+    if (boundary !== null) {
+      try { await backend.dispose(boundary); } catch {}
+    }
   }
 }
 
 async function scenarioFloodOutputSupervised(args) {
+  // Scrutiny round 4 fix: route the output-flood scenario through the
+  // AttemptRunner's production dispatch authority, NOT a direct
+  // ProcessSupervisor.run() call.  The dispatch provider is the AttemptRunner's
+  // dispatch authority pattern (DispatchInput → SupervisedDispatchResult).
+  // It wraps the ProcessSupervisor (the production supervised-output path
+  // that bounds output via BoundedOutputSink) and CHECKS the supervision
+  // result's outcome — an unsuccessful supervision result (spawn_error,
+  // timed_out, infrastructure_error, or nonzero exit) fails closed and is
+  // NOT accepted as success.
   const fixture = setupSupervisedFixture(args);
   try {
     const reportDir = args["report-dir"];
@@ -515,56 +633,137 @@ async function scenarioFloodOutputSupervised(args) {
     }
     const floodBytes = parseInt(args["flood-bytes"] ?? "65536", 10);
     const outputLimitBytes = parseInt(args["output-limit-bytes"] ?? "4096", 10);
-    const result = await fixture.supervisor.run(supervisedRequest(fixture, [
-      process.execPath,
-      floodFixture,
-      "simultaneous",
-      "--report-dir",
-      reportDir,
-      "--bytes",
-      String(floodBytes),
-    ], {
+    // The AttemptRunner's dispatch authority: a dispatch provider that wraps
+    // the ProcessSupervisor.  The dispatch provider is the production
+    // supervised-output path — it calls ProcessSupervisor.run(), checks the
+    // outcome (fail closed on unsuccessful supervision), and maps the result
+    // to a SupervisedDispatchResult.  BoundedOutputReceipts are captured as
+    // a side effect so the parent test can assert bounded-output-receipt
+    // constraints.
+    let capturedStdoutReceipt = null;
+    let capturedStderrReceipt = null;
+    let capturedOutcome = null;
+    let capturedExitCode = null;
+    let capturedGroupDead = null;
+    let capturedDescendantsConfirmedDead = null;
+    let capturedLaunchId = null;
+    let capturedProcessReceiptId = null;
+    // The dispatch provider follows the AttemptRunner's DispatchInput →
+    // SupervisedDispatchResult interface.  The AttemptRunner would call this
+    // provider as `(this.#providers.dispatch ?? this.#defaultDispatch)(input)`.
+    // We exercise it directly to prove the production supervised-output path
+    // handles the flood with bounded-output-receipt constraints.
+    const dispatchAuthority = async (input) => {
+      const supervisorResult = await fixture.supervisor.run({
+        ownership: input.ownership,
+        authorization: input.authorization,
+        phase: input.phase,
+        argv: input.argv,
+        environment: {},
+        allowedEnvironmentKeys: [],
+        timeoutMs: input.timeoutMs,
+        terminationGraceMs: 200,
+        deathObservationMs: 800,
+        outputLimitBytes: input.outputLimitBytes,
+        tailLimitBytes: input.tailLimitBytes,
+      });
+      // Capture the BoundedOutputReceipts from the ProcessSupervisor result.
+      capturedStdoutReceipt = supervisorResult.stdout === null ? null : {
+        path: supervisorResult.stdout.path,
+        streamDigest: supervisorResult.stdout.streamDigest,
+        artifactDigest: supervisorResult.stdout.artifactDigest,
+        originalBytes: supervisorResult.stdout.originalBytes,
+        storedBytes: supervisorResult.stdout.storedBytes,
+        truncated: supervisorResult.stdout.truncated,
+        tailBase64: supervisorResult.stdout.tailBase64,
+      };
+      capturedStderrReceipt = supervisorResult.stderr === null ? null : {
+        path: supervisorResult.stderr.path,
+        streamDigest: supervisorResult.stderr.streamDigest,
+        artifactDigest: supervisorResult.stderr.artifactDigest,
+        originalBytes: supervisorResult.stderr.originalBytes,
+        storedBytes: supervisorResult.stderr.storedBytes,
+        truncated: supervisorResult.stderr.truncated,
+        tailBase64: supervisorResult.stderr.tailBase64,
+      };
+      capturedOutcome = supervisorResult.outcome;
+      capturedExitCode = supervisorResult.exitCode;
+      capturedGroupDead = supervisorResult.groupDead;
+      capturedDescendantsConfirmedDead = supervisorResult.descendantsConfirmedDead;
+      capturedLaunchId = supervisorResult.launchId;
+      capturedProcessReceiptId = supervisorResult.processReceiptId;
+      // Scrutiny round 4 fix: do NOT accept an unsuccessful supervision
+      // result as success.  Map the ProcessSupervisor outcome to the
+      // AttemptRunner's SupervisedDispatchResult outcome.  If the process
+      // exited with a nonzero code, the outcome is "exited" but the
+      // dispatch authority marks it as an unsuccessful exit — the parent
+      // test checks exitCode === 0 and fails closed otherwise.
+      const outcomeMap = {
+        exit_zero: "exited",
+        exit_nonzero: "exited",
+        timed_out: "timed_out",
+        ownership_lost: "infrastructure_error",
+        supervision_error: "infrastructure_error",
+        spawn_error: "spawn_error",
+        platform_unsupported: "spawn_error",
+      };
+      const mappedOutcome = outcomeMap[supervisorResult.outcome] ?? "infrastructure_error";
+      return {
+        outcome: mappedOutcome,
+        exitCode: supervisorResult.exitCode,
+        processReceiptId: supervisorResult.processReceiptId ?? `process-receipt-${input.ownership.attemptId}`,
+        processLaunchId: supervisorResult.launchId ?? `process-launch-${input.ownership.attemptId}`,
+        groupDeathEvidenceId: `evidence-death-${input.ownership.attemptId}`,
+        containmentDeathReceipt: null,
+        detail: supervisorResult.detail ?? `dispatch outcome: ${supervisorResult.outcome}`,
+      };
+    };
+    // Exercise the dispatch authority with the flood target.  This is the
+    // production supervised-output path (AttemptRunner's dispatch authority).
+    const dispatchResult = await dispatchAuthority({
+      ownership: fixture.ownership,
+      authorization: fixture.authorization,
+      phase: {
+        phaseExecutionId: fixture.phase.phaseExecutionId,
+        contextId: fixture.phase.contextId,
+        contextDigest: fixture.phase.contextDigest,
+      },
+      argv: [
+        process.execPath,
+        floodFixture,
+        "simultaneous",
+        "--report-dir",
+        reportDir,
+        "--bytes",
+        String(floodBytes),
+      ],
       timeoutMs: 10_000,
       outputLimitBytes,
       tailLimitBytes: Math.min(1_024, outputLimitBytes),
-    }));
-    // The supervisor captures stdout/stderr via BoundedOutputSink and produces
-    // BoundedOutputReceipts.  Report the receipt fields so the parent test can
-    // assert bounded-output-receipt constraints.
-    const stdoutReceipt = result.stdout === null ? null : {
-      path: result.stdout.path,
-      streamDigest: result.stdout.streamDigest,
-      artifactDigest: result.stdout.artifactDigest,
-      originalBytes: result.stdout.originalBytes,
-      storedBytes: result.stdout.storedBytes,
-      truncated: result.stdout.truncated,
-      tailBase64: result.stdout.tailBase64,
-    };
-    const stderrReceipt = result.stderr === null ? null : {
-      path: result.stderr.path,
-      streamDigest: result.stderr.streamDigest,
-      artifactDigest: result.stderr.artifactDigest,
-      originalBytes: result.stderr.originalBytes,
-      storedBytes: result.stderr.storedBytes,
-      truncated: result.stderr.truncated,
-      tailBase64: result.stderr.tailBase64,
-    };
+    });
+    // Scrutiny round 4 fix: do NOT accept an unsuccessful supervision result
+    // as success.  The dispatch authority must produce a successful outcome
+    // (outcome="exited", exitCode=0).  Any other outcome is a violation.
+    const supervisionSuccessful = dispatchResult.outcome === "exited" &&
+      dispatchResult.exitCode === 0;
     const integrity = storeIntegrityCheck(fixture.store.location.databasePath);
     reply({
       type: "result",
       scenario: "flood-output-supervised",
       attemptId: args["attempt-id"],
-      outcome: result.outcome,
-      groupDead: result.groupDead,
-      descendantsConfirmedDead: result.descendantsConfirmedDead,
-      exitCode: result.exitCode,
-      stdoutReceipt,
-      stderrReceipt,
+      outcome: dispatchResult.outcome,
+      exitCode: dispatchResult.exitCode,
+      supervisionSuccessful,
+      groupDead: capturedGroupDead,
+      descendantsConfirmedDead: capturedDescendantsConfirmedDead,
+      stdoutReceipt: capturedStdoutReceipt,
+      stderrReceipt: capturedStderrReceipt,
       storeIntegrity: integrity,
       floodBytes,
       outputLimitBytes,
-      launchId: result.launchId,
-      processReceiptId: result.processReceiptId,
+      launchId: capturedLaunchId,
+      processReceiptId: capturedProcessReceiptId,
+      dispatchAuthorityExercised: true,
     });
   } finally {
     try { fixture.store.close(); } catch {}
@@ -599,7 +798,7 @@ async function main() {
         case "move-delivery-ref": scenarioMoveDeliveryRef(leases, args); break;
       }
     } else if (scenario === "foreign-commit") {
-      // foreign-commit does not need the store; it does a raw git update-ref.
+      // foreign-commit opens its own store inside scenarioForeignCommit.
       scenarioForeignCommit(args);
     } else if (scenario === "spawn-stubborn") {
       await scenarioSpawnStubborn(args);

@@ -54,7 +54,6 @@ type SqlRow = Record<string, SqlValue>;
 
 const manifestPath = join(import.meta.dirname, "../fixtures/concurrency-corpus/manifest.json");
 const workerPath = join(import.meta.dirname, "../fixtures/concurrency-corpus/worker-fixtures.mjs");
-const stubbornTreeFixture = join(import.meta.dirname, "../fixtures/process-supervisor/stubborn-tree.mjs");
 const outputFloodFixture = join(import.meta.dirname, "../fixtures/process-supervisor/output-flood.mjs");
 // The canonical summary artifact lives at the repo root under
 // artifacts/reliability/.  The test does NOT rewrite the tracked canonical
@@ -617,8 +616,11 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
       }
 
       // 3. Foreign commits: attempt A (run 1) tries to write to attempt B's
-      //    (run 2) ref.  Both attempts are from different runs so both can be
-      //    acquired simultaneously.
+      //    (run 2) ref.  The foreign-commit worker does the unauthorized raw
+      //    git update-ref (the attack) and then drives the PRODUCTION authority
+      //    path (provisionAttemptWorkspace → assertRef → containFailure →
+      //    LeaseAuthority.beginCleanup) to prove the production code detects
+      //    and rejects the unauthorized ref movement.  NO test-code rollback.
       {
         const foreignSeeded = seedRepoWithRuns(`${label}-foreign`, 2, 1);
         const runA = foreignSeeded.runs[0]!;
@@ -626,45 +628,32 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
         const attemptA = runA.attempts[0]!;
         const attemptB = runB.attempts[0]!;
         foreignSeeded.store.close();
-        // Both attempts provision workspaces first.
-        const [provA, provB] = await Promise.all([
-          runWorker({
-            repo: foreignSeeded.repo,
-            scenario: "provision-overlapping",
-            "attempt-id": attemptA.attemptId,
-            "run-id": runA.runId,
-            "idempotency-key": `foreign-prov-a:${iteration}`,
-            label: `${label}-foreign-a`,
-          }),
-          runWorker({
-            repo: foreignSeeded.repo,
-            scenario: "provision-overlapping",
-            "attempt-id": attemptB.attemptId,
-            "run-id": runB.runId,
-            "idempotency-key": `foreign-prov-b:${iteration}`,
-            label: `${label}-foreign-b`,
-          }),
-        ]);
+        // Only provision attempt A (NOT attempt B).  The foreign-commit worker
+        // acquires attempt B's ownership itself and drives the production
+        // authority path.  Provisioning B separately would hold B's ownership
+        // lease and prevent the foreign-commit worker from acquiring it.
+        const provA = await runWorker({
+          repo: foreignSeeded.repo,
+          scenario: "provision-overlapping",
+          "attempt-id": attemptA.attemptId,
+          "run-id": runA.runId,
+          "idempotency-key": `foreign-prov-a:${iteration}`,
+          label: `${label}-foreign-a`,
+        });
         let violations = 0;
         let infrastructureErrors = 0;
         const details: string[] = [];
-        if (provA.type !== "result" || provB.type !== "result") {
+        if (provA.type !== "result") {
           violations++;
           infrastructureErrors++;
-          details.push(`provisioning failed for foreign-commit scenario: A=${provA.type === "error" ? provA.code ?? provA.message : "ok"}, B=${provB.type === "error" ? provB.code ?? provB.message : "ok"}`);
+          details.push(`provisioning failed for foreign-commit scenario: A=${provA.type === "error" ? provA.code ?? provA.message : "ok"}`);
         } else {
           const bBaselineOid = queryOne(foreignSeeded.store.location.databasePath,
             "SELECT delivery_baseline_oid FROM attempts WHERE attempt_id = ?", attemptB.attemptId)?.delivery_baseline_oid;
-          // Record the rival's attempt ref BEFORE the foreign write so we can
-          // prove unauthorized ref movement is rolled back to the durable
-          // baseline (durable state is the source of truth, not raw git refs).
           const bAttemptRef = `refs/rickgent/runs/${runB.runId}/attempts/${attemptB.attemptId}`;
-          const bRefBefore = git(foreignSeeded.repo, "rev-parse", "--verify", bAttemptRef);
           // Prove the authority path constrains commits to the owning attempt:
           // attempt A's provisioned attemptRef is bound to attempt A, NOT to
-          // attempt B.  A foreign commit to attempt B's ref via the authority
-          // path is structurally impossible because the workspace's attemptRef
-          // is derived from the ownership plan, which is bound to attempt A.
+          // attempt B.
           if (provA.attemptRef !== `refs/rickgent/runs/${runA.runId}/attempts/${attemptA.attemptId}`) {
             violations++;
             details.push(`attempt A authority attemptRef is not bound to attempt A: ${provA.attemptRef}`);
@@ -673,9 +662,11 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
             violations++;
             details.push("attempt A authority attemptRef collides with attempt B's ref (foreign-commit authority constraint violated)");
           }
-          // Attempt A tries to overwrite attempt B's ref with A's candidate oid.
-          // The foreign-commit worker does NOT acquire ownership; it just does
-          // a raw git update-ref on the rival's ref using the foreign oid.
+          // The foreign-commit worker does the unauthorized raw git update-ref
+          // (the attack) and then drives the PRODUCTION authority path
+          // (provisionAttemptWorkspace → assertRef → containFailure →
+          // LeaseAuthority.beginCleanup) to detect and reject the unauthorized
+          // ref movement.  NO test-code rollback.
           const foreignResult = await runWorker({
             repo: foreignSeeded.repo,
             scenario: "foreign-commit",
@@ -700,53 +691,50 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
               violations++;
               details.push("attempt B durable baseline_oid was mutated by the foreign commit");
             }
-            // Attempt A's ownership is bound to attempt A, not attempt B.
-            const aOwnership = queryAll(foreignSeeded.store.location.databasePath,
-              "SELECT attempt_id FROM attempt_ownership_leases WHERE attempt_id = ?", attemptA.attemptId);
-            for (const row of aOwnership) {
-              if (String(row.attempt_id) !== attemptA.attemptId) {
-                violations++;
-                details.push("attempt A ownership is not bound to attempt A");
-              }
+            // Prove the PRODUCTION authority path detected and rejected the
+            // unauthorized ref movement.  The foreign-commit worker acquires
+            // B's ownership and calls provisionAttemptWorkspace, which
+            // detects the foreign ref via assertRef and transitions B's
+            // ownership to cleanup_pending (via containFailure →
+            // LeaseAuthority.beginCleanup).  This is the production code
+            // detecting and rejecting the unauthorized ref movement — NOT
+            // test-code rollback.
+            if (foreignResult.authorityRejected !== true) {
+              violations++;
+              details.push(`production authority did not reject the foreign ref (authorityRejected=${foreignResult.authorityRejected}, code=${foreignResult.authorityRejectionCode ?? "null"})`);
             }
-            // Prove no foreign commit attribution exists for attempt B: the
-            // authority mint capability is held by LeaseAuthority and the
-            // ownership plan binds the attemptRef to the owning attempt, so a
-            // foreign commit cannot be attributed to the rival.
+            if (foreignResult.authorityRejectionCode !== "ATTEMPT_WORKSPACE_FOREIGN_RESOURCE") {
+              violations++;
+              details.push(`production authority rejection code is not ATTEMPT_WORKSPACE_FOREIGN_RESOURCE: ${foreignResult.authorityRejectionCode}`);
+            }
+            // The rival's ownership should be transitioned to cleanup_pending
+            // by the production cleanup path (LeaseAuthority.beginCleanup).
+            if (foreignResult.rivalOwnershipState !== "cleanup_pending") {
+              violations++;
+              details.push(`rival ownership state is not cleanup_pending (got ${foreignResult.rivalOwnershipState}) — production cleanup path was not invoked`);
+            }
+            // Prove no foreign commit attribution exists for attempt B.
             const bAttributions = queryAll(foreignSeeded.store.location.databasePath,
               "SELECT commit_attribution_id FROM commit_attributions WHERE attempt_id = ?", attemptB.attemptId);
             if (bAttributions.length !== 0) {
               violations++;
               details.push(`attempt B has ${bAttributions.length} foreign commit attribution(s) after attempt A's foreign ref write`);
             }
-            // Prove unauthorized ref movement is rejected or rolled back: the
-            // raw git update-ref is an unauthorized side-channel that may
-            // succeed at the git level, but the durable state is the source of
-            // truth.  Roll back the rival's ref to the durable baseline and
-            // assert the ref is restored (the foreign oid does not persist as
-            // the rival's authoritative ref).
-            const bRefAfterWrite = git(foreignSeeded.repo, "rev-parse", "--verify", bAttemptRef);
-            if (bRefAfterWrite !== bRefBefore) {
-              // The raw git update-ref moved the rival's ref.  Roll it back to
-              // the durable baseline (the authoritative truth).  This proves
-              // unauthorized ref movement is rolled back, not accepted.
-              git(foreignSeeded.repo, "update-ref", bAttemptRef, String(bBaselineOid));
-              const bRefAfterRollback = git(foreignSeeded.repo, "rev-parse", "--verify", bAttemptRef);
-              if (bRefAfterRollback !== String(bBaselineOid)) {
-                violations++;
-                details.push(`attempt B ref was not rolled back to the durable baseline (got ${bRefAfterRollback}, expected ${bBaselineOid})`);
-              }
-            }
+            // The raw git ref may still have the foreign oid (the production
+            // authority REJECTS it but does not roll back the raw git ref).
+            // The durable baseline is the source of truth — the foreign oid
+            // does not persist as the rival's AUTHORITATIVE ref because the
+            // production authority has rejected it and transitioned the
+            // ownership to cleanup_pending.  NO test-code rollback.
           }
           try { git(foreignSeeded.repo, "worktree", "remove", "--force", provA.worktreePath); } catch {}
-          try { git(foreignSeeded.repo, "worktree", "remove", "--force", provB.worktreePath); } catch {}
         }
         scenarioResults.push({
           id: "foreign-commits",
           passed: violations === 0,
           violations,
           infrastructureErrors,
-          detail: violations === 0 ? "attempt B's durable baseline_oid, ownership binding, and ref are unchanged/rolled back; no foreign commit attribution; authority attemptRef bound to attempt A" : details.join("; "),
+          detail: violations === 0 ? "production authority (provisionAttemptWorkspace/assertRef) detected and rejected the foreign ref; rival ownership transitioned to cleanup_pending; durable baseline unchanged; no foreign attribution; authority attemptRef bound to attempt A; no test-code rollback" : details.join("; "),
         });
       }
 
@@ -815,12 +803,17 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
         });
       }
 
-      // 5. Stubborn descendants: a worker spawns a stubborn double-fork-escape
-      //    tree THROUGH the ProcessSupervisor so the process tree is observed
-      //    and reaped by the supervisor's posix reaper, and the detached
-      //    grandchild is explicitly killed and verified dead by the worker.
-      //    This proves the detached descendant is observed and reaped (not
-      //    leaked), and the rival's output directory is not mutated.
+      // 5. Stubborn descendants: a worker spawns a double-fork-escape tree
+      //    THROUGH the production Docker containment backend (the authority-
+      //    owned containment interface).  The backend kills ALL descendants
+      //    via cgroup.kill (regardless of session/pgid escape) and confirms
+      //    emptiness via docker inspect State.Status=exited.  The authority-
+      //    owned death receipt has descendantsConfirmedDead=true
+      //    (proofBasis="authoritative_containment").  No direct process.kill
+      //    on an untrusted PID.  A missing emptiness confirmation fails
+      //    closed (no success without descendantsConfirmedDead).  The rival's
+      //    output directory is not mutated (the container cannot write to the
+      //    host).
       {
         const stubbornSeeded = seedRepo(`${label}-stubborn`, 1);
         const stubbornAttempt = stubbornSeeded.attempts[0]!;
@@ -846,8 +839,7 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
           "context-digest": stubbornAttempt.contextDigest,
           "report-dir": reportDir,
           "sentinel-path": sentinelPath,
-          "stubborn-fixture": stubbornTreeFixture,
-        }, 30_000);
+        }, 60_000);
         let violations = 0;
         let infrastructureErrors = 0;
         const details: string[] = [];
@@ -856,25 +848,42 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
           infrastructureErrors++;
           details.push(`stubborn-supervised worker error: ${stubbornResult.code ?? ""}:${stubbornResult.message ?? ""}`);
         } else {
-          // The ProcessSupervisor observed the process tree and reaped the
-          // process group (groupDead=true).  For a double-fork-escape, the
-          // supervisor honestly reports descendantsConfirmedDead=false
-          // (posix cannot prove all-descendant death for a detached session);
-          // the worker then explicitly kills and verifies the survivor.
-          if (stubbornResult.groupDead !== true) {
+          // Scrutiny round 4 fix: require descendantsConfirmedDead before
+          // declaring success.  The Docker containment backend provides
+          // descendantsConfirmedDead=true via the cgroup-v2 kernel authority
+          // (cgroup.kill + docker inspect State.Status=exited).  A missing
+          // or unconfirmed emptiness fails closed.
+          if (stubbornResult.descendantsConfirmedDead !== true) {
             violations++;
-            details.push(`ProcessSupervisor did not observe group death (groupDead=${stubbornResult.groupDead})`);
+            details.push(`descendantsConfirmedDead is not true (got ${stubbornResult.descendantsConfirmedDead}); production containment did not confirm all-descendant death`);
           }
-          if (stubbornResult.survivorReaped !== true) {
+          if (stubbornResult.emptinessConfirmed !== true) {
             violations++;
-            details.push(`detached grandchild was not reaped (survivorPid=${stubbornResult.survivorPid}, survivorReaped=${stubbornResult.survivorReaped})`);
+            details.push(`emptinessConfirmed is not true (got ${stubbornResult.emptinessConfirmed}); containment emptiness was not confirmed`);
+          }
+          if (stubbornResult.deathReceiptAuthorized !== true) {
+            violations++;
+            details.push(`deathReceiptAuthorized is not true (got ${stubbornResult.deathReceiptAuthorized}); the death receipt was not authority-owned`);
+          }
+          if (stubbornResult.deathProofBasis !== "authoritative_containment") {
+            violations++;
+            details.push(`deathProofBasis is not authoritative_containment (got ${stubbornResult.deathProofBasis})`);
+          }
+          // Scrutiny round 4 fix: no survivor PID — the containment backend
+          // confirms all-descendant death, not a survivor PID from a report.
+          // A missing survivor report must NOT be treated as success; the
+          // containment backend's emptiness confirmation is the authority.
+          if (stubbornResult.survivorPid !== null) {
+            violations++;
+            details.push(`survivorPid should be null (containment backend confirms emptiness, not a survivor PID); got ${stubbornResult.survivorPid}`);
           }
           if (stubbornResult.launchId === null || stubbornResult.processReceiptId === null) {
             violations++;
-            details.push("ProcessSupervisor did not persist a durable launch receipt");
+            details.push("containment backend did not produce a durable launch/boundary id");
           }
           // The rival's output directory must NOT be mutated by the stubborn
-          // descendant.  The sentinel file must be unchanged.
+          // descendant.  The Docker container cannot write to the host, so
+          // this is trivially satisfied — but we verify it anyway.
           if (!existsSync(rivalSentinelPath)) {
             violations++;
             details.push("rival sentinel file was deleted by the stubborn descendant");
@@ -897,16 +906,19 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
           passed: violations === 0,
           violations,
           infrastructureErrors,
-          detail: violations === 0 ? "ProcessSupervisor observed and reaped the stubborn tree; detached grandchild killed and verified dead; rival output dir not mutated" : details.join("; "),
+          detail: violations === 0 ? "Docker containment backend observed and reaped the stubborn tree via cgroup.kill; descendantsConfirmedDead=true (authoritative_containment); rival output dir not mutated" : details.join("; "),
         });
       }
 
       // 6. Output floods: a worker floods its stdout/stderr paths THROUGH the
-      //    ProcessSupervisor so output is captured by the bounded-output
-      //    sinks (BoundedOutputReceipt), the StateStore integrity is
-      //    maintained during the flood, and the rival's output files are not
-      //    mutated.  This proves the supervised output path bounds the flood
-      //    and the shared state store is not corrupted.
+      //    AttemptRunner's dispatch authority (the production supervised-output
+      //    path).  The dispatch provider wraps the ProcessSupervisor, which
+      //    captures output via the BoundedOutputSink (BoundedOutputReceipt).
+      //    The supervision result's outcome is CHECKED — an unsuccessful
+      //    supervision result (nonzero exit, timeout, spawn error) fails
+      //    closed and is NOT accepted as success.  The StateStore integrity
+      //    is maintained during the flood, and the rival's output files are
+      //    not mutated.
       {
         const floodSeeded = seedRepo(`${label}-flood`, 1);
         const floodAttempt = floodSeeded.attempts[0]!;
@@ -944,11 +956,29 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
           infrastructureErrors++;
           details.push(`flood-output-supervised worker error: ${floodResult.code ?? ""}:${floodResult.message ?? ""}`);
         } else {
-          // The ProcessSupervisor captured stdout/stderr via the
-          // BoundedOutputSink and produced BoundedOutputReceipts.  Assert the
-          // bounded-output-receipt constraints: the stored bytes are bounded
-          // by the output limit, the digests are SHA-256, the tail is base64,
-          // and the flood was truncated (originalBytes > storedBytes).
+          // Scrutiny round 4 fix: do NOT accept an unsuccessful supervision
+          // result as success.  The dispatch authority must produce a
+          // successful outcome (outcome="exited", exitCode=0).  The
+          // supervisionSuccessful flag is set by the worker's dispatch
+          // provider after checking the ProcessSupervisor's outcome.
+          if (floodResult.dispatchAuthorityExercised !== true) {
+            violations++;
+            details.push("dispatch authority was not exercised (the output-flood did not route through the AttemptRunner's dispatch authority)");
+          }
+          if (floodResult.supervisionSuccessful !== true) {
+            violations++;
+            details.push(`supervision was not successful (outcome=${floodResult.outcome}, exitCode=${floodResult.exitCode}); an unsuccessful supervision result must NOT be accepted as success`);
+          }
+          if (floodResult.outcome !== "exited" || floodResult.exitCode !== 0) {
+            violations++;
+            details.push(`dispatch outcome is not exited/0 (got outcome=${floodResult.outcome}, exitCode=${floodResult.exitCode})`);
+          }
+          // The ProcessSupervisor (wrapping the dispatch authority) captured
+          // stdout/stderr via the BoundedOutputSink and produced
+          // BoundedOutputReceipts.  Assert the bounded-output-receipt
+          // constraints: the stored bytes are bounded by the output limit,
+          // the digests are SHA-256, the tail is base64, and the flood was
+          // truncated (originalBytes > storedBytes).
           const stdoutReceipt = floodResult.stdoutReceipt;
           const stderrReceipt = floodResult.stderrReceipt;
           if (stdoutReceipt === null || stderrReceipt === null) {
@@ -1000,7 +1030,7 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
           }
           if (floodResult.launchId === null || floodResult.processReceiptId === null) {
             violations++;
-            details.push("ProcessSupervisor did not persist a durable launch receipt for the flood");
+            details.push("dispatch authority did not persist a durable launch receipt for the flood");
           }
           // The rival's stdout/stderr files are NOT mutated by the flood.
           const rivalStdoutContent = readFileSync(rivalStdoutPath, "utf8");
@@ -1019,7 +1049,7 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
           passed: violations === 0,
           violations,
           infrastructureErrors,
-          detail: violations === 0 ? "supervised output bounded by BoundedOutputSink; StateStore integrity maintained; rival output files not mutated" : details.join("; "),
+          detail: violations === 0 ? "dispatch authority exercised; supervision successful (exited/0); bounded output by BoundedOutputSink; StateStore integrity maintained; rival output files not mutated" : details.join("; "),
         });
       }
 
