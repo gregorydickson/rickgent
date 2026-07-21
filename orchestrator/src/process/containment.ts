@@ -439,6 +439,86 @@ function nowIso(): string {
 }
 
 // ---------------------------------------------------------------------------
+// Output-limit validation (scrutiny round 9, defect #2).
+//
+// `outputLimitBytes` and `tailLimitBytes` were previously accepted without
+// finite positive bounds, maximum cap, or tail<=output validation.  Malformed
+// or infinite values could disable bounded capture (e.g. NaN would make every
+// `Math.min` comparison NaN, Infinity would disable truncation, a negative
+// value would make the sink store nothing, and tail > output would invert
+// the tail semantics).  The validation below runs BEFORE the Docker
+// containment backend spawns the target so a malformed configuration fails
+// closed with a `ContainmentUnavailableError` instead of producing a
+// non-functional or unbounded capture path.
+//
+// The 64 MiB cap aligns with the ProcessSupervisor's
+// `MAX_OUTPUT_LIMIT_BYTES` so both the containment and supervisor paths
+// enforce the same maximum bound.
+// ---------------------------------------------------------------------------
+
+/**
+ * Maximum allowed value for `outputLimitBytes` and `tailLimitBytes` in the
+ * Docker containment streaming capture path.  Aligns with the
+ * ProcessSupervisor's `MAX_OUTPUT_LIMIT_BYTES` (64 MiB) so both paths
+ * enforce the same upper bound.
+ */
+export const RICKGENT_MAX_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Validate `outputLimitBytes` and `tailLimitBytes` before spawning a target
+ * into the Docker containment boundary.  Rejects malformed/unbounded values
+ * with a fail-closed {@link ContainmentUnavailableError}:
+ *   (a) both must be positive safe integers (rejects NaN, Infinity,
+ *       -Infinity, negative, zero, and fractional values —
+ *       `Number.isSafeInteger` is false for all of these),
+ *   (b) both must be finite (covered by the safe-integer check),
+ *   (c) both must be <= {@link RICKGENT_MAX_OUTPUT_LIMIT_BYTES} (64 MiB),
+ *   (d) `tailLimitBytes` must be <= `outputLimitBytes`.
+ *
+ * This is the production gate the Docker containment backend's
+ * `releaseTarget` calls BEFORE `observeMembership` (and therefore before any
+ * `docker exec` spawn) so a malformed configuration fails closed without
+ * contacting the Docker daemon for the exec.
+ */
+export function validateDockerOutputLimits(
+  outputLimitBytes: number,
+  tailLimitBytes: number,
+): void {
+  const assertPositiveSafeInteger = (value: number, label: string): void => {
+    // Number.isSafeInteger returns false for NaN, Infinity, -Infinity, and
+    // fractional values.  The `value < 1` check rejects zero and negatives
+    // (safe integers can be negative).  Together these enforce: positive,
+    // finite, safe integer.
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new ContainmentUnavailableError(
+        "docker-cgroup-v2",
+        `${label} must be a positive safe integer (got ${String(value)})`,
+      );
+    }
+  };
+  assertPositiveSafeInteger(outputLimitBytes, "outputLimitBytes");
+  assertPositiveSafeInteger(tailLimitBytes, "tailLimitBytes");
+  if (outputLimitBytes > RICKGENT_MAX_OUTPUT_LIMIT_BYTES) {
+    throw new ContainmentUnavailableError(
+      "docker-cgroup-v2",
+      `outputLimitBytes ${outputLimitBytes} exceeds the maximum ${RICKGENT_MAX_OUTPUT_LIMIT_BYTES}`,
+    );
+  }
+  if (tailLimitBytes > RICKGENT_MAX_OUTPUT_LIMIT_BYTES) {
+    throw new ContainmentUnavailableError(
+      "docker-cgroup-v2",
+      `tailLimitBytes ${tailLimitBytes} exceeds the maximum ${RICKGENT_MAX_OUTPUT_LIMIT_BYTES}`,
+    );
+  }
+  if (tailLimitBytes > outputLimitBytes) {
+    throw new ContainmentUnavailableError(
+      "docker-cgroup-v2",
+      `tailLimitBytes ${tailLimitBytes} cannot exceed outputLimitBytes ${outputLimitBytes}`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // BoundedOutputSink — streaming byte-counting sink (scrutiny round 8).
 //
 // A streaming {@link BoundedOutputReceipt} producer that counts EVERY byte
@@ -801,23 +881,71 @@ async function dockerExecStreaming(
     stderrPath: string;
     outputLimitBytes: number;
     tailLimitBytes: number;
+    /**
+     * Factory for {@link BoundedOutputSink} instances.  Defaults to the real
+     * `BoundedOutputSink`.  Provided as a dependency-injection seam so the
+     * production-path negative proof (scrutiny round 9, defect #1) can
+     * substitute a failing sink and assert the dispatch fails closed —
+     * without bypassing the real `dockerExecStreaming` code path.  This is
+     * NOT a production bypass flag; it is unreachable from environment
+     * variables and defaults to the real implementation.
+     */
+    sinkFactory?: (path: string, limit: number, tailLimit: number, opts: { strictDirectorySafety: boolean }) => BoundedOutputSink;
   },
-): Promise<{ exitCode: number | null; timedOut: boolean; stdoutReceipt: BoundedOutputReceipt; stderrReceipt: BoundedOutputReceipt }> {
+): Promise<{ exitCode: number | null; timedOut: boolean; stdoutReceipt: BoundedOutputReceipt; stderrReceipt: BoundedOutputReceipt; sinkFailed: boolean }> {
   // The Docker containment path writes captured output to tmpdir-derived
   // paths whose parent directory mode is not controlled by the sink.  Use
   // relaxed directory safety (the file itself is still opened with
   // O_EXCL | O_NOFOLLOW and the size integrity check runs on close).
+  const sinkFactory = opts.sinkFactory ?? ((path, limit, tailLimit, o) => new BoundedOutputSink(path, limit, tailLimit, o));
   let stdoutSink: BoundedOutputSink;
   let stderrSink: BoundedOutputSink;
   try {
-    stdoutSink = new BoundedOutputSink(opts.stdoutPath, opts.outputLimitBytes, opts.tailLimitBytes, { strictDirectorySafety: false });
-    stderrSink = new BoundedOutputSink(opts.stderrPath, opts.outputLimitBytes, opts.tailLimitBytes, { strictDirectorySafety: false });
+    stdoutSink = sinkFactory(opts.stdoutPath, opts.outputLimitBytes, opts.tailLimitBytes, { strictDirectorySafety: false });
+    stderrSink = sinkFactory(opts.stderrPath, opts.outputLimitBytes, opts.tailLimitBytes, { strictDirectorySafety: false });
   } catch (error) {
     throw new ContainmentUnavailableError(
       "docker-cgroup-v2",
       `bounded output sink could not be opened: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+  // Scrutiny round 9, defect #1: track sink write/close/integrity failures
+  // so they propagate as a fail-closed infrastructure failure (null exit
+  // code) BEFORE success terminalization.  The unfixed code swallowed sink
+  // write errors (caught in the `data` handler with no propagation) and
+  // close/integrity errors (caught in `safeCloseSink` which synthesized an
+  // empty receipt), allowing a zero child exit to terminalize as a
+  // successful dispatch with a partial or synthetic empty output receipt.
+  // The fix records whether either sink failed (write error recorded in
+  // `sink.failure`, or close/integrity error caught below) and forces the
+  // exit code to `null` when any sink failure is observed.
+  let stdoutCloseFailed = false;
+  let stderrCloseFailed = false;
+  // Scrutiny round 9, defect #1: track write failures observed in the
+  // stream `data` handlers.  The real `BoundedOutputSink.write` records
+  // `writeSync` failures in `sink.failure`, but a sink that throws BEFORE
+  // reaching `writeSync` (e.g. a subclass, or a sink whose `write` is
+  // overridden) would not set `sink.failure`.  The production code must
+  // treat ANY throw from `sink.write` as a sink failure — the receipt
+  // cannot be trusted if any chunk was not processed.
+  let stdoutWriteFailed = false;
+  let stderrWriteFailed = false;
+  const closeSinkOrFail = (sink: BoundedOutputSink, setFailed: () => void): BoundedOutputReceipt => {
+    try {
+      return sink.close();
+    } catch {
+      setFailed();
+      return Object.freeze({
+        path: "",
+        streamDigest: `sha256:${createHash("sha256").update(Buffer.alloc(0)).digest("hex")}` as `sha256:${string}`,
+        artifactDigest: `sha256:${createHash("sha256").update(Buffer.alloc(0)).digest("hex")}` as `sha256:${string}`,
+        originalBytes: 0,
+        storedBytes: 0,
+        truncated: false,
+        tailBase64: "",
+      });
+    }
+  };
   return new Promise((resolve) => {
     let child: ChildProcessByStdio<null, Readable, Readable>;
     try {
@@ -828,9 +956,10 @@ async function dockerExecStreaming(
       // Spawn error — fail closed.  Close the sinks (no bytes observed) and
       // resolve with a null exit code so the caller treats this as an
       // infrastructure error.  Do NOT synthesize a zero exit code.
-      const stdoutReceipt = safeCloseSink(stdoutSink);
-      const stderrReceipt = safeCloseSink(stderrSink);
-      resolve({ exitCode: null, timedOut: false, stdoutReceipt, stderrReceipt });
+      const stdoutReceipt = closeSinkOrFail(stdoutSink, () => { stdoutCloseFailed = true; });
+      const stderrReceipt = closeSinkOrFail(stderrSink, () => { stderrCloseFailed = true; });
+      const sinkFailed = stdoutCloseFailed || stderrCloseFailed || stdoutWriteFailed || stderrWriteFailed || stdoutSink.failure !== null || stderrSink.failure !== null;
+      resolve({ exitCode: null, timedOut: false, stdoutReceipt, stderrReceipt, sinkFailed });
       return;
     }
     let timedOut = false;
@@ -840,59 +969,49 @@ async function dockerExecStreaming(
       try { child.kill("SIGKILL"); } catch { /* already exited */ }
     }, opts.timeoutMs);
     child.stdout.on("data", (chunk: Buffer) => {
-      try { stdoutSink.write(chunk); } catch { /* sink failure recorded */ }
+      try { stdoutSink.write(chunk); } catch { stdoutWriteFailed = true; /* sink write failure — fail closed */ }
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      try { stderrSink.write(chunk); } catch { /* sink failure recorded */ }
+      try { stderrSink.write(chunk); } catch { stderrWriteFailed = true; /* sink write failure — fail closed */ }
     });
     child.on("error", () => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      const stdoutReceipt = safeCloseSink(stdoutSink);
-      const stderrReceipt = safeCloseSink(stderrSink);
+      const stdoutReceipt = closeSinkOrFail(stdoutSink, () => { stdoutCloseFailed = true; });
+      const stderrReceipt = closeSinkOrFail(stderrSink, () => { stderrCloseFailed = true; });
       // Spawn error after launch — null exit code (infrastructure_error).
-      resolve({ exitCode: null, timedOut: false, stdoutReceipt, stderrReceipt });
+      // A sink failure observed during the stream is also a fail-closed
+      // condition (defect #1): the receipt cannot be trusted.
+      const sinkFailed = stdoutCloseFailed || stderrCloseFailed || stdoutWriteFailed || stderrWriteFailed || stdoutSink.failure !== null || stderrSink.failure !== null;
+      resolve({ exitCode: null, timedOut: false, stdoutReceipt, stderrReceipt, sinkFailed });
     });
     child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      const stdoutReceipt = safeCloseSink(stdoutSink);
-      const stderrReceipt = safeCloseSink(stderrSink);
+      const stdoutReceipt = closeSinkOrFail(stdoutSink, () => { stdoutCloseFailed = true; });
+      const stderrReceipt = closeSinkOrFail(stderrSink, () => { stderrCloseFailed = true; });
+      // Scrutiny round 9, defect #1: if either sink recorded a write failure
+      // (`sink.failure !== null`, or a throw from `sink.write` caught in the
+      // `data` handler) OR a close/integrity failure, the dispatch MUST
+      // fail closed — force the exit code to `null` so the AttemptRunner
+      // maps the dispatch to `infrastructure_error` (not success).  The
+      // unfixed code swallowed these failures and allowed a zero child exit
+      // to terminalize as a successful dispatch with a partial or synthetic
+      // empty output receipt.
+      const sinkFailed = stdoutCloseFailed || stderrCloseFailed || stdoutWriteFailed || stderrWriteFailed || stdoutSink.failure !== null || stderrSink.failure !== null;
       // On timeout, docker kills the exec process (SIGKILL) → signal set,
       // code null.  Preserve the timedOut flag from the timer; the exit
       // code is null so the caller treats it as an infrastructure/timeout
       // outcome (the AttemptRunner maps timedOut to its timeout state).
-      const exitCode = timedOut ? null : code;
+      // On sink failure, the exit code is null so the caller treats it as
+      // an infrastructure error (defect #1 fail-closed propagation).
+      const exitCode = (timedOut || sinkFailed) ? null : code;
       void signal;
-      resolve({ exitCode, timedOut, stdoutReceipt, stderrReceipt });
+      resolve({ exitCode, timedOut, stdoutReceipt, stderrReceipt, sinkFailed });
     });
   });
-}
-
-/**
- * Close a {@link BoundedOutputSink} and return its receipt, or synthesize an
- * empty fail-closed receipt if the close itself throws (the artifact became
- * unsafe).  The synthesized receipt is NOT a success — it carries zero
- * stored bytes and an empty digest so the caller cannot mistake it for
- * captured output.  The sink's own failure (if any) is preserved in the
- * receipt's zero byte count.
- */
-function safeCloseSink(sink: BoundedOutputSink): BoundedOutputReceipt {
-  try {
-    return sink.close();
-  } catch {
-    return Object.freeze({
-      path: "",
-      streamDigest: `sha256:${createHash("sha256").update(Buffer.alloc(0)).digest("hex")}` as `sha256:${string}`,
-      artifactDigest: `sha256:${createHash("sha256").update(Buffer.alloc(0)).digest("hex")}` as `sha256:${string}`,
-      originalBytes: 0,
-      storedBytes: 0,
-      truncated: false,
-      tailBase64: "",
-    });
-  }
 }
 
 /**
@@ -952,6 +1071,17 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
    * bypassing the real `omnigent run` dispatch argv.
    */
   readonly extraEnv: Readonly<Record<string, string>>;
+  /**
+   * Scrutiny round 9, defect #1: Factory for {@link BoundedOutputSink}
+   * instances used by `releaseTarget`'s streaming capture.  Defaults to the
+   * real `BoundedOutputSink`.  Provided as a dependency-injection seam so
+   * the production-path negative proof can substitute a failing sink and
+   * assert the dispatch fails closed — without bypassing the real
+   * `dockerExecStreaming` code path.  This is NOT a production bypass flag;
+   * it is unreachable from environment variables and defaults to the real
+   * implementation.
+   */
+  readonly #sinkFactory: (path: string, limit: number, tailLimit: number, opts: { strictDirectorySafety: boolean }) => BoundedOutputSink;
 
   constructor(opts: {
     image?: string;
@@ -975,6 +1105,13 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
      * fixture omnigent without bypassing the dispatch argv.
      */
     extraEnv?: Record<string, string>;
+    /**
+     * Scrutiny round 9, defect #1: Factory for BoundedOutputSink instances.
+     * Defaults to the real BoundedOutputSink.  Test-only dependency injection
+     * for the production-path sink failure negative proof; unreachable from
+     * environment variables.
+     */
+    sinkFactory?: (path: string, limit: number, tailLimit: number, opts: { strictDirectorySafety: boolean }) => BoundedOutputSink;
   } = {}) {
     this.image = opts.image ?? "rickgent-runner:latest";
     this.probeTimeoutMs = opts.probeTimeoutMs ?? 30_000;
@@ -984,6 +1121,7 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
     this.containerPath = opts.containerPath ?? null;
     this.containerAgentDir = opts.containerAgentDir ?? null;
     this.extraEnv = Object.freeze({ ...(opts.extraEnv ?? {}) });
+    this.#sinkFactory = opts.sinkFactory ?? ((path, limit, tailLimit, o) => new BoundedOutputSink(path, limit, tailLimit, o));
   }
 
   invalidateProbe(): void {
@@ -1185,13 +1323,6 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
     if (!isAuthorizedContainmentBoundary(boundary)) {
       throw new ContainmentUnavailableError(this.backendId, "releaseTarget received a forged boundary");
     }
-    // Observe membership BEFORE user code runs: the container is running and
-    // its cgroup is populated.  Target code cannot begin before membership is
-    // authoritative (VAL-T22B-002).
-    const membership = this.observeMembership(boundary);
-    const timeoutMs = opts.timeoutMs ?? 30_000;
-    const stdoutPath = opts.stdoutPath ?? join(realpathSync(tmpdir()), `rickgent-containment-stdout-${boundary.launchId}`);
-    const stderrPath = opts.stderrPath ?? join(realpathSync(tmpdir()), `rickgent-containment-stderr-${boundary.launchId}`);
     // Scrutiny round 8: the output limit is now configurable per-release so
     // the streaming BoundedOutputSink truncates at the configured bound
     // (not the hard-coded 8 MiB Docker maxBuffer).  When the produced bytes
@@ -1199,6 +1330,20 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
     // truncated = true, and artifactDigest = SHA-256 of the STORED bytes.
     const outputLimitBytes = opts.outputLimitBytes ?? 8 * 1024 * 1024;
     const tailLimitBytes = opts.tailLimitBytes ?? 16 * 1024;
+    // Scrutiny round 9, defect #2: validate outputLimitBytes and
+    // tailLimitBytes BEFORE contacting Docker for the exec (and before
+    // observeMembership, which itself contacts Docker).  Malformed or
+    // unbounded values (NaN, Infinity, negative, zero, tail > output,
+    // values > 64 MiB cap) could disable bounded capture; reject them with
+    // a fail-closed ContainmentUnavailableError before spawning.
+    validateDockerOutputLimits(outputLimitBytes, tailLimitBytes);
+    // Observe membership BEFORE user code runs: the container is running and
+    // its cgroup is populated.  Target code cannot begin before membership is
+    // authoritative (VAL-T22B-002).
+    const membership = this.observeMembership(boundary);
+    const timeoutMs = opts.timeoutMs ?? 30_000;
+    const stdoutPath = opts.stdoutPath ?? join(realpathSync(tmpdir()), `rickgent-containment-stdout-${boundary.launchId}`);
+    const stderrPath = opts.stderrPath ?? join(realpathSync(tmpdir()), `rickgent-containment-stderr-${boundary.launchId}`);
     // Launch the target into the container's cgroup via `docker exec`.  The
     // exec'd process is a member of the container's root cgroup (the
     // boundary); it cannot escape the private cgroup namespace without
@@ -1244,6 +1389,12 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
       stderrPath,
       outputLimitBytes,
       tailLimitBytes,
+      // Scrutiny round 9, defect #1: pass the sink factory through so the
+      // production-path negative proof can inject a failing sink.  Defaults
+      // to the real BoundedOutputSink; the fail-closed propagation of sink
+      // write/close/integrity failures is exercised on the real
+      // dockerExecStreaming code path regardless of which sink is used.
+      sinkFactory: this.#sinkFactory,
     });
     return Object.freeze({
       boundary,

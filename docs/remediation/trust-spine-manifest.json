@@ -1108,8 +1108,8 @@
         "t22"
       ],
       "completed_at": {
-        "commit": "922c361",
-        "phase_report": "docs/remediation/phase-5-t23-streaming-bounded-output-sink-execution-report-2026-07-21.md"
+        "commit": "dfbd5a8",
+        "phase_report": "docs/remediation/phase-5-t23-bounded-output-fail-closed-validation-execution-report-2026-07-21.md"
       }
     },
     {
