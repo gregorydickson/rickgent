@@ -157,6 +157,15 @@ function observeCandidateOid(
  * production observation — the gate runner executes the contract's
  * verification command and records the observed result.  A failing command
  * produces a "failed" gate, not a manufactured "pass".
+ *
+ * The observed exit code is classified against the verification's sealed
+ * `expected_exit_codes` allowlist (t22D-fix-round-6, M4 scrutiny round 6).
+ * A permitted nonzero exit (e.g., a linter that exits 1 on warnings but is
+ * configured with `expected_exit_codes [0, 1]`) classifies as "pass".  An
+ * exit code NOT in the allowlist fails closed as "fail" — including exit 0
+ * when 0 is not in the allowlist.  This is the fail-closed contract: the
+ * classifier consults the sealed allowlist rather than assuming exit 0 is
+ * always a pass.
  */
 function runVerificationArgv(
   executable: string,
@@ -164,6 +173,7 @@ function runVerificationArgv(
   cwd: string,
   env: Readonly<Record<string, string>>,
   timeoutMs: number,
+  expectedExitCodes: readonly number[],
 ): { status: "pass" | "fail" | "infrastructure_error"; exitCode: number | null; stdout: string; stderr: string } {
   try {
     const result = execFileSync(executable, [...args], {
@@ -173,12 +183,20 @@ function runVerificationArgv(
       env: { ...process.env, ...env } as NodeJS.ProcessEnv,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    return { status: "pass", exitCode: 0, stdout: result, stderr: "" };
+    // execFileSync returns without throwing only when the process exits 0.
+    // Classify against the allowlist: if 0 is not in expected_exit_codes,
+    // even a clean exit fails closed.
+    const status: "pass" | "fail" = expectedExitCodes.includes(0) ? "pass" : "fail";
+    return { status, exitCode: 0, stdout: result, stderr: "" };
   } catch (error) {
     const e = error as { status?: number; signal?: string; stdout?: string; stderr?: string };
     if (typeof e.status === "number") {
+      // Classify the observed exit against the sealed allowlist.  A
+      // permitted nonzero exit passes; anything else (including codes the
+      // contract did not seal) fails closed.
+      const status: "pass" | "fail" = expectedExitCodes.includes(e.status) ? "pass" : "fail";
       return {
-        status: e.status === 0 ? "pass" : "fail",
+        status,
         exitCode: e.status,
         stdout: typeof e.stdout === "string" ? e.stdout : "",
         stderr: typeof e.stderr === "string" ? e.stderr : "",
@@ -457,6 +475,7 @@ export function buildAttemptRunnerProviders(
           cwd,
           env,
           verification.timeout_ms,
+          verification.expected_exit_codes,
         );
 
         // The gate status is derived from the real verification result.

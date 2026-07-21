@@ -156,7 +156,12 @@ function multiVerificationDraft(opts: {
     timeout_ms: 30_000,
     network: "deny" as const,
     writable_outputs: [],
-    expected_exit_codes: opts.failLast ? [1] : [0],
+    // t22D-fix-round-6: when failLast, the verification exits 1 and the
+    // sealed allowlist is [0] so exit 1 is NOT permitted and fails closed.
+    // (Previously this was [1], which under the corrected classifier
+    // semantics means exit 1 is a permitted pass — contradicting the test's
+    // intent of "one verification fails".)
+    expected_exit_codes: opts.failLast ? [0] : [0],
   });
   const verificationIds = verifications.map((v) => v.id);
   return {
@@ -214,7 +219,9 @@ function buildFixture(opts: { readonly failLast?: boolean; readonly failExecutab
     idempotencyKey: `acquire:mv`,
   }));
   const provisioned = provisionAttemptWorkspace(leases, acquired);
-  if (!provisioned.ok) throw new Error(`provision failed: ${provisioned.code}: ${provisioned.detail}`);
+  if (!provisioned.ok) {
+    throw new Error(`provision failed: ${provisioned.code}: ${provisioned.detail}`);
+  }
   const ownership = provisioned.workspace.ownership;
   // Create the policy bundle directory so the execution context resolves.
   mkdirSync(ownership.plan.policyBundlePath, { recursive: true, mode: 0o700 });
