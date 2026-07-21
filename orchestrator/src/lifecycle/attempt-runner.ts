@@ -608,8 +608,8 @@ export class AttemptRunner {
         );
       }
       // Activate the run and ticket rows through the production store
-      // authority (not raw SQL).  The run transitions planned -> active;
-      // the ticket transitions planned -> active.  Both are required
+      // authority (not raw SQL). The run transitions from planned to active;
+      // the ticket transitions from planned to active. Both are required
       // before the LeaseAuthority can acquire (the Store validates
       // run_state/ticket_state).  These store-level activation methods
       // record durable state_transitions rows without requiring phase-
