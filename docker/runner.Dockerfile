@@ -51,16 +51,39 @@ RUN git --version && node --version && python3 --version
 # binary that cannot run inside Linux.
 # The build context is the omnigent source directory; COPY . copies it into
 # the image.
-# NOTE: omnigent-client==0.6.0.dev0 is a dev version not on PyPI; install
-# with --no-deps and let the runtime resolve the client from the mounted
-# host installation, or install the client separately when available.
+# t22D-fix-round-5 (defect #3): The install MUST fail the Docker build if
+# omnigent is not installed and executable.  No `|| echo` fallback that
+# permits silent failure — the image must not be usable without omnigent.
+#
+# omnigent has circular path-deps on its sibling SDK packages
+# (omnigent-client and omnigent-ui-sdk, both 0.6.0.dev0 and not on PyPI).
+# We install the third-party dependencies first, then the three sibling
+# packages with --no-deps so the circular pins are satisfied locally.
 COPY . /opt/omnigent
-RUN cd /opt/omnigent && pip install --no-cache-dir --no-deps -e . || \
-    echo "warning: omnigent editable install failed; runtime will use mounted host installation"
+RUN pip install --no-cache-dir \
+    "pyyaml>=6.0,<7" \
+    "openai>=1.0,<3" \
+    "rich>=14,<15" \
+    "prompt_toolkit>=3.0,<4" \
+    "mcp>=1.0,<2" \
+    "starlette>=1.0.1,<2" \
+    "uvicorn[standard]>=0.30,<1" \
+    "websockets>=10.4,<15" \
+    "httpx>=0.27" \
+    "ftfy>=6.0" \
+    "psutil>=5.9,<8" \
+    "pydantic>=2.0,<3"
+RUN pip install --no-cache-dir --no-deps -e /opt/omnigent/sdks/python-client && \
+    pip install --no-cache-dir --no-deps -e /opt/omnigent/sdks/ui && \
+    pip install --no-cache-dir --no-deps -e /opt/omnigent
 
-# Verify omnigent is importable and the CLI is on PATH.
-RUN python3 -c "import omnigent; print('omnigent OK')" && \
-    which omnigent || true
+# Verify omnigent is installed and the CLI is executable.  This RUN step
+# fails the Docker build if omnigent is not installed correctly — the image
+# cannot be built without a working omnigent installation.
+RUN omnigent --version
+
+# Verify omnigent is importable.
+RUN python3 -c "import omnigent; print('omnigent OK')"
 
 # Create the rickgent data directory structure.
 RUN mkdir -p /rickgent/agents /rickgent/data /rickgent/worktrees

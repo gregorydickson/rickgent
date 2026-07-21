@@ -562,6 +562,13 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
    * Propagated from the build request's opts.agentDir.
    */
   readonly containerAgentDir: string | null;
+  /**
+   * t22D-fix-round-5 (defect #3): Extra environment variables to set inside
+   * the container via `docker exec -e KEY=VALUE`.  Used by the integration
+   * test to configure the fixture omnigent (e.g. FIXTURE_MODE=prompt) without
+   * bypassing the real `omnigent run` dispatch argv.
+   */
+  readonly extraEnv: Readonly<Record<string, string>>;
 
   constructor(opts: {
     image?: string;
@@ -579,6 +586,12 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
      * command resolves the agent bundle inside the container.
      */
     containerAgentDir?: string;
+    /**
+     * t22D-fix-round-5 (defect #3): Extra env vars to set inside the container
+     * via `docker exec -e`.  Used by the integration test to configure the
+     * fixture omnigent without bypassing the dispatch argv.
+     */
+    extraEnv?: Record<string, string>;
   } = {}) {
     this.image = opts.image ?? "rickgent-runner:latest";
     this.probeTimeoutMs = opts.probeTimeoutMs ?? 30_000;
@@ -587,6 +600,7 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
     this.hostMounts = Object.freeze([...(opts.hostMounts ?? [])]);
     this.containerPath = opts.containerPath ?? null;
     this.containerAgentDir = opts.containerAgentDir ?? null;
+    this.extraEnv = Object.freeze({ ...(opts.extraEnv ?? {}) });
   }
 
   invalidateProbe(): void {
@@ -822,6 +836,11 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
     }
     if (this.containerAgentDir !== null) {
       execArgv.push("-e", `RICKGENT_AGENT_DIR=${this.containerAgentDir}`);
+    }
+    // t22D-fix-round-5 (defect #3): Set extra env vars inside the container
+    // (e.g. FIXTURE_MODE=prompt for the integration test's fixture omnigent).
+    for (const [key, value] of Object.entries(this.extraEnv)) {
+      execArgv.push("-e", `${key}=${value}`);
     }
     if (opts.workdir && opts.workdir.startsWith("/")) {
       execArgv.push("-w", opts.workdir);
@@ -1548,8 +1567,8 @@ export class FixtureContainmentBackend implements ContainmentBackend {
  * ratified ADR: Docker Desktop (option A) first, then native Linux cgroup-v2
  * (option D), then unavailable.
  */
-export function probeContainmentBackend(opts: { dockerImage?: string; probeTimeoutMs?: number; cgroupRoot?: string } = {}): ContainmentBackend {
-  const dockerOpts: { image?: string; probeTimeoutMs?: number; hostMounts?: readonly string[]; containerPath?: string; containerAgentDir?: string } = {};
+export function probeContainmentBackend(opts: { dockerImage?: string; probeTimeoutMs?: number; cgroupRoot?: string; agentDir?: string } = {}): ContainmentBackend {
+  const dockerOpts: { image?: string; probeTimeoutMs?: number; hostMounts?: readonly string[]; containerPath?: string; containerAgentDir?: string; extraEnv?: Record<string, string> } = {};
   if (opts.dockerImage !== undefined) {
     dockerOpts.image = opts.dockerImage;
   }
@@ -1561,8 +1580,12 @@ export function probeContainmentBackend(opts: { dockerImage?: string; probeTimeo
   // Without these mounts the alpine container has no omnigent, Python, Node,
   // agent bundle, or worktree — the advertised production dispatch command
   // cannot run inside the containment boundary.  The paths come from env
-  // vars set by init.sh (OMNIGENT_ROOT, OMNIGENT_PYTHON, RICKGENT_NODE_REALPATH,
-  // RICKGENT_AGENT_DIR) plus the resource directory (for worktrees).
+  // vars set by init.sh (OMNIGENT_ROOT, OMNIGENT_PYTHON,
+  // RICKGENT_NODE_REALPATH) plus the resource directory (for worktrees).
+  // t22D-fix-round-5 (defect #2): The agent directory comes from the explicit
+  // opts.agentDir parameter (validated per-request), NOT from the sticky
+  // process-global agent directory environment variable.  A second build in
+  // the same process must not inherit the first build's agent directory.
   const hostMounts: string[] = [];
   const pathDirs: string[] = [];
   const env = process.env;
@@ -1583,7 +1606,11 @@ export function probeContainmentBackend(opts: { dockerImage?: string; probeTimeo
     if (!hostMounts.includes(nodeDir)) hostMounts.push(nodeDir);
     pathDirs.push(nodeDir);
   }
-  const agentDir = env.RICKGENT_AGENT_DIR;
+  // t22D-fix-round-5 (defect #2): Use the explicit per-request opts.agentDir
+  // parameter, NOT the sticky process-global agent directory env var.  A
+  // second build in the same process with a different agentDir must not
+  // inherit the first build's agent directory.
+  const agentDir = opts.agentDir;
   if (agentDir && existsSync(agentDir)) {
     const realAgentDir = realpathSync(agentDir);
     if (!hostMounts.includes(realAgentDir)) hostMounts.push(realAgentDir);
@@ -1602,10 +1629,10 @@ export function probeContainmentBackend(opts: { dockerImage?: string; probeTimeo
     // mounted omnigent/python/node are found before any container defaults.
     dockerOpts.containerPath = [...pathDirs, "/usr/local/bin", "/usr/bin", "/bin"].join(":");
   }
-  // t22D-fix-round-3: Propagate RICKGENT_AGENT_DIR into the container so the
-  // dispatched `omnigent run <agentDir>` command resolves the agent bundle.
-  // opts.agentDir is propagated from the build request through the containment
-  // probe so the container knows where the agent bundle is mounted.
+  // t22D-fix-round-5 (defect #2): Propagate the per-request agentDir into the
+  // container so the dispatched `omnigent run <agentDir>` command resolves the
+  // agent bundle.  Uses the explicit opts.agentDir parameter, not the sticky
+  // process-global agent directory env var.
   if (agentDir && existsSync(agentDir)) {
     dockerOpts.containerAgentDir = realpathSync(agentDir);
   }

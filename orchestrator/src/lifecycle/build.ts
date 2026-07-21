@@ -701,18 +701,18 @@ async function executeBuildViaRunner(
     report.push(`build: containment backend available (${probe.backendId})`);
   } else {
     try {
-      // t22D-fix-round-3: Propagate opts.agentDir to RICKGENT_AGENT_DIR so
-      // the containment probe passes it to the Docker backend, which sets it
-      // inside the container via `docker exec -e RICKGENT_AGENT_DIR=...`.
-      if (opts.agentDir && process.env.RICKGENT_AGENT_DIR === undefined) {
-        process.env.RICKGENT_AGENT_DIR = opts.agentDir;
-      }
-      const probeOpts: { dockerImage?: string; probeTimeoutMs?: number; cgroupRoot?: string } = {};
+      // t22D-fix-round-5 (defect #2): Pass opts.agentDir explicitly to
+      // probeContainmentBackend as a per-request parameter.  Do NOT mutate
+      // the sticky process-global process.env.RICKGENT_AGENT_DIR — a second
+      // build in the same process with a different agentDir must not inherit
+      // the first build's agent directory.
+      const probeOpts: { dockerImage?: string; probeTimeoutMs?: number; cgroupRoot?: string; agentDir?: string } = {};
       if (env.RICKGENT_CONTAINMENT_DOCKER_IMAGE) probeOpts.dockerImage = env.RICKGENT_CONTAINMENT_DOCKER_IMAGE;
       if (env.RICKGENT_CONTAINMENT_PROBE_TIMEOUT_MS) {
         const ms = Number(env.RICKGENT_CONTAINMENT_PROBE_TIMEOUT_MS);
         if (Number.isFinite(ms)) probeOpts.probeTimeoutMs = ms;
       }
+      if (opts.agentDir) probeOpts.agentDir = opts.agentDir;
       containmentBackend = probeContainmentBackend(probeOpts);
       const probe = containmentBackend.probe();
       if (probe.status !== "available") {

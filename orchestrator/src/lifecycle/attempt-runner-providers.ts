@@ -80,12 +80,17 @@ function sha256(value: string): `sha256:${string}` {
  *
  * If there are no changes (clean worktree, HEAD = baseline), the candidate is
  * the baseline.  If Git fails, the provider fails closed (no manufactured oid).
+ *
+ * t22D-fix-round-5 (defect #4): Staging uses owned-paths-only
+ * (`git add -- <paths>`), never staging all files at once.  The owned paths
+ * come from the contract scope so only in-scope files are committed.
  */
 function observeCandidateOid(
   repositoryPath: string,
   worktreePath: string,
   attemptRef: string,
   baselineOid: string,
+  ownedPaths: readonly string[],
 ): { candidateOid: string; attemptRefObservedOid: string } {
   // First, check the worktree's HEAD for commits made by the agent.
   try {
@@ -103,8 +108,17 @@ function observeCandidateOid(
         "-C", worktreePath, "status", "--porcelain",
       ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
       if (status.length > 0) {
-        // There are uncommitted changes — stage and commit them on the host.
-        execFileSync("git", ["-C", worktreePath, "add", "-A"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+        // There are uncommitted changes — stage ONLY the owned paths and
+        // commit them on the host.  Never stage all files (invariant 9);
+        // use owned-paths-only staging with explicit paths from the
+        // contract scope.
+        const addArgv = ["-C", worktreePath, "add", "--"];
+        for (const p of ownedPaths) {
+          if (p.length > 0) addArgv.push(p);
+        }
+        if (addArgv.length > 4) {
+          execFileSync("git", addArgv as string[], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+        }
         execFileSync("git", [
           "-C", worktreePath,
           "-c", "user.name=rickgent",
@@ -211,9 +225,11 @@ export function buildAttemptRunnerProviders(
 
       // Observe the real candidate oid from Git.  Pass the worktree path so
       // the function can observe the worktree's HEAD (where the agent commits)
-      // and update the attempt ref to point to the new commit.
+      // and update the attempt ref to point to the new commit.  Pass the
+      // contract scope paths as owned paths for owned-paths-only staging.
+      const ownedPaths = input.contract.scope.map((s) => s.path).filter((p) => p.length > 0);
       const { candidateOid, attemptRefObservedOid } = observeCandidateOid(
-        ownership.repositoryPath, ownership.plan.worktreePath, attemptRef, baselineOid,
+        ownership.repositoryPath, ownership.plan.worktreePath, attemptRef, baselineOid, ownedPaths,
       );
 
       const commitIntentId = `commit-intent-${attemptId}`;
@@ -255,10 +271,12 @@ export function buildAttemptRunnerProviders(
       const findingsEvidenceId = `evidence-review-findings-${attemptId}`;
 
       // Derive the review verdict from a real observation: the candidate oid
-      // is a valid Git object that differs from or equals the baseline.  This
-      // is the real production observation — a review that accepts the
-      // candidate as a valid commit.  If the candidate cannot be resolved,
-      // the review fails closed with "reject".
+      // must resolve to a valid Git tree object.  This is the real production
+      // observation — a review that accepts the candidate as a valid commit.
+      // If the candidate cannot be resolved, the review fails closed with
+      // "reject" — do NOT substitute the baseline tree and accept it (that
+      // is the fail-open defect from M4 scrutiny round 5: an unresolvable
+      // candidate would mint a positive review on the nonempty baseline).
       const candidateOid = input.attribution.candidateOid;
       const baselineOid = input.ownership.plan.lineage.deliveryBaselineOid;
       let treeOid: string;
@@ -267,14 +285,20 @@ export function buildAttemptRunnerProviders(
           "-C", input.ownership.repositoryPath, "rev-parse", `${candidateOid}^{tree}`,
         ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
       } catch {
-        // Cannot resolve the candidate tree — reject (fail closed).
-        treeOid = baselineOid;
+        // Cannot resolve the candidate tree — fail closed (reject).
+        // Do NOT substitute the baseline tree; an unresolvable candidate
+        // must not mint a positive review.
+        return { reviewRecordId, verdict: "reject" as const, reviewEvidenceId: verdictEvidenceId };
+      }
+      // An empty resolution (empty string) is also a fail-closed reject.
+      if (treeOid.length === 0) {
+        return { reviewRecordId, verdict: "reject" as const, reviewEvidenceId: verdictEvidenceId };
       }
 
-      // The verdict is "accepted" when the candidate tree is a valid Git tree
-      // object.  This is a real observation — we verified the candidate exists
-      // as a Git object.  A non-existent or corrupt candidate produces "reject".
-      const verdict: "accept" | "reject" = treeOid.length > 0 ? "accept" : "reject";
+      // The verdict is "accept" only when the candidate tree is a valid,
+      // resolved Git tree object that differs from or equals the baseline
+      // in a way the diff computation can validate against contract scope.
+      const verdict: "accept" | "reject" = "accept";
       // Compute the real diff digest from the actual git diff between
       // the baseline and the candidate tree.  The store independently
       // derives this same digest and checks that they match.
@@ -398,10 +422,13 @@ export function buildAttemptRunnerProviders(
 
       // Observe the candidate tree oid from the attempt ref (same as the
       // attribution provider).  Use the real candidate, not the baseline.
+      // t22D-fix-round-5 (defect #4): pass owned paths for owned-paths-only
+      // staging.
       const baselineOid = input.ownership.plan.lineage.deliveryBaselineOid;
       const attemptRef = input.ownership.plan.attemptRef;
+      const ownedPaths = input.contract.scope.map((s) => s.path).filter((p) => p.length > 0);
       const { candidateOid } = observeCandidateOid(
-        input.ownership.repositoryPath, input.ownership.plan.worktreePath, attemptRef, baselineOid,
+        input.ownership.repositoryPath, input.ownership.plan.worktreePath, attemptRef, baselineOid, ownedPaths,
       );
       let candidateTreeOid: string;
       try {
@@ -409,7 +436,10 @@ export function buildAttemptRunnerProviders(
           "-C", input.ownership.repositoryPath, "rev-parse", `${candidateOid}^{tree}`,
         ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
       } catch {
-        candidateTreeOid = baselineOid;
+        // t22D-fix-round-5 (defect #1): Cannot resolve the candidate tree —
+        // fail closed.  Do NOT substitute the baseline tree; an unresolvable
+        // candidate must not produce a manufactured gate record.
+        throw new Error("RICKGENT_ATTEMPT_VERIFICATION_ERROR: cannot resolve candidate tree for gate record");
       }
       // Compute the real diff digest from the actual git diff.
       let candidateDiffDigest: string;

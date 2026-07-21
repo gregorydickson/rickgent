@@ -34,6 +34,7 @@ import { LeaseAuthority } from "../../src/state/leases.js";
 import { RICKGENT_ORACLE_VERSION } from "../../src/state/oracle.js";
 import { openStateStore, type AllocatedAttempt, type AllocatedRun, type StateStore } from "../../src/state/store.js";
 import { runBuildViaRunnerForTesting } from "../../src/lifecycle/build.js";
+import { DockerCgroupV2ContainmentBackend } from "../../src/process/containment.js";
 import { FIXTURE_RUNTIME_AUTHORITY } from "../../src/testing/fixture-authority.js";
 
 const orchestratorRoot = join(import.meta.dirname, "../..");
@@ -200,13 +201,19 @@ describe("defect #2: Docker runner image is Linux-compatible", () => {
     expect(probeFnBody).toMatch(/containerAgentDir/);
   });
 
-  it("executeBuildViaRunner propagates opts.agentDir to RICKGENT_AGENT_DIR", () => {
+  it("executeBuildViaRunner passes opts.agentDir to probeContainmentBackend (not sticky env)", () => {
     const source = readFileSync(join(orchestratorRoot, "src", "lifecycle", "build.ts"), "utf-8");
     const start = source.indexOf("async function executeBuildViaRunner(");
     const end = source.indexOf("async function executeBuildLegacy(", start);
     const body = source.slice(start, end);
-    expect(body).toMatch(/RICKGENT_AGENT_DIR/);
+    // t22D-fix-round-5 (defect #2): The production path must pass opts.agentDir
+    // to probeContainmentBackend as an explicit per-request parameter.  It
+    // must NOT mutate the sticky process.env.RICKGENT_AGENT_DIR.
     expect(body).toMatch(/opts\.agentDir/);
+    expect(body).toMatch(/probeContainmentBackend/);
+    expect(body).toMatch(/agentDir.*opts\.agentDir|opts\.agentDir.*agentDir/);
+    // The production path must NOT set process.env.RICKGENT_AGENT_DIR.
+    expect(body).not.toMatch(/process\.env\.RICKGENT_AGENT_DIR\s*=/);
   });
 });
 
@@ -275,16 +282,20 @@ describe("defect #3: production-path integration test with real Docker", () => {
   // This test uses the REAL Docker containment backend
   // (DockerCgroupV2ContainmentBackend, not FixtureContainmentBackend),
   // drives the full executeBuildViaRunner path with real providers, and
-  // asserts successful terminalization (result.outcome.status === "ok").
+  // asserts successful terminalization (result.outcome.status === "succeeded").
   //
-  // The worker command is a simple shell command that produces real git
-  // changes matching the contract scope — this is NOT a fixture dependency;
-  // it is the real production dispatch argv (a simple implementation command
-  // that creates the contract's required file).  The containment, providers,
-  // and authority APIs are all real.
+  // t22D-fix-round-5 (defect #3): The test uses the REAL `omnigent run
+  // <agentDir> --no-session -p <prompt>` dispatch argv — no dispatch argv
+  // override, no `sh -c` bypass.  The fixture omnigent (from
+  // orchestrator/test/fixtures/omnigent-fixture/) is mounted into the
+  // container via -v volume mount and placed on the container PATH so the
+  // real `omnigent` command resolves to the fixture.  FIXTURE_MODE=prompt is
+  // set inside the container so the fixture writes the contract's scope path
+  // from the prompt.  The test proves the advertised omnigent command is
+  // runnable in the production container without any override.
   //
   // Skipped when Docker is not available or the runner image is not built.
-  it("runBuildViaRunnerForTesting with real Docker containment asserts outcome.status === 'ok'", async () => {
+  it("runBuildViaRunnerForTesting with real Docker containment asserts outcome.status === 'succeeded'", async () => {
     // Check Docker and the runner image are available.
     let dockerAvailable = false;
     try {
@@ -304,14 +315,31 @@ describe("defect #3: production-path integration test with real Docker", () => {
     const dataDir = join(repo, "data");
     const agentDir = join(repoRoot, "agents", "rickgent");
 
-    // The worker command produces real git changes matching the contract
-    // scope: creates src/feature.ts with the feature function.  This is a
-    // real production observation — the worker actually creates the file,
-    // and the providers observe the real git state.
-    const dispatchArgvOverride: readonly string[] = [
-      "sh", "-c",
-      "mkdir -p src && echo 'export const feature = () => true;' > src/feature.ts",
-    ];
+    // t22D-fix-round-5 (defect #3): Mount the fixture omnigent into the
+    // container and place it on the container PATH so the real `omnigent run`
+    // dispatch argv resolves to the fixture.  The fixture omnigent is a bash
+    // script that delegates to fixture.mjs (a node script).  The Dockerfile
+    // installs nodejs, so `node` is available inside the container.  The
+    // fixture directory is bind-mounted at the same path so the bash script's
+    // $DIR resolves correctly.
+    //
+    // FIXTURE_MODE=prompt is set via extraEnv so the fixture extracts the
+    // contract scope path from the prompt and writes it to the worktree CWD.
+    // The worktree is mounted separately via the containment lineage.
+    const fixtureOmnigentDir = realpathSync(join(orchestratorRoot, "test", "fixtures", "omnigent-fixture"));
+    const realAgentDir = realpathSync(agentDir);
+    const dockerBackend = new DockerCgroupV2ContainmentBackend({
+      image: "rickgent-runner:latest",
+      // Mount the fixture omnigent directory and the agent bundle directory.
+      hostMounts: [fixtureOmnigentDir, realAgentDir],
+      // The fixture directory comes first on PATH so `omnigent` resolves to
+      // the fixture script, not the real omnigent installed in the image.
+      containerPath: [fixtureOmnigentDir, "/usr/local/bin", "/usr/bin", "/bin"].join(":"),
+      // RICKGENT_AGENT_DIR inside the container points to the agent bundle.
+      containerAgentDir: realAgentDir,
+      // FIXTURE_MODE=prompt so the fixture writes the file from the prompt.
+      extraEnv: { FIXTURE_MODE: "prompt" },
+    });
 
     const result = await runBuildViaRunnerForTesting(
       FIXTURE_RUNTIME_AUTHORITY,
@@ -324,21 +352,22 @@ describe("defect #3: production-path integration test with real Docker", () => {
         env: {
           ...process.env,
           RICKGENT_DIR: rickgentDir,
-          RICKGENT_AGENT_DIR: agentDir,
           RICKGENT_CONTAINMENT_DOCKER_IMAGE: "rickgent-runner:latest",
         },
       },
       {
-        // No containmentBackendOverride — use the REAL Docker containment.
-        // No attemptRunnerProviders override — use the REAL providers.
-        // Only override the dispatch argv to a simple shell command that
-        // produces real git changes without requiring real LLM tokens.
-        dispatchArgvOverride,
+        // t22D-fix-round-5 (defect #3): Use the REAL Docker containment
+        // backend configured with the fixture omnigent mounted.  No
+        // dispatch argv override — the real `omnigent run <agentDir>
+        // --no-session -p <prompt>` argv is used.  NO
+        // attemptRunnerProviders override — the REAL providers are used.
+        containmentBackendOverride: dockerBackend,
       },
     );
 
     // The build MUST complete successfully — the providers are real, the
-    // containment is real Docker, and the worker produces real changes.
+    // containment is real Docker, and the fixture omnigent produces real
+    // changes via the real omnigent run argv.
     if (result.outcome.status !== "succeeded") {
       console.log("Build report:", JSON.stringify(result.report, null, 2));
       console.log("Build outcome:", JSON.stringify(result.outcome, null, 2));
