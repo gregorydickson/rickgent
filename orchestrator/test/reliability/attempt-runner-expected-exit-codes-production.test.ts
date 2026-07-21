@@ -6,8 +6,8 @@
  * provider tests (`attempt-runner-expected-exit-codes.test.ts`) that invoke
  * `providers.verification!()` directly.  Those tests do NOT prove a valid
  * permitted-nonzero contract terminalizes successfully through the full
- * production path (`runBuildViaRunnerForTesting` → `executeBuildViaRunner` →
- * `AttemptRunner.runAttempt` → providers.verification → oracle →
+ * production path (`runBuildViaRunnerForTesting`, `executeBuildViaRunner`,
+ * `AttemptRunner.runAttempt`, providers.verification, oracle, and
  * terminalization).  A helper-level test passing while the production
  * terminalization path stays vulnerable is a scrutiny failure (invariant 10:
  * verify at the production entrypoint, not just helper level).
@@ -17,13 +17,13 @@
  *   (a) Permitted-nonzero success: `runBuildViaRunnerForTesting` with a sealed
  *       `expected_exit_codes` allowlist containing the command's nonzero exit
  *       (expected_exit_codes `[1]`, verification command exits 1).  Asserts
- *       `outcome.status === "succeeded"` — the full production path
+ *       `outcome.status === "succeeded"`, so the full production path
  *       terminalizes a valid permitted-nonzero contract.
  *
  *   (b) Excluded-exit fail-closed: `runBuildViaRunnerForTesting` with a sealed
  *       `expected_exit_codes` allowlist that does NOT contain the command's
  *       exit (expected_exit_codes `[1]`, verification command exits 2).
- *       Asserts `outcome.status !== "succeeded"` — the production path fails
+ *       Asserts `outcome.status !== "succeeded"`, so the production path fails
  *       closed when the observed exit is not in the sealed allowlist.
  *
  * Both tests drive the REAL production entrypoint with a FixtureContainmentBackend
@@ -32,7 +32,7 @@
  * real fixture omnigent mounted into the container, and the real
  * `buildAttemptRunnerProviders` providers constructed by the production path.
  * The dispatch argv is the real `omnigent run <agentDir> --no-session -p
- * <prompt>` command — no `dispatchArgvOverride`, no `sh -c` bypass.
+ * <prompt>` command, with no `dispatchArgvOverride` or `sh -c` bypass.
  *
  * Red-then-green proof: before the expected_exit_codes fix (round 6), test
  * (a) fails because exit 1 is classified as "fail" by the hardcoded
@@ -117,7 +117,6 @@ function makeDockerBackend(): DockerCgroupV2ContainmentBackend {
 describe("(a) production-entrypoint permitted-nonzero terminalization succeeds", () => {
   it("runBuildViaRunnerForTesting with expected_exit_codes [1] and exit 1 asserts outcome.status === 'succeeded'", async () => {
     if (!dockerAvailable()) {
-      console.log("Skipping Docker integration test: Docker or runner image not available");
       return;
     }
 
@@ -149,15 +148,14 @@ describe("(a) production-entrypoint permitted-nonzero terminalization succeeds",
       },
     );
 
-    if (result.outcome.status !== "succeeded") {
-      console.log("Build report:", JSON.stringify(result.report, null, 2));
-      console.log("Build outcome:", JSON.stringify(result.outcome, null, 2));
-    }
     // The full production path must terminalize successfully: the verification
     // provider classifies exit 1 as "pass" (1 is in expected_exit_codes [1]),
     // the gate result is "passed", the oracle accepts, and the runner
     // terminalizes through the purpose-specific finalization.
-    expect(result.outcome.status).toBe("succeeded");
+    expect(
+      result.outcome.status,
+      `build outcome: ${JSON.stringify(result.outcome)}; report: ${JSON.stringify(result.report)}`,
+    ).toBe("succeeded");
     expect(result.outcome.stableCode).toBe("RICKGENT_OK");
     expect(result.ticketsDone).toBeGreaterThan(0);
   }, 180_000);
@@ -171,7 +169,6 @@ describe("(a) production-entrypoint permitted-nonzero terminalization succeeds",
 describe("(b) production-entrypoint excluded-exit fails closed", () => {
   it("runBuildViaRunnerForTesting with expected_exit_codes [1] and exit 2 asserts outcome.status !== 'succeeded'", async () => {
     if (!dockerAvailable()) {
-      console.log("Skipping Docker integration test: Docker or runner image not available");
       return;
     }
 
@@ -207,10 +204,9 @@ describe("(b) production-entrypoint excluded-exit fails closed", () => {
     // expected_exit_codes [1]), the gate result is "failed", the oracle
     // rejects, and the runner branches to the ordinary-failure state machine
     // instead of terminalizing.  The build outcome must NOT be "succeeded".
-    if (result.outcome.status === "succeeded") {
-      console.log("UNEXPECTED SUCCESS — Build report:", JSON.stringify(result.report, null, 2));
-      console.log("UNEXPECTED SUCCESS — Build outcome:", JSON.stringify(result.outcome, null, 2));
-    }
-    expect(result.outcome.status).not.toBe("succeeded");
+    expect(
+      result.outcome.status,
+      `build outcome: ${JSON.stringify(result.outcome)}; report: ${JSON.stringify(result.report)}`,
+    ).not.toBe("succeeded");
   }, 180_000);
 });
