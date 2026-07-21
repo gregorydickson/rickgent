@@ -99,6 +99,7 @@ import { TargetStartGateAuthority } from "./target-start-gate.js";
 import {
   AttemptExecutionContextAuthority,
 } from "../context/attempt-execution-context.js";
+import { buildAttemptRunnerProviders } from "./attempt-runner-providers.js";
 
 export interface BuildOptions {
   prdPath: string;
@@ -722,15 +723,19 @@ async function executeBuildViaRunner(
   // supervision, attribution, review, verification, oracle evaluation,
   // cleanup, and finalization.
   // The DispatchQueue feeds tickets to the runner sequentially (scheduling/
-  // diagnostic plumbing only); it cannot release ownership.  The runner's
-  // phase providers default to fail-closed (RICKGENT_ATTEMPT_*_UNCONFIGURED);
-  // the live ProcessSupervisor/CommitService provider wiring is validated by
-  // the M10 vertical slice.  The runner is the sole owner either way: no
-  // legacy execution/cleanup/workspace owner is invoked on this path.
+  // diagnostic plumbing only); it cannot release ownership.
+  // t22D-fix-round-2: The runner is constructed with REAL authority-owned
+  // providers (buildAttemptRunnerProviders) that seed durable receipt rows
+  // through the Store — NOT the default fail-closed stubs.  Without real
+  // providers, a normally completed dispatch reaches defaultAttribution and
+  // fails RICKGENT_ATTEMPT_ATTRIBUTION_UNCONFIGURED after acquisition, leaving
+  // the lease unresolved while autonomous_dispatch is enabled.
+  // The fixture-bridge may override providers via dependencies.attemptRunnerProviders.
   const leases = new LeaseAuthority(stateStore);
   const targetStartGate = new TargetStartGateAuthority(stateStore, leases, containmentBackend);
   const terminalization = new AttemptTerminalizationService(stateStore, leases);
   const executionContext = new AttemptExecutionContextAuthority(stateStore);
+  const realProviders = buildAttemptRunnerProviders(stateStore, leases);
   const runner = new AttemptRunner(
     stateStore,
     leases,
@@ -738,7 +743,7 @@ async function executeBuildViaRunner(
     targetStartGate,
     terminalization,
     executionContext,
-    dependencies.attemptRunnerProviders,
+    dependencies.attemptRunnerProviders ?? realProviders,
   );
   const resolver = new IdentityContextResolver(stateStore);
   const journal = new InMemoryDispatchJournal();

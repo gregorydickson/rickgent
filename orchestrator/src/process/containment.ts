@@ -35,7 +35,7 @@ import { execFileSync, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, dirname } from "node:path";
 import { canonicalJson } from "../contracts/ticket-contract.js";
 
 export const RICKGENT_CONTAINMENT_UNAVAILABLE = "RICKGENT_CONTAINMENT_UNAVAILABLE" as const;
@@ -542,12 +542,36 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
   readonly probeTimeoutMs: number;
   readonly killTimeoutMs: number;
   readonly pollIntervalMs: number;
+  /**
+   * t22D-fix-round-2: Host paths to bind-mount into the container at the same
+   * path (e.g. omnigent installation, Python runtime, Node.js, agent bundle,
+   * worktree/resource directory).  Without these mounts the dispatched
+   * `omnigent run` command cannot execute inside the alpine container because
+   * omnigent, Python, Node, the agent bundle, and the worktree are absent.
+   */
+  readonly hostMounts: readonly string[];
+  /**
+   * PATH environment value to set inside the container so mounted tools
+   * (omnigent, python, node) are findable.  Passed via `docker exec -e PATH=...`.
+   */
+  readonly containerPath: string | null;
 
-  constructor(opts: { image?: string; probeTimeoutMs?: number; killTimeoutMs?: number; pollIntervalMs?: number } = {}) {
+  constructor(opts: {
+    image?: string;
+    probeTimeoutMs?: number;
+    killTimeoutMs?: number;
+    pollIntervalMs?: number;
+    /** Host paths to bind-mount into the container at the same path. */
+    hostMounts?: readonly string[];
+    /** PATH to set inside the container via `docker exec -e`. */
+    containerPath?: string;
+  } = {}) {
     this.image = opts.image ?? "alpine:latest";
     this.probeTimeoutMs = opts.probeTimeoutMs ?? 30_000;
     this.killTimeoutMs = opts.killTimeoutMs ?? 30_000;
     this.pollIntervalMs = opts.pollIntervalMs ?? 50;
+    this.hostMounts = Object.freeze([...(opts.hostMounts ?? [])]);
+    this.containerPath = opts.containerPath ?? null;
   }
 
   invalidateProbe(): void {
@@ -634,10 +658,21 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
     const containerName = `rickgent-boundary-${launchId}`.slice(0, 63).replace(/[^a-zA-Z0-9_.-]/g, "-");
     // Remove any stale container with the same name (idempotent create).
     dockerExecSilent(["rm", "-f", containerName], { timeoutMs: this.probeTimeoutMs });
-    const createResult = dockerExecSilent(
-      ["create", "--name", containerName, "--cgroupns=private", "--init", this.image, "sleep", "3600"],
-      { timeoutMs: this.probeTimeoutMs },
-    );
+    // t22D-fix-round-2: Build the docker create argv with volume mounts for
+    // host tools and paths.  Without these mounts the dispatched omnigent run
+    // command cannot execute inside the alpine container — omnigent, Python,
+    // Node, the agent bundle, and the worktree are all on the host, not in
+    // the container image.  Each host path is bind-mounted at the same path
+    // inside the container so the dispatch argv's host paths are valid inside
+    // the containment boundary.
+    const createArgv: string[] = ["create", "--name", containerName, "--cgroupns=private", "--init"];
+    for (const hostPath of this.hostMounts) {
+      if (hostPath.length > 0 && hostPath.startsWith("/")) {
+        createArgv.push("-v", `${hostPath}:${hostPath}`);
+      }
+    }
+    createArgv.push(this.image, "sleep", "3600");
+    const createResult = dockerExecSilent(createArgv, { timeoutMs: this.probeTimeoutMs });
     if (createResult.status !== 0) {
       throw new ContainmentUnavailableError(this.backendId, `docker create failed: ${createResult.stderr.trim()}`);
     }
@@ -749,10 +784,16 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
     // exec'd process is a member of the container's root cgroup (the
     // boundary); it cannot escape the private cgroup namespace without
     // CAP_SYS_ADMIN on the host, which the container does not have.
-    const result = dockerExecSilent(
-      ["exec", boundary.runtimeHandle, ...argv],
-      { timeoutMs },
-    );
+    // t22D-fix-round-2: Set PATH inside the container via `-e` so the
+    // mounted tools (omnigent, python, node) are findable.  Without this,
+    // the alpine container's default PATH does not include the host tool
+    // directories, and the dispatch command fails with "executable not found".
+    const execArgv: string[] = ["exec"];
+    if (this.containerPath !== null) {
+      execArgv.push("-e", `PATH=${this.containerPath}`);
+    }
+    execArgv.push(boundary.runtimeHandle, ...argv);
+    const result = dockerExecSilent(execArgv, { timeoutMs });
     writeFileSync(stdoutPath, result.stdout);
     writeFileSync(stderrPath, result.stderr);
     const stdoutSink = createHash("sha256");
@@ -1474,12 +1515,58 @@ export class FixtureContainmentBackend implements ContainmentBackend {
  * (option D), then unavailable.
  */
 export function probeContainmentBackend(opts: { dockerImage?: string; probeTimeoutMs?: number; cgroupRoot?: string } = {}): ContainmentBackend {
-  const dockerOpts: { image?: string; probeTimeoutMs?: number } = {};
+  const dockerOpts: { image?: string; probeTimeoutMs?: number; hostMounts?: readonly string[]; containerPath?: string } = {};
   if (opts.dockerImage !== undefined) {
     dockerOpts.image = opts.dockerImage;
   }
   if (opts.probeTimeoutMs !== undefined) {
     dockerOpts.probeTimeoutMs = opts.probeTimeoutMs;
+  }
+  // t22D-fix-round-2: Collect host paths to bind-mount into the Docker
+  // container so the dispatched `omnigent run` command can actually execute.
+  // Without these mounts the alpine container has no omnigent, Python, Node,
+  // agent bundle, or worktree — the advertised production dispatch command
+  // cannot run inside the containment boundary.  The paths come from env
+  // vars set by init.sh (OMNIGENT_ROOT, OMNIGENT_PYTHON, RICKGENT_NODE_REALPATH,
+  // RICKGENT_AGENT_DIR) plus the resource directory (for worktrees).
+  const hostMounts: string[] = [];
+  const pathDirs: string[] = [];
+  const env = process.env;
+  const omnigentRoot = env.OMNIGENT_ROOT;
+  if (omnigentRoot && existsSync(omnigentRoot)) {
+    hostMounts.push(omnigentRoot);
+    pathDirs.push(join(omnigentRoot, "bin"));
+  }
+  const omnigentPython = env.OMNIGENT_PYTHON;
+  if (omnigentPython && existsSync(omnigentPython)) {
+    const pythonDir = dirname(omnigentPython);
+    if (!hostMounts.includes(pythonDir)) hostMounts.push(pythonDir);
+    pathDirs.push(pythonDir);
+  }
+  const nodeRealpath = env.RICKGENT_NODE_REALPATH;
+  if (nodeRealpath && existsSync(nodeRealpath)) {
+    const nodeDir = dirname(nodeRealpath);
+    if (!hostMounts.includes(nodeDir)) hostMounts.push(nodeDir);
+    pathDirs.push(nodeDir);
+  }
+  const agentDir = env.RICKGENT_AGENT_DIR;
+  if (agentDir && existsSync(agentDir)) {
+    const realAgentDir = realpathSync(agentDir);
+    if (!hostMounts.includes(realAgentDir)) hostMounts.push(realAgentDir);
+  }
+  const cliRealpath = env.RICKGENT_CLI_REALPATH;
+  if (cliRealpath && existsSync(cliRealpath)) {
+    const orchestratorDir = dirname(dirname(cliRealpath)); // repo root
+    if (!hostMounts.includes(orchestratorDir)) hostMounts.push(orchestratorDir);
+  }
+  if (hostMounts.length > 0) {
+    dockerOpts.hostMounts = Object.freeze(hostMounts);
+  }
+  if (pathDirs.length > 0) {
+    // Build a PATH that includes the mounted tool directories plus the
+    // container's default paths.  The host tool dirs come first so the
+    // mounted omnigent/python/node are found before any container defaults.
+    dockerOpts.containerPath = [...pathDirs, "/usr/local/bin", "/usr/bin", "/bin"].join(":");
   }
   const docker = new DockerCgroupV2ContainmentBackend(dockerOpts);
   if (docker.probe().status === "available") {

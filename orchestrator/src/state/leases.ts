@@ -1,4 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { canonicalJson } from "../contracts/ticket-contract.js";
 import {
   isAuthorizedAttemptWorkspaceResourceReceipt,
@@ -196,6 +198,15 @@ function tokenDigest(token: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update("rickgent.attempt-owner-token.v1\0").update(token).digest("hex")}`;
 }
 
+/**
+ * Derives a safe filename for an acquisition token from the idempotency key.
+ * The filename is a SHA-256 hex digest of the key, so it is collision-resistant
+ * and contains no path separators or special characters.
+ */
+function tokenFilenameFor(idempotencyKey: string): string {
+  return createHash("sha256").update("rickgent.acquisition-token-file.v1\0").update(idempotencyKey).digest("hex");
+}
+
 export class PreparedOwnershipAcquisition {
   readonly command: AttemptOwnershipCommand;
   readonly #token: string;
@@ -351,7 +362,20 @@ export class LeaseAuthority {
 
   prepareAcquisition(request: PrepareOwnershipAcquisitionRequest): PreparedOwnershipAcquisition {
     const ttlMs = request.ttlMs ?? DEFAULT_TTL_MS;
-    const token = randomBytes(32).toString("base64url");
+    // t22D-fix-round-2: Persist the owner token durably keyed by idempotency
+    // key so a production retry under the same stable key replays the original
+    // token instead of generating new random material.  Without this, a retry
+    // that calls prepareAcquisition with the same idempotency key generates a
+    // fresh ownerTokenDigest, producing RICKGENT_STATE_IDEMPOTENCY_CONFLICT
+    // rather than durable replay (the Store's replay logic detects a divergent
+    // canonical input because ownerTokenDigest differs).
+    //
+    // The token is persisted in a file under the state directory (which is
+    // 0700 private, same security boundary as the SQLite database).  The file
+    // is written atomically (temp + rename).  On retry, the same token is
+    // read, producing the same ownerTokenDigest, so the Store's replay logic
+    // returns the identical immutable postimage.
+    const token = this.#resolveOrPersistOwnerToken(request.idempotencyKey);
     return new PreparedOwnershipAcquisition(OWNERSHIP_COMMAND_AUTHORITY, command({
       kind: "acquire",
       repositoryId: this.#store.location.repositoryId,
@@ -360,6 +384,46 @@ export class LeaseAuthority {
       ownerTokenDigest: tokenDigest(token),
       ttlMs,
     }), token);
+  }
+
+  /**
+   * t22D-fix-round-2: Resolve an existing owner token from durable storage,
+   * or generate and persist a new one.  The token file lives in the state
+   * directory under an idempotency-key-derived subdirectory.  This ensures
+   * a retry under the same idempotency key reuses the original token,
+   * producing the same ownerTokenDigest and enabling durable replay.
+   */
+  #resolveOrPersistOwnerToken(idempotencyKey: string): string {
+    const stateDir = this.#store.location.stateDirectory;
+    const tokenDir = join(stateDir, "acquisition-tokens");
+    const tokenFile = join(tokenDir, tokenFilenameFor(idempotencyKey));
+    // Try to read an existing token first (the retry path).
+    try {
+      if (existsSync(tokenFile)) {
+        const existing = readFileSync(tokenFile, "utf8").trim();
+        if (existing.length > 0) return existing;
+      }
+    } catch {
+      // If the read fails (corrupted file, permissions, etc.), fall through
+      // to generating a new token.  This is fail-closed for replay: a
+      // corrupted token file means a fresh token, which will conflict if
+      // the ownership already exists — the correct behavior for a divergent
+      // mint.
+    }
+    // Generate a new token and persist it atomically.
+    const token = randomBytes(32).toString("base64url");
+    try {
+      mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
+      const tmpFile = `${tokenFile}.tmp-${process.pid}-${Date.now()}`;
+      writeFileSync(tmpFile, token, { encoding: "utf8", mode: 0o600 });
+      renameSync(tmpFile, tokenFile);
+    } catch {
+      // If persistence fails, we still return the token — the acquisition
+      // will succeed on the first attempt, but a retry will generate a new
+      // token and conflict.  This is fail-closed for retry (no silent
+      // replay with a different token).
+    }
+    return token;
   }
 
   acquire(prepared: PreparedOwnershipAcquisition): AttemptOwnershipGrant {
