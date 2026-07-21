@@ -31,7 +31,7 @@
  *   - No structural authority field is trusted from an injected controller.
  */
 
-import { execFileSync, type SpawnSyncReturns } from "node:child_process";
+import { execFileSync, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -494,22 +494,29 @@ function dockerExec(argv: readonly string[], opts: DockerExecOptions = {}): stri
 }
 
 function dockerExecSilent(argv: readonly string[], opts: DockerExecOptions = {}): { status: number | null; stdout: string; stderr: string } {
-  try {
-    const stdout = execFileSync("docker", argv as string[], {
-      encoding: "utf8",
-      timeout: opts.timeoutMs ?? 30_000,
-      maxBuffer: opts.maxOutputBytes ?? 8 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    return { status: 0, stdout, stderr: "" };
-  } catch (error) {
-    const e = error as SpawnSyncReturns<string> & { status?: number };
+  // Use spawnSync (not execFileSync) so BOTH stdout and stderr are captured
+  // on success.  execFileSync only returns stdout on success and discards
+  // stderr — the production dispatch path needs both streams to produce
+  // complete bounded-output receipts.
+  const result = spawnSync("docker", argv as string[], {
+    encoding: "utf8",
+    timeout: opts.timeoutMs ?? 30_000,
+    maxBuffer: opts.maxOutputBytes ?? 8 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.status !== null) {
     return {
-      status: typeof e.status === "number" ? e.status : null,
-      stdout: typeof e.stdout === "string" ? e.stdout : "",
-      stderr: typeof e.stderr === "string" ? e.stderr : "",
+      status: result.status,
+      stdout: typeof result.stdout === "string" ? result.stdout : "",
+      stderr: typeof result.stderr === "string" ? result.stderr : "",
     };
   }
+  // Timed out or spawn error (status === null).
+  return {
+    status: null,
+    stdout: typeof result.stdout === "string" ? result.stdout : "",
+    stderr: typeof result.stderr === "string" ? result.stderr : "",
+  };
 }
 
 /**

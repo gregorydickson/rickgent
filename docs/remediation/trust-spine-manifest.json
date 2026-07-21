@@ -1108,8 +1108,8 @@
         "t22"
       ],
       "completed_at": {
-        "commit": "0ac5503",
-        "phase_report": "docs/remediation/phase-5-t23-output-flood-runner-escaped-descendant-sentinel-execution-report-2026-07-21.md"
+        "commit": "46f5b11",
+        "phase_report": "docs/remediation/phase-5-t23-output-flood-real-dispatch-descendant-sentinel-execution-report-2026-07-21.md"
       }
     },
     {

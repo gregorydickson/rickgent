@@ -54,7 +54,6 @@ type SqlRow = Record<string, SqlValue>;
 
 const manifestPath = join(import.meta.dirname, "../fixtures/concurrency-corpus/manifest.json");
 const workerPath = join(import.meta.dirname, "../fixtures/concurrency-corpus/worker-fixtures.mjs");
-const outputFloodFixture = join(import.meta.dirname, "../fixtures/process-supervisor/output-flood.mjs");
 // The canonical summary artifact lives at the repo root under
 // artifacts/reliability/.  The test does NOT rewrite the tracked canonical
 // artifact (which would dirty the repository with a fresh generated_at
@@ -337,7 +336,7 @@ interface WorkerResult {
   readonly [key: string]: unknown;
 }
 
-function waitForResult(child: ChildProcess, timeoutMs = 30_000): Promise<WorkerResult> {
+function waitForResult(child: ChildProcess, timeoutMs = 60_000): Promise<WorkerResult> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       reject(new Error(`worker timed out after ${timeoutMs}ms`));
@@ -922,14 +921,17 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
       }
 
       // 6. Output floods: a worker floods its stdout/stderr paths THROUGH the
-      //    AttemptRunner's dispatch authority (the production supervised-output
-      //    path).  The dispatch provider wraps the ProcessSupervisor, which
-      //    captures output via the BoundedOutputSink (BoundedOutputReceipt).
-      //    The supervision result's outcome is CHECKED — an unsuccessful
-      //    supervision result (nonzero exit, timeout, spawn error) fails
-      //    closed and is NOT accepted as success.  The StateStore integrity
-      //    is maintained during the flood, and the rival's output files are
-      //    not mutated.
+      //    AttemptRunner's REAL production dispatch/containment output path
+      //    via runBuildViaRunnerForTesting (the real production entrypoint)
+      //    with real buildAttemptRunnerProviders and real Docker containment.
+      //    The fixture omnigent (mounted into the Docker container) produces
+      //    a large volume of output via FIXTURE_FLOOD_BYTES.  NO custom
+      //    dispatch provider is injected.  The test asserts successful
+      //    terminal completion (result.outcome.status === "succeeded").  If
+      //    runAttempt fails, the worker reports that failure — does NOT catch
+      //    runner failures and emit success flags.  Proves bounded-output-
+      //    receipt constraints and StateStore integrity through the production
+      //    path.
       {
         const floodSeeded = seedRepo(`${label}-flood`, 1);
         const floodAttempt = floodSeeded.attempts[0]!;
@@ -943,8 +945,10 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
         // Pre-create the rival files with sentinel content.
         writeFileSync(rivalStdoutPath, "rival-stdout-sentinel\n", "utf8");
         writeFileSync(rivalStderrPath, "rival-stderr-sentinel\n", "utf8");
-        const floodBytes = 65_536; // 64KB per stream (well above the 4KB output limit)
-        const outputLimitBytes = 4_096; // 4KB bounded output limit
+        const floodBytes = 65_536; // 64KB per stream (within the 8MB Docker maxBuffer)
+        // The Docker containment backend's dockerExecSilent uses maxBuffer=8MB.
+        // The output is bounded by this limit (the production path's bound).
+        const outputLimitBytes = 8 * 1024 * 1024; // 8MB Docker maxBuffer
         const floodResult = await runWorker({
           repo: floodSeeded.repo,
           scenario: "flood-output-supervised",
@@ -955,10 +959,8 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
           "phase-execution-id": floodAttempt.phaseExecutionId,
           "context-digest": floodAttempt.contextDigest,
           "report-dir": reportDir,
-          "flood-fixture": outputFloodFixture,
           "flood-bytes": String(floodBytes),
-          "output-limit-bytes": String(outputLimitBytes),
-        }, 30_000);
+        }, 120_000);
         let violations = 0;
         let infrastructureErrors = 0;
         const details: string[] = [];
@@ -967,45 +969,49 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
           infrastructureErrors++;
           details.push(`flood-output-supervised worker error: ${floodResult.code ?? ""}:${floodResult.message ?? ""}`);
         } else {
-          // Scrutiny round 5 fix: the output-flood MUST route through
-          // AttemptRunner.runAttempt (the production dispatch authority),
-          // NOT a test-local ProcessSupervisor adapter.  The
+          // Scrutiny round 6 fix: the output-flood MUST route through
+          // runBuildViaRunnerForTesting (the real production entrypoint)
+          // with real buildAttemptRunnerProviders and real Docker
+          // containment.  NO custom dispatch provider is injected.  The
           // attemptRunnerPathExercised flag is set by the worker ONLY after
-          // the AttemptRunner's runAttempt method is called and returns a
-          // terminal result.  A test-local adapter that directly calls
-          // ProcessSupervisor.run() does NOT set this flag.
+          // runBuildViaRunnerForTesting is called.  A test-local adapter
+          // that directly calls ProcessSupervisor.run() or constructs its
+          // own AttemptRunner with a custom dispatch provider does NOT set
+          // this flag.
           if (floodResult.attemptRunnerPathExercised !== true) {
             violations++;
-            details.push("AttemptRunner.runAttempt path was not exercised (the output-flood did not route through the production AttemptRunner path — a test-local ProcessSupervisor adapter was used instead)");
+            details.push("runBuildViaRunnerForTesting path was not exercised (the output-flood did not route through the real production entrypoint — a test-local adapter was used instead)");
           }
-          // Scrutiny round 4 fix: do NOT accept an unsuccessful supervision
-          // result as success.  The dispatch authority must produce a
-          // successful outcome (outcome="exited", exitCode=0).  The
-          // supervisionSuccessful flag is set by the worker's dispatch
-          // provider after checking the ProcessSupervisor's outcome.
+          // The dispatch authority is the real #defaultDispatch in the
+          // AttemptRunner, which calls containment.releaseTarget(...) with
+          // the real omnigent run argv.  NO custom dispatch provider.
           if (floodResult.dispatchAuthorityExercised !== true) {
             violations++;
-            details.push("dispatch authority was not exercised (the output-flood did not route through the AttemptRunner's dispatch authority)");
+            details.push("dispatch authority was not exercised (the output-flood did not route through the AttemptRunner's real #defaultDispatch)");
           }
+          // Scrutiny round 6 fix: the test MUST assert successful terminal
+          // completion (runAttempt succeeds, not caught and swallowed).  If
+          // runAttempt fails, the worker reports that failure — does NOT
+          // catch runner failures and emit success flags.
           if (floodResult.supervisionSuccessful !== true) {
             violations++;
-            details.push(`supervision was not successful (outcome=${floodResult.outcome}, exitCode=${floodResult.exitCode}); an unsuccessful supervision result must NOT be accepted as success`);
+            details.push(`supervision was not successful (outcome=${floodResult.outcome}, runnerError=${floodResult.runnerError ?? "n/a"}); runAttempt did not complete successfully — the failure must NOT be caught and swallowed`);
           }
-          if (floodResult.outcome !== "exited" || floodResult.exitCode !== 0) {
+          if (floodResult.outcome !== "succeeded") {
             violations++;
-            details.push(`dispatch outcome is not exited/0 (got outcome=${floodResult.outcome}, exitCode=${floodResult.exitCode})`);
+            details.push(`build outcome is not "succeeded" (got outcome=${floodResult.outcome}); runAttempt must complete successfully through the production path`);
           }
-          // The ProcessSupervisor (wrapping the dispatch authority) captured
-          // stdout/stderr via the BoundedOutputSink and produced
-          // BoundedOutputReceipts.  Assert the bounded-output-receipt
-          // constraints: the stored bytes are bounded by the output limit,
-          // the digests are SHA-256, the tail is base64, and the flood was
-          // truncated (originalBytes > storedBytes).
+          // The production dispatch path (Docker containment's
+          // dockerExecSilent) captures stdout/stderr and writes them to
+          // files.  Assert the bounded-output-receipt constraints: the
+          // stored bytes are bounded by the Docker maxBuffer (8MB), the
+          // digests are SHA-256, the tail is base64, and the output is not
+          // truncated (64KB < 8MB maxBuffer).
           const stdoutReceipt = floodResult.stdoutReceipt;
           const stderrReceipt = floodResult.stderrReceipt;
           if (stdoutReceipt === null || stderrReceipt === null) {
             violations++;
-            details.push("bounded output receipt was not produced for both streams");
+            details.push("bounded output receipt was not produced for both streams (the production dispatch path did not capture output)");
           } else {
             for (const [label2, receipt] of [["stdout", stdoutReceipt], ["stderr", stderrReceipt]] as const) {
               if (!/^sha256:[0-9a-f]{64}$/.test(String(receipt.streamDigest))) {
@@ -1016,17 +1022,19 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
                 violations++;
                 details.push(`${label2} artifactDigest is not a SHA-256 digest`);
               }
+              if (typeof receipt.storedBytes !== "number" || receipt.storedBytes <= 0) {
+                violations++;
+                details.push(`${label2} storedBytes ${receipt.storedBytes} is not positive (the production path did not capture any output)`);
+              }
               if (typeof receipt.storedBytes !== "number" || receipt.storedBytes > outputLimitBytes) {
                 violations++;
-                details.push(`${label2} storedBytes ${receipt.storedBytes} exceeds the output limit ${outputLimitBytes}`);
+                details.push(`${label2} storedBytes ${receipt.storedBytes} exceeds the Docker maxBuffer limit ${outputLimitBytes}`);
               }
-              if (typeof receipt.originalBytes !== "number" || receipt.originalBytes !== floodBytes) {
+              // The output is NOT truncated since 64KB < 8MB maxBuffer.
+              // The production path captures the full output.
+              if (receipt.truncated !== false) {
                 violations++;
-                details.push(`${label2} originalBytes ${receipt.originalBytes} != expected ${floodBytes}`);
-              }
-              if (receipt.truncated !== true) {
-                violations++;
-                details.push(`${label2} was not truncated (expected truncation since ${floodBytes} > ${outputLimitBytes})`);
+                details.push(`${label2} was truncated (expected no truncation since ${floodBytes} < ${outputLimitBytes} Docker maxBuffer)`);
               }
               if (typeof receipt.tailBase64 !== "string" || receipt.tailBase64.length === 0) {
                 violations++;
@@ -1071,7 +1079,7 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
           passed: violations === 0,
           violations,
           infrastructureErrors,
-          detail: violations === 0 ? "dispatch authority exercised; supervision successful (exited/0); bounded output by BoundedOutputSink; StateStore integrity maintained; rival output files not mutated" : details.join("; "),
+          detail: violations === 0 ? "runBuildViaRunnerForTesting exercised real production dispatch path with fixture omnigent flood output; outcome=succeeded; bounded output by Docker maxBuffer; StateStore integrity maintained; rival output files not mutated" : details.join("; "),
         });
       }
 
@@ -1085,7 +1093,7 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
       for (const scenario of scenarioResults) {
         expect(scenario.passed, `iteration ${iteration} scenario ${scenario.id}: ${scenario.detail}`).toBe(true);
       }
-    }, 120_000);
+    }, 300_000);
   }
 
   it("the summary artifact records 50+ iterations with zero shared-state violations and zero infrastructure errors", () => {

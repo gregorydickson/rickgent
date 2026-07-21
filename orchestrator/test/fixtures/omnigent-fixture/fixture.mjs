@@ -153,6 +153,28 @@ function stubbornMode(record) {
   setInterval(() => {}, 1_000);
 }
 
+function emitFloodOutput() {
+  // FIXTURE_FLOOD_BYTES: when set to a positive integer, emit that many bytes
+  // to BOTH stdout and stderr as part of the dispatch.  This is used by the
+  // t23 concurrency corpus output-flood scenario to prove the production
+  // AttemptRunner dispatch path (via the Docker containment backend) handles
+  // a large volume of output through the real production path.  The output is
+  // emitted BEFORE the scope file write so the dispatch produces the flood
+  // while still completing successfully (writing the scope file + DB session).
+  const floodBytes = parseInt(env("FIXTURE_FLOOD_BYTES", "0"), 10);
+  if (!Number.isSafeInteger(floodBytes) || floodBytes <= 0) return;
+  const stdoutPattern = Buffer.from("STDOUT|0123456789abcdef|\n", "ascii");
+  const stderrPattern = Buffer.from("STDERR|fedcba9876543210|\n", "ascii");
+  let written = 0;
+  while (written < floodBytes) {
+    const remaining = floodBytes - written;
+    const len = Math.min(stdoutPattern.length, remaining);
+    process.stdout.write(stdoutPattern.subarray(0, len));
+    process.stderr.write(stderrPattern.subarray(0, len));
+    written += len;
+  }
+}
+
 function promptMode() {
   const prompt = promptArg();
   process.stdout.write(env("FIXTURE_STDOUT", "fixture worker transcript line") + "\n");
@@ -185,6 +207,11 @@ function promptMode() {
     // session, transcript, commit, or in-scope delta for the oracle to verify.
     process.exit(0);
   }
+
+  // Emit flood output (if configured) BEFORE writing the scope file so the
+  // dispatch produces a large volume of output through the production path
+  // while still completing successfully.
+  emitFloodOutput();
 
   // Succeeding ticket: DB session + non-empty transcript + unstaged in-scope delta.
   const dataDir = env("OMNIGENT_DATA_DIR");

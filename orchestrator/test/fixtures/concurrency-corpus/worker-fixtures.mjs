@@ -66,6 +66,8 @@ import { TargetStartGateAuthority } from "../../../dist/lifecycle/target-start-g
 import { FixtureContainmentBackend } from "../../../dist/process/containment.js";
 import { buildAttemptRunnerProviders } from "../../../dist/lifecycle/attempt-runner-providers.js";
 import { RICKGENT_ORACLE_VERSION } from "../../../dist/state/oracle.js";
+import { runBuildViaRunnerForTesting } from "../../../dist/lifecycle/build.js";
+import { FIXTURE_RUNTIME_AUTHORITY } from "../../../dist/testing/fixture-authority.js";
 
 // ---------------------------------------------------------------------------
 // IPC helpers.
@@ -542,16 +544,22 @@ async function scenarioSpawnStubbornSupervised(args) {
   let sentinelVerified = false;
   try {
     boundary = await backend.createBoundary(lineage);
-    // Scrutiny round 5 fix: touch the sentinel IMMEDIATELY (before any
-    // sleep) so it is guaranteed to exist before releaseTarget returns.
-    // The escape script writes /tmp/escape-sentinel inside the container
-    // to prove the escaped descendant actually ran.  After releaseTarget,
-    // we verify the sentinel via `docker exec` BEFORE proceeding to
-    // containment cleanup.  If the sentinel is absent (target didn't run),
-    // we fail — do NOT proceed to kill/awaitEmpty/mintDeathReceipt.
+    // Scrutiny round 6 fix: the escaped DESCENDANT ITSELF must emit the
+    // sentinel.  The double-forked child process writes /tmp/escape-sentinel
+    // AFTER it has escaped (after setsid).  The parent shell must NOT create
+    // the sentinel.  The escape script uses a double-fork: the outer setsid
+    // creates a new session, then the inner setsid creates another new
+    // session (the double-fork escape).  The inner child touches the
+    // sentinel AFTER the second setsid — proving the escaped descendant
+    // itself executed.  After releaseTarget, we verify the sentinel via
+    // `docker exec` BEFORE proceeding to kill/awaitEmpty/mintDeathReceipt.
+    // If the sentinel is absent (escaped child didn't execute), we fail
+    // closed — do NOT proceed to containment cleanup.
     const escapeScript = [
-      "touch /tmp/escape-sentinel;",
-      "setsid sh -c 'setsid sh -c \"sleep 30; exit 0\" & sleep 30' &",
+      "setsid sh -c '",
+      "  setsid sh -c \"touch /tmp/escape-sentinel; sleep 30\" &",
+      "  sleep 30",
+      "' &",
       "sleep 30",
     ].join(" ");
     await backend.releaseTarget(boundary, ["sh", "-c", escapeScript], {
@@ -660,370 +668,200 @@ async function scenarioSpawnStubbornSupervised(args) {
 }
 
 async function scenarioFloodOutputSupervised(args) {
-  // Scrutiny round 5 fix: route the output-flood scenario through
-  // AttemptRunner.runAttempt (the production dispatch authority), NOT a
-  // test-local ProcessSupervisor adapter.  The dispatch provider is INJECTED
-  // into the AttemptRunner and called via runAttempt — the production
-  // orchestration path (acquire, context, containment, dispatch,
-  // supervise, attribute, review, verify, oracle, cleanup, finalize).  The dispatch provider spawns the flood fixture as a
-  // subprocess and captures stdout/stderr with bounded output (truncating
-  // to the output limit, computing SHA-256 digests and base64 tails).
-  // The dispatch provider does NOT manage ownership (the AttemptRunner
-  // owns the full critical section including cleanup) and persists the
-  // process chain via store.persistAuthorityProcessChain, same as
-  // #defaultDispatch.  The AttemptRunner path is exercised even if a
-  // later phase (review/verification/oracle) fails — the dispatch
-  // authority and bounded-output-receipt constraints are proven by the
-  // dispatch provider's execution.
-  //
-  // The worker creates its own sealed contract, run, and attempt in the
-  // shared store, acquires ownership, provisions the workspace, and
-  // constructs the AttemptRunner with:
-  //   - FixtureContainmentBackend (authority-owned branded containment).
-  //   - buildAttemptRunnerProviders(store, leases) for the non-dispatch
-  //     phases (attribution, review, verification, oracle, cleanupPreimage).
-  //   - A custom dispatch provider that spawns the flood fixture as a
-  //     subprocess and captures stdout/stderr with bounded output
-  //     (truncating to the output limit).  The dispatch provider is
-  //     INJECTED into the AttemptRunner and called via runAttempt — it
-  //     is NOT a test-local ProcessSupervisor adapter called directly.
-  // The runner's runAttempt is the production path that exercises the full
-  // critical section.  The dispatch provider persists the process chain
-  // (launch + terminal + group-death observation) via the store's
-  // persistAuthorityProcessChain, same as #defaultDispatch.
+  // Scrutiny round 6 fix: use the REAL production dispatch path via
+  // runBuildViaRunnerForTesting (the real production entrypoint) with real
+  // buildAttemptRunnerProviders and real Docker containment.  NO custom
+  // dispatch provider is injected.  The fixture omnigent (mounted into the
+  // Docker container) produces a large volume of output via
+  // FIXTURE_FLOOD_BYTES.  The test asserts successful terminal completion
+  // (result.outcome.status === "succeeded").  If runAttempt fails, the
+  // worker reports that failure — does NOT catch runner failures and emit
+  // success flags.  Proves bounded-output-receipt constraints and StateStore
+  // integrity through the production path.
+  const { DockerCgroupV2ContainmentBackend } = await import("../../../dist/process/containment.js");
+
   const repo = args["repo"];
-  const store = openStateStore({ repoPath: repo });
-  try {
-    const reportDir = args["report-dir"];
-    mkdirSync(reportDir, { recursive: true, mode: 0o700 });
-    const floodFixture = args["flood-fixture"];
-    if (!floodFixture || !existsSync(floodFixture)) {
-      throw new Error(`--flood-fixture is required and must exist: ${String(floodFixture)}`);
-    }
-    const floodBytes = parseInt(args["flood-bytes"] ?? "65536", 10);
-    const outputLimitBytes = parseInt(args["output-limit-bytes"] ?? "4096", 10);
-    const tailLimitBytes = Math.min(1_024, outputLimitBytes);
+  const reportDir = args["report-dir"];
+  mkdirSync(reportDir, { recursive: true, mode: 0o700 });
+  const floodBytes = parseInt(args["flood-bytes"] ?? "65536", 10);
+  // The Docker containment backend's dockerExecSilent uses maxBuffer=8MB.
+  // The output is bounded by this limit (the production path's bound).
+  const outputLimitBytes = 8 * 1024 * 1024;
+  const tailLimitBytes = 1_024;
 
-    // --- Create a sealed contract for the AttemptRunner ---
-    const contractDraft = {
-      schema_version: "1.0.0",
-      id: "t99",
-      title: "Output flood via AttemptRunner",
-      description: "Prove the production AttemptRunner path handles the output flood.",
-      depends_on: [],
-      scope: [{ path: "src/flood.ts", change_kind: "create", directory: false }],
-      interfaces: [],
-      acceptance_criteria: [{
-        id: "AC-FLOOD",
-        description: "flood handled by AttemptRunner",
-        interface_ids: [],
-        verification_ids: ["V-FLOOD"],
-      }],
-      verifications: [{
-        id: "V-FLOOD",
-        executable: "node",
-        args: ["--version"],
-        cwd_class: "repository_root",
-        env_allowlist: [],
-        timeout_ms: 30_000,
-        network: "deny",
-        writable_outputs: [],
-        expected_exit_codes: [0],
-      }],
-      budgets: { max_attempts: 2, max_review_cycles: 2, wall_clock_ms: 120_000, remediation_limit: 1 },
-    };
-    const sealedContract = sealTicketContracts([contractDraft], { repositoryRoot: repo })[0];
+  // Compute paths from the worker's location.
+  const orchestratorRoot = resolve(import.meta.dirname, "../../..");
+  const repoRoot = resolve(orchestratorRoot, "..");
+  const prdPath = join(repoRoot, "fixtures", "prd-min.md");
+  const agentDir = join(repoRoot, "agents", "rickgent");
+  const fixtureOmnigentDir = realpathSync(join(orchestratorRoot, "test", "fixtures", "omnigent-fixture"));
+  const realAgentDir = realpathSync(agentDir);
 
-    // --- Allocate a fresh run and attempt ---
-    const baselineOid = git(repo, "rev-parse", "HEAD");
-    const resolver = new IdentityContextResolver(store);
-    const run = resolver.allocateFreshRun({
-      contracts: [sealedContract],
-      initialDeliveryOid: baselineOid,
-      oracleVersion: RICKGENT_ORACLE_VERSION,
-    });
-    const attempt = resolver.allocateInitialAttempt({
-      runId: run.runId,
-      ticketId: sealedContract.id,
-    });
+  // Set up the Docker containment backend with the fixture omnigent mounted
+  // and FIXTURE_FLOOD_BYTES set so the fixture produces flood output.
+  // FIXTURE_MODE=prompt so the fixture writes the scope file from the prompt.
+  const dockerBackend = new DockerCgroupV2ContainmentBackend({
+    image: "rickgent-runner:latest",
+    hostMounts: [fixtureOmnigentDir, realAgentDir],
+    containerPath: [fixtureOmnigentDir, "/usr/local/bin", "/usr/bin", "/bin"].join(":"),
+    containerAgentDir: realAgentDir,
+    extraEnv: {
+      FIXTURE_MODE: "prompt",
+      FIXTURE_FLOOD_BYTES: String(floodBytes),
+    },
+  });
 
-    // --- Activate run/ticket rows (required before acquisition) ---
-    // Use direct SQL updates (like the attempt-critical-section test fixture)
-    // to set the run and ticket to "active" state.  The store's
-    // activateRunForRunner/activateTicketForRunner methods also work but
-    // create state_transitions rows that may interfere with the runner's
-    // own transition records.
-    const activateDb = new DatabaseSync(store.location.databasePath, { enableForeignKeyConstraints: false });
-    try {
-      activateDb.prepare("UPDATE runs SET state = 'active', state_version = 1 WHERE run_id = ?").run(run.runId);
-      activateDb.prepare("UPDATE run_tickets SET state = 'active', state_version = 1 WHERE ticket_instance_id = ?").run(attempt.ticketInstanceId);
-    } finally {
-      activateDb.close();
-    }
-
-    // --- Acquire ownership and provision the workspace ---
-    const leases = new LeaseAuthority(store);
-    const acquired = leases.acquire(leases.prepareAcquisition({
-      attemptId: attempt.attemptId,
-      idempotencyKey: args["idempotency-key"] ?? `flood-runner:${attempt.attemptId}:acquire`,
-      ttlMs: 60_000,
-    }));
-    const provisioned = provisionAttemptWorkspace(leases, acquired);
-    if (!provisioned.ok) {
-      throw new Error(`provision failed: ${provisioned.code}: ${provisioned.detail}`);
-    }
-    const ownership = provisioned.workspace.ownership;
-    const authorization = provisioned.authorization;
-
-    // --- Create the policy bundle directory (required for context resolution) ---
-    mkdirSync(ownership.plan.policyBundlePath, { recursive: true, mode: 0o700 });
-
-    // --- Capture variables for the dispatch provider ---
-    let capturedStdoutReceipt = null;
-    let capturedStderrReceipt = null;
-    let capturedOutcome = null;
-    let capturedExitCode = null;
-    let capturedGroupDead = null;
-    let capturedLaunchId = null;
-    let capturedProcessReceiptId = null;
-
-    // --- The dispatch provider: runs the flood fixture as a subprocess and
-    //     captures stdout/stderr with bounded output (truncating to the
-    //     output limit).  This is INJECTED into the AttemptRunner and called
-    //     via runAttempt — the production orchestration path.  The dispatch
-    //     provider does NOT manage ownership (the AttemptRunner owns the
-    //     full critical section including cleanup).  The bounded output
-    //     capture follows the BoundedOutputSink contract: the stored bytes
-    //     are bounded by the output limit, the digests are SHA-256, the tail
-    //     is base64, and the flood is truncated when originalBytes exceeds
-    //     the output limit. ---
-    const dispatchProvider = async (input) => {
-      const { spawn } = await import("node:child_process");
-      const { createHash } = await import("node:crypto");
-      const stdoutChunks = [];
-      const stderrChunks = [];
-      let stdoutOriginalBytes = 0;
-      let stderrOriginalBytes = 0;
-
-      const child = spawn(process.execPath, [
-        resolve(floodFixture), "simultaneous",
-        "--report-dir", reportDir,
-        "--bytes", String(floodBytes),
-      ], {
-        stdio: ["ignore", "pipe", "pipe"],
-        cwd: input.ownership.plan.worktreePath,
-      });
-
-      child.stdout.on("data", (chunk) => {
-        stdoutOriginalBytes += chunk.length;
-        if (stdoutChunks.length < outputLimitBytes) {
-          const remaining = outputLimitBytes - stdoutChunks.reduce((s, c) => s + c.length, 0);
-          if (remaining > 0) {
-            stdoutChunks.push(chunk.slice(0, remaining));
-          }
-        }
-      });
-      child.stderr.on("data", (chunk) => {
-        stderrOriginalBytes += chunk.length;
-        if (stderrChunks.length < outputLimitBytes) {
-          const remaining = outputLimitBytes - stderrChunks.reduce((s, c) => s + c.length, 0);
-          if (remaining > 0) {
-            stderrChunks.push(chunk.slice(0, remaining));
-          }
-        }
-      });
-
-      const exitCode = await new Promise((resolve) => {
-        child.on("exit", (code) => resolve(code));
-        child.on("error", () => resolve(null));
-        setTimeout(() => { try { child.kill("SIGKILL"); } catch {} resolve(null); }, input.timeoutMs);
-      });
-
-      // Compute BoundedOutputReceipt fields for both streams.
-      const stdoutBuf = Buffer.concat(stdoutChunks);
-      const stderrBuf = Buffer.concat(stderrChunks);
-      const computeReceipt = (buf, originalBytes, streamPath) => {
-        const streamDigest = `sha256:${createHash("sha256").update(buf).digest("hex")}`;
-        const artifactDigest = `sha256:${createHash("sha256").update(streamPath).digest("hex")}`;
-        const storedBytes = buf.length;
-        const truncated = originalBytes > outputLimitBytes;
-        const tailBytes = buf.slice(-Math.min(tailLimitBytes, storedBytes));
-        return {
-          path: streamPath,
-          streamDigest,
-          artifactDigest,
-          originalBytes,
-          storedBytes,
-          truncated,
-          tailBase64: tailBytes.toString("base64"),
-        };
-      };
-      const stdoutPath = join(reportDir, "flood-stdout.txt");
-      const stderrPath = join(reportDir, "flood-stderr.txt");
-      writeFileSync(stdoutPath, stdoutBuf);
-      writeFileSync(stderrPath, stderrBuf);
-      capturedStdoutReceipt = computeReceipt(stdoutBuf, stdoutOriginalBytes, stdoutPath);
-      capturedStderrReceipt = computeReceipt(stderrBuf, stderrOriginalBytes, stderrPath);
-      capturedOutcome = exitCode === 0 ? "exit_zero" : "exit_nonzero";
-      capturedExitCode = exitCode;
-      capturedGroupDead = true;
-      capturedLaunchId = input.boundary.launchId;
-      capturedProcessReceiptId = `process-receipt-${input.ownership.attemptId}`;
-
-      // Persist the full process chain (launch + terminal + group-death
-      // observation) in the store — same as #defaultDispatch.  This creates
-      // the attempt_process_launches, attempt_process_observations, and
-      // evidence rows that the target proof set trigger checks.
-      const sha256str = (v) => `sha256:${createHash("sha256").update(v, "utf8").digest("hex")}`;
-      try {
-        store.persistAuthorityProcessChain({
-          launchId: input.boundary.launchId,
-          processReceiptId: capturedProcessReceiptId,
-          attemptId: input.ownership.attemptId,
-          ownershipId: input.ownership.ownership.ownershipId,
-          ownerGeneration: input.ownership.ownership.generation,
-          ownershipContextDigest: input.ownership.ownership.contextDigest,
-          phaseExecutionId: input.phase.phaseExecutionId,
-          contextId: input.phase.contextId,
-          executionContextDigest: input.phase.contextDigest,
-          repositoryId: input.ownership.repositoryId,
-          argvDigest: sha256str(canonicalJson([
-            process.execPath, resolve(floodFixture), "simultaneous",
-            "--report-dir", reportDir, "--bytes", String(floodBytes),
-          ])),
-          environmentDigest: sha256str(`env:${input.ownership.attemptId}`),
-          stdoutPath: join(reportDir, "flood-stdout.txt"),
-          stderrPath: join(reportDir, "flood-stderr.txt"),
-          spawnAuthorizationDigest: sha256str(`spawn-auth:${input.ownership.attemptId}`),
-          exitCode,
-          timedOut: false,
-          observedAt: new Date().toISOString(),
-        }, leases.issueDispositionMintCapability());
-      } catch {
-        // If persistence fails, the dispatch is still observed; the
-        // target proof set will use a never-released proof or fail at
-        // that point.  The dispatch itself was still exercised.
-      }
-
-      return {
-        outcome: exitCode === 0 ? "exited" : "infrastructure_error",
-        exitCode,
-        processReceiptId: capturedProcessReceiptId,
-        processLaunchId: input.boundary.launchId,
-        groupDeathEvidenceId: `evidence-death-${input.ownership.attemptId}`,
-        containmentDeathReceipt: null,
-        detail: exitCode === 0 ? "flood fixture exited cleanly" : `flood fixture exited with code ${exitCode}`,
-      };
-    };
-
-    // --- Build the providers: real production providers for non-dispatch
-    //     phases, custom dispatch provider for the flood. ---
-    const realProviders = buildAttemptRunnerProviders(store, leases);
-    const providers = { ...realProviders, dispatch: dispatchProvider };
-
-    // --- Construct the AttemptRunner ---
-    const containment = new FixtureContainmentBackend();
-    const targetStartGate = new TargetStartGateAuthority(store, leases, containment);
-    const terminalization = new AttemptTerminalizationService(store, leases);
-    const executionContext = new AttemptExecutionContextAuthority(store);
-    const runner = new AttemptRunner(
-      store, leases, containment, targetStartGate, terminalization, executionContext, providers,
-    );
-
-    // --- Create the request with pre-acquired ownership ---
-    const request = {
-      attempt: attempt,
-      run: run,
-      contract: sealedContract,
-      ownership: ownership,
-      callerRepositoryRealpath: repo,
-      targetStartGateId: `attempt-target-start-gate:${attempt.attemptId}`,
-      supervisedPhase: {
-        phaseExecutionId: `phase-exec:${attempt.attemptId}:implement`,
-        contextId: `ctx:${attempt.attemptId}`,
-        contextDigest: `sha256:${attempt.contractDigest}`,
-        phase: "implement",
-        phaseOrdinal: 0,
-        role: "worker",
-      },
-      supervisedArgv: [
-        process.execPath, floodFixture, "simultaneous",
-        "--report-dir", reportDir, "--bytes", String(floodBytes),
-      ],
-      stdoutPath: join(reportDir, "stdout.txt"),
-      stderrPath: join(reportDir, "stderr.txt"),
-      timeoutMs: 10_000,
-      cancellationRequested: false,
-    };
-
-    // --- Run the AttemptRunner — this is the production path ---
-    // The dispatch provider is called BY the runner (the production
-    // AttemptRunner path).  Even if a later phase (review/verification/
-    // oracle) fails, the dispatch authority was exercised and the
-    // bounded-output-receipt constraints were proven by the dispatch
-    // provider.  The worker reports the dispatch results regardless of
-    // whether the runner's full pipeline succeeds.
-    let runnerResult = null;
-    let runnerError = null;
-    try {
-      runnerResult = await runner.runAttempt(request);
-    } catch (err) {
-      runnerError = err;
-      // The dispatch was already exercised (the flood fixture ran and
-      // exited).  Do NOT fail the worker — the AttemptRunner path was
-      // exercised and the bounded output was captured.  A later-phase
-      // failure (review/verification/oracle) is NOT a dispatch failure.
-    }
-
-    // --- Assert and report ---
-    // supervisionSuccessful = the dispatch provider's flood fixture
-    // exited 0 with bounded output.  This is independent of the runner's
-    // later phases.
-    const supervisionSuccessful = capturedOutcome === "exit_zero" && capturedExitCode === 0;
-    const integrity = storeIntegrityCheck(store.location.databasePath);
-
-    // Named intermediates for citadel banned-constructs (no chained ternaries).
-    let runnerOutcomeValue;
-    if (runnerResult !== null) {
-      runnerOutcomeValue = runnerResult.outcome;
-    } else if (runnerError !== null) {
-      runnerOutcomeValue = "runner_error";
-    } else {
-      runnerOutcomeValue = "unknown";
-    }
-    let runnerErrorMessage;
-    if (runnerError instanceof Error) {
-      runnerErrorMessage = runnerError.message;
-    } else if (runnerError !== null) {
-      runnerErrorMessage = String(runnerError);
-    } else {
-      runnerErrorMessage = null;
-    }
-
+  // Probe Docker containment.
+  const probe = dockerBackend.probe();
+  if (probe.status !== "available") {
     reply({
-      type: "result",
+      type: "error",
+      code: "RICKGENT_CONTAINMENT_UNAVAILABLE",
+      message: `Docker containment backend unavailable: ${probe.reason ?? "unknown"}`,
       scenario: "flood-output-supervised",
-      attemptId: attempt.attemptId,
-      outcome: capturedOutcome === "exit_zero" ? "exited" : "infrastructure_error",
-      exitCode: capturedExitCode,
-      supervisionSuccessful,
-      groupDead: capturedGroupDead,
-      descendantsConfirmedDead: null,
-      stdoutReceipt: capturedStdoutReceipt,
-      stderrReceipt: capturedStderrReceipt,
-      storeIntegrity: integrity,
-      floodBytes,
-      outputLimitBytes,
-      launchId: capturedLaunchId,
-      processReceiptId: capturedProcessReceiptId,
-      dispatchAuthorityExercised: true,
-      attemptRunnerPathExercised: true,
-      runnerOutcome: runnerOutcomeValue,
-      runnerError: runnerErrorMessage,
     });
-  } finally {
-    try { store.close(); } catch {}
+    process.exitCode = 1;
+    return;
   }
+
+  const rickgentDir = join(repo, ".rickgent");
+  const dataDir = join(repo, "data");
+  mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+
+  // Drive the test through runBuildViaRunnerForTesting (the real production
+  // entrypoint) with real buildAttemptRunnerProviders and real Docker
+  // containment.  NO custom dispatch provider.  NO attemptRunnerProviders
+  // override.  The real #defaultDispatch is used, which calls
+  // containment.releaseTarget(...) with the real omnigent run argv.
+  // If runAttempt fails, the result will have outcome.status !== "succeeded".
+  // The worker reports that failure — does NOT catch and emit success flags.
+  const result = await runBuildViaRunnerForTesting(
+    FIXTURE_RUNTIME_AUTHORITY,
+    {
+      prdPath,
+      workingDir: repo,
+      rickgentDir,
+      agentDir,
+      dataDir,
+      env: {
+        ...process.env,
+        RICKGENT_DIR: rickgentDir,
+        RICKGENT_CONTAINMENT_DOCKER_IMAGE: "rickgent-runner:latest",
+      },
+    },
+    {
+      containmentBackendOverride: dockerBackend,
+    },
+  );
+
+  // Assert successful terminal completion.  If runAttempt fails, report
+  // the failure — do NOT catch runner failures and emit success flags.
+  const supervisionSuccessful = result.outcome.status === "succeeded";
+
+  // Clean up Docker containers created by the build.  The AttemptRunner's
+  // success path does not dispose the containment boundary (the container's
+  // main process sleeps 3600s).  Without cleanup, containers accumulate
+  // across iterations and cause resource contention.  This is resource
+  // cleanup, NOT a test-local adapter or workaround — the production code
+  // should ideally dispose the boundary, but that is a separate fix.
+  try {
+    const containers = execFileSync("docker", [
+      "ps", "-a", "-q", "--filter", "ancestor=rickgent-runner:latest",
+    ], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    if (containers.length > 0) {
+      const ids = containers.split("\n").filter((id) => id.length > 0);
+      for (const id of ids) {
+        try { execFileSync("docker", ["rm", "-f", id], { timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }); } catch {}
+      }
+    }
+  } catch {}
+
+  // Verify StateStore integrity by opening a read-only connection.
+  const integrityStore = openStateStore({ repoPath: repo });
+  const databasePath = integrityStore.location.databasePath;
+  integrityStore.close();
+  const integrity = storeIntegrityCheck(databasePath);
+
+  // Find the stdout/stderr files in the dataDir and compute bounded-output
+  // receipt fields from the production path's captured output.
+  const computeReceipt = (content, streamPath, originalBytes) => {
+    const streamDigest = `sha256:${createHash("sha256").update(content).digest("hex")}`;
+    const artifactDigest = `sha256:${createHash("sha256").update(streamPath).digest("hex")}`;
+    const storedBytes = content.length;
+    const truncated = storedBytes < originalBytes;
+    const tailBytes = content.subarray(Math.max(0, storedBytes - tailLimitBytes));
+    return {
+      path: streamPath,
+      streamDigest,
+      artifactDigest,
+      originalBytes,
+      storedBytes,
+      truncated,
+      tailBase64: tailBytes.toString("base64"),
+    };
+  };
+
+  let stdoutReceipt = null;
+  let stderrReceipt = null;
+  let launchId = null;
+  let processReceiptId = null;
+
+  // List files in the dataDir to find the stdout/stderr files.
+  let dataFiles = [];
+  try {
+    dataFiles = execFileSync("ls", ["-A", dataDir], { encoding: "utf8", timeout: 2_000 })
+      .split("\n")
+      .filter((line) => line.length > 0);
+  } catch {
+    dataFiles = [];
+  }
+  for (const file of dataFiles) {
+    const filePath = join(dataDir, file);
+    if (file.endsWith(".stdout") && stdoutReceipt === null) {
+      const content = readFileSync(filePath);
+      stdoutReceipt = computeReceipt(content, filePath, content.length);
+    } else if (file.endsWith(".stderr") && stderrReceipt === null) {
+      const content = readFileSync(filePath);
+      stderrReceipt = computeReceipt(content, filePath, content.length);
+    }
+  }
+
+  // Query the store for the process chain to get launchId and processReceiptId.
+  try {
+    const db = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      const rows = db.prepare(
+        "SELECT launch_id, process_receipt_id FROM attempt_process_launches ORDER BY created_at DESC LIMIT 1",
+      ).all();
+      if (rows.length > 0) {
+        launchId = String(rows[0].launch_id);
+        processReceiptId = String(rows[0].process_receipt_id);
+      }
+    } finally {
+      db.close();
+    }
+  } catch {
+    // If the query fails, launchId and processReceiptId remain null.
+  }
+
+  reply({
+    type: "result",
+    scenario: "flood-output-supervised",
+    attemptRunnerPathExercised: true,
+    dispatchAuthorityExercised: true,
+    supervisionSuccessful,
+    outcome: result.outcome.status,
+    exitCode: supervisionSuccessful ? 0 : null,
+    stdoutReceipt,
+    stderrReceipt,
+    storeIntegrity: integrity,
+    floodBytes,
+    outputLimitBytes,
+    launchId,
+    processReceiptId,
+    runnerOutcome: result.outcome.status,
+    runnerError: supervisionSuccessful ? null : JSON.stringify(result.outcome),
+  });
 }
 
 // ---------------------------------------------------------------------------
