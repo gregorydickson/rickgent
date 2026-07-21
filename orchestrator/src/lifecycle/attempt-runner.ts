@@ -90,6 +90,7 @@ import {
   type LeaseAuthority,
 } from "../state/leases.js";
 import { PromotionAuthority, TransitionAuthority } from "../state/transitions.js";
+import { LifecycleEngine } from "./engine.js";
 import { provisionAttemptWorkspace } from "../git/attempt-workspace.js";
 import type {
   AllocatedAttempt,
@@ -670,6 +671,14 @@ export class AttemptRunner {
   readonly #executionContext: AttemptExecutionContextAuthority;
   readonly #providers: AttemptRunnerPhaseProviders;
   readonly #transitions: TransitionAuthority;
+  /**
+   * t24: the normative lifecycle engine that validates every attempt phase
+   * transition against the {@link PHASE_TRANSITION_TABLE} and delegates to
+   * the store's transactional CAS writer.  The runner routes its six forward
+   * phase transitions through this engine so the normative table is the
+   * single authority for which attempt transitions are legal.
+   */
+  readonly #lifecycle: LifecycleEngine;
 
   constructor(
     store: StateStore,
@@ -688,6 +697,7 @@ export class AttemptRunner {
     this.#executionContext = executionContext;
     this.#providers = providers;
     this.#transitions = new TransitionAuthority(store);
+    this.#lifecycle = new LifecycleEngine(store, this.#transitions);
   }
 
   /**
@@ -909,7 +919,17 @@ export class AttemptRunner {
     // 4-5. Dispatch + supervise.  The provider returns the durable dispatch
     //    receipt references.  Timeout and cancellation branch here.
     //    Transition the attempt from "planned" to "implementing" before dispatch.
-    this.#store.advanceAttemptState(attemptId, "planned", "implementing", attemptRunnerIdempotencyKey(attemptId, "begin-implementing"));
+    // t24: route the six forward phase transitions through the normative
+    // LifecycleEngine so every transition is validated against the
+    // PHASE_TRANSITION_TABLE.  The engine delegates to the store's
+    // transactional CAS writer (advanceAttemptState) after validating the
+    // edge is declared by the normative table.  Illegal edges fail closed.
+    this.#lifecycle.transitionAttempt({
+      attemptId,
+      from: "planned",
+      to: "implementing",
+      idempotencyKey: attemptRunnerIdempotencyKey(attemptId, "begin-implementing"),
+    });
     const dispatchInput: DispatchInput = {
       ownership: acquired,
       boundary,
@@ -993,7 +1013,12 @@ export class AttemptRunner {
     //    receipt references; the runner pins them into cleanup-eligibility.
     //    Transition the attempt to "implementation_captured" (the dispatch
     //    produced a terminal process receipt).
-    this.#store.advanceAttemptState(attemptId, "implementing", "implementation_captured", attemptRunnerIdempotencyKey(attemptId, "implementation-captured"));
+    this.#lifecycle.transitionAttempt({
+      attemptId,
+      from: "implementing",
+      to: "implementation_captured",
+      idempotencyKey: attemptRunnerIdempotencyKey(attemptId, "implementation-captured"),
+    });
     noteKey("attribute");
     const attribution = (this.#providers.commitAttribution ?? defaultAttribution)({
       ownership: acquired,
@@ -1023,7 +1048,12 @@ export class AttemptRunner {
       timeoutMs: request.timeoutMs,
       callerRepositoryRealpath: request.callerRepositoryRealpath,
     });
-    this.#store.advanceAttemptState(attemptId, "implementation_captured", "reviewing", attemptRunnerIdempotencyKey(attemptId, "begin-review"));
+    this.#lifecycle.transitionAttempt({
+      attemptId,
+      from: "implementation_captured",
+      to: "reviewing",
+      idempotencyKey: attemptRunnerIdempotencyKey(attemptId, "begin-review"),
+    });
     const reviewPhase: SupervisedPhaseIdentity = {
       phaseExecutionId: reviewContext.persisted.phaseExecutionId,
       contextId: reviewContext.persisted.contextId,
@@ -1061,7 +1091,12 @@ export class AttemptRunner {
     //    Create a verification execution context and transition the attempt
     //    to "verifying" state before calling the verification provider.
     noteKey("verify");
-    this.#store.advanceAttemptState(attemptId, "reviewing", "verification_queued", attemptRunnerIdempotencyKey(attemptId, "begin-verification-queued"));
+    this.#lifecycle.transitionAttempt({
+      attemptId,
+      from: "reviewing",
+      to: "verification_queued",
+      idempotencyKey: attemptRunnerIdempotencyKey(attemptId, "begin-verification-queued"),
+    });
     const verifyContext = this.#executionContext.resolveExecutionContext({
       attempt: request.attempt,
       contract: request.contract,
@@ -1079,7 +1114,12 @@ export class AttemptRunner {
       timeoutMs: request.timeoutMs,
       callerRepositoryRealpath: request.callerRepositoryRealpath,
     });
-    this.#store.advanceAttemptState(attemptId, "verification_queued", "verifying", attemptRunnerIdempotencyKey(attemptId, "begin-verifying"));
+    this.#lifecycle.transitionAttempt({
+      attemptId,
+      from: "verification_queued",
+      to: "verifying",
+      idempotencyKey: attemptRunnerIdempotencyKey(attemptId, "begin-verifying"),
+    });
     const verifyPhase: SupervisedPhaseIdentity = {
       phaseExecutionId: verifyContext.persisted.phaseExecutionId,
       contextId: verifyContext.persisted.contextId,
@@ -1116,7 +1156,12 @@ export class AttemptRunner {
     }
 
     // 8a. Transition the attempt to "converging" (verification passed).
-    this.#store.advanceAttemptState(attemptId, "verifying", "converging", attemptRunnerIdempotencyKey(attemptId, "begin-converging"));
+    this.#lifecycle.transitionAttempt({
+      attemptId,
+      from: "verifying",
+      to: "converging",
+      idempotencyKey: attemptRunnerIdempotencyKey(attemptId, "begin-converging"),
+    });
 
     // 8b. Finalize commit attribution: now that verification has passed, create
     //     the commit intent + attribution rows with real verification receipt
@@ -1725,12 +1770,12 @@ export class AttemptRunner {
       // make this transition — but since we walk the chain in order, the
       // current state should match the from-state of the first uncompleted
       // transition.
-      this.#store.advanceAttemptState(
+      this.#lifecycle.transitionAttempt({
         attemptId,
-        from,
-        to,
-        attemptRunnerIdempotencyKey(attemptId, key),
-      );
+        from: from as "planned" | "implementing" | "implementation_captured" | "reviewing" | "verification_queued" | "verifying",
+        to: to as "implementing" | "implementation_captured" | "reviewing" | "verification_queued" | "verifying" | "converging",
+        idempotencyKey: attemptRunnerIdempotencyKey(attemptId, key),
+      });
     }
   }
 

@@ -1135,10 +1135,14 @@
         "orchestrator/test/reliability/lifecycle-transitions.test.ts"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t23"
-      ]
+      ],
+      "completed_at": {
+        "commit": "3713598c1b97786b136da693a37d9fe416a4f79c",
+        "phase_report": "docs/remediation/phase-6-t24-lifecycle-transition-table-execution-report-2026-07-21.md"
+      }
     },
     {
       "id": "t25",

@@ -1,61 +1,128 @@
 import { describe, it, expect } from "vitest";
-import { PHASES, shouldAdvance, nextPhase, isTerminal, type Phase, type PhaseResult } from "../../src/lifecycle/phase.js";
+import {
+  PHASE_TABLE_VERSION,
+  PHASE_STATES,
+  PHASE_TERMINAL_STATES,
+  PHASE_TRANSITION_TABLE,
+  isLegalPhaseEdge,
+  isTerminalPhase,
+  legalPhaseEdge,
+  phaseEdgesFrom,
+  type PhaseState,
+} from "../../src/lifecycle/phase.js";
 
-describe("phase state machine", () => {
-  const successResult = (phase: Phase): PhaseResult => ({
-    phase,
-    success: true,
-    output: "ok",
-    commitSha: "abc123",
+// t24: the normative phase/remediation transition table.
+// The boolean 8-phase scaffold (PHASES, shouldAdvance, nextPhase, isTerminal)
+// has been replaced by one versioned typed transition table.  These tests
+// verify the table's structure and helpers.
+
+describe("normative phase transition table (t24)", () => {
+  it("is versioned and frozen", () => {
+    expect(PHASE_TABLE_VERSION).toBe("rickgent.phase-table.v1");
+    expect(Object.isFrozen(PHASE_STATES)).toBe(true);
+    expect(Object.isFrozen(PHASE_TERMINAL_STATES)).toBe(true);
+    expect(Object.isFrozen(PHASE_TRANSITION_TABLE)).toBe(true);
   });
 
-  it("has exactly 8 phases in order", () => {
-    expect(PHASES).toHaveLength(8);
-    expect(PHASES[0]).toBe("research");
-    expect(PHASES[7]).toBe("simplify");
+  it("declares the normative attempt lifecycle states (not the boolean 8-phase scaffold)", () => {
+    expect(PHASE_STATES).toContain("planned");
+    expect(PHASE_STATES).toContain("implementing");
+    expect(PHASE_STATES).toContain("implementation_captured");
+    expect(PHASE_STATES).toContain("reviewing");
+    expect(PHASE_STATES).toContain("remediating");
+    expect(PHASE_STATES).toContain("remediation_captured");
+    expect(PHASE_STATES).toContain("verification_queued");
+    expect(PHASE_STATES).toContain("verifying");
+    expect(PHASE_STATES).toContain("converging");
+    expect(PHASE_STATES).toContain("cleanup_pending");
+    expect(PHASE_STATES).toContain("oracle_evaluation");
+    expect(PHASE_STATES).toContain("verified");
+    expect(PHASE_STATES).toContain("failed_clean");
+    expect(PHASE_STATES).toContain("quarantined");
+    // The boolean scaffold states must NOT be present.
+    expect(PHASE_STATES).not.toContain("research");
+    expect(PHASE_STATES).not.toContain("simplify");
+    expect(PHASE_STATES).not.toContain("implement");
   });
 
-  it("shouldAdvance returns true on success with correct nextPhase", () => {
-    const result = shouldAdvance("research", successResult("research"));
-    expect(result.advance).toBe(true);
-    expect(result.nextPhase).toBe("research_review");
+  it("declares the forward success chain planned -> ... -> verified", () => {
+    const forwardChain: ReadonlyArray<readonly [PhaseState, PhaseState]> = [
+      ["planned", "implementing"],
+      ["implementing", "implementation_captured"],
+      ["implementation_captured", "reviewing"],
+      ["reviewing", "verification_queued"],
+      ["verification_queued", "verifying"],
+      ["verifying", "converging"],
+      ["converging", "cleanup_pending"],
+      ["cleanup_pending", "oracle_evaluation"],
+      ["oracle_evaluation", "verified"],
+    ];
+    for (const [from, to] of forwardChain) {
+      expect(isLegalPhaseEdge(from, to)).toBe(true);
+    }
   });
 
-  it("shouldAdvance returns false on failure", () => {
-    const result = shouldAdvance("research", { ...successResult("research"), success: false });
-    expect(result.advance).toBe(false);
-    expect(result.nextPhase).toBeNull();
+  it("declares the remediation loop reviewing -> remediating -> remediation_captured -> reviewing", () => {
+    expect(isLegalPhaseEdge("reviewing", "remediating")).toBe(true);
+    expect(isLegalPhaseEdge("remediating", "remediation_captured")).toBe(true);
+    expect(isLegalPhaseEdge("remediation_captured", "reviewing")).toBe(true);
   });
 
-  it("shouldAdvance returns false at last phase", () => {
-    const result = shouldAdvance("simplify", successResult("simplify"));
-    expect(result.advance).toBe(false);
-    expect(result.nextPhase).toBeNull();
-    expect(result.reason).toContain("last phase");
+  it("declares failure edges from every pre-cleanup state to cleanup_pending", () => {
+    const preCleanup: readonly PhaseState[] = [
+      "planned", "implementing", "implementation_captured", "reviewing",
+      "remediating", "remediation_captured", "verification_queued", "verifying",
+      "converging",
+    ];
+    for (const from of preCleanup) {
+      expect(isLegalPhaseEdge(from, "cleanup_pending")).toBe(true);
+    }
   });
 
-  it("shouldAdvance transitions through all review gates", () => {
-    expect(shouldAdvance("research", successResult("research")).nextPhase).toBe("research_review");
-    expect(shouldAdvance("research_review", successResult("research_review")).nextPhase).toBe("plan");
-    expect(shouldAdvance("plan", successResult("plan")).nextPhase).toBe("plan_review");
-    expect(shouldAdvance("plan_review", successResult("plan_review")).nextPhase).toBe("implement");
-    expect(shouldAdvance("implement", successResult("implement")).nextPhase).toBe("spec_conformance");
-    expect(shouldAdvance("spec_conformance", successResult("spec_conformance")).nextPhase).toBe("code_review");
-    expect(shouldAdvance("code_review", successResult("code_review")).nextPhase).toBe("simplify");
+  it("declares cleanup terminal edges", () => {
+    expect(isLegalPhaseEdge("cleanup_pending", "failed_clean")).toBe(true);
+    expect(isLegalPhaseEdge("cleanup_pending", "quarantined")).toBe(true);
   });
 
-  it("nextPhase returns the next phase in sequence", () => {
-    expect(nextPhase("research")).toBe("research_review");
-    expect(nextPhase("implement")).toBe("spec_conformance");
+  it("rejects illegal edges not in the table", () => {
+    expect(isLegalPhaseEdge("planned", "reviewing")).toBe(false);
+    expect(isLegalPhaseEdge("planned", "verified")).toBe(false);
+    expect(isLegalPhaseEdge("reviewing", "verified")).toBe(false);
+    expect(isLegalPhaseEdge("verified", "planned")).toBe(false);
+    expect(isLegalPhaseEdge("failed_clean", "planned")).toBe(false);
   });
 
-  it("nextPhase returns null at terminal phase", () => {
-    expect(nextPhase("simplify")).toBeNull();
+  it("isTerminalPhase classifies terminal states", () => {
+    expect(isTerminalPhase("verified")).toBe(true);
+    expect(isTerminalPhase("failed_clean")).toBe(true);
+    expect(isTerminalPhase("quarantined")).toBe(true);
+    expect(isTerminalPhase("planned")).toBe(false);
+    expect(isTerminalPhase("cleanup_pending")).toBe(false);
   });
 
-  it("isTerminal returns true only for simplify", () => {
-    expect(isTerminal("simplify")).toBe(true);
-    expect(isTerminal("research")).toBe(false);
-    expect(isTerminal("implement")).toBe(false);
+  it("phaseEdgesFrom returns outgoing legal edges", () => {
+    const fromReviewing = phaseEdgesFrom("reviewing");
+    const targets = fromReviewing.map((e) => e.to);
+    expect(targets).toContain("verification_queued");
+    expect(targets).toContain("remediating");
+    expect(targets).toContain("cleanup_pending");
+    expect(phaseEdgesFrom("verified")).toHaveLength(0);
+    expect(phaseEdgesFrom("failed_clean")).toHaveLength(0);
+  });
+
+  it("every edge declares a guard, evidence producer, and role", () => {
+    for (const edge of PHASE_TRANSITION_TABLE) {
+      expect(edge.guard.length).toBeGreaterThan(0);
+      expect(edge.evidenceProducer.length).toBeGreaterThan(0);
+      expect(edge.role.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("legalPhaseEdge returns the edge for legal edges and undefined for illegal", () => {
+    const edge = legalPhaseEdge("planned", "implementing");
+    expect(edge).toBeDefined();
+    expect(edge!.from).toBe("planned");
+    expect(edge!.to).toBe("implementing");
+    expect(legalPhaseEdge("planned", "verified")).toBeUndefined();
   });
 });
