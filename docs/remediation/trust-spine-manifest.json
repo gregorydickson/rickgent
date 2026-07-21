@@ -1108,8 +1108,8 @@
         "t22"
       ],
       "completed_at": {
-        "commit": "224284a",
-        "phase_report": "docs/remediation/phase-5-t23-concurrency-corpus-execution-report-2026-07-21.md"
+        "commit": "99f8e1c",
+        "phase_report": "docs/remediation/phase-5-fix-build-commit-amend-execution-report-2026-07-21.md"
       }
     },
     {
