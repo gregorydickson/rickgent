@@ -1140,7 +1140,7 @@
         "t23"
       ],
       "completed_at": {
-        "commit": "3713598c1b97786b136da693a37d9fe416a4f79c",
+        "commit": "ffdb0912857b0d244866e0b95e7d984b0f772aec",
         "phase_report": "docs/remediation/phase-6-t24-lifecycle-transition-table-execution-report-2026-07-21.md"
       }
     },
