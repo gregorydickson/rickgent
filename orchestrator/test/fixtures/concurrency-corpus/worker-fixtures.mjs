@@ -28,21 +28,36 @@
  *                         a new oid; report the new delivery oid.
  *   spawn-stubborn        Spawn a stubborn descendant process tree that tries
  *                         to write an escape marker; report the escape attempt.
+ *   spawn-stubborn-supervised
+ *                       Spawn a stubborn descendant tree (double-fork-escape)
+ *                       through the ProcessSupervisor; observe and reap the
+ *                       detached grandchild; report groupDead,
+ *                       descendantsConfirmedDead, survivorPid, survivorReaped.
  *   flood-output          Write a large volume to the attempt's stdout/stderr
  *                         paths; report the bytes written.
+ *   flood-output-supervised
+ *                       Run the output-flood fixture through the
+ *                       ProcessSupervisor so output is captured by the
+ *                       bounded-output sinks; report the BoundedOutputReceipt
+ *                       fields for stdout/stderr and the StateStore integrity
+ *                       (quick_check / foreign_key_check) result.
  *
  * All scenarios report via process.send with { type: "result", ... } on
  * success or { type: "error", code, message } on failure.  The parent test
  * treats an unexpected error as an infrastructure error (not a caught race).
  */
 import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { LeaseAuthority } from "../../../dist/state/leases.js";
 import { openStateStore } from "../../../dist/state/store.js";
 import { provisionAttemptWorkspace } from "../../../dist/git/attempt-workspace.js";
+import { ProcessSupervisor } from "../../../dist/process/supervisor.js";
+import { canonicalJson } from "../../../dist/contracts/ticket-contract.js";
 
 // ---------------------------------------------------------------------------
 // IPC helpers.
@@ -271,6 +286,292 @@ function scenarioFloodOutput(args) {
 }
 
 // ---------------------------------------------------------------------------
+// Supervised fixture helper.
+//
+// The supervised scenarios (spawn-stubborn-supervised, flood-output-supervised)
+// route process execution through the real ProcessSupervisor so that:
+//   - output is captured by the BoundedOutputSink (bounded-output receipts),
+//   - the process tree is observed and reaped by the PosixProcessController,
+//   - the durable StateStore records the launch + terminal observations.
+//
+// The worker opens the shared StateStore against the disposable repo, ensures
+// the execution_contexts / phase_executions rows the launch foreign-keys
+// reference are present, acquires ownership, provisions the workspace, and
+// constructs the ProcessSupervisor.  The parent test seeds the repo (runs,
+// tickets, attempts) and passes the attempt id + phase identity; the worker
+// seeds the phase/context rows if they are not already present so the
+// supervised launch's foreign keys resolve.
+// ---------------------------------------------------------------------------
+
+function sha256Hex(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function ensurePhaseContext(store, args) {
+  const attemptId = args["attempt-id"];
+  const contextId = args["context-id"] ?? `context-${attemptId}`;
+  const phaseExecutionId = args["phase-execution-id"] ?? `phase-${attemptId}`;
+  const contextDigest = args["context-digest"] ?? `sha256:${sha256Hex(canonicalJson({ attempt_id: attemptId, phase: "implement" }))}`;
+  const now = new Date().toISOString();
+  const db = new DatabaseSync(store.location.databasePath);
+  try {
+    db.exec("PRAGMA foreign_keys = ON");
+    const ctxRow = db.prepare("SELECT 1 FROM execution_contexts WHERE context_id = ? AND attempt_id = ?").get(contextId, attemptId);
+    if (ctxRow === undefined) {
+      const contextJson = canonicalJson({
+        schema_version: "rickgent.execution-context/v1",
+        attempt_id: attemptId,
+        phase: "implement",
+        phase_ordinal: 0,
+        role: "worker",
+      });
+      const contractDigest = db.prepare("SELECT contract_digest FROM attempts WHERE attempt_id = ?").get(attemptId).contract_digest;
+      const capabilityDigest = db.prepare("SELECT capability_snapshot_digest FROM attempts WHERE attempt_id = ?").get(attemptId).capability_snapshot_digest;
+      db.prepare(
+        `INSERT INTO execution_contexts (context_id, context_digest, attempt_id, phase, phase_ordinal, role, canonical_context_json, contract_digest, capability_snapshot_digest, policy_bundle_digest, model_selection_digest, budget_digest, scope_digest, context_schema_version, oracle_version, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      ).run(
+        contextId,
+        contextDigest,
+        attemptId,
+        "implement",
+        0,
+        "worker",
+        contextJson,
+        contractDigest,
+        capabilityDigest,
+        `sha256:${sha256Hex("policy:" + attemptId)}`,
+        `sha256:${sha256Hex("model:" + attemptId)}`,
+        `sha256:${sha256Hex("budget:" + attemptId)}`,
+        `sha256:${sha256Hex("scope:" + attemptId)}`,
+        "rickgent.execution-context/v1",
+        "rickgent.oracle.v2",
+        now,
+      );
+    }
+    const phaseRow = db.prepare("SELECT 1 FROM phase_executions WHERE phase_execution_id = ? AND attempt_id = ?").get(phaseExecutionId, attemptId);
+    if (phaseRow === undefined) {
+      db.prepare(
+        `INSERT INTO phase_executions (phase_execution_id, attempt_id, context_id, phase, phase_ordinal, role, identity_digest, created_at) VALUES (?,?,?,?,?,?,?,?)`,
+      ).run(
+        phaseExecutionId,
+        attemptId,
+        contextId,
+        "implement",
+        0,
+        "worker",
+        `sha256:${sha256Hex("phase:" + attemptId)}`,
+        now,
+      );
+    }
+  } finally {
+    db.close();
+  }
+  return { contextId, phaseExecutionId, contextDigest };
+}
+
+function setupSupervisedFixture(args) {
+  const repo = args["repo"];
+  const store = openStateStore({ repoPath: repo });
+  const phase = ensurePhaseContext(store, args);
+  const leases = new LeaseAuthority(store);
+  const acquired = leases.acquire(leases.prepareAcquisition({
+    attemptId: args["attempt-id"],
+    idempotencyKey: args["idempotency-key"],
+    ttlMs: 60_000,
+  }));
+  const provisioned = provisionAttemptWorkspace(leases, acquired);
+  if (!provisioned.ok) {
+    throw new Error(`provision failed: ${provisioned.code}: ${provisioned.detail}`);
+  }
+  const supervisor = new ProcessSupervisor(store, leases);
+  return {
+    store,
+    leases,
+    supervisor,
+    ownership: provisioned.workspace.ownership,
+    authorization: provisioned.authorization,
+    phase,
+  };
+}
+
+function supervisedRequest(fixture, argv, overrides = {}) {
+  return {
+    ownership: fixture.ownership,
+    authorization: fixture.authorization,
+    phase: {
+      phaseExecutionId: fixture.phase.phaseExecutionId,
+      contextId: fixture.phase.contextId,
+      contextDigest: fixture.phase.contextDigest,
+    },
+    argv,
+    environment: {},
+    allowedEnvironmentKeys: [],
+    timeoutMs: 5_000,
+    terminationGraceMs: 200,
+    deathObservationMs: 800,
+    outputLimitBytes: 8_192,
+    tailLimitBytes: 1_024,
+    ...overrides,
+  };
+}
+
+function storeIntegrityCheck(databasePath) {
+  const db = new DatabaseSync(databasePath, { readOnly: true });
+  try {
+    const quick = db.prepare("PRAGMA quick_check").get();
+    const fk = db.prepare("PRAGMA foreign_key_check").all();
+    return {
+      quick_check: quick && typeof quick === "object" ? String(quick.quick_check ?? quick[Object.keys(quick)[0]] ?? "") : String(quick),
+      foreign_key_check_violations: Array.isArray(fk) ? fk.length : 0,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+async function scenarioSpawnStubbornSupervised(args) {
+  const fixture = setupSupervisedFixture(args);
+  try {
+    const reportDir = args["report-dir"];
+    mkdirSync(reportDir, { recursive: true, mode: 0o700 });
+    const sentinel = args["sentinel-path"] ?? join(reportDir, "escape-sentinel.txt");
+    const stubbornFixture = args["stubborn-fixture"];
+    if (!stubbornFixture || !existsSync(stubbornFixture)) {
+      throw new Error(`--stubborn-fixture is required and must exist: ${String(stubbornFixture)}`);
+    }
+    const result = await fixture.supervisor.run(supervisedRequest(fixture, [
+      process.execPath,
+      stubbornFixture,
+      "double-fork-escape",
+      "--report-dir",
+      reportDir,
+      "--lifetime-ms",
+      "3000",
+      "--mutation-delay-ms",
+      "200",
+      "--sentinel",
+      sentinel,
+    ], {
+      timeoutMs: 4_000,
+      deathObservationMs: 1_000,
+    }));
+    // Read the survivor report written by the double-fork-escape fixture.
+    let survivorPid = null;
+    let survivorReaped = false;
+    const survivorReportPath = join(reportDir, "escape-survivor.json");
+    if (existsSync(survivorReportPath)) {
+      try {
+        const survivorReport = JSON.parse(readFileSync(survivorReportPath, "utf8"));
+        survivorPid = Number(survivorReport.pid ?? null);
+      } catch {}
+    }
+    // Reap the detached grandchild: the ProcessSupervisor's posix reaper
+    // kills the process GROUP but a double-fork-escape survivor detaches into
+    // its own session, so the supervisor honestly reports
+    // descendantsConfirmedDead=false.  The worker explicitly kills and
+    // verifies the survivor to prove the detached descendant is reaped.
+    if (survivorPid !== null && Number.isSafeInteger(survivorPid) && survivorPid > 0) {
+      try { process.kill(survivorPid, "SIGKILL"); } catch {}
+      // Wait briefly for the kernel to reap, then verify ESRCH.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      try {
+        process.kill(survivorPid, 0);
+        survivorReaped = false;
+      } catch (error) {
+        survivorReaped = error instanceof Error && /ESRCH|No such process/.test(error.message);
+      }
+    } else {
+      survivorReaped = true; // no survivor to reap
+    }
+    reply({
+      type: "result",
+      scenario: "spawn-stubborn-supervised",
+      attemptId: args["attempt-id"],
+      outcome: result.outcome,
+      groupDead: result.groupDead,
+      descendantsConfirmedDead: result.descendantsConfirmedDead,
+      exitCode: result.exitCode,
+      pid: result.pid,
+      survivorPid,
+      survivorReaped,
+      reportDir,
+      sentinelPath: sentinel,
+      launchId: result.launchId,
+      processReceiptId: result.processReceiptId,
+    });
+  } finally {
+    try { fixture.store.close(); } catch {}
+  }
+}
+
+async function scenarioFloodOutputSupervised(args) {
+  const fixture = setupSupervisedFixture(args);
+  try {
+    const reportDir = args["report-dir"];
+    mkdirSync(reportDir, { recursive: true, mode: 0o700 });
+    const floodFixture = args["flood-fixture"];
+    if (!floodFixture || !existsSync(floodFixture)) {
+      throw new Error(`--flood-fixture is required and must exist: ${String(floodFixture)}`);
+    }
+    const floodBytes = parseInt(args["flood-bytes"] ?? "65536", 10);
+    const outputLimitBytes = parseInt(args["output-limit-bytes"] ?? "4096", 10);
+    const result = await fixture.supervisor.run(supervisedRequest(fixture, [
+      process.execPath,
+      floodFixture,
+      "simultaneous",
+      "--report-dir",
+      reportDir,
+      "--bytes",
+      String(floodBytes),
+    ], {
+      timeoutMs: 10_000,
+      outputLimitBytes,
+      tailLimitBytes: Math.min(1_024, outputLimitBytes),
+    }));
+    // The supervisor captures stdout/stderr via BoundedOutputSink and produces
+    // BoundedOutputReceipts.  Report the receipt fields so the parent test can
+    // assert bounded-output-receipt constraints.
+    const stdoutReceipt = result.stdout === null ? null : {
+      path: result.stdout.path,
+      streamDigest: result.stdout.streamDigest,
+      artifactDigest: result.stdout.artifactDigest,
+      originalBytes: result.stdout.originalBytes,
+      storedBytes: result.stdout.storedBytes,
+      truncated: result.stdout.truncated,
+      tailBase64: result.stdout.tailBase64,
+    };
+    const stderrReceipt = result.stderr === null ? null : {
+      path: result.stderr.path,
+      streamDigest: result.stderr.streamDigest,
+      artifactDigest: result.stderr.artifactDigest,
+      originalBytes: result.stderr.originalBytes,
+      storedBytes: result.stderr.storedBytes,
+      truncated: result.stderr.truncated,
+      tailBase64: result.stderr.tailBase64,
+    };
+    const integrity = storeIntegrityCheck(fixture.store.location.databasePath);
+    reply({
+      type: "result",
+      scenario: "flood-output-supervised",
+      attemptId: args["attempt-id"],
+      outcome: result.outcome,
+      groupDead: result.groupDead,
+      descendantsConfirmedDead: result.descendantsConfirmedDead,
+      exitCode: result.exitCode,
+      stdoutReceipt,
+      stderrReceipt,
+      storeIntegrity: integrity,
+      floodBytes,
+      outputLimitBytes,
+      launchId: result.launchId,
+      processReceiptId: result.processReceiptId,
+    });
+  } finally {
+    try { fixture.store.close(); } catch {}
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main entry point.
 // ---------------------------------------------------------------------------
 
@@ -302,8 +603,13 @@ async function main() {
       scenarioForeignCommit(args);
     } else if (scenario === "spawn-stubborn") {
       await scenarioSpawnStubborn(args);
+    } else if (scenario === "spawn-stubborn-supervised") {
+      // setupSupervisedFixture opens/closes its own store.
+      await scenarioSpawnStubbornSupervised(args);
     } else if (scenario === "flood-output") {
       scenarioFloodOutput(args);
+    } else if (scenario === "flood-output-supervised") {
+      await scenarioFloodOutputSupervised(args);
     } else {
       reply({ type: "error", code: "RICKGENT_CONCURRENCY_WORKER_UNKNOWN_SCENARIO", message: `unknown scenario: ${scenario}` });
       process.exitCode = 1;

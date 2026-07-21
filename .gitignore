@@ -10,3 +10,6 @@ __pycache__/
 .DS_Store
 coverage/
 *.log
+# Dynamic per-run concurrency corpus summary (untracked; the canonical
+# concurrency-summary.json is the tracked artifact).
+artifacts/reliability/concurrency-summary.test.json

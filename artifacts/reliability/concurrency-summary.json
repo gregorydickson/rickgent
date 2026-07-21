@@ -39,5 +39,5 @@
     }
   },
   "parallel_dispatch_state_after_proof": "unavailable",
-  "generated_at": "2026-07-21T08:22:44.600Z"
+  "artifact_note": "Canonical tracked summary of a passing 50-iteration concurrency corpus run. The dynamic per-run summary (with a generated_at timestamp) is written to the untracked sibling concurrency-summary.test.json by the test so this canonical artifact is not dirtied by timestamp changes on every test run."
 }

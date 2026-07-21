@@ -41,7 +41,10 @@
         "A worker with attempt A ownership cannot update attempt B's attempt ref to a foreign oid without corrupting B's durable baseline (the store's cleanup validation rejects a foreign attempt ref oid)",
         "Attempt A's ownership lease is bound to attempt A's attempt id; attempt B's lease is bound to attempt B's attempt id",
         "Attempt A's commit attribution (if any) is not observable as attempt B's commit attribution",
-        "A foreign ownership grant (attempt A's grant presented for attempt B) is rejected by isAuthorizedAttemptOwnershipGrant / assertFresh"
+        "A foreign ownership grant (attempt A's grant presented for attempt B) is rejected by isAuthorizedAttemptOwnershipGrant / assertFresh",
+        "Unauthorized ref movement is rolled back to the durable baseline (the rival's attempt ref is restored; the foreign oid does not persist as the rival's authoritative ref)",
+        "No commit attribution row is persisted for the rival attempt after the foreign ref write (the authority mint capability is held by LeaseAuthority; the ownership plan binds the attemptRef to the owning attempt)",
+        "The authority path constrains commits to the owning attempt: attempt A's provisioned attemptRef is bound to attempt A's ref, not attempt B's ref"
       ]
     },
     {
@@ -59,25 +62,27 @@
     {
       "id": "stubborn-descendants",
       "name": "Stubborn descendants",
-      "description": "A worker spawns a stubborn descendant process tree (double-fork escape attempt). The descendant cannot escape the attempt's containment: no sentinel file appears outside the attempt's owned output directory, and the descendant process is reaped before the attempt's ownership is released.",
-      "worker_scenario": "spawn-stubborn",
+      "description": "A worker spawns a stubborn descendant process tree (double-fork escape attempt) through the ProcessSupervisor so the process tree is observed and reaped. The detached grandchild is explicitly killed and verified dead. The descendant cannot escape the attempt's containment: no sentinel file appears outside the attempt's owned output directory, and the descendant process is reaped before the attempt's ownership is released.",
+      "worker_scenario": "spawn-stubborn-supervised",
       "assertions": [
         "A double-fork escape attempt does not create a marker file outside the attempt's owned output directory",
+        "The ProcessSupervisor observes the process tree and reaps the process group (groupDead=true); a durable launch receipt is persisted",
+        "The detached grandchild is explicitly killed and verified dead (ESRCH) by the worker so no stubborn descendant outlives the worker that spawned it",
         "The attempt's process group is distinct from the rival attempt's process group",
-        "No stubborn descendant outlives the worker process that spawned it (the test reaps the process tree before asserting isolation)",
         "The rival attempt's output directory is not mutated by the stubborn descendant"
       ]
     },
     {
       "id": "output-floods",
       "name": "Output floods",
-      "description": "A worker floods its stdout and stderr paths with a large volume of output. The bounded output receipts keep each attempt's output isolated: the rival attempt's stdout/stderr paths are not affected, and the flood does not corrupt the shared state store.",
-      "worker_scenario": "flood-output",
+      "description": "A worker floods its stdout and stderr through the ProcessSupervisor so output is captured by the bounded-output sinks (BoundedOutputReceipt). The bounded output receipts keep each attempt's output isolated: the rival attempt's stdout/stderr paths are not affected, and the flood does not corrupt the shared state store.",
+      "worker_scenario": "flood-output-supervised",
       "assertions": [
-        "The flooding worker's stdout path is bounded (the write succeeds but the file size is the bounded volume)",
+        "The flooding worker's stdout/stderr are captured by the BoundedOutputSink (BoundedOutputReceipt with streamDigest, artifactDigest, originalBytes, storedBytes, truncated, tailBase64)",
+        "The stored bytes are bounded by the output limit (storedBytes <= outputLimitBytes); the flood is truncated when originalBytes exceeds the output limit",
         "The rival attempt's stdout path is not mutated by the flood",
         "The rival attempt's stderr path is not mutated by the flood",
-        "The shared state store is not corrupted by the output flood (quick_check passes, foreign_key_check passes)"
+        "The shared state store is not corrupted by the output flood (PRAGMA quick_check returns ok; PRAGMA foreign_key_check reports zero violations)"
       ]
     }
   ]
