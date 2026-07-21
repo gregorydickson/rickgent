@@ -1166,10 +1166,14 @@
         "orchestrator/test/reliability/contract-propagation.test.ts"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t24"
-      ]
+      ],
+      "completed_at": {
+        "commit": "PENDING",
+        "phase_report": "docs/remediation/phase-6-t25-ticket-contract-propagation-execution-report-2026-07-21.md"
+      }
     },
     {
       "id": "t26",

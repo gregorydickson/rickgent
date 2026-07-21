@@ -35,9 +35,9 @@ import { evaluatePrd } from "../core/prd.js";
 import { parseExecutablePrdFile } from "./prd-parse.js";
 import {
   TicketContractError,
-  canonicalJson,
   type TicketContract,
 } from "../contracts/ticket-contract.js";
+import { renderImplementationPrompt } from "./prompts.js";
 import {
   reapOrphanedWorkerProcs,
   detectBackend,
@@ -460,12 +460,29 @@ function provisionFailureIssue(result: Exclude<ProvisionRunWorkspaceResult, { re
   });
 }
 
+/**
+ * t25: the implementation prompt is produced by the role-specific renderer
+ * ({@link renderImplementationPrompt}) which carries the full normalized
+ * contract (ACs, structured verification definitions, interfaces, scope/
+ * change kinds, dependencies, budgets, contract digest) and the required
+ * output schema.  The legacy lossy `Implement ticket <id>: <title>` header
+ * is removed; the renderer's canonical prompt body is the single production
+ * source.
+ *
+ * Returns the canonical prompt_text so legacy callers (and the
+ * `prd-ticket-adapter` parity test) continue to receive a string prompt.
+ */
 export function ticketPrompt(ticket: TicketContract): string {
-  return [
-    "Implement the following normalized TicketContract exactly.",
-    "The digest and every executable field are authoritative:",
-    canonicalJson(ticket),
-  ].join("\n");
+  return renderImplementationPrompt(ticket, {
+    phase: "implement",
+    role: "worker",
+    // The legacy fixture-bridge path has no persisted execution context; use
+    // the contract digest as the context binding so the receipt is still
+    // content-hashed and verifiable.  The production AttemptRunner path
+    // supplies the real persisted context digest.
+    contextDigest: ticket.digest,
+    contractDigest: ticket.digest,
+  }).prompt_text;
 }
 
 // ---------------------------------------------------------------------------
@@ -820,7 +837,18 @@ async function executeBuildViaRunner(
     // The supervised argv is the real `omnigent run <agentDir> -p <prompt>`
     // dispatch path derived from the configured agent bundle and ticket
     // prompt — not a placeholder command.
-    const prompt = `Implement ticket ${ticket.id}: ${ticket.title}\n${ticket.description}`;
+    // t25: the supervised argv prompt is the role-specific implementation
+    // renderer's canonical prompt body — the full normalized contract
+    // (ACs, structured verification definitions, interfaces, scope/change
+    // kinds, dependencies, budgets, contract digest) plus the required
+    // output schema.  The lossy `Implement ticket <id>: <title>` two-line
+    // header is removed; the renderer is the single production source.
+    const prompt = renderImplementationPrompt(ticket, {
+      phase: "implement",
+      role: "worker",
+      contextDigest: attempt.contractDigest,
+      contractDigest: ticket.digest,
+    }).prompt_text;
     const supervisedArgv = dependencies.dispatchArgvOverride ?? buildOmnigentDispatchArgv(opts.agentDir, prompt);
     const request: AttemptRunnerRequest = {
       attempt,
