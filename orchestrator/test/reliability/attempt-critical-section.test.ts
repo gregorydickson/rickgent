@@ -773,7 +773,7 @@ function makeRunner(
       };
     },
     review() { return { reviewRecordId: `review-${fixture.attempt.attemptId}`, verdict: reviewVerdict, reviewEvidenceId: `evidence-review-${fixture.attempt.attemptId}` }; },
-    verification() { return { gateResultId: `gate-${fixture.attempt.attemptId}`, status: verificationStatus, gateEvidenceId: `evidence-gate-${fixture.attempt.attemptId}` }; },
+    verification() { return { gateResultId: `gate-${fixture.attempt.attemptId}`, gateResultIds: [`gate-${fixture.attempt.attemptId}`], status: verificationStatus, gateEvidenceId: `evidence-gate-${fixture.attempt.attemptId}` }; },
     oracle(input) {
       const oracleDecisionId = `oracle-${fixture.attempt.attemptId}`;
       // Seed the oracle decision row as a durable receipt the runner reads.

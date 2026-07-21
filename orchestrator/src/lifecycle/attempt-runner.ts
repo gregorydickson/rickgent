@@ -263,9 +263,22 @@ export interface ReviewResult {
 
 /**
  * Result of the verification phase.
+ *
+ * `gateResultId` is the first gate result ID (backward-compatible
+ * representative).  `gateResultIds` carries the complete list of gate result
+ * IDs — one per sealed contract verification ID.  The runner uses
+ * `gateResultIds` to build the complete `verificationReceiptDigestsJson`
+ * array so the oracle sees the full sorted set of required gate results.
  */
 export interface VerificationResult {
   readonly gateResultId: string;
+  /**
+   * The complete list of gate result IDs, one per sealed contract
+   * verification ID.  The oracle requires passed gate records for the
+   * complete sorted set of sealed verification IDs, so the provider must
+   * create a gate result for every verification — not just `verifications[0]`.
+   */
+  readonly gateResultIds: readonly string[];
   readonly status: "pass" | "fail" | "infrastructure_error";
   readonly gateEvidenceId: string;
 }
@@ -1054,12 +1067,21 @@ export class AttemptRunner {
     //     which are only available after verification.
     noteKey("finalize-attribution");
     try {
-      let verificationDigest: string;
-      try {
-        verificationDigest = this.#store.queryGateResultDigest(verification.gateResultId);
-      } catch {
-        verificationDigest = sha256(`gate:${verification.gateResultId}`);
-      }
+      // t22D-fix-multi-verification: Build the verification receipt digests
+      // from ALL gate result IDs — one per sealed contract verification ID.
+      // The oracle requires the complete sorted set of gate result digests;
+      // using only the first gate result leaves the remaining required gates
+      // unsealed and the oracle rejects with required_gate_missing_or_duplicate.
+      const verificationGateIds = verification.gateResultIds.length > 0
+        ? verification.gateResultIds
+        : [verification.gateResultId];
+      const verificationDigests = verificationGateIds.map((gateId) => {
+        try {
+          return this.#store.queryGateResultDigest(gateId);
+        } catch {
+          return sha256(`gate:${gateId}`);
+        }
+      });
       const normalizedDelta = observeGitDelta(
         acquired.repositoryPath,
         acquired.plan.lineage.deliveryBaselineOid,
@@ -1138,7 +1160,7 @@ export class AttemptRunner {
         changeKindSetDigest,
         modeSetDigest,
         normalizedDeltaJson: canonicalJson(normalizedDelta),
-        verificationReceiptDigestsJson: canonicalJson([verificationDigest]),
+        verificationReceiptDigestsJson: canonicalJson(verificationDigests),
         deliveryRefObservedOid: acquired.plan.lineage.deliveryBaselineOid,
         attemptRefBeforeOid: acquired.plan.lineage.deliveryBaselineOid,
         attemptRefAfterOid: attribution.attemptRefObservedOid,

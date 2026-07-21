@@ -383,47 +383,23 @@ export function buildAttemptRunnerProviders(
       const phase = input.phase;
       const createdAt = input.ownership.ownership.heartbeatAt;
       const contract = input.contract;
-      const gateResultId = `gate-${attemptId}`;
-      const gateEvidenceId = `evidence-gate-${attemptId}`;
 
-      // Run the contract's verification argv.  This is the real production
-      // observation — the gate runner executes the verification command and
-      // records the observed result.  A failing command produces a "failed"
-      // gate, not a manufactured "pass".
-      const verification = contract.verifications[0];
-      if (verification === undefined) {
+      // t22D-fix-multi-verification: Iterate ALL sealed contract verification
+      // IDs — not just verifications[0].  The StateStore's oracle requires
+      // passed gate records for the complete sorted set of sealed verification
+      // IDs; selecting only the first leaves the remaining required gates
+      // unsealed and the oracle rejects with required_gate_missing_or_duplicate.
+      const verifications = contract.verifications;
+      if (verifications.length === 0) {
         // No verification declared — fail closed (no manufactured pass).
         throw new Error("RICKGENT_ATTEMPT_VERIFICATION_UNCONFIGURED: contract has no verification argv");
       }
 
-      // Run the verification in the worktree (where the worker's changes
-      // are visible), not the main repository path.  The worker dispatch
-      // creates files in the worktree; the verification must observe them
-      // there.
-      const cwd = input.ownership.plan.worktreePath ?? input.ownership.repositoryPath;
-      const env: Record<string, string> = {};
-      for (const key of verification.env_allowlist) {
-        if (process.env[key] !== undefined) {
-          env[key] = process.env[key]!;
-        }
-      }
-      const result = runVerificationArgv(
-        verification.executable,
-        verification.args,
-        cwd,
-        env,
-        verification.timeout_ms,
-      );
-
-      // The gate status is derived from the real verification result.
-      const gateStatus: "passed" | "failed" | "infrastructure_error" =
-        result.status === "pass" ? "passed" :
-        result.status === "fail" ? "failed" : "infrastructure_error";
-
       // Observe the candidate tree oid from the attempt ref (same as the
       // attribution provider).  Use the real candidate, not the baseline.
       // t22D-fix-round-5 (defect #4): pass owned paths for owned-paths-only
-      // staging.
+      // staging.  The candidate tree + diff digest are the same for all
+      // verifications — they all evaluate the same candidate.
       const baselineOid = input.ownership.plan.lineage.deliveryBaselineOid;
       const attemptRef = input.ownership.plan.attemptRef;
       const ownedPaths = input.contract.scope.map((s) => s.path).filter((p) => p.length > 0);
@@ -455,52 +431,94 @@ export function buildAttemptRunnerProviders(
         throw new Error("RICKGENT_ATTEMPT_VERIFICATION_ERROR: cannot resolve candidate diff for gate record");
       }
 
-      // Persist the gate evidence.
-      const gatePayload = {
-        gate_id: verification.id,
-        evaluation_ordinal: 0,
-        required: true,
-        status: gateStatus,
-        candidate_tree_oid: candidateTreeOid,
-        candidate_diff_digest: candidateDiffDigest,
-      };
-      store.persistAuthorityEvidence({
-        evidenceId: gateEvidenceId,
-        attemptId,
-        phaseExecutionId: phase.phaseExecutionId,
-        contextId: phase.contextId,
-        producerService: "VerificationService",
-        scope: gateResultId,
-        schemaVersion: "rickgent.gate-result.v1",
-        payload: gatePayload,
-        idempotencyKey: `gate-evidence:${attemptId}`,
-        observedAt: createdAt,
-      }, mintCapability);
+      // Run each verification argv and persist a gate result for each.
+      // The overall status is "pass" only if ALL pass; "fail" if ANY fail
+      // (non-infra); "infrastructure_error" if ANY is an infrastructure error.
+      const gateResultIds: string[] = [];
+      const gateEvidenceIds: string[] = [];
+      let overallStatus: "pass" | "fail" | "infrastructure_error" = "pass";
+      const cwd = input.ownership.plan.worktreePath ?? input.ownership.repositoryPath;
 
-      // Persist the gate result through the authority API.
-      lifecycleRecords.recordGateResult({
-        gateResultId,
-        attemptId,
-        gateId: verification.id,
-        evaluationOrdinal: 0,
-        status: gateStatus,
-        required: true,
-        contextId: phase.contextId,
-        ownerContextDigest: phase.contextDigest,
-        contractDigest: contract.digest,
-        evidenceId: gateEvidenceId,
-        candidateTreeOid,
-        candidateDiffDigest,
-        createdAt,
-      });
+      for (let index = 0; index < verifications.length; index++) {
+        const verification = verifications[index]!;
+        const perGateResultId = `gate-${attemptId}-${index}`;
+        const perGateEvidenceId = `evidence-gate-${attemptId}-${index}`;
 
-      const verificationStatus: "pass" | "fail" | "infrastructure_error" =
-        result.status === "pass" ? "pass" :
-        result.status === "fail" ? "fail" : "infrastructure_error";
+        // Build the env from the verification's allowlist.
+        const env: Record<string, string> = {};
+        for (const key of verification.env_allowlist) {
+          if (process.env[key] !== undefined) {
+            env[key] = process.env[key]!;
+          }
+        }
+        const result = runVerificationArgv(
+          verification.executable,
+          verification.args,
+          cwd,
+          env,
+          verification.timeout_ms,
+        );
+
+        // The gate status is derived from the real verification result.
+        const gateStatus: "passed" | "failed" | "infrastructure_error" =
+          result.status === "pass" ? "passed" :
+          result.status === "fail" ? "failed" : "infrastructure_error";
+
+        // Track the overall status: infra_error > fail > pass.
+        if (result.status === "infrastructure_error") {
+          overallStatus = "infrastructure_error";
+        } else if (result.status === "fail" && overallStatus !== "infrastructure_error") {
+          overallStatus = "fail";
+        }
+
+        // Persist the gate evidence.
+        const gatePayload = {
+          gate_id: verification.id,
+          evaluation_ordinal: 0,
+          required: true,
+          status: gateStatus,
+          candidate_tree_oid: candidateTreeOid,
+          candidate_diff_digest: candidateDiffDigest,
+        };
+        store.persistAuthorityEvidence({
+          evidenceId: perGateEvidenceId,
+          attemptId,
+          phaseExecutionId: phase.phaseExecutionId,
+          contextId: phase.contextId,
+          producerService: "VerificationService",
+          scope: perGateResultId,
+          schemaVersion: "rickgent.gate-result.v1",
+          payload: gatePayload,
+          idempotencyKey: `gate-evidence:${attemptId}:${verification.id}`,
+          observedAt: createdAt,
+        }, mintCapability);
+
+        // Persist the gate result through the authority API.
+        lifecycleRecords.recordGateResult({
+          gateResultId: perGateResultId,
+          attemptId,
+          gateId: verification.id,
+          evaluationOrdinal: 0,
+          status: gateStatus,
+          required: true,
+          contextId: phase.contextId,
+          ownerContextDigest: phase.contextDigest,
+          contractDigest: contract.digest,
+          evidenceId: perGateEvidenceId,
+          candidateTreeOid,
+          candidateDiffDigest,
+          createdAt,
+        });
+
+        gateResultIds.push(perGateResultId);
+        gateEvidenceIds.push(perGateEvidenceId);
+      }
+
       return {
-        gateResultId,
-        status: verificationStatus,
-        gateEvidenceId,
+        gateResultId: gateResultIds[0]!,
+        gateResultIds: Object.freeze(gateResultIds) as readonly string[],
+        status: overallStatus,
+        gateEvidenceId: gateEvidenceIds[0]!,
       };
     },
 
