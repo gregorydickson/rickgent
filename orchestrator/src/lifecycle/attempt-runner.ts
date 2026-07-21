@@ -66,6 +66,7 @@ import {
   type ContainmentLineage,
   type ContainmentMembership,
   type ContainmentNeverReleasedReceipt,
+  type BoundedOutputReceipt,
 } from "../process/containment.js";
 import {
   AttemptTerminalizationService,
@@ -237,6 +238,19 @@ export interface SupervisedDispatchResult {
   readonly processLaunchId: string;
   readonly groupDeathEvidenceId: string;
   readonly containmentDeathReceipt: ContainmentDeathReceipt | null;
+  /**
+   * Production bounded-output receipt for stdout (scrutiny round 7).
+   * Carries independently derived source/stored byte counts, byte-content
+   * artifact digest (SHA-256 of the actual byte content, NOT the file
+   * path), and truncation flag from the containment backend's capture path.
+   * Null when the dispatch did not produce a receipt (e.g. spawn_error).
+   */
+  readonly stdoutReceipt: BoundedOutputReceipt | null;
+  /**
+   * Production bounded-output receipt for stderr (scrutiny round 7).
+   * Same semantics as {@link stdoutReceipt}.
+   */
+  readonly stderrReceipt: BoundedOutputReceipt | null;
   readonly detail: string;
 }
 
@@ -435,6 +449,18 @@ export interface AttemptRunnerResult {
   readonly cleanupEligibilityReceipt: CleanupEligibilityReceipt | null;
   readonly oracleDecisionId: string | null;
   readonly terminalReceipt: AttemptTerminalizationResult | null;
+  /**
+   * Production bounded-output receipt for stdout (scrutiny round 7).
+   * Sourced from the AttemptRunner's dispatch result (the real
+   * containment backend's capture path), NOT a test-local reconstruction.
+   * Null when dispatch did not produce a receipt.
+   */
+  readonly stdoutReceipt: BoundedOutputReceipt | null;
+  /**
+   * Production bounded-output receipt for stderr (scrutiny round 7).
+   * Same semantics as {@link stdoutReceipt}.
+   */
+  readonly stderrReceipt: BoundedOutputReceipt | null;
   readonly failureCode: string | null;
   readonly idempotencyKeys: readonly { readonly step: AttemptRunnerStep; readonly key: string }[];
 }
@@ -842,7 +868,7 @@ export class AttemptRunner {
           processReceiptId: `process-receipt-${attemptId}-infra`,
           processLaunchId: `process-launch-${attemptId}-infra`,
           groupDeathEvidenceId: `evidence-death-${attemptId}-infra`,
-          containmentDeathReceipt: null, detail: reason } as SupervisedDispatchResult,
+          containmentDeathReceipt: null, stdoutReceipt: null, stderrReceipt: null, detail: reason } as SupervisedDispatchResult,
         durableObservedAt,
         productionPhase,
       );
@@ -850,6 +876,7 @@ export class AttemptRunner {
         boundary: null, membership: null, deathReceipt: null,
         targetNeverReleased: closed.receipt,
         cleanupEligibility: null, oracleDecisionId: null, terminal,
+        stdoutReceipt: null, stderrReceipt: null,
         failureCode: failureCodeFor({ kind: "infrastructure", reason }), keys,
       });
     }
@@ -888,6 +915,7 @@ export class AttemptRunner {
         boundary, membership, deathReceipt,
         targetNeverReleased: null,
         cleanupEligibility: null, oracleDecisionId: null, terminal,
+        stdoutReceipt: supervised.stdoutReceipt, stderrReceipt: supervised.stderrReceipt,
         failureCode: failureReceipt.receipt.failureCode, keys,
       });
     }
@@ -908,6 +936,7 @@ export class AttemptRunner {
         boundary, membership, deathReceipt,
         targetNeverReleased: null,
         cleanupEligibility: null, oracleDecisionId: null, terminal,
+        stdoutReceipt: supervised.stdoutReceipt, stderrReceipt: supervised.stderrReceipt,
         failureCode: failureReceipt.receipt.failureCode, keys,
       });
     }
@@ -928,6 +957,7 @@ export class AttemptRunner {
         boundary, membership, deathReceipt,
         targetNeverReleased: null,
         cleanupEligibility: null, oracleDecisionId: null, terminal,
+        stdoutReceipt: supervised.stdoutReceipt, stderrReceipt: supervised.stderrReceipt,
         failureCode: failureReceipt.receipt.failureCode, keys,
       });
     }
@@ -994,6 +1024,7 @@ export class AttemptRunner {
         boundary, membership, deathReceipt,
         targetNeverReleased: null,
         cleanupEligibility: null, oracleDecisionId: null, terminal,
+        stdoutReceipt: supervised.stdoutReceipt, stderrReceipt: supervised.stderrReceipt,
         failureCode: failureReceipt.receipt.failureCode, keys,
       });
     }
@@ -1052,6 +1083,7 @@ export class AttemptRunner {
         boundary, membership, deathReceipt,
         targetNeverReleased: null,
         cleanupEligibility: null, oracleDecisionId: null, terminal,
+        stdoutReceipt: supervised.stdoutReceipt, stderrReceipt: supervised.stderrReceipt,
         failureCode: failureReceipt.receipt.failureCode, keys,
       });
     }
@@ -1255,6 +1287,7 @@ export class AttemptRunner {
         boundary, membership, deathReceipt,
         targetNeverReleased: null,
         cleanupEligibility: eligibilityReceipt.receipt, oracleDecisionId: oracle.oracleDecisionId, terminal,
+        stdoutReceipt: supervised.stdoutReceipt, stderrReceipt: supervised.stderrReceipt,
         failureCode: failureReceipt.receipt.failureCode, keys,
       });
     }
@@ -1359,6 +1392,7 @@ export class AttemptRunner {
       boundary, membership, deathReceipt: supervised.containmentDeathReceipt,
       targetNeverReleased: null,
       cleanupEligibility: eligibilityReceipt.receipt, oracleDecisionId: oracle.oracleDecisionId, terminal,
+      stdoutReceipt: supervised.stdoutReceipt, stderrReceipt: supervised.stderrReceipt,
       failureCode: null, keys,
     });
   }
@@ -1419,7 +1453,7 @@ export class AttemptRunner {
         processReceiptId: `process-receipt-${attemptId}-quarantine`,
         processLaunchId: `process-launch-${attemptId}-quarantine`,
         groupDeathEvidenceId: `evidence-death-${attemptId}-quarantine`,
-        containmentDeathReceipt: null, detail: "quarantine" } as SupervisedDispatchResult,
+        containmentDeathReceipt: null, stdoutReceipt: null, stderrReceipt: null, detail: "quarantine" } as SupervisedDispatchResult,
       kind: "quarantine",
     });
     const quarantineObservation: QuarantineObservation = {
@@ -1496,6 +1530,7 @@ export class AttemptRunner {
       boundary: null, membership: null, deathReceipt: null,
       targetNeverReleased: null,
       cleanupEligibility: null, oracleDecisionId: null, terminal,
+      stdoutReceipt: null, stderrReceipt: null,
       failureCode: null, keys,
     });
   }
@@ -1753,6 +1788,8 @@ export class AttemptRunner {
           processLaunchId: launchId,
           groupDeathEvidenceId,
           containmentDeathReceipt: deathReceipt,
+          stdoutReceipt: launch.stdoutReceipt,
+          stderrReceipt: launch.stderrReceipt,
           detail: "dispatch timed out",
         };
       }
@@ -1764,6 +1801,8 @@ export class AttemptRunner {
           processLaunchId: launchId,
           groupDeathEvidenceId,
           containmentDeathReceipt: deathReceipt,
+          stdoutReceipt: launch.stdoutReceipt,
+          stderrReceipt: launch.stderrReceipt,
           detail: "dispatch produced no exit code",
         };
       }
@@ -1775,6 +1814,8 @@ export class AttemptRunner {
           processLaunchId: launchId,
           groupDeathEvidenceId,
           containmentDeathReceipt: deathReceipt,
+          stdoutReceipt: launch.stdoutReceipt,
+          stderrReceipt: launch.stderrReceipt,
           detail: `worker exited with code ${launch.exitCode}`,
         };
       }
@@ -1785,6 +1826,8 @@ export class AttemptRunner {
         processLaunchId: launchId,
         groupDeathEvidenceId,
         containmentDeathReceipt: deathReceipt,
+        stdoutReceipt: launch.stdoutReceipt,
+        stderrReceipt: launch.stderrReceipt,
         detail: "worker exited cleanly",
       };
     } catch (error) {
@@ -1798,6 +1841,8 @@ export class AttemptRunner {
         processLaunchId: `process-launch-${attemptId}-spawn-error`,
         groupDeathEvidenceId: `evidence-death-${attemptId}-spawn-error`,
         containmentDeathReceipt: null,
+        stdoutReceipt: null,
+        stderrReceipt: null,
         detail,
       };
     }
@@ -1928,6 +1973,8 @@ export class AttemptRunner {
       readonly cleanupEligibility: CleanupEligibilityReceipt | null;
       readonly oracleDecisionId: string | null;
       readonly terminal: AttemptTerminalizationResult | null;
+      readonly stdoutReceipt: BoundedOutputReceipt | null;
+      readonly stderrReceipt: BoundedOutputReceipt | null;
       readonly failureCode: string | null;
       readonly keys: readonly { readonly step: AttemptRunnerStep; readonly key: string }[];
     },
@@ -1943,6 +1990,8 @@ export class AttemptRunner {
       cleanupEligibilityReceipt: fields.cleanupEligibility,
       oracleDecisionId: fields.oracleDecisionId,
       terminalReceipt: fields.terminal,
+      stdoutReceipt: fields.stdoutReceipt,
+      stderrReceipt: fields.stderrReceipt,
       failureCode: fields.failureCode,
       idempotencyKeys: Object.freeze(fields.keys),
     });

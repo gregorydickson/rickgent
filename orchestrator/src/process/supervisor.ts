@@ -37,7 +37,14 @@ import {
   assertContainmentMembershipForLaunch,
   type ContainmentLineage,
   type ContainmentMembership,
+  type BoundedOutputReceipt,
 } from "./containment.js";
+
+// Re-export BoundedOutputReceipt so existing consumers that imported it
+// from supervisor.ts continue to resolve.  The canonical definition lives
+// in containment.ts (the lower-level module) so both the containment and
+// supervisor paths produce the same receipt shape (scrutiny round 7).
+export type { BoundedOutputReceipt };
 
 const PROCESS_SUPERVISOR_COMMAND_AUTHORITY = Symbol("rickgent.process-supervisor-command");
 const AUTHORIZED_PROCESS_SUPERVISOR_COMMANDS = new WeakSet<object>();
@@ -211,16 +218,6 @@ export interface SupervisedProcessRequest {
   readonly containmentMembership?: ContainmentMembership;
   /** The exact attempt lineage the membership must bind to (t22B). */
   readonly containmentLineage?: ContainmentLineage;
-}
-
-export interface BoundedOutputReceipt {
-  readonly path: string;
-  readonly streamDigest: `sha256:${string}`;
-  readonly artifactDigest: `sha256:${string}`;
-  readonly originalBytes: number;
-  readonly storedBytes: number;
-  readonly truncated: boolean;
-  readonly tailBase64: string;
 }
 
 export type ProcessSupervisorResult = Readonly<{

@@ -293,6 +293,21 @@ export interface BuildResult {
    * the caller repository or the legacy run workspace.
    */
   authorityExecutionContexts: ReadonlyArray<Readonly<{ readonly attemptId: string; readonly worktreeRealpath: string }>>;
+  /**
+   * Production bounded-output receipts from the AttemptRunner's dispatch
+   * result (scrutiny round 7).  Each entry carries the attempt id and the
+   * production BoundedOutputReceipt for stdout/stderr — independently
+   * derived source/stored byte counts, byte-content artifact digest
+   * (SHA-256 of the actual byte content, NOT the file path), and truncation
+   * flag.  Sourced from the real containment backend's capture path, NOT a
+   * test-local reconstruction.  Empty for gate-hit builds that never
+   * dispatched.
+   */
+  boundedOutputReceipts: ReadonlyArray<Readonly<{
+    readonly attemptId: string;
+    readonly stdout: import("../process/containment.js").BoundedOutputReceipt | null;
+    readonly stderr: import("../process/containment.js").BoundedOutputReceipt | null;
+  }>>;
 }
 
 type BuildObservation = Omit<BuildResult, "outcome">;
@@ -519,6 +534,7 @@ async function prepareBuildPhase(
     workspaceCleanup: null,
     terminalizationReceipts: [],
     authorityExecutionContexts: [],
+    boundedOutputReceipts: [],
   };
   const issues: RunIssue[] = [];
 
@@ -887,6 +903,20 @@ async function executeBuildViaRunner(
     }));
   }
   report.push("build: production AttemptRunner path complete; automatic delivery remains unavailable");
+  // Scrutiny round 7: collect the production BoundedOutputReceipts from the
+  // AttemptRunner results so the test can assert the ACTUAL production
+  // receipt fields (independently derived source/stored byte counts,
+  // byte-content artifact digest, truncation flag) — NOT a test-local
+  // reconstruction.
+  base.boundedOutputReceipts = Array.from(runnerResults.entries()).map(([dispatchId, result]) => {
+    const ticket = ticketByDispatchId.get(dispatchId);
+    const attempt = ticket ? attemptByTicket.get(ticket.id) : undefined;
+    return Object.freeze({
+      attemptId: attempt?.attemptId ?? dispatchId,
+      stdout: result.stdoutReceipt,
+      stderr: result.stderrReceipt,
+    });
+  });
   return finishBuild({ ...base }, issues);
 }
 
@@ -927,6 +957,7 @@ async function executeBuildLegacy(
     workspaceCleanup: null,
     terminalizationReceipts: [],
     authorityExecutionContexts: [],
+    boundedOutputReceipts: [],
   };
   const issues: RunIssue[] = [];
 

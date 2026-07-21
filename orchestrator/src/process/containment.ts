@@ -319,12 +319,54 @@ export interface ContainmentBackend {
   mintNeverReleasedReceipt(lineage: ContainmentLineage, reason: string): ContainmentNeverReleasedReceipt;
 }
 
+/**
+ * Production bounded-output receipt for a captured process stream.
+ *
+ * Carries independently derived source/stored byte counts, a byte-content
+ * artifact digest (SHA-256 of the actual stored byte content, NOT the file
+ * path), a stream digest (SHA-256 of all bytes observed, including
+ * truncated bytes), a truncation flag (true iff source > stored), and a
+ * base64 tail of the last {@link BoundedOutputReceipt.tailLimitBytes} bytes.
+ *
+ * This interface is structurally identical to the {@code BoundedOutputReceipt}
+ * in {@link supervisor.ts}; the supervisor re-exports it from here so both
+ * the containment and supervisor paths produce the same receipt shape.
+ */
+export interface BoundedOutputReceipt {
+  /** The file path the stored bytes were written to. */
+  readonly path: string;
+  /** SHA-256 of ALL bytes observed (including bytes beyond the storage limit). */
+  readonly streamDigest: `sha256:${string}`;
+  /** SHA-256 of the STORED byte content (the bytes actually persisted). */
+  readonly artifactDigest: `sha256:${string}`;
+  /** Total bytes produced by the command (source). Independently derived. */
+  readonly originalBytes: number;
+  /** Bytes actually captured/stored. Independently derived. */
+  readonly storedBytes: number;
+  /** True iff source > stored (the output was truncated). */
+  readonly truncated: boolean;
+  /** Base64 of the last tail-limit bytes of the stored content. */
+  readonly tailBase64: string;
+}
+
 export interface ContainmentLaunch {
   readonly boundary: ContainmentBoundary;
   readonly exitCode: number | null;
   readonly timedOut: boolean;
   readonly stdoutDigest: Sha256Digest;
   readonly stderrDigest: Sha256Digest;
+  /**
+   * Production bounded-output receipt for stdout (scrutiny round 7).
+   * Independently derived source/stored byte counts, byte-content artifact
+   * digest, and truncation flag from the containment backend's capture path.
+   */
+  readonly stdoutReceipt: BoundedOutputReceipt;
+  /**
+   * Production bounded-output receipt for stderr (scrutiny round 7).
+   * Independently derived source/stored byte counts, byte-content artifact
+   * digest, and truncation flag from the containment backend's capture path.
+   */
+  readonly stderrReceipt: BoundedOutputReceipt;
   /** Cgroup membership was proven before user code ran. */
   readonly membership: ContainmentMembership;
 }
@@ -335,6 +377,47 @@ export interface ContainmentLaunch {
 
 function sha256(value: string | Buffer): Sha256Digest {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+/**
+ * Compute a production {@link BoundedOutputReceipt} from a captured output
+ * string.  The receipt has independently derived source/stored byte counts,
+ * a byte-content artifact digest (SHA-256 of the actual byte content, NOT
+ * the file path), and a truncation flag (true iff source > stored).
+ *
+ * When the captured content is within the storage limit (not truncated),
+ * source = stored = content length, and the stream and artifact digests are
+ * identical.  When the content exceeds the storage limit, stored is capped
+ * at the limit, the artifact digest covers only the stored prefix, and the
+ * stream digest covers all observed bytes.
+ *
+ * @param streamPath  The file path the stored bytes are written to.
+ * @param content     The captured byte content (a string or Buffer).
+ * @param outputLimitBytes  The maximum number of bytes that can be stored.
+ * @param tailLimitBytes    The number of trailing bytes to include as base64.
+ */
+function computeBoundedOutputReceipt(
+  streamPath: string,
+  content: string | Buffer,
+  outputLimitBytes: number,
+  tailLimitBytes: number,
+): BoundedOutputReceipt {
+  const bytes = typeof content === "string" ? Buffer.from(content, "utf8") : content;
+  const originalBytes = bytes.length;
+  const storedBytes = Math.min(originalBytes, outputLimitBytes);
+  const stored = bytes.subarray(0, storedBytes);
+  const streamDigest = `sha256:${createHash("sha256").update(bytes).digest("hex")}` as `sha256:${string}`;
+  const artifactDigest = `sha256:${createHash("sha256").update(stored).digest("hex")}` as `sha256:${string}`;
+  const tail = bytes.subarray(Math.max(0, storedBytes - tailLimitBytes));
+  return Object.freeze({
+    path: streamPath,
+    streamDigest,
+    artifactDigest,
+    originalBytes,
+    storedBytes,
+    truncated: originalBytes > storedBytes,
+    tailBase64: tail.toString("base64"),
+  });
 }
 
 function nowIso(): string {
@@ -861,12 +944,24 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
     stdoutSink.update(result.stdout);
     stderrSink.update(result.stderr);
     const timedOut = result.status === null;
+    // Scrutiny round 7: produce the production BoundedOutputReceipt from
+    // the captured stdout/stderr.  The receipt has independently derived
+    // source/stored byte counts, a byte-content artifact digest (SHA-256 of
+    // the actual byte content, NOT the file path), and a truncation flag.
+    // The Docker maxBuffer (8MB) is the storage limit; when the captured
+    // output is within the limit, source = stored and truncated = false.
+    const outputLimitBytes = 8 * 1024 * 1024;
+    const tailLimitBytes = 16 * 1024;
+    const stdoutReceipt = computeBoundedOutputReceipt(stdoutPath, result.stdout, outputLimitBytes, tailLimitBytes);
+    const stderrReceipt = computeBoundedOutputReceipt(stderrPath, result.stderr, outputLimitBytes, tailLimitBytes);
     return Object.freeze({
       boundary,
       exitCode: result.status,
       timedOut,
       stdoutDigest: `sha256:${stdoutSink.digest("hex")}` as Sha256Digest,
       stderrDigest: `sha256:${stderrSink.digest("hex")}` as Sha256Digest,
+      stdoutReceipt,
+      stderrReceipt,
       membership,
     });
   }
@@ -1154,23 +1249,37 @@ export class LinuxCgroupV2ContainmentBackend implements ContainmentBackend {
     let timedOut = false;
     const stdoutSink = createHash("sha256");
     const stderrSink = createHash("sha256");
+    let stdoutContent = "";
+    let stderrContent = "";
     try {
       const out = execFileSync("sh", ["-c", `echo $$ > ${boundary.runtimeHandle}/cgroup.procs 2>/dev/null; exec ${argv.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ")}`], {
         encoding: "utf8", timeout: 30_000,
       });
+      stdoutContent = out;
       stdoutSink.update(out);
       exitCode = 0;
     } catch (error) {
       const e = error as SpawnSyncReturns<string> & { status?: number };
-      stdoutSink.update(typeof e.stdout === "string" ? e.stdout : "");
-      stderrSink.update(typeof e.stderr === "string" ? e.stderr : "");
+      stdoutContent = typeof e.stdout === "string" ? e.stdout : "";
+      stderrContent = typeof e.stderr === "string" ? e.stderr : "";
+      stdoutSink.update(stdoutContent);
+      stderrSink.update(stderrContent);
       exitCode = typeof e.status === "number" ? e.status : null;
       timedOut = e.signal === "SIGTERM";
     }
+    // Scrutiny round 7: produce production BoundedOutputReceipt objects.
+    // The Posix backend does not write to user-supplied paths; the receipts
+    // carry the captured content with an empty path (the bytes are in-memory).
+    const outputLimitBytes = 8 * 1024 * 1024;
+    const tailLimitBytes = 16 * 1024;
+    const stdoutReceipt = computeBoundedOutputReceipt("", stdoutContent, outputLimitBytes, tailLimitBytes);
+    const stderrReceipt = computeBoundedOutputReceipt("", stderrContent, outputLimitBytes, tailLimitBytes);
     return Object.freeze({
       boundary, exitCode, timedOut,
       stdoutDigest: `sha256:${stdoutSink.digest("hex")}` as Sha256Digest,
       stderrDigest: `sha256:${stderrSink.digest("hex")}` as Sha256Digest,
+      stdoutReceipt,
+      stderrReceipt,
       membership,
     });
   }
@@ -1475,12 +1584,20 @@ export class FixtureContainmentBackend implements ContainmentBackend {
     });
     // Do not await exit here; releaseTarget resolves on exec.
     void child;
+    // Scrutiny round 7: produce production BoundedOutputReceipt objects.
+    // The fixture backend spawns a detached process whose stdout/stderr go
+    // to file descriptors (not captured in memory); the receipts carry zero
+    // bytes and empty digests (the output is streamed to files, not captured).
+    const emptyStdoutReceipt = computeBoundedOutputReceipt(stdoutPath, "", 8 * 1024 * 1024, 16 * 1024);
+    const emptyStderrReceipt = computeBoundedOutputReceipt(stderrPath, "", 8 * 1024 * 1024, 16 * 1024);
     return Object.freeze({
       boundary,
       exitCode: null,
       timedOut: false,
       stdoutDigest: sha256(""),
       stderrDigest: sha256(""),
+      stdoutReceipt: emptyStdoutReceipt,
+      stderrReceipt: emptyStderrReceipt,
       membership,
     });
   }

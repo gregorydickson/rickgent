@@ -1007,13 +1007,46 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
           // stored bytes are bounded by the Docker maxBuffer (8MB), the
           // digests are SHA-256, the tail is base64, and the output is not
           // truncated (64KB < 8MB maxBuffer).
+          // Scrutiny round 7 fix: the receipts MUST come from the ACTUAL
+          // production BoundedOutputReceipt exposed by the AttemptRunner's
+          // dispatch result (result.boundedOutputReceipts), NOT a test-local
+          // reconstruction.  The production receipt has independently derived
+          // source/stored byte counts, a byte-content artifact digest
+          // (SHA-256 of the actual byte content, NOT the file path), and a
+          // truncation flag (true if source > stored, false if complete
+          // capture).  The test asserts these fields match independently
+          // computed expectations from the known fixture output.
           const stdoutReceipt = floodResult.stdoutReceipt;
           const stderrReceipt = floodResult.stderrReceipt;
+          if (floodResult.productionReceipt !== true) {
+            violations++;
+            details.push("production receipt flag is not true (the receipt was not sourced from the production BoundedOutputReceipt in the AttemptRunner dispatch result — a test-local lookalike was used instead)");
+          }
           if (stdoutReceipt === null || stderrReceipt === null) {
             violations++;
             details.push("bounded output receipt was not produced for both streams (the production dispatch path did not capture output)");
           } else {
-            for (const [label2, receipt] of [["stdout", stdoutReceipt], ["stderr", stderrReceipt]] as const) {
+            // Independently compute the expected fixture output content to
+            // verify the production receipt's byte counts and digests.
+            // The fixture (FIXTURE_MODE=prompt) writes:
+            //   stdout: "fixture worker transcript line\n" + floodPattern
+            //   stderr: floodPattern only
+            // where floodPattern repeats "STDOUT|0123456789abcdef|\n" (22
+            // bytes) or "STDERR|fedcba9876543210|\n" (22 bytes) to fill
+            // floodBytes.
+            const stdoutPattern = Buffer.from("STDOUT|0123456789abcdef|\n", "ascii");
+            const stderrPattern = Buffer.from("STDERR|fedcba9876543210|\n", "ascii");
+            const expectedStdout = Buffer.concat([
+              Buffer.from("fixture worker transcript line\n", "utf8"),
+              repeatPattern(stdoutPattern, floodBytes),
+            ]);
+            const expectedStderr = repeatPattern(stderrPattern, floodBytes);
+            const expectedStdoutDigest = `sha256:${createHash("sha256").update(expectedStdout).digest("hex")}`;
+            const expectedStderrDigest = `sha256:${createHash("sha256").update(expectedStderr).digest("hex")}`;
+            for (const [label2, receipt, expectedContent, expectedDigest] of [
+              ["stdout", stdoutReceipt, expectedStdout, expectedStdoutDigest],
+              ["stderr", stderrReceipt, expectedStderr, expectedStderrDigest],
+            ] as const) {
               if (!/^sha256:[0-9a-f]{64}$/.test(String(receipt.streamDigest))) {
                 violations++;
                 details.push(`${label2} streamDigest is not a SHA-256 digest`);
@@ -1022,19 +1055,54 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
                 violations++;
                 details.push(`${label2} artifactDigest is not a SHA-256 digest`);
               }
+              // Scrutiny round 7 fix: the artifactDigest MUST be the SHA-256
+              // of the actual byte content, NOT the SHA-256 of the file path.
+              // The test-local reconstruction hashed the path; the production
+              // receipt hashes the bytes.  Assert the production digest
+              // matches the independently computed content digest.
+              if (String(receipt.artifactDigest) !== expectedDigest) {
+                violations++;
+                details.push(`${label2} artifactDigest ${receipt.artifactDigest} does not match independently computed SHA-256 of the actual byte content ${expectedDigest} (the receipt may be hashing the file PATH instead of BYTES)`);
+              }
+              // The streamDigest should also match the content digest when
+              // not truncated (all bytes are stored).
+              if (String(receipt.streamDigest) !== expectedDigest) {
+                violations++;
+                details.push(`${label2} streamDigest ${receipt.streamDigest} does not match independently computed SHA-256 of the actual byte content ${expectedDigest}`);
+              }
+              // Scrutiny round 7 fix: originalBytes (source) MUST be
+              // independently derived (total bytes produced by the command),
+              // NOT set equal to storedBytes (which would make truncation
+              // always false).  The fixture produces exactly
+              // expectedContent.length bytes.
+              if (typeof receipt.originalBytes !== "number" || receipt.originalBytes !== expectedContent.length) {
+                violations++;
+                details.push(`${label2} originalBytes ${receipt.originalBytes} does not match independently computed source bytes ${expectedContent.length} (the fixture produces exactly ${expectedContent.length} bytes)`);
+              }
               if (typeof receipt.storedBytes !== "number" || receipt.storedBytes <= 0) {
                 violations++;
                 details.push(`${label2} storedBytes ${receipt.storedBytes} is not positive (the production path did not capture any output)`);
+              }
+              // Scrutiny round 7 fix: storedBytes MUST be independently
+              // derived (bytes actually captured/stored), NOT just copied
+              // from originalBytes.  When the output limit is >= the
+              // produced bytes, stored = source = expectedContent.length.
+              if (typeof receipt.storedBytes !== "number" || receipt.storedBytes !== expectedContent.length) {
+                violations++;
+                details.push(`${label2} storedBytes ${receipt.storedBytes} does not match independently computed stored bytes ${expectedContent.length} (the output limit ${outputLimitBytes} >= produced bytes, so stored should equal source)`);
               }
               if (typeof receipt.storedBytes !== "number" || receipt.storedBytes > outputLimitBytes) {
                 violations++;
                 details.push(`${label2} storedBytes ${receipt.storedBytes} exceeds the Docker maxBuffer limit ${outputLimitBytes}`);
               }
-              // The output is NOT truncated since 64KB < 8MB maxBuffer.
-              // The production path captures the full output.
+              // The output is NOT truncated since the produced bytes <
+              // Docker maxBuffer (8MB).  The production path captures the
+              // full output.  The truncation flag must be false (source <=
+              // stored), independently derived — NOT hardcoded to false by
+              // setting originalBytes = storedBytes.
               if (receipt.truncated !== false) {
                 violations++;
-                details.push(`${label2} was truncated (expected no truncation since ${floodBytes} < ${outputLimitBytes} Docker maxBuffer)`);
+                details.push(`${label2} was truncated (expected no truncation since ${expectedContent.length} < ${outputLimitBytes} Docker maxBuffer)`);
               }
               if (typeof receipt.tailBase64 !== "string" || receipt.tailBase64.length === 0) {
                 violations++;
@@ -1134,6 +1202,29 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
     expect(canonical.generated_at).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// repeatPattern — repeat a byte pattern to fill exactly `totalBytes` bytes
+// (the last iteration may be a partial slice).  This mirrors the fixture
+// omnigent's emitFloodOutput() behavior so the test can independently compute
+// the expected byte content and verify the production BoundedOutputReceipt.
+// ---------------------------------------------------------------------------
+
+function repeatPattern(pattern: Buffer, totalBytes: number): Buffer {
+  if (totalBytes <= 0) {
+    return Buffer.alloc(0);
+  }
+  const repeats = Math.floor(totalBytes / pattern.length);
+  const remainder = totalBytes % pattern.length;
+  const chunks: Buffer[] = [];
+  for (let i = 0; i < repeats; i++) {
+    chunks.push(pattern);
+  }
+  if (remainder > 0) {
+    chunks.push(pattern.subarray(0, remainder));
+  }
+  return Buffer.concat(chunks);
+}
 
 // ---------------------------------------------------------------------------
 // readdirSafe — a best-effort directory listing that does not throw on

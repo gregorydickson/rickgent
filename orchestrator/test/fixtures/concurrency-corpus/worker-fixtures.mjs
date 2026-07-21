@@ -782,49 +782,31 @@ async function scenarioFloodOutputSupervised(args) {
   integrityStore.close();
   const integrity = storeIntegrityCheck(databasePath);
 
-  // Find the stdout/stderr files in the dataDir and compute bounded-output
-  // receipt fields from the production path's captured output.
-  const computeReceipt = (content, streamPath, originalBytes) => {
-    const streamDigest = `sha256:${createHash("sha256").update(content).digest("hex")}`;
-    const artifactDigest = `sha256:${createHash("sha256").update(streamPath).digest("hex")}`;
-    const storedBytes = content.length;
-    const truncated = storedBytes < originalBytes;
-    const tailBytes = content.subarray(Math.max(0, storedBytes - tailLimitBytes));
-    return {
-      path: streamPath,
-      streamDigest,
-      artifactDigest,
-      originalBytes,
-      storedBytes,
-      truncated,
-      tailBase64: tailBytes.toString("base64"),
-    };
-  };
+  // Scrutiny round 7 fix: extract the ACTUAL production BoundedOutputReceipt
+  // from the AttemptRunner's dispatch result (result.boundedOutputReceipts),
+  // NOT a test-local reconstruction.  The production receipt has:
+  //   (a) independently derived source/stored byte counts (source = total
+  //       bytes produced by the command, stored = bytes actually
+  //       captured/stored),
+  //   (b) byte-content artifact digest (SHA-256 of the actual byte content,
+  //       not the file path),
+  //   (c) truncation flag (true if source > stored, false if complete
+  //       capture).
+  // The test-local computeReceipt helper that hashed the artifact PATH
+  // instead of BYTES and set originalBytes = captured bytes (making
+  // truncation always false) has been removed entirely.
+  const productionReceipts = Array.isArray(result.boundedOutputReceipts)
+    ? result.boundedOutputReceipts
+    : [];
+  const firstProductionReceipt = productionReceipts.length > 0
+    ? productionReceipts[0]
+    : null;
+  const stdoutReceipt = firstProductionReceipt?.stdout ?? null;
+  const stderrReceipt = firstProductionReceipt?.stderr ?? null;
+  const productionReceipt = stdoutReceipt !== null && stderrReceipt !== null;
 
-  let stdoutReceipt = null;
-  let stderrReceipt = null;
   let launchId = null;
   let processReceiptId = null;
-
-  // List files in the dataDir to find the stdout/stderr files.
-  let dataFiles = [];
-  try {
-    dataFiles = execFileSync("ls", ["-A", dataDir], { encoding: "utf8", timeout: 2_000 })
-      .split("\n")
-      .filter((line) => line.length > 0);
-  } catch {
-    dataFiles = [];
-  }
-  for (const file of dataFiles) {
-    const filePath = join(dataDir, file);
-    if (file.endsWith(".stdout") && stdoutReceipt === null) {
-      const content = readFileSync(filePath);
-      stdoutReceipt = computeReceipt(content, filePath, content.length);
-    } else if (file.endsWith(".stderr") && stderrReceipt === null) {
-      const content = readFileSync(filePath);
-      stderrReceipt = computeReceipt(content, filePath, content.length);
-    }
-  }
 
   // Query the store for the process chain to get launchId and processReceiptId.
   try {
@@ -854,6 +836,7 @@ async function scenarioFloodOutputSupervised(args) {
     exitCode: supervisionSuccessful ? 0 : null,
     stdoutReceipt,
     stderrReceipt,
+    productionReceipt,
     storeIntegrity: integrity,
     floodBytes,
     outputLimitBytes,
