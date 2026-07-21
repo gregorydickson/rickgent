@@ -1171,7 +1171,7 @@
         "t24"
       ],
       "completed_at": {
-        "commit": "PENDING",
+        "commit": "591d1faba7610ed616bb95899b81f6bbe247c974",
         "phase_report": "docs/remediation/phase-6-t25-ticket-contract-propagation-execution-report-2026-07-21.md"
       }
     },
