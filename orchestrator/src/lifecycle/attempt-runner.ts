@@ -335,6 +335,20 @@ export interface DispatchInput {
   readonly stdoutPath: string;
   readonly stderrPath: string;
   readonly cancellationRequested: boolean;
+  /**
+   * Scrutiny round 8: per-dispatch output storage limit (bytes).  The
+   * containment backend's streaming BoundedOutputSink counts ALL bytes
+   * produced (originalBytes) and stores only up to this limit (storedBytes).
+   * When the produced bytes exceed the limit, truncated = true and
+   * artifactDigest = SHA-256 of the STORED bytes.  Defaults to 8 MiB when
+   * absent (the historical Docker maxBuffer bound).
+   */
+  readonly outputLimitBytes?: number | undefined;
+  /**
+   * Scrutiny round 8: number of trailing STORED bytes to retain as a base64
+   * tail in the BoundedOutputReceipt.  Defaults to 16 KiB.
+   */
+  readonly tailLimitBytes?: number | undefined;
 }
 
 export interface AttributionInput {
@@ -436,6 +450,17 @@ export interface AttemptRunnerRequest {
   readonly stderrPath: string;
   readonly timeoutMs: number;
   readonly cancellationRequested: boolean;
+  /**
+   * Scrutiny round 8: per-dispatch output storage limit (bytes).  Flows
+   * through {@link DispatchInput} to the containment backend's streaming
+   * BoundedOutputSink.  Defaults to 8 MiB when absent.
+   */
+  readonly outputLimitBytes?: number | undefined;
+  /**
+   * Scrutiny round 8: trailing STORED bytes to retain as base64 in the
+   * BoundedOutputReceipt.  Defaults to 16 KiB when absent.
+   */
+  readonly tailLimitBytes?: number | undefined;
 }
 
 export interface AttemptRunnerResult {
@@ -895,6 +920,8 @@ export class AttemptRunner {
       stdoutPath: request.stdoutPath,
       stderrPath: request.stderrPath,
       cancellationRequested: request.cancellationRequested,
+      outputLimitBytes: request.outputLimitBytes,
+      tailLimitBytes: request.tailLimitBytes,
     };
     noteKey("dispatch");
     const supervised = await (this.#providers.dispatch ?? this.#defaultDispatch.bind(this))(dispatchInput);
@@ -1728,6 +1755,8 @@ export class AttemptRunner {
           stderrPath: input.stderrPath,
           timeoutMs: input.timeoutMs,
           workdir: input.ownership.plan.worktreePath,
+          outputLimitBytes: input.outputLimitBytes,
+          tailLimitBytes: input.tailLimitBytes,
         },
       );
       // Observe the containment death receipt after the launch completes.

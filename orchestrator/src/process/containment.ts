@@ -31,9 +31,23 @@
  *   - No structural authority field is trusted from an injected controller.
  */
 
-import { execFileSync, spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type SpawnSyncReturns, type ChildProcessByStdio } from "node:child_process";
+import type { Readable } from "node:stream";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
+import {
+  accessSync,
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, dirname } from "node:path";
 import { canonicalJson } from "../contracts/ticket-contract.js";
@@ -312,7 +326,7 @@ export interface ContainmentBackend {
   createBoundary(lineage: ContainmentLineage): Promise<ContainmentBoundary>;
   observeMembership(boundary: ContainmentBoundary): ContainmentMembership;
   /** Launch a target command into the boundary; resolves on exec, not on exit. */
-  releaseTarget(boundary: ContainmentBoundary, argv: readonly string[], opts?: { stdoutPath?: string; stderrPath?: string; timeoutMs?: number; workdir?: string }): Promise<ContainmentLaunch>;
+  releaseTarget(boundary: ContainmentBoundary, argv: readonly string[], opts?: { stdoutPath?: string | undefined; stderrPath?: string | undefined; timeoutMs?: number | undefined; workdir?: string | undefined; outputLimitBytes?: number | undefined; tailLimitBytes?: number | undefined }): Promise<ContainmentLaunch>;
   kill(boundary: ContainmentBoundary): Promise<void>;
   awaitEmpty(boundary: ContainmentBoundary, deadlineMs: number): Promise<ContainmentEmptinessObservation>;
   mintDeathReceipt(boundary: ContainmentBoundary, emptiness: ContainmentEmptinessObservation): ContainmentDeathReceipt;
@@ -345,7 +359,7 @@ export interface BoundedOutputReceipt {
   readonly storedBytes: number;
   /** True iff source > stored (the output was truncated). */
   readonly truncated: boolean;
-  /** Base64 of the last tail-limit bytes of the stored content. */
+  /** Base64 of the last tail-limit bytes of the OBSERVED stream (all bytes produced, including bytes beyond the storage limit). */
   readonly tailBase64: string;
 }
 
@@ -422,6 +436,160 @@ function computeBoundedOutputReceipt(
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+// ---------------------------------------------------------------------------
+// BoundedOutputSink — streaming byte-counting sink (scrutiny round 8).
+//
+// A streaming {@link BoundedOutputReceipt} producer that counts EVERY byte
+// observed on a stream (originalBytes) while storing only up to a configured
+// limit (storedBytes).  Used by the Docker containment backend's
+// `releaseTarget` to replace the `spawnSync`-based `maxBuffer` capture that
+// silently dropped bytes beyond the limit (making `originalBytes` equal to
+// the captured bytes and `truncated` always false for over-limit output).
+//
+// The sink:
+//   (a) updates `streamDigest` (SHA-256) over ALL observed bytes (including
+//       bytes beyond the storage limit),
+//   (b) writes the leading `limit` bytes to the output file and updates
+//       `artifactDigest` (SHA-256) over the STORED bytes only,
+//   (c) retains the last `tailLimit` bytes of the STORED content for the
+//       base64 tail,
+//   (d) on `close()`, returns a frozen {@link BoundedOutputReceipt} with
+//       `originalBytes` = total bytes observed, `storedBytes` = bytes
+//       actually stored (min(originalBytes, limit)), `truncated` =
+//       (originalBytes > limit), `artifactDigest` = SHA-256(stored bytes),
+//       `streamDigest` = SHA-256(all bytes).
+//
+// This is the canonical BoundedOutputSink; the ProcessSupervisor reuses it
+// (with strict directory safety, the default) so both the containment and
+// supervisor paths produce the same receipt shape from the same sink.
+// ---------------------------------------------------------------------------
+
+const BOUNDED_OUTPUT_PRIVATE_DIRECTORY_MODE = 0o700;
+const BOUNDED_OUTPUT_PRIVATE_FILE_MODE = 0o600;
+
+export class BoundedOutputSink {
+  readonly #path: string;
+  readonly #limit: number;
+  readonly #tailLimit: number;
+  readonly #strictDirectorySafety: boolean;
+  readonly #descriptor: number;
+  readonly #streamHash = createHash("sha256");
+  readonly #artifactHash = createHash("sha256");
+  #tail = Buffer.alloc(0);
+  #originalBytes = 0;
+  #storedBytes = 0;
+  #closed = false;
+  #failure: Error | null = null;
+
+  constructor(
+    path: string,
+    limit: number,
+    tailLimit: number,
+    opts: { strictDirectorySafety?: boolean } = {},
+  ) {
+    this.#path = path;
+    this.#limit = limit;
+    this.#tailLimit = tailLimit;
+    this.#strictDirectorySafety = opts.strictDirectorySafety ?? true;
+    const directory = dirname(path);
+    mkdirSync(directory, { recursive: true, mode: BOUNDED_OUTPUT_PRIVATE_DIRECTORY_MODE });
+    if (this.#strictDirectorySafety) {
+      const directoryInfo = lstatSync(directory);
+      if (
+        directoryInfo.isSymbolicLink() || !directoryInfo.isDirectory() ||
+        realpathSync.native(directory) !== directory ||
+        (directoryInfo.mode & 0o777) !== BOUNDED_OUTPUT_PRIVATE_DIRECTORY_MODE ||
+        (typeof process.geteuid === "function" && directoryInfo.uid !== process.geteuid())
+      ) throw new Error(`bounded output directory is unsafe: ${directory}`);
+    }
+    this.#descriptor = openSync(
+      path,
+      // Strict mode (supervisor worktree paths): O_EXCL fails if the file
+      // already exists, preventing symlink-replacement attacks on fresh
+      // per-attempt output paths.  Relaxed mode (Docker containment tmpdir
+      // paths): O_TRUNC overwrites an existing file, matching the previous
+      // writeFileSync behavior so multiple releaseTarget calls on the same
+      // boundary (which reuse the launchId-derived default path) do not fail
+      // on a stale artifact from a prior call.  O_NOFOLLOW is retained in
+      // both modes to reject symlink targets.
+      fsConstants.O_CREAT | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW |
+        (this.#strictDirectorySafety ? fsConstants.O_EXCL : fsConstants.O_TRUNC),
+      BOUNDED_OUTPUT_PRIVATE_FILE_MODE,
+    );
+  }
+
+  write(chunk: Buffer): void {
+    if (this.#closed) return;
+    this.#streamHash.update(chunk);
+    this.#originalBytes += chunk.length;
+    const remaining = this.#limit - this.#storedBytes;
+    if (remaining > 0 && this.#failure === null) {
+      const stored = chunk.subarray(0, Math.min(remaining, chunk.length));
+      try {
+        let offset = 0;
+        while (offset < stored.length) {
+          const written = writeSync(this.#descriptor, stored, offset, stored.length - offset);
+          if (written < 1) throw new Error("bounded output write made no progress");
+          this.#artifactHash.update(stored.subarray(offset, offset + written));
+          this.#storedBytes += written;
+          offset += written;
+        }
+      } catch (error) {
+        this.#failure = error instanceof Error ? error : new Error(String(error));
+        try {
+          closeSync(this.#descriptor);
+        } catch {
+          // Preserve the first output failure.
+        }
+        this.#closed = true;
+      }
+    }
+    // The tail is the last `tailLimit` bytes of the OBSERVED stream (all
+    // bytes produced, including bytes beyond the storage limit).  This
+    // preserves the supervisor's established tail semantics (the last
+    // tailLimit bytes of the full stream, NOT the stored prefix) so a
+    // reviewer can inspect the tail to see how the output ended even when
+    // the body was truncated (scrutiny round 8: kept the round-7 behavior;
+    // the interface comment was clarified to match the implementation).
+    if (this.#tailLimit > 0) {
+      this.#tail = Buffer.concat([this.#tail, chunk]).subarray(-this.#tailLimit);
+    }
+  }
+
+  get failure(): Error | null {
+    return this.#failure;
+  }
+
+  close(): BoundedOutputReceipt {
+    if (!this.#closed) {
+      closeSync(this.#descriptor);
+      this.#closed = true;
+    }
+    const info = statSync(this.#path);
+    // The file integrity checks (regular file, no symlink, size === stored)
+    // always apply — they verify the artifact we wrote was not tampered with
+    // or replaced.  The mode check is skipped when strict directory safety is
+    // disabled (the Docker containment path writes to tmpdir paths whose
+    // parent directory mode is not controlled by the sink).
+    if (
+      !info.isFile() || info.isSymbolicLink() ||
+      (this.#strictDirectorySafety && (info.mode & 0o777) !== BOUNDED_OUTPUT_PRIVATE_FILE_MODE) ||
+      info.size !== this.#storedBytes
+    ) {
+      throw new Error(`bounded output artifact became unsafe: ${this.#path}`);
+    }
+    return Object.freeze({
+      path: this.#path,
+      streamDigest: `sha256:${this.#streamHash.digest("hex")}` as `sha256:${string}`,
+      artifactDigest: `sha256:${this.#artifactHash.digest("hex")}` as `sha256:${string}`,
+      originalBytes: this.#originalBytes,
+      storedBytes: this.#storedBytes,
+      truncated: this.#originalBytes > this.#storedBytes,
+      tailBase64: this.#tail.toString("base64"),
+    });
+  }
 }
 
 function boundaryNameFor(lineage: ContainmentLineage): string {
@@ -600,6 +768,131 @@ function dockerExecSilent(argv: readonly string[], opts: DockerExecOptions = {})
     stdout: typeof result.stdout === "string" ? result.stdout : "",
     stderr: typeof result.stderr === "string" ? result.stderr : "",
   };
+}
+
+/**
+ * Streaming `docker exec` capture (scrutiny round 8).
+ *
+ * Replaces the {@link dockerExecSilent} `spawnSync` + `maxBuffer` capture in
+ * the Docker containment backend's `releaseTarget`.  Uses
+ * `child_process.spawn` (NOT `spawnSync`) to stream stdout/stderr through a
+ * {@link BoundedOutputSink} that counts EVERY byte produced
+ * (`originalBytes`) before truncation, stores only up to the configured
+ * `outputLimitBytes` (`storedBytes`), and computes the artifact digest as
+ * SHA-256 of the STORED bytes (not the path, not the full stream).
+ *
+ * The previous `spawnSync`-based capture used `maxBuffer=8 MiB`; bytes beyond
+ * that limit were silently dropped by Node, so `originalBytes` could never
+ * exceed the captured bytes and `truncated` was always false for over-limit
+ * output.  The streaming sink observes every byte the process produces
+ * regardless of the storage limit, so `originalBytes` is the true total
+ * produced byte count and `truncated` is true iff the process produced more
+ * than the configured limit.
+ *
+ * Fail-closed: a spawn error or a sink that cannot be opened safely produces
+ * a `null` exit code and empty receipts are NOT synthesized — the caller
+ * (AttemptRunner) treats a `null` exitCode as an `infrastructure_error`.
+ */
+async function dockerExecStreaming(
+  argv: readonly string[],
+  opts: {
+    timeoutMs: number;
+    stdoutPath: string;
+    stderrPath: string;
+    outputLimitBytes: number;
+    tailLimitBytes: number;
+  },
+): Promise<{ exitCode: number | null; timedOut: boolean; stdoutReceipt: BoundedOutputReceipt; stderrReceipt: BoundedOutputReceipt }> {
+  // The Docker containment path writes captured output to tmpdir-derived
+  // paths whose parent directory mode is not controlled by the sink.  Use
+  // relaxed directory safety (the file itself is still opened with
+  // O_EXCL | O_NOFOLLOW and the size integrity check runs on close).
+  let stdoutSink: BoundedOutputSink;
+  let stderrSink: BoundedOutputSink;
+  try {
+    stdoutSink = new BoundedOutputSink(opts.stdoutPath, opts.outputLimitBytes, opts.tailLimitBytes, { strictDirectorySafety: false });
+    stderrSink = new BoundedOutputSink(opts.stderrPath, opts.outputLimitBytes, opts.tailLimitBytes, { strictDirectorySafety: false });
+  } catch (error) {
+    throw new ContainmentUnavailableError(
+      "docker-cgroup-v2",
+      `bounded output sink could not be opened: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return new Promise((resolve) => {
+    let child: ChildProcessByStdio<null, Readable, Readable>;
+    try {
+      child = spawn("docker", argv as string[], {
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      // Spawn error — fail closed.  Close the sinks (no bytes observed) and
+      // resolve with a null exit code so the caller treats this as an
+      // infrastructure error.  Do NOT synthesize a zero exit code.
+      const stdoutReceipt = safeCloseSink(stdoutSink);
+      const stderrReceipt = safeCloseSink(stderrSink);
+      resolve({ exitCode: null, timedOut: false, stdoutReceipt, stderrReceipt });
+      return;
+    }
+    let timedOut = false;
+    let settled = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill("SIGKILL"); } catch { /* already exited */ }
+    }, opts.timeoutMs);
+    child.stdout.on("data", (chunk: Buffer) => {
+      try { stdoutSink.write(chunk); } catch { /* sink failure recorded */ }
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      try { stderrSink.write(chunk); } catch { /* sink failure recorded */ }
+    });
+    child.on("error", () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const stdoutReceipt = safeCloseSink(stdoutSink);
+      const stderrReceipt = safeCloseSink(stderrSink);
+      // Spawn error after launch — null exit code (infrastructure_error).
+      resolve({ exitCode: null, timedOut: false, stdoutReceipt, stderrReceipt });
+    });
+    child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const stdoutReceipt = safeCloseSink(stdoutSink);
+      const stderrReceipt = safeCloseSink(stderrSink);
+      // On timeout, docker kills the exec process (SIGKILL) → signal set,
+      // code null.  Preserve the timedOut flag from the timer; the exit
+      // code is null so the caller treats it as an infrastructure/timeout
+      // outcome (the AttemptRunner maps timedOut to its timeout state).
+      const exitCode = timedOut ? null : code;
+      void signal;
+      resolve({ exitCode, timedOut, stdoutReceipt, stderrReceipt });
+    });
+  });
+}
+
+/**
+ * Close a {@link BoundedOutputSink} and return its receipt, or synthesize an
+ * empty fail-closed receipt if the close itself throws (the artifact became
+ * unsafe).  The synthesized receipt is NOT a success — it carries zero
+ * stored bytes and an empty digest so the caller cannot mistake it for
+ * captured output.  The sink's own failure (if any) is preserved in the
+ * receipt's zero byte count.
+ */
+function safeCloseSink(sink: BoundedOutputSink): BoundedOutputReceipt {
+  try {
+    return sink.close();
+  } catch {
+    return Object.freeze({
+      path: "",
+      streamDigest: `sha256:${createHash("sha256").update(Buffer.alloc(0)).digest("hex")}` as `sha256:${string}`,
+      artifactDigest: `sha256:${createHash("sha256").update(Buffer.alloc(0)).digest("hex")}` as `sha256:${string}`,
+      originalBytes: 0,
+      storedBytes: 0,
+      truncated: false,
+      tailBase64: "",
+    });
+  }
 }
 
 /**
@@ -887,7 +1180,7 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
   async releaseTarget(
     boundary: ContainmentBoundary,
     argv: readonly string[],
-    opts: { stdoutPath?: string; stderrPath?: string; timeoutMs?: number; workdir?: string } = {},
+    opts: { stdoutPath?: string | undefined; stderrPath?: string | undefined; timeoutMs?: number | undefined; workdir?: string | undefined; outputLimitBytes?: number | undefined; tailLimitBytes?: number | undefined } = {},
   ): Promise<ContainmentLaunch> {
     if (!isAuthorizedContainmentBoundary(boundary)) {
       throw new ContainmentUnavailableError(this.backendId, "releaseTarget received a forged boundary");
@@ -899,12 +1192,13 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
     const timeoutMs = opts.timeoutMs ?? 30_000;
     const stdoutPath = opts.stdoutPath ?? join(realpathSync(tmpdir()), `rickgent-containment-stdout-${boundary.launchId}`);
     const stderrPath = opts.stderrPath ?? join(realpathSync(tmpdir()), `rickgent-containment-stderr-${boundary.launchId}`);
-    for (const p of [stdoutPath, stderrPath]) {
-      const dir = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : ".";
-      if (dir !== "." && !existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-    }
+    // Scrutiny round 8: the output limit is now configurable per-release so
+    // the streaming BoundedOutputSink truncates at the configured bound
+    // (not the hard-coded 8 MiB Docker maxBuffer).  When the produced bytes
+    // exceed the limit, originalBytes = total produced, storedBytes = limit,
+    // truncated = true, and artifactDigest = SHA-256 of the STORED bytes.
+    const outputLimitBytes = opts.outputLimitBytes ?? 8 * 1024 * 1024;
+    const tailLimitBytes = opts.tailLimitBytes ?? 16 * 1024;
     // Launch the target into the container's cgroup via `docker exec`.  The
     // exec'd process is a member of the container's root cgroup (the
     // boundary); it cannot escape the private cgroup namespace without
@@ -936,32 +1230,29 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
       execArgv.push("-w", opts.workdir);
     }
     execArgv.push(boundary.runtimeHandle, ...argv);
-    const result = dockerExecSilent(execArgv, { timeoutMs });
-    writeFileSync(stdoutPath, result.stdout);
-    writeFileSync(stderrPath, result.stderr);
-    const stdoutSink = createHash("sha256");
-    const stderrSink = createHash("sha256");
-    stdoutSink.update(result.stdout);
-    stderrSink.update(result.stderr);
-    const timedOut = result.status === null;
-    // Scrutiny round 7: produce the production BoundedOutputReceipt from
-    // the captured stdout/stderr.  The receipt has independently derived
-    // source/stored byte counts, a byte-content artifact digest (SHA-256 of
-    // the actual byte content, NOT the file path), and a truncation flag.
-    // The Docker maxBuffer (8MB) is the storage limit; when the captured
-    // output is within the limit, source = stored and truncated = false.
-    const outputLimitBytes = 8 * 1024 * 1024;
-    const tailLimitBytes = 16 * 1024;
-    const stdoutReceipt = computeBoundedOutputReceipt(stdoutPath, result.stdout, outputLimitBytes, tailLimitBytes);
-    const stderrReceipt = computeBoundedOutputReceipt(stderrPath, result.stderr, outputLimitBytes, tailLimitBytes);
+    // Scrutiny round 8: stream stdout/stderr through a BoundedOutputSink
+    // (child_process.spawn, NOT spawnSync) so EVERY byte produced is counted
+    // before truncation.  The previous spawnSync + maxBuffer=8 MiB capture
+    // silently dropped bytes beyond the limit, making originalBytes equal to
+    // the captured bytes and truncated always false for over-limit output.
+    // The streaming sink counts all bytes (originalBytes), stores only up to
+    // the limit (storedBytes), and computes artifactDigest = SHA-256 of the
+    // STORED bytes (not the path, not the full stream).
+    const capture = await dockerExecStreaming(execArgv, {
+      timeoutMs,
+      stdoutPath,
+      stderrPath,
+      outputLimitBytes,
+      tailLimitBytes,
+    });
     return Object.freeze({
       boundary,
-      exitCode: result.status,
-      timedOut,
-      stdoutDigest: `sha256:${stdoutSink.digest("hex")}` as Sha256Digest,
-      stderrDigest: `sha256:${stderrSink.digest("hex")}` as Sha256Digest,
-      stdoutReceipt,
-      stderrReceipt,
+      exitCode: capture.exitCode,
+      timedOut: capture.timedOut,
+      stdoutDigest: capture.stdoutReceipt.streamDigest as Sha256Digest,
+      stderrDigest: capture.stderrReceipt.streamDigest as Sha256Digest,
+      stdoutReceipt: capture.stdoutReceipt,
+      stderrReceipt: capture.stderrReceipt,
       membership,
     });
   }

@@ -1164,6 +1164,204 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
     }, 300_000);
   }
 
+  // ---------------------------------------------------------------------------
+  // Production-path over-limit output proof (scrutiny round 8).
+  //
+  // The 50-iteration stress loop above proves the UNDER-limit case (64KB
+  // flood < 8MB Docker maxBuffer; originalBytes === storedBytes; truncated
+  // === false) 50 times.  This one-shot proof exercises the OVER-limit case:
+  // the fixture omnigent produces floodBytes EXCEEDING the configured output
+  // limit, the production streaming BoundedOutputSink (child_process.spawn,
+  // NOT spawnSync) must count ALL bytes produced (originalBytes), store only
+  // up to the limit (storedBytes = min(originalBytes, limit)), set truncated
+  // = (originalBytes > limit), and compute artifactDigest = SHA-256 of the
+  // STORED bytes (not the path, not the full stream).  Driven through
+  // runBuildViaRunnerForTesting with real Docker containment and the real
+  // #defaultDispatch — NO test-local receipt reconstruction.
+  // ---------------------------------------------------------------------------
+
+  describe("t23 concurrency corpus — over-limit output production proof", () => {
+    it("the production streaming BoundedOutputSink truncates over-limit output and reports correct receipt fields", async () => {
+      const label = "over-limit-proof";
+      const floodSeeded = seedRepo(`${label}`, 1);
+      const floodAttempt = floodSeeded.attempts[0]!;
+      floodSeeded.store.close();
+      const floodRoot = realpathSync(mkdtempSync(join(tmpdir(), "rickgent-overlimit-")));
+      roots.add(floodRoot);
+      const reportDir = join(floodRoot, "report");
+      mkdirSync(reportDir, { recursive: true, mode: 0o700 });
+      // Configure the production streaming capture's output limit BELOW the
+      // fixture's floodBytes so the production path MUST truncate.  Using a
+      // small ratio (512KB flood / 256KB limit) keeps the Docker streaming
+      // proof fast while exercising the exact over-limit property the ticket
+      // requires (originalBytes > storedBytes; truncated === true).
+      const outputLimitBytes = 256 * 1024; // 256KB storage limit
+      const floodBytes = 512 * 1024;       // 512KB produced (> limit)
+      const tailLimitBytes = 1024;
+      const floodResult = await runWorker({
+        repo: floodSeeded.repo,
+        scenario: "flood-output-over-limit",
+        "attempt-id": floodAttempt.attemptId,
+        "run-id": floodSeeded.runId,
+        "idempotency-key": `over-limit-proof`,
+        "context-id": floodAttempt.contextId,
+        "phase-execution-id": floodAttempt.phaseExecutionId,
+        "context-digest": floodAttempt.contextDigest,
+        "report-dir": reportDir,
+        "flood-bytes": String(floodBytes),
+        "output-limit-bytes": String(outputLimitBytes),
+        "tail-limit-bytes": String(tailLimitBytes),
+      }, 180_000);
+      expect(floodResult.type).toBe("result");
+      if (floodResult.type !== "result") {
+        throw new Error(`over-limit worker error: ${floodResult.code ?? ""}:${floodResult.message ?? ""}`);
+      }
+      // The production path must complete successfully even when truncating.
+      expect(floodResult.attemptRunnerPathExercised, "runBuildViaRunnerForTesting path was not exercised").toBe(true);
+      expect(floodResult.dispatchAuthorityExercised, "real #defaultDispatch was not exercised").toBe(true);
+      expect(floodResult.supervisionSuccessful, `runAttempt did not complete successfully (outcome=${floodResult.outcome}, runnerError=${floodResult.runnerError ?? "n/a"})`).toBe(true);
+      expect(floodResult.outcome, `build outcome is not "succeeded" (got ${floodResult.outcome})`).toBe("succeeded");
+      expect(floodResult.productionReceipt, "production receipt was not sourced from result.boundedOutputReceipts").toBe(true);
+      const stdoutReceipt = floodResult.stdoutReceipt;
+      const stderrReceipt = floodResult.stderrReceipt;
+      expect(stdoutReceipt, "stdout receipt was not produced").not.toBeNull();
+      expect(stderrReceipt, "stderr receipt was not produced").not.toBeNull();
+      if (stdoutReceipt === null || stderrReceipt === null) {
+        throw new Error("over-limit receipts missing");
+      }
+      // Independently compute the expected fixture output content and the
+      // expected STORED prefix (the first outputLimitBytes bytes).  The
+      // fixture (FIXTURE_MODE=prompt) writes:
+      //   stdout: "fixture worker transcript line\n" + floodPattern
+      //   stderr: floodPattern only
+      // where floodPattern repeats "STDOUT|0123456789abcdef|\n" (22 bytes)
+      // or "STDERR|fedcba9876543210|\n" (22 bytes) to fill floodBytes.
+      const stdoutPattern = Buffer.from("STDOUT|0123456789abcdef|\n", "ascii");
+      const stderrPattern = Buffer.from("STDERR|fedcba9876543210|\n", "ascii");
+      const expectedStdoutFull = Buffer.concat([
+        Buffer.from("fixture worker transcript line\n", "utf8"),
+        repeatPattern(stdoutPattern, floodBytes),
+      ]);
+      const expectedStderrFull = repeatPattern(stderrPattern, floodBytes);
+      const expectedOriginalStdout = expectedStdoutFull.length;
+      const expectedOriginalStderr = expectedStderrFull.length;
+      // The stored prefix is the first outputLimitBytes bytes of the full
+      // stream (the BoundedOutputSink stores the leading bytes up to the
+      // limit and drops the tail).
+      const expectedStoredStdout = expectedStdoutFull.subarray(0, outputLimitBytes);
+      const expectedStoredStderr = expectedStderrFull.subarray(0, outputLimitBytes);
+      const expectedStdoutArtifactDigest = `sha256:${createHash("sha256").update(expectedStoredStdout).digest("hex")}`;
+      const expectedStderrArtifactDigest = `sha256:${createHash("sha256").update(expectedStoredStderr).digest("hex")}`;
+      const expectedStdoutStreamDigest = `sha256:${createHash("sha256").update(expectedStdoutFull).digest("hex")}`;
+      const expectedStderrStreamDigest = `sha256:${createHash("sha256").update(expectedStderrFull).digest("hex")}`;
+
+      for (const [label2, receipt, expectedOriginal, expectedStored, expectedArtifact, expectedStream, expectedFull] of [
+        ["stdout", stdoutReceipt, expectedOriginalStdout, expectedStoredStdout, expectedStdoutArtifactDigest, expectedStdoutStreamDigest, expectedStdoutFull],
+        ["stderr", stderrReceipt, expectedOriginalStderr, expectedStoredStderr, expectedStderrArtifactDigest, expectedStderrStreamDigest, expectedStderrFull],
+      ] as const) {
+        // (a) originalBytes = total bytes produced (counted before truncation).
+        expect(typeof receipt.originalBytes, `${label2} originalBytes must be a number`).toBe("number");
+        expect(Number(receipt.originalBytes), `${label2} originalBytes ${receipt.originalBytes} !== total produced ${expectedOriginal}`).toBe(expectedOriginal);
+        // (b) storedBytes = bytes actually stored (min(originalBytes, limit)).
+        expect(Number(receipt.storedBytes), `${label2} storedBytes ${receipt.storedBytes} !== limit ${outputLimitBytes}`).toBe(outputLimitBytes);
+        expect(Number(receipt.storedBytes), `${label2} storedBytes must be <= limit`).toBeLessThanOrEqual(outputLimitBytes);
+        // (c) truncated = (originalBytes > limit) — true for over-limit.
+        expect(Boolean(receipt.truncated), `${label2} truncated should be true (originalBytes ${receipt.originalBytes} > limit ${outputLimitBytes})`).toBe(true);
+        // (d) originalBytes > storedBytes (the over-limit property).
+        expect(Number(receipt.originalBytes), `${label2} originalBytes ${receipt.originalBytes} should be > storedBytes ${receipt.storedBytes}`).toBeGreaterThan(Number(receipt.storedBytes));
+        // (e) artifactDigest = SHA-256 of the STORED bytes (not the path, not the full stream).
+        expect(String(receipt.artifactDigest), `${label2} artifactDigest ${receipt.artifactDigest} !== SHA-256(stored bytes) ${expectedArtifact}`).toBe(expectedArtifact);
+        // (f) streamDigest = SHA-256 of ALL bytes (including truncated tail).
+        expect(String(receipt.streamDigest), `${label2} streamDigest ${receipt.streamDigest} !== SHA-256(all bytes) ${expectedStream}`).toBe(expectedStream);
+        // (g) artifactDigest !== streamDigest (proves truncation: stored != full).
+        expect(String(receipt.artifactDigest), `${label2} artifactDigest should differ from streamDigest when truncated`).not.toBe(String(receipt.streamDigest));
+        // (h) tailBase64 = base64 of the last tailLimitBytes of the OBSERVED
+        //     stream (all bytes produced, including bytes beyond the storage
+        //     limit).  The supervisor's established tail semantics retains
+        //     the last tailLimit bytes of the full stream so a reviewer can
+        //     see how the output ended even when the body was truncated.
+        const expectedTailFull = expectedFull.subarray(-tailLimitBytes);
+        const expectedTailBase64 = expectedTailFull.toString("base64");
+        expect(String(receipt.tailBase64), `${label2} tailBase64 does not match the last ${tailLimitBytes} observed bytes`).toBe(expectedTailBase64);
+      }
+
+      // StateStore integrity is maintained during the over-limit flood.
+      const integrity = floodResult.storeIntegrity;
+      expect(integrity, "StateStore integrity check result was not reported").not.toBeNull();
+      if (integrity !== null && typeof integrity === "object") {
+        expect(String(integrity.quick_check), `StateStore quick_check failed: ${integrity.quick_check}`).toBe("ok");
+        expect(Number(integrity.foreign_key_check_violations), `StateStore foreign_key_check reported ${integrity.foreign_key_check_violations} violation(s)`).toBe(0);
+      }
+    }, 300_000);
+
+    it("the under-limit case still works (originalBytes === storedBytes, truncated === false) through the production streaming path", async () => {
+      // This re-verifies the under-limit property through the SAME production
+      // streaming path (spawn, not spawnSync) to confirm the streaming fix
+      // did not regress the under-limit case.  Uses a floodBytes value below
+      // the configured output limit so no truncation occurs.
+      const label = "under-limit-proof";
+      const floodSeeded = seedRepo(`${label}`, 1);
+      const floodAttempt = floodSeeded.attempts[0]!;
+      floodSeeded.store.close();
+      const floodRoot = realpathSync(mkdtempSync(join(tmpdir(), "rickgent-underlimit-")));
+      roots.add(floodRoot);
+      const reportDir = join(floodRoot, "report");
+      mkdirSync(reportDir, { recursive: true, mode: 0o700 });
+      const outputLimitBytes = 256 * 1024; // 256KB storage limit
+      const floodBytes = 64 * 1024;        // 64KB produced (< limit, no truncation)
+      const tailLimitBytes = 1024;
+      const floodResult = await runWorker({
+        repo: floodSeeded.repo,
+        scenario: "flood-output-over-limit",
+        "attempt-id": floodAttempt.attemptId,
+        "run-id": floodSeeded.runId,
+        "idempotency-key": `under-limit-proof`,
+        "context-id": floodAttempt.contextId,
+        "phase-execution-id": floodAttempt.phaseExecutionId,
+        "context-digest": floodAttempt.contextDigest,
+        "report-dir": reportDir,
+        "flood-bytes": String(floodBytes),
+        "output-limit-bytes": String(outputLimitBytes),
+        "tail-limit-bytes": String(tailLimitBytes),
+      }, 180_000);
+      expect(floodResult.type).toBe("result");
+      if (floodResult.type !== "result") {
+        throw new Error(`under-limit worker error: ${floodResult.code ?? ""}:${floodResult.message ?? ""}`);
+      }
+      expect(floodResult.supervisionSuccessful, `runAttempt did not complete successfully (outcome=${floodResult.outcome})`).toBe(true);
+      expect(floodResult.outcome).toBe("succeeded");
+      expect(floodResult.productionReceipt).toBe(true);
+      const stdoutReceipt = floodResult.stdoutReceipt;
+      const stderrReceipt = floodResult.stderrReceipt;
+      expect(stdoutReceipt).not.toBeNull();
+      expect(stderrReceipt).not.toBeNull();
+      if (stdoutReceipt === null || stderrReceipt === null) {
+        throw new Error("under-limit receipts missing");
+      }
+      const stdoutPattern = Buffer.from("STDOUT|0123456789abcdef|\n", "ascii");
+      const stderrPattern = Buffer.from("STDERR|fedcba9876543210|\n", "ascii");
+      const expectedStdoutFull = Buffer.concat([
+        Buffer.from("fixture worker transcript line\n", "utf8"),
+        repeatPattern(stdoutPattern, floodBytes),
+      ]);
+      const expectedStderrFull = repeatPattern(stderrPattern, floodBytes);
+      const expectedStdoutDigest = `sha256:${createHash("sha256").update(expectedStdoutFull).digest("hex")}`;
+      const expectedStderrDigest = `sha256:${createHash("sha256").update(expectedStderrFull).digest("hex")}`;
+      for (const [label2, receipt, expectedContent, expectedDigest] of [
+        ["stdout", stdoutReceipt, expectedStdoutFull, expectedStdoutDigest],
+        ["stderr", stderrReceipt, expectedStderrFull, expectedStderrDigest],
+      ] as const) {
+        // Under-limit: originalBytes === storedBytes === produced bytes.
+        expect(Number(receipt.originalBytes), `${label2} originalBytes ${receipt.originalBytes} !== ${expectedContent.length}`).toBe(expectedContent.length);
+        expect(Number(receipt.storedBytes), `${label2} storedBytes ${receipt.storedBytes} !== ${expectedContent.length}`).toBe(expectedContent.length);
+        expect(Boolean(receipt.truncated), `${label2} truncated should be false (under-limit)`).toBe(false);
+        // artifactDigest === streamDigest === SHA-256(full content) when not truncated.
+        expect(String(receipt.artifactDigest), `${label2} artifactDigest ${receipt.artifactDigest} !== ${expectedDigest}`).toBe(expectedDigest);
+        expect(String(receipt.streamDigest), `${label2} streamDigest ${receipt.streamDigest} !== ${expectedDigest}`).toBe(expectedDigest);
+      }
+    }, 300_000);
+  });
+
   it("the summary artifact records 50+ iterations with zero shared-state violations and zero infrastructure errors", () => {
     // The afterAll hook writes the dynamic summary artifact to the untracked
     // .test.json sibling.  Here we verify the accumulated iteration summaries

@@ -848,6 +848,141 @@ async function scenarioFloodOutputSupervised(args) {
 }
 
 // ---------------------------------------------------------------------------
+// scenarioFloodOutputOverLimit — production-path over-limit output proof.
+//
+// Drives runBuildViaRunnerForTesting with a configurable outputLimitBytes
+// (via BuildOptions.outputLimitBytes) and a fixture omnigent that produces
+// floodBytes EXCEEDING the limit.  The production streaming BoundedOutputSink
+// must count ALL bytes produced (originalBytes = floodBytes + transcript
+// line), store only up to the limit (storedBytes = min(originalBytes, limit)),
+// set truncated = (originalBytes > limit), and compute artifactDigest =
+// SHA-256 of the STORED bytes.  NO test-local receipt reconstruction — the
+// receipt comes from result.boundedOutputReceipts (the AttemptRunner's real
+// production dispatch result).
+// ---------------------------------------------------------------------------
+
+async function scenarioFloodOutputOverLimit(args) {
+  const { DockerCgroupV2ContainmentBackend } = await import("../../../dist/process/containment.js");
+
+  const repo = args["repo"];
+  const reportDir = args["report-dir"];
+  mkdirSync(reportDir, { recursive: true, mode: 0o700 });
+  const floodBytes = parseInt(args["flood-bytes"] ?? "524288", 10);
+  // The output limit is intentionally SMALLER than floodBytes so the
+  // production streaming capture must truncate.  The streaming
+  // BoundedOutputSink counts ALL bytes produced (originalBytes) and stores
+  // only up to the limit (storedBytes).
+  const outputLimitBytes = parseInt(args["output-limit-bytes"] ?? "262144", 10);
+  const tailLimitBytes = parseInt(args["tail-limit-bytes"] ?? "1024", 10);
+
+  const orchestratorRoot = resolve(import.meta.dirname, "../../..");
+  const repoRoot = resolve(orchestratorRoot, "..");
+  const prdPath = join(repoRoot, "fixtures", "prd-min.md");
+  const agentDir = join(repoRoot, "agents", "rickgent");
+  const fixtureOmnigentDir = realpathSync(join(orchestratorRoot, "test", "fixtures", "omnigent-fixture"));
+  const realAgentDir = realpathSync(agentDir);
+
+  const dockerBackend = new DockerCgroupV2ContainmentBackend({
+    image: "rickgent-runner:latest",
+    hostMounts: [fixtureOmnigentDir, realAgentDir],
+    containerPath: [fixtureOmnigentDir, "/usr/local/bin", "/usr/bin", "/bin"].join(":"),
+    containerAgentDir: realAgentDir,
+    extraEnv: {
+      FIXTURE_MODE: "prompt",
+      FIXTURE_FLOOD_BYTES: String(floodBytes),
+    },
+  });
+
+  const probe = dockerBackend.probe();
+  if (probe.status !== "available") {
+    reply({
+      type: "error",
+      code: "RICKGENT_CONTAINMENT_UNAVAILABLE",
+      message: `Docker containment backend unavailable: ${probe.reason ?? "unknown"}`,
+      scenario: "flood-output-over-limit",
+    });
+    process.exitCode = 1;
+    return;
+  }
+
+  const rickgentDir = join(repo, ".rickgent");
+  const dataDir = join(repo, "data");
+  mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+
+  const result = await runBuildViaRunnerForTesting(
+    FIXTURE_RUNTIME_AUTHORITY,
+    {
+      prdPath,
+      workingDir: repo,
+      rickgentDir,
+      agentDir,
+      dataDir,
+      env: {
+        ...process.env,
+        RICKGENT_DIR: rickgentDir,
+        RICKGENT_CONTAINMENT_DOCKER_IMAGE: "rickgent-runner:latest",
+      },
+      // Configure the production streaming capture's output limit BELOW the
+      // fixture's floodBytes so the production path MUST truncate.  This
+      // flows through BuildOptions -> AttemptRunnerRequest -> DispatchInput
+      // -> containment.releaseTarget(outputLimitBytes) -> BoundedOutputSink.
+      outputLimitBytes,
+      tailLimitBytes,
+    },
+    {
+      containmentBackendOverride: dockerBackend,
+    },
+  );
+
+  const supervisionSuccessful = result.outcome.status === "succeeded";
+
+  try {
+    const containers = execFileSync("docker", [
+      "ps", "-a", "-q", "--filter", "ancestor=rickgent-runner:latest",
+    ], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    if (containers.length > 0) {
+      const ids = containers.split("\n").filter((id) => id.length > 0);
+      for (const id of ids) {
+        try { execFileSync("docker", ["rm", "-f", id], { timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }); } catch {}
+      }
+    }
+  } catch {}
+
+  const integrityStore = openStateStore({ repoPath: repo });
+  const databasePath = integrityStore.location.databasePath;
+  integrityStore.close();
+  const integrity = storeIntegrityCheck(databasePath);
+
+  const productionReceipts = Array.isArray(result.boundedOutputReceipts)
+    ? result.boundedOutputReceipts
+    : [];
+  const firstProductionReceipt = productionReceipts.length > 0
+    ? productionReceipts[0]
+    : null;
+  const stdoutReceipt = firstProductionReceipt?.stdout ?? null;
+  const stderrReceipt = firstProductionReceipt?.stderr ?? null;
+  const productionReceipt = stdoutReceipt !== null && stderrReceipt !== null;
+
+  reply({
+    type: "result",
+    scenario: "flood-output-over-limit",
+    attemptRunnerPathExercised: true,
+    dispatchAuthorityExercised: true,
+    supervisionSuccessful,
+    outcome: result.outcome.status,
+    stdoutReceipt,
+    stderrReceipt,
+    productionReceipt,
+    storeIntegrity: integrity,
+    floodBytes,
+    outputLimitBytes,
+    tailLimitBytes,
+    runnerOutcome: result.outcome.status,
+    runnerError: supervisionSuccessful ? null : JSON.stringify(result.outcome),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Main entry point.
 // ---------------------------------------------------------------------------
 
@@ -886,6 +1021,8 @@ async function main() {
       scenarioFloodOutput(args);
     } else if (scenario === "flood-output-supervised") {
       await scenarioFloodOutputSupervised(args);
+    } else if (scenario === "flood-output-over-limit") {
+      await scenarioFloodOutputOverLimit(args);
     } else {
       reply({ type: "error", code: "RICKGENT_CONCURRENCY_WORKER_UNKNOWN_SCENARIO", message: `unknown scenario: ${scenario}` });
       process.exitCode = 1;

@@ -2,16 +2,12 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   accessSync,
-  closeSync,
   constants as fsConstants,
   lstatSync,
-  mkdirSync,
-  openSync,
   realpathSync,
   statSync,
-  writeSync,
 } from "node:fs";
-import { dirname, isAbsolute } from "node:path";
+import { isAbsolute } from "node:path";
 import { canonicalJson } from "../contracts/ticket-contract.js";
 import {
   consumeAttemptWorkspaceSpawnAuthorization,
@@ -33,6 +29,7 @@ import {
   type TrackedSignalResult,
 } from "./posix.js";
 import {
+  BoundedOutputSink,
   ContainmentUnavailableError,
   assertContainmentMembershipForLaunch,
   type ContainmentLineage,
@@ -48,8 +45,6 @@ export type { BoundedOutputReceipt };
 
 const PROCESS_SUPERVISOR_COMMAND_AUTHORITY = Symbol("rickgent.process-supervisor-command");
 const AUTHORIZED_PROCESS_SUPERVISOR_COMMANDS = new WeakSet<object>();
-const PRIVATE_DIRECTORY_MODE = 0o700;
-const PRIVATE_FILE_MODE = 0o600;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_TERMINATION_GRACE_MS = 1_000;
 const DEFAULT_DEATH_OBSERVATION_MS = 5_000;
@@ -291,94 +286,10 @@ function authoritativeDescendantDeathConfirmed(death: ProcessDeathObservation | 
     death.descendantsConfirmedDead === true;
 }
 
-class BoundedOutputSink {
-  readonly #path: string;
-  readonly #limit: number;
-  readonly #tailLimit: number;
-  readonly #descriptor: number;
-  readonly #streamHash = createHash("sha256");
-  readonly #artifactHash = createHash("sha256");
-  #tail = Buffer.alloc(0);
-  #originalBytes = 0;
-  #storedBytes = 0;
-  #closed = false;
-  #failure: Error | null = null;
-
-  constructor(path: string, limit: number, tailLimit: number) {
-    this.#path = path;
-    this.#limit = limit;
-    this.#tailLimit = tailLimit;
-    const directory = dirname(path);
-    mkdirSync(directory, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
-    const directoryInfo = lstatSync(directory);
-    if (
-      directoryInfo.isSymbolicLink() || !directoryInfo.isDirectory() ||
-      realpathSync.native(directory) !== directory ||
-      (directoryInfo.mode & 0o777) !== PRIVATE_DIRECTORY_MODE ||
-      (typeof process.geteuid === "function" && directoryInfo.uid !== process.geteuid())
-    ) throw new Error(`bounded output directory is unsafe: ${directory}`);
-    this.#descriptor = openSync(
-      path,
-      fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW,
-      PRIVATE_FILE_MODE,
-    );
-  }
-
-  write(chunk: Buffer): void {
-    if (this.#closed) return;
-    this.#streamHash.update(chunk);
-    this.#originalBytes += chunk.length;
-    const remaining = this.#limit - this.#storedBytes;
-    if (remaining > 0 && this.#failure === null) {
-      const stored = chunk.subarray(0, Math.min(remaining, chunk.length));
-      try {
-        let offset = 0;
-        while (offset < stored.length) {
-          const written = writeSync(this.#descriptor, stored, offset, stored.length - offset);
-          if (written < 1) throw new Error("bounded output write made no progress");
-          this.#artifactHash.update(stored.subarray(offset, offset + written));
-          this.#storedBytes += written;
-          offset += written;
-        }
-      } catch (error) {
-        this.#failure = error instanceof Error ? error : new Error(String(error));
-        try {
-          closeSync(this.#descriptor);
-        } catch {
-          // Preserve the first output failure.
-        }
-        this.#closed = true;
-      }
-    }
-    if (this.#tailLimit > 0) {
-      this.#tail = Buffer.concat([this.#tail, chunk]).subarray(-this.#tailLimit);
-    }
-  }
-
-  get failure(): Error | null {
-    return this.#failure;
-  }
-
-  close(): BoundedOutputReceipt {
-    if (!this.#closed) {
-      closeSync(this.#descriptor);
-      this.#closed = true;
-    }
-    const info = statSync(this.#path);
-    if (!info.isFile() || info.isSymbolicLink() || (info.mode & 0o777) !== PRIVATE_FILE_MODE || info.size !== this.#storedBytes) {
-      throw new Error(`bounded output artifact became unsafe: ${this.#path}`);
-    }
-    return Object.freeze({
-      path: this.#path,
-      streamDigest: `sha256:${this.#streamHash.digest("hex")}`,
-      artifactDigest: `sha256:${this.#artifactHash.digest("hex")}`,
-      originalBytes: this.#originalBytes,
-      storedBytes: this.#storedBytes,
-      truncated: this.#originalBytes > this.#storedBytes,
-      tailBase64: this.#tail.toString("base64"),
-    });
-  }
-}
+// The canonical BoundedOutputSink now lives in ./containment.js (the
+// lower-level module) and is imported above.  Both the containment and
+// supervisor paths produce the same BoundedOutputReceipt shape from the
+// same streaming sink (scrutiny round 8).
 
 function validateEnvironment(request: SupervisedProcessRequest): Readonly<Record<string, string>> {
   const allowed = new Set(request.allowedEnvironmentKeys);

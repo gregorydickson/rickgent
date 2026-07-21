@@ -152,6 +152,20 @@ export interface BuildOptions {
     attempt: AllocatedAttempt,
     outcome: "failure" | "promotion" | "quarantine" | "nonterminal",
   ) => AttemptAuthoritySubstrate | null;
+  /**
+   * Scrutiny round 8: per-dispatch output storage limit (bytes).  Flows
+   * through the AttemptRunner to the containment backend's streaming
+   * BoundedOutputSink.  When the produced bytes exceed the limit, the
+   * BoundedOutputReceipt reports originalBytes = total produced,
+   * storedBytes = limit, truncated = true, artifactDigest = SHA-256(stored).
+   * Defaults to 8 MiB when absent (the historical Docker maxBuffer bound).
+   */
+  outputLimitBytes?: number | undefined;
+  /**
+   * Scrutiny round 8: trailing STORED bytes to retain as base64 in the
+   * BoundedOutputReceipt.  Defaults to 16 KiB when absent.
+   */
+  tailLimitBytes?: number | undefined;
 }
 
 /**
@@ -829,6 +843,8 @@ async function executeBuildViaRunner(
       stderrPath: join(opts.dataDir, `${attempt.attemptId}.stderr`),
       timeoutMs: opts.timeout ?? 60000,
       cancellationRequested: false,
+      outputLimitBytes: opts.outputLimitBytes,
+      tailLimitBytes: opts.tailLimitBytes,
     };
     let result: AttemptRunnerResult;
     try {
