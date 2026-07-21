@@ -924,8 +924,8 @@ async function scenarioFloodOutputOverLimit(args) {
       },
       // Configure the production streaming capture's output limit BELOW the
       // fixture's floodBytes so the production path MUST truncate.  This
-      // flows through BuildOptions -> AttemptRunnerRequest -> DispatchInput
-      // -> containment.releaseTarget(outputLimitBytes) -> BoundedOutputSink.
+      // flows from BuildOptions through AttemptRunnerRequest and DispatchInput
+      // into containment.releaseTarget(outputLimitBytes) and BoundedOutputSink.
       outputLimitBytes,
       tailLimitBytes,
     },
