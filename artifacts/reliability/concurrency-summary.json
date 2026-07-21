@@ -1,0 +1,43 @@
+{
+  "schema_version": "rickgent.concurrency-corpus.summary/v1",
+  "proof_version": "concurrency-corpus-v1",
+  "manifest_path": "orchestrator/test/fixtures/concurrency-corpus/manifest.json",
+  "iterations": 50,
+  "required_iterations": 50,
+  "shared_state_violations": 0,
+  "infrastructure_errors": 0,
+  "scenarios": {
+    "overlapping-scopes": {
+      "passed": 50,
+      "violations": 0,
+      "infrastructure_errors": 0
+    },
+    "competing-owners": {
+      "passed": 50,
+      "violations": 0,
+      "infrastructure_errors": 0
+    },
+    "foreign-commits": {
+      "passed": 50,
+      "violations": 0,
+      "infrastructure_errors": 0
+    },
+    "delivery-ref-movement": {
+      "passed": 50,
+      "violations": 0,
+      "infrastructure_errors": 0
+    },
+    "stubborn-descendants": {
+      "passed": 50,
+      "violations": 0,
+      "infrastructure_errors": 0
+    },
+    "output-floods": {
+      "passed": 50,
+      "violations": 0,
+      "infrastructure_errors": 0
+    }
+  },
+  "parallel_dispatch_state_after_proof": "unavailable",
+  "generated_at": "2026-07-21T08:22:44.600Z"
+}

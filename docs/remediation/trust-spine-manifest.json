@@ -1103,10 +1103,14 @@
         "orchestrator/test/fixtures/concurrency-corpus/worker-fixtures.mjs"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t22"
-      ]
+      ],
+      "completed_at": {
+        "commit": "b8820826308a329cd8bdeb78641e9686878675f8",
+        "phase_report": "docs/remediation/phase-5-t23-concurrency-corpus-execution-report-2026-07-21.md"
+      }
     },
     {
       "id": "t24",

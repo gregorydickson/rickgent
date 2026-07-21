@@ -1,0 +1,84 @@
+{
+  "schema_version": "rickgent.concurrency-corpus.manifest/v1",
+  "complete": true,
+  "required_iterations": 50,
+  "stress_iterations_env": "RICKGENT_STRESS_ITERATIONS",
+  "summary_artifact_path": "artifacts/reliability/concurrency-summary.json",
+  "worker_fixture_path": "orchestrator/test/fixtures/concurrency-corpus/worker-fixtures.mjs",
+  "proof_version": "concurrency-corpus-v1",
+  "parallel_dispatch_state_after_proof": "unavailable",
+  "conflicts": [
+    {
+      "id": "overlapping-scopes",
+      "name": "Overlapping scopes",
+      "description": "Two attempts with overlapping path scopes provision independent worktrees and indices. Neither attempt can observe or mutate the other's worktree, index, or policy context. The scope fence keeps each attempt's writes inside its own owned paths.",
+      "worker_scenario": "provision-overlapping",
+      "assertions": [
+        "Each attempt provisions a distinct worktree with a detached HEAD at the baseline oid",
+        "A file written in attempt A's worktree is not visible in attempt B's worktree",
+        "The caller repository's index and HEAD are unchanged after both attempts provision",
+        "Each attempt's policy context path is distinct and not shared"
+      ]
+    },
+    {
+      "id": "competing-owners",
+      "name": "Competing owners",
+      "description": "Two OS processes acquire the same attempt's ownership concurrently. SQLite WAL serializes the acquisition; exactly one wins and the other receives RICKGENT_STATE_CONFLICT. No partial reservation (credential without resources, or resources without credential) is left behind.",
+      "worker_scenario": "acquire-competing",
+      "assertions": [
+        "Exactly one of the two competing workers acquires ownership; the other receives RICKGENT_STATE_CONFLICT",
+        "The durable ownership lease table has exactly one row for the attempt after the race",
+        "The durable resource claim table has exactly 11 rows (the fixed resource set) for the attempt after the race",
+        "No partial reservation (credential row without resource rows) is persisted"
+      ]
+    },
+    {
+      "id": "foreign-commits",
+      "name": "Foreign commits",
+      "description": "An attempt cannot claim another attempt's commit or release its lease. A worker with attempt A's ownership cannot finalize cleanup using attempt B's attempt-ref oid, and cannot observe or mutate attempt B's commit attribution or cleanup artifacts.",
+      "worker_scenario": "foreign-commit",
+      "assertions": [
+        "A worker with attempt A ownership cannot update attempt B's attempt ref to a foreign oid without corrupting B's durable baseline (the store's cleanup validation rejects a foreign attempt ref oid)",
+        "Attempt A's ownership lease is bound to attempt A's attempt id; attempt B's lease is bound to attempt B's attempt id",
+        "Attempt A's commit attribution (if any) is not observable as attempt B's commit attribution",
+        "A foreign ownership grant (attempt A's grant presented for attempt B) is rejected by isAuthorizedAttemptOwnershipGrant / assertFresh"
+      ]
+    },
+    {
+      "id": "delivery-ref-movement",
+      "name": "Delivery-ref movement",
+      "description": "One attempt's cleanup moves the run's delivery ref while another attempt is in flight. The in-flight attempt's baseline oid is preserved in the durable store and is not corrupted by the delivery-ref movement. No attempt can release another attempt's lease during delivery-ref movement.",
+      "worker_scenario": "move-delivery-ref",
+      "assertions": [
+        "The delivery ref movement (git update-ref) does not change the in-flight attempt's durable delivery_baseline_oid",
+        "The in-flight attempt's attempt ref is not moved by the delivery-ref movement",
+        "The in-flight attempt's worktree HEAD remains at its baseline oid",
+        "The delivery ref movement does not release or alter the in-flight attempt's ownership lease"
+      ]
+    },
+    {
+      "id": "stubborn-descendants",
+      "name": "Stubborn descendants",
+      "description": "A worker spawns a stubborn descendant process tree (double-fork escape attempt). The descendant cannot escape the attempt's containment: no sentinel file appears outside the attempt's owned output directory, and the descendant process is reaped before the attempt's ownership is released.",
+      "worker_scenario": "spawn-stubborn",
+      "assertions": [
+        "A double-fork escape attempt does not create a marker file outside the attempt's owned output directory",
+        "The attempt's process group is distinct from the rival attempt's process group",
+        "No stubborn descendant outlives the worker process that spawned it (the test reaps the process tree before asserting isolation)",
+        "The rival attempt's output directory is not mutated by the stubborn descendant"
+      ]
+    },
+    {
+      "id": "output-floods",
+      "name": "Output floods",
+      "description": "A worker floods its stdout and stderr paths with a large volume of output. The bounded output receipts keep each attempt's output isolated: the rival attempt's stdout/stderr paths are not affected, and the flood does not corrupt the shared state store.",
+      "worker_scenario": "flood-output",
+      "assertions": [
+        "The flooding worker's stdout path is bounded (the write succeeds but the file size is the bounded volume)",
+        "The rival attempt's stdout path is not mutated by the flood",
+        "The rival attempt's stderr path is not mutated by the flood",
+        "The shared state store is not corrupted by the output flood (quick_check passes, foreign_key_check passes)"
+      ]
+    }
+  ]
+}
