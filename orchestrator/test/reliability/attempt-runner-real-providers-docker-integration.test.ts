@@ -339,11 +339,12 @@ describe("defect #3: production-path integration test with real Docker", () => {
 
     // The build MUST complete successfully — the providers are real, the
     // containment is real Docker, and the worker produces real changes.
-    if (result.outcome.status !== "ok") {
+    if (result.outcome.status !== "succeeded") {
       console.log("Build report:", JSON.stringify(result.report, null, 2));
       console.log("Build outcome:", JSON.stringify(result.outcome, null, 2));
     }
-    expect(result.outcome.status).toBe("ok");
+    expect(result.outcome.status).toBe("succeeded");
+    expect(result.outcome.stableCode).toBe("RICKGENT_OK");
     expect(result.ticketsDone).toBeGreaterThan(0);
   }, 180_000);
 });

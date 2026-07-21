@@ -601,7 +601,7 @@ export function buildAttemptRunnerProviders(
         phaseExecutionId: phase.phaseExecutionId,
         contextId: phase.contextId,
         producerService: "TargetProofService",
-        scope: targetProofSetId,
+        scope: `${targetProofSetId}:${input.kind}`,
         schemaVersion: "rickgent.attempt-target-proof-set.v1",
         payload: proofSetPayload,
         idempotencyKey: `target-proof-set-evidence:${attemptId}:${input.kind}`,

@@ -88,7 +88,7 @@ import {
   type AttemptOwnershipGrant,
   type LeaseAuthority,
 } from "../state/leases.js";
-import { TransitionAuthority } from "../state/transitions.js";
+import { PromotionAuthority, TransitionAuthority } from "../state/transitions.js";
 import { provisionAttemptWorkspace } from "../git/attempt-workspace.js";
 import type {
   AllocatedAttempt,
@@ -1078,7 +1078,13 @@ export class AttemptRunner {
       }
       // Compute the real diff digest from the git diff (matching the review
       // and verification providers' canonicalGitDeltaFromRaw computation).
+      // All four digests are derived from the same normalized delta by
+      // canonicalGitDeltaFromRaw so the oracle's deriveOracleAttributionDigests
+      // re-derivation matches exactly.
       let candidateDiffDigest: string;
+      let pathSetDigest: string;
+      let changeKindSetDigest: string;
+      let modeSetDigest: string;
       try {
         const rawDiff = execFileSync("git", [
           "-C", acquired.repositoryPath,
@@ -1087,6 +1093,9 @@ export class AttemptRunner {
         ], { encoding: "utf8", timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
         const delta = canonicalGitDeltaFromRaw(rawDiff);
         candidateDiffDigest = delta.candidateDiffDigest;
+        pathSetDigest = delta.pathSetDigest;
+        changeKindSetDigest = delta.changeKindSetDigest;
+        modeSetDigest = delta.modeSetDigest;
       } catch {
         throw new AttemptRunnerError(
           "RICKGENT_ATTEMPT_INFRASTRUCTURE_ERROR",
@@ -1125,9 +1134,9 @@ export class AttemptRunner {
         treeAfterOid: candidateTreeOid,
         commitOid: attribution.candidateOid,
         candidateDiffDigest,
-        pathSetDigest: sha256(`paths:${attemptId}`),
-        changeKindSetDigest: sha256(`kinds:${attemptId}`),
-        modeSetDigest: sha256(`modes:${attemptId}`),
+        pathSetDigest,
+        changeKindSetDigest,
+        modeSetDigest,
         normalizedDeltaJson: canonicalJson(normalizedDelta),
         verificationReceiptDigestsJson: canonicalJson([verificationDigest]),
         deliveryRefObservedOid: acquired.plan.lineage.deliveryBaselineOid,
@@ -1258,6 +1267,56 @@ export class AttemptRunner {
       callerAfterDigest: sha256("attempt-runner-caller-before"),
       observedAt: durableObservedAt,
     };
+    // Create the promotion intent BEFORE minting the promotion-cleanup
+    // receipt.  The store's #validatePromotionCleanupPreimage checks that
+    // a promotion_intents row exists referencing the exact oracle decision.
+    // Without this, the promotion-cleanup receipt validation fails closed.
+    const promotionAuthority = new PromotionAuthority(this.#store);
+    promotionAuthority.createIntent({
+      promotionIntentId: promotionObservation.promotionIntentId,
+      runId: request.run.runId,
+      ticketInstanceId: request.attempt.ticketInstanceId,
+      attemptId,
+      promotionSequence: 1,
+      deliveryRef: request.run.deliveryRef,
+      expectedOldOid: request.attempt.deliveryBaselineOid,
+      candidateOid: attribution.candidateOid,
+      oracleDecisionId: oracle.oracleDecisionId,
+      commitAttributionId: attribution.commitAttributionId,
+      ownerContextId: productionPhase.contextId,
+      idempotencyKey: `promotion-intent:${attemptId}`,
+      createdAt: durableObservedAt,
+    });
+
+    // Persist the promotion observation evidence BEFORE minting the
+    // promotion-cleanup receipt.  The promotion_cleanup_records table has
+    // a FK constraint on promotion_observation_evidence_id → evidence, so
+    // the evidence row must exist before the receipt is inserted.  If the
+    // evidence already exists (e.g., seeded by a fixture oracle provider),
+    // skip creation — the existing evidence satisfies the FK constraint.
+    if (!this.#store.evidenceExists(promotionObservation.promotionObservationEvidenceId, attemptId)) {
+      this.#store.persistAuthorityEvidence({
+        evidenceId: promotionObservation.promotionObservationEvidenceId,
+        attemptId,
+        phaseExecutionId: productionPhase.phaseExecutionId,
+        contextId: productionPhase.contextId,
+        producerService: "PromotionCleanupService",
+        scope: `promotion-observation:${attemptId}`,
+        schemaVersion: "rickgent.promotion-observation.v1",
+        payload: {
+          attempt_id: attemptId,
+          oracle_decision_id: oracle.oracleDecisionId,
+          cleanup_eligibility_receipt_id: eligibilityReceipt.record.cleanup_eligibility_record_id as string,
+          commit_attribution_id: attribution.commitAttributionId,
+          candidate_oid: attribution.candidateOid,
+          delivery_observed_oid: attribution.candidateOid,
+          expected_old_oid: request.attempt.deliveryBaselineOid,
+        },
+        idempotencyKey: `promotion-observation:${attemptId}`,
+        observedAt: durableObservedAt,
+      }, this.#leases.issueDispositionMintCapability());
+    }
+
     const promotionReceipt = this.#store.mintPromotionCleanup(
       { observation: promotionObservation, promotionObservationEvidenceId: promotionObservation.promotionObservationEvidenceId },
       this.#leases.issueDispositionMintCapability(),

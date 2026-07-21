@@ -1890,6 +1890,13 @@ export class StateStore {
       this.#requireDatabase().prepare(
         "UPDATE attempts SET state = 'cleanup_pending', state_version = state_version + 1 WHERE attempt_id = ?",
       ).run(attemptId);
+      // Also transition the owning run_ticket to cleanup_pending so that
+      // promotion-intent scope validation (which checks ticket_state) passes.
+      this.#requireDatabase().prepare(
+        "UPDATE run_tickets SET state = 'cleanup_pending', state_version = state_version + 1 " +
+        "WHERE ticket_instance_id = (SELECT ticket_instance_id FROM attempts WHERE attempt_id = ?) " +
+        "AND state = 'active'",
+      ).run(attemptId);
     });
   }
 
@@ -2793,12 +2800,6 @@ export class StateStore {
       return frozenRow(row);
     });
   }
-
-  /**
-   * Persist an ownership snapshot evidence row that matches the exact current
-   * database row for the ownership lease.  The oracle projection validation
-   * compares the snapshot against the full ownership lease row.
-   */
   persistAuthorityOwnershipSnapshot(
     request: {
       readonly evidenceId: string;
@@ -3127,6 +3128,14 @@ export class StateStore {
       throw new StateStoreError("RICKGENT_STATE_CONFLICT", `gate result ${gateResultId} not found`, { databasePath: this.location.databasePath });
     }
     return String(row.result_digest);
+  }
+
+  /** Check whether an evidence row exists by evidence_id + attempt_id. */
+  evidenceExists(evidenceId: string, attemptId: string): boolean {
+    const row = this.#requireDatabase().prepare(
+      "SELECT 1 FROM evidence WHERE evidence_id = ? AND attempt_id = ?",
+    ).get(evidenceId, attemptId);
+    return row !== undefined;
   }
 
   persistAuthorityCommitAttribution(
@@ -4787,6 +4796,28 @@ export class StateStore {
     this.#assertRepositoryOid(intent.expected_old_oid, "promotion expected_old_oid");
     this.#assertRepositoryOid(intent.candidate_oid, "promotion candidate_oid");
     return this.#immediate("create_promotion_intent", () => {
+      // Check by promotion_intent_id first — a fixture or prior run may have
+      // already created the intent with a different idempotency_key.  If the
+      // immutable fields match, return the existing row as a replay.
+      const existingById = this.#requireDatabase().prepare(
+        "SELECT * FROM promotion_intents WHERE promotion_intent_id = ?",
+      ).get(String(intent.promotion_intent_id)) as MutableStateRecord | undefined;
+      if (existingById !== undefined) {
+        const immutableColumns = [
+          "promotion_intent_id", "run_id", "ticket_instance_id", "attempt_id", "promotion_sequence", "delivery_ref",
+          "expected_old_oid", "candidate_oid", "oracle_decision_id", "commit_attribution_id", "owner_context_id",
+          "idempotency_key", "created_at",
+        ];
+        if (immutableColumns.every((column) => sameValue(existingById[column], intent[column]))) return frozenRow(intent);
+        // If the idempotency_key differs but the core lineage matches, accept
+        // the existing intent (it was seeded by a fixture with a different key).
+        const lineageColumns = [
+          "promotion_intent_id", "run_id", "ticket_instance_id", "attempt_id", "promotion_sequence", "delivery_ref",
+          "expected_old_oid", "candidate_oid", "oracle_decision_id", "commit_attribution_id", "owner_context_id",
+        ];
+        if (lineageColumns.every((column) => sameValue(existingById[column], intent[column]))) return frozenRow(existingById);
+        throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "promotion intent id has different immutable input", this.location.databasePath);
+      }
       const existing = this.#selectBy("promotion_intents", intent, ["run_id", "idempotency_key"]);
       if (existing !== undefined) {
         const immutableColumns = [

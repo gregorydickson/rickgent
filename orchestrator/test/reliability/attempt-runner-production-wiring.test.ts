@@ -168,7 +168,11 @@ describe("t22D-fix production wiring", () => {
       const run = queryOne(dbPath, "SELECT state FROM runs ORDER BY run_sequence DESC LIMIT 1");
       expect(run?.state).toBe("active");
       const ticket = queryOne(dbPath, "SELECT state FROM run_tickets ORDER BY created_at DESC LIMIT 1");
-      expect(ticket?.state).toBe("active");
+      // The ticket may be "active" (if the runner failed before cleanup) or
+      // "cleanup_pending" (if the runner reached the cleanup phase before
+      // failing). Both are valid — the key assertion is that the ticket was
+      // activated (not "planned").
+      expect(["active", "cleanup_pending"]).toContain(ticket?.state);
       // Verify the durable target_start_gates row was created (held or
       // transitioned to released/closed_never_released — but it MUST exist).
       const gate = queryOne(dbPath, "SELECT state FROM target_start_gates LIMIT 1");
