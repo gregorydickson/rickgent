@@ -1290,7 +1290,7 @@ export class AttemptRunner {
 
     // Persist the promotion observation evidence BEFORE minting the
     // promotion-cleanup receipt.  The promotion_cleanup_records table has
-    // a FK constraint on promotion_observation_evidence_id → evidence, so
+    // a FK constraint requires the promotion-observation evidence row, so
     // the evidence row must exist before the receipt is inserted.  If the
     // evidence already exists (e.g., seeded by a fixture oracle provider),
     // skip creation — the existing evidence satisfies the FK constraint.
