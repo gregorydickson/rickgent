@@ -7,7 +7,7 @@
 // Extracted from build.ts so both the build pipeline and the standalone
 // `rickgent citadel` command import the gate from a single source.
 
-import { execFileSync, spawnSync } from "child_process";
+import { spawnSync } from "child_process";
 import { join } from "path";
 import type { AcceptanceCriterion } from "../core/prd.js";
 import type { TicketContract, TicketVerification } from "../contracts/ticket-contract.js";
@@ -20,44 +20,25 @@ export interface ConformanceResult {
   results: Array<{ acId: string; pass: boolean; detail: string }>;
 }
 
+/**
+ * Legacy raw-shell conformance gate.  `raw_shell` is `unavailable` with no
+ * activation profile — this function always throws.  The legacy shell
+ * execution body has been removed (t26); use {@link runContractConformanceGate}
+ * for argv-only verification against sealed `TicketVerification` contracts.
+ *
+ * The function is retained as an importable symbol so existing test imports
+ * and the `citadel-cli` import test continue to resolve.  It is NOT the
+ * production verification path.
+ */
 export function runConformanceGate(
-  acceptanceCriteria: AcceptanceCriterion[],
-  workingDir: string,
-  env: NodeJS.ProcessEnv,
+  _acceptanceCriteria: AcceptanceCriterion[],
+  _workingDir: string,
+  _env: NodeJS.ProcessEnv,
 ): ConformanceResult {
   RUNTIME_CAPABILITY_GATE.require("raw_shell");
-  const results: Array<{ acId: string; pass: boolean; detail: string }> = [];
-  let passed = 0;
-  let failed = 0;
-
-  for (let i = 0; i < acceptanceCriteria.length; i++) {
-    const ac = acceptanceCriteria[i]!;
-    const acId = `AC-${i + 1}`;
-    // Strip markdown backtick delimiters that the PRD parser preserves.
-    const cmd = (ac.verifyCommand ?? "").replace(/^`+|`+$/g, "").trim();
-    if (!cmd) {
-      results.push({ acId, pass: true, detail: "no verify command" });
-      passed++;
-      continue;
-    }
-    try {
-      execFileSync("sh", ["-c", cmd], {
-        cwd: workingDir,
-        encoding: "utf-8",
-        timeout: 30000,
-        stdio: ["ignore", "pipe", "pipe"],
-        env,
-      });
-      results.push({ acId, pass: true, detail: "verify command succeeded" });
-      passed++;
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      results.push({ acId, pass: false, detail: `verify command failed: ${detail}` });
-      failed++;
-    }
-  }
-
-  return { total: acceptanceCriteria.length, passed, failed, results };
+  // Safety net: if the capability gate is mocked to allow, still fail closed.
+  // raw_shell has no activation profile — shell execution is permanently removed.
+  throw new Error("RICKGENT_RAW_SHELL_UNAVAILABLE: shell execution removed (t26); use runContractConformanceGate");
 }
 
 function verificationCwd(verification: TicketVerification, workingDir: string): string | null {

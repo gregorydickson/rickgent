@@ -4,9 +4,8 @@ import { tmpdir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
-import { runConformanceGate, type ConformanceResult } from "../../src/lifecycle/citadel.js";
+import { runConformanceGate } from "../../src/lifecycle/citadel.js";
 import { runDeslopGate, type DeslopResult } from "../../src/lifecycle/szechuan.js";
-import type { AcceptanceCriterion } from "../../src/core/prd.js";
 import { sealTicketContracts } from "../../src/contracts/ticket-contract.js";
 
 // Unit-only parity coverage for a legacy raw-command gate; public raw shell is
@@ -44,30 +43,24 @@ describe("Foundation extraction — build.ts imports the extracted gates (VAL-M0
 });
 
 describe("runConformanceGate parity (VAL-M0-005)", () => {
-  it("produces the pre-extraction finding set for a fixed AC fixture", () => {
-    const acceptanceCriteria: AcceptanceCriterion[] = [
-      { description: "passing", type: "test", verifyCommand: "true", scope: [] },
-      { description: "backtick-wrapped passing", type: "test", verifyCommand: "`true`", scope: [] },
-      { description: "failing", type: "test", verifyCommand: "false", scope: [] },
-      { description: "empty", type: "test", verifyCommand: "", scope: [] },
-    ];
-
-    const result: ConformanceResult = runConformanceGate(
-      acceptanceCriteria,
+  it("throws RICKGENT_RAW_SHELL_UNAVAILABLE — sh -c execution removed (t26)", () => {
+    // The legacy runConformanceGate used sh -c to execute PRD verifyCommand
+    // shell text.  t26 removed sh -c from citadel.ts; the function now
+    // throws unconditionally (raw_shell is unavailable with no activation
+    // profile).  Use runContractConformanceGate for argv-only verification.
+    expect(() => runConformanceGate(
+      [],
       process.cwd(),
       process.env,
-    );
+    )).toThrow("RICKGENT_RAW_SHELL_UNAVAILABLE");
+  });
 
-    expect(result.total).toBe(4);
-    expect(result.passed).toBe(3);
-    expect(result.failed).toBe(1);
-    expect(result.results.map((r) => ({ acId: r.acId, pass: r.pass }))).toEqual([
-      { acId: "AC-1", pass: true },
-      { acId: "AC-2", pass: true },
-      { acId: "AC-3", pass: false },
-      { acId: "AC-4", pass: true },
-    ]);
-    expect(result.results[3]!.detail).toBe("no verify command");
+  it("throws even when the capability gate is mocked to allow (safety net)", () => {
+    expect(() => runConformanceGate(
+      [{ description: "x", type: "test", verifyCommand: "true", scope: [] }],
+      process.cwd(),
+      process.env,
+    )).toThrow("RICKGENT_RAW_SHELL_UNAVAILABLE");
   });
 });
 

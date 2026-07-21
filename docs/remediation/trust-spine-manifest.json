@@ -1199,7 +1199,11 @@
         "orchestrator/test/reliability/gate-sandbox.test.ts"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
+      "completed_at": {
+        "commit": "COMMIT_SHA_PLACEHOLDER",
+        "phase_report": "docs/remediation/phase-6-t26-structured-gate-runner-execution-report-2026-07-21.md"
+      },
       "depends_on": [
         "t25"
       ]

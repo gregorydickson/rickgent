@@ -46,6 +46,8 @@ import type { TicketContract } from "../contracts/ticket-contract.js";
 import type { LeaseAuthority } from "../state/leases.js";
 import type { StateStore } from "../state/store.js";
 import { canonicalGitDeltaFromRaw } from "../state/store.js";
+import { runGateVerification } from "../verification/gate-runner.js";
+import { buildSandboxEnv } from "../verification/sandbox.js";
 import { LifecycleRecordAuthority } from "../state/transitions.js";
 import type {
   AttemptRunnerPhaseProviders,
@@ -150,65 +152,6 @@ function observeCandidateOid(
     // If the ref cannot be resolved, use the baseline as the candidate.
   }
   return { candidateOid: baselineOid, attemptRefObservedOid: baselineOid };
-}
-
-/**
- * Run a verification argv and observe the real exit code.  This is the real
- * production observation — the gate runner executes the contract's
- * verification command and records the observed result.  A failing command
- * produces a "failed" gate, not a manufactured "pass".
- *
- * The observed exit code is classified against the verification's sealed
- * `expected_exit_codes` allowlist (t22D-fix-round-6, M4 scrutiny round 6).
- * A permitted nonzero exit (e.g., a linter that exits 1 on warnings but is
- * configured with `expected_exit_codes [0, 1]`) classifies as "pass".  An
- * exit code NOT in the allowlist fails closed as "fail" — including exit 0
- * when 0 is not in the allowlist.  This is the fail-closed contract: the
- * classifier consults the sealed allowlist rather than assuming exit 0 is
- * always a pass.
- */
-function runVerificationArgv(
-  executable: string,
-  args: readonly string[],
-  cwd: string,
-  env: Readonly<Record<string, string>>,
-  timeoutMs: number,
-  expectedExitCodes: readonly number[],
-): { status: "pass" | "fail" | "infrastructure_error"; exitCode: number | null; stdout: string; stderr: string } {
-  try {
-    const result = execFileSync(executable, [...args], {
-      cwd,
-      encoding: "utf8",
-      timeout: timeoutMs,
-      env: { ...process.env, ...env } as NodeJS.ProcessEnv,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    // execFileSync returns without throwing only when the process exits 0.
-    // Classify against the allowlist: if 0 is not in expected_exit_codes,
-    // even a clean exit fails closed.
-    const status: "pass" | "fail" = expectedExitCodes.includes(0) ? "pass" : "fail";
-    return { status, exitCode: 0, stdout: result, stderr: "" };
-  } catch (error) {
-    const e = error as { status?: number; signal?: string; stdout?: string; stderr?: string };
-    if (typeof e.status === "number") {
-      // Classify the observed exit against the sealed allowlist.  A
-      // permitted nonzero exit passes; anything else (including codes the
-      // contract did not seal) fails closed.
-      const status: "pass" | "fail" = expectedExitCodes.includes(e.status) ? "pass" : "fail";
-      return {
-        status,
-        exitCode: e.status,
-        stdout: typeof e.stdout === "string" ? e.stdout : "",
-        stderr: typeof e.stderr === "string" ? e.stderr : "",
-      };
-    }
-    return {
-      status: "infrastructure_error",
-      exitCode: null,
-      stdout: typeof e.stdout === "string" ? e.stdout : "",
-      stderr: typeof e.stderr === "string" ? e.stderr : String(error),
-    };
-  }
 }
 
 /**
@@ -462,31 +405,42 @@ export function buildAttemptRunnerProviders(
         const perGateResultId = `gate-${attemptId}-${index}`;
         const perGateEvidenceId = `evidence-gate-${attemptId}-${index}`;
 
-        // Build the env from the verification's allowlist.
-        const env: Record<string, string> = {};
-        for (const key of verification.env_allowlist) {
-          if (process.env[key] !== undefined) {
-            env[key] = process.env[key]!;
-          }
-        }
-        const result = runVerificationArgv(
-          verification.executable,
-          verification.args,
+        // Build the sandbox env from the verification's sealed allowlist.
+        const env = buildSandboxEnv(process.env, verification.env_allowlist);
+
+        // t26: Execute the verification through the structured gate runner
+        // (argv-only, no shell interpolation).  The gate runner is the
+        // single authority for classifying verification outcomes into the
+        // sealed GATE_STATUSES enum.
+        const gateResult = runGateVerification({
+          verification,
           cwd,
           env,
-          verification.timeout_ms,
-          verification.expected_exit_codes,
-        );
+          contractDigest: contract.digest,
+          contextDigest: phase.contextDigest,
+          phaseDigest: phase.contextDigest,
+        });
 
-        // The gate status is derived from the real verification result.
-        const gateStatus: "passed" | "failed" | "infrastructure_error" =
-          result.status === "pass" ? "passed" :
-          result.status === "fail" ? "failed" : "infrastructure_error";
+        // The gate status is the typed GateRunnerStatus from the gate
+        // runner (one of the 9 GATE_STATUSES values).  All non-passed
+        // statuses block advancement (fail-closed) via the oracle.
+        const gateStatus: "passed" | "failed" | "missing" | "null" | "skipped" | "unavailable" | "infrastructure_error" | "stale" | "conflicting" =
+          gateResult.status;
+
+        // Map the typed gate status to the simplified overall status:
+        // infrastructure_error > fail > pass.  Infrastructure-level
+        // failures (infrastructure_error, unavailable, missing) map to
+        // "infrastructure_error"; all other non-passed statuses map to
+        // "fail" (ordinary verification failure).
+        const mappedOverall: "pass" | "fail" | "infrastructure_error" =
+          gateResult.status === "passed" ? "pass" :
+          (gateResult.status === "infrastructure_error" || gateResult.status === "unavailable" || gateResult.status === "missing")
+            ? "infrastructure_error" : "fail";
 
         // Track the overall status: infra_error > fail > pass.
-        if (result.status === "infrastructure_error") {
+        if (mappedOverall === "infrastructure_error") {
           overallStatus = "infrastructure_error";
-        } else if (result.status === "fail" && overallStatus !== "infrastructure_error") {
+        } else if (mappedOverall === "fail" && overallStatus !== "infrastructure_error") {
           overallStatus = "fail";
         }
 

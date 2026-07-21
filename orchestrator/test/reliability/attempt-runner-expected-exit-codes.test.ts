@@ -280,21 +280,22 @@ function callVerification(fixture: Fixture): {
 // ---------------------------------------------------------------------------
 
 describe("structural: verification provider honors expected_exit_codes", () => {
-  it("attempt-runner-providers.ts passes per-verification expected_exit_codes to the classifier", () => {
+  it("attempt-runner-providers.ts delegates to the structured gate runner (t26)", () => {
     const source = readFileSync(join(orchestratorRoot, "src", "lifecycle", "attempt-runner-providers.ts"), "utf-8");
-    // The classifier function (runVerificationArgv) must accept an
-    // expected_exit_codes parameter.
-    expect(source).toMatch(/expected_exit_codes|expectedExitCodes/);
-    // The provider must pass the per-verification expected_exit_codes when
-    // calling the classifier (not hardcode only exit 0 as pass).
-    const verifyStart = source.indexOf("verification(input: VerificationInput): VerificationResult");
-    expect(verifyStart).toBeGreaterThanOrEqual(0);
-    const verifyEnd = source.indexOf("oracle(input: OracleInput)", verifyStart);
-    expect(verifyEnd).toBeGreaterThan(verifyStart);
-    const verifyBody = source.slice(verifyStart, verifyEnd);
-    // The classifier call inside the verification provider must reference
-    // the per-verification expected_exit_codes.
-    expect(verifyBody).toMatch(/expected_exit_codes|expectedExitCodes/);
+    // t26: the verification provider delegates to runGateVerification from
+    // the structured gate runner module.  The gate runner is the single
+    // authority for classifying verification outcomes (including
+    // expected_exit_codes classification).
+    expect(source).toMatch(/runGateVerification/);
+    expect(source).toMatch(/from\s+["']\.\.\/verification\/gate-runner\.js["']/);
+  });
+
+  it("the gate runner source (gate-runner.ts) honors expected_exit_codes classification", () => {
+    const gateRunnerSource = readFileSync(join(orchestratorRoot, "src", "verification", "gate-runner.ts"), "utf-8");
+    // The gate runner must consult the sealed expected_exit_codes allowlist
+    // when classifying the exit code — not hardcode exit 0 as the only pass.
+    expect(gateRunnerSource).toMatch(/expected_exit_codes/);
+    expect(gateRunnerSource).not.toMatch(/e\.status\s*===\s*0\s*\?\s*"pass"\s*:\s*"fail"/);
   });
 
   it("attempt-runner-providers.ts does NOT hardcode exit 0 as the only pass condition", () => {
