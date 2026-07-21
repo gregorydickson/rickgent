@@ -151,7 +151,7 @@ function scenarioProvisionOverlapping(leases, args) {
 function scenarioForeignCommit(args) {
   // The foreign-commit scenario simulates an unauthorized raw git update-ref
   // on the rival's attempt ref, then drives the PRODUCTION authority path
-  // (provisionAttemptWorkspace → assertRef → containFailure →
+  // (provisionAttemptWorkspace, then assertRef, then containFailure, then
   // LeaseAuthority.beginCleanup) to prove the production code detects and
   // rejects the unauthorized ref movement.  The worker does NOT roll back
   // the ref in test/worker code — the production authority path handles it
@@ -617,7 +617,7 @@ async function scenarioFloodOutputSupervised(args) {
   // Scrutiny round 4 fix: route the output-flood scenario through the
   // AttemptRunner's production dispatch authority, NOT a direct
   // ProcessSupervisor.run() call.  The dispatch provider is the AttemptRunner's
-  // dispatch authority pattern (DispatchInput → SupervisedDispatchResult).
+  // dispatch authority pattern from DispatchInput to SupervisedDispatchResult.
   // It wraps the ProcessSupervisor (the production supervised-output path
   // that bounds output via BoundedOutputSink) and CHECKS the supervision
   // result's outcome — an unsuccessful supervision result (spawn_error,
@@ -648,8 +648,8 @@ async function scenarioFloodOutputSupervised(args) {
     let capturedDescendantsConfirmedDead = null;
     let capturedLaunchId = null;
     let capturedProcessReceiptId = null;
-    // The dispatch provider follows the AttemptRunner's DispatchInput →
-    // SupervisedDispatchResult interface.  The AttemptRunner would call this
+    // The dispatch provider follows the AttemptRunner's DispatchInput to
+    // SupervisedDispatchResult interface. The AttemptRunner would call this
     // provider as `(this.#providers.dispatch ?? this.#defaultDispatch)(input)`.
     // We exercise it directly to prove the production supervised-output path
     // handles the flood with bounded-output-receipt constraints.

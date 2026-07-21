@@ -618,8 +618,8 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
       // 3. Foreign commits: attempt A (run 1) tries to write to attempt B's
       //    (run 2) ref.  The foreign-commit worker does the unauthorized raw
       //    git update-ref (the attack) and then drives the PRODUCTION authority
-      //    path (provisionAttemptWorkspace → assertRef → containFailure →
-      //    LeaseAuthority.beginCleanup) to prove the production code detects
+      //    path (provisionAttemptWorkspace, then assertRef, then containFailure,
+      //    then LeaseAuthority.beginCleanup) to prove the production code detects
       //    and rejects the unauthorized ref movement.  NO test-code rollback.
       {
         const foreignSeeded = seedRepoWithRuns(`${label}-foreign`, 2, 1);
@@ -664,8 +664,8 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
           }
           // The foreign-commit worker does the unauthorized raw git update-ref
           // (the attack) and then drives the PRODUCTION authority path
-          // (provisionAttemptWorkspace → assertRef → containFailure →
-          // LeaseAuthority.beginCleanup) to detect and reject the unauthorized
+          // (provisionAttemptWorkspace, then assertRef, then containFailure,
+          // then LeaseAuthority.beginCleanup) to detect and reject the unauthorized
           // ref movement.  NO test-code rollback.
           const foreignResult = await runWorker({
             repo: foreignSeeded.repo,
@@ -695,8 +695,8 @@ describe("t23 concurrency corpus — deterministic stress iterations", () => {
             // unauthorized ref movement.  The foreign-commit worker acquires
             // B's ownership and calls provisionAttemptWorkspace, which
             // detects the foreign ref via assertRef and transitions B's
-            // ownership to cleanup_pending (via containFailure →
-            // LeaseAuthority.beginCleanup).  This is the production code
+            // ownership to cleanup_pending (via containFailure, then
+            // LeaseAuthority.beginCleanup). This is the production code
             // detecting and rejecting the unauthorized ref movement — NOT
             // test-code rollback.
             if (foreignResult.authorityRejected !== true) {
