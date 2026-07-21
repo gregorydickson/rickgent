@@ -233,6 +233,15 @@ export interface InternalBuildDependencies {
    * that seed durable receipt rows deterministically.
    */
   attemptRunnerProviders?: import("./attempt-runner.js").AttemptRunnerPhaseProviders;
+  /**
+   * t22D-fix-round-3: Override the supervised dispatch argv.  When supplied,
+   * `executeBuildViaRunner` uses this argv instead of the real `omnigent run`
+   * argv.  Production never sets this (the real omnigent dispatch is the
+   * production path); the real production-path integration test injects a
+   * simple command that produces real git changes inside the containment
+   * boundary without requiring real LLM tokens.
+   */
+  dispatchArgvOverride?: readonly string[];
 }
 
 /**
@@ -692,6 +701,12 @@ async function executeBuildViaRunner(
     report.push(`build: containment backend available (${probe.backendId})`);
   } else {
     try {
+      // t22D-fix-round-3: Propagate opts.agentDir to RICKGENT_AGENT_DIR so
+      // the containment probe passes it to the Docker backend, which sets it
+      // inside the container via `docker exec -e RICKGENT_AGENT_DIR=...`.
+      if (opts.agentDir && process.env.RICKGENT_AGENT_DIR === undefined) {
+        process.env.RICKGENT_AGENT_DIR = opts.agentDir;
+      }
       const probeOpts: { dockerImage?: string; probeTimeoutMs?: number; cgroupRoot?: string } = {};
       if (env.RICKGENT_CONTAINMENT_DOCKER_IMAGE) probeOpts.dockerImage = env.RICKGENT_CONTAINMENT_DOCKER_IMAGE;
       if (env.RICKGENT_CONTAINMENT_PROBE_TIMEOUT_MS) {
@@ -776,7 +791,7 @@ async function executeBuildViaRunner(
     // dispatch path derived from the configured agent bundle and ticket
     // prompt — not a placeholder command.
     const prompt = `Implement ticket ${ticket.id}: ${ticket.title}\n${ticket.description}`;
-    const supervisedArgv = buildOmnigentDispatchArgv(opts.agentDir, prompt);
+    const supervisedArgv = dependencies.dispatchArgvOverride ?? buildOmnigentDispatchArgv(opts.agentDir, prompt);
     const request: AttemptRunnerRequest = {
       attempt,
       run: allocatedRun,

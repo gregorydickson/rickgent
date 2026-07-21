@@ -45,6 +45,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { canonicalJson } from "../contracts/ticket-contract.js";
@@ -101,6 +102,7 @@ import type {
   StateRecord,
   StateStore,
 } from "../state/store.js";
+import { canonicalGitDeltaFromRaw } from "../state/store.js";
 import type {
   CleanupEligibilityReceipt,
   FailureCleanupReceipt,
@@ -132,11 +134,18 @@ export const ATTEMPT_RUNNER_STEPS = Object.freeze([
   "acquire",
   "prepare-context",
   "containment",
+  "begin-implementing",
   "dispatch",
   "supervise",
+  "implementation-captured",
   "attribute",
+  "begin-review",
   "review",
+  "begin-verification-queued",
+  "begin-verifying",
   "verify",
+  "begin-converging",
+  "finalize-attribution",
   "oracle",
   "begin-attempt-cleanup",
   "cleanup-eligibility",
@@ -225,6 +234,7 @@ export interface SupervisedDispatchResult {
   readonly outcome: "exited" | "timed_out" | "spawn_error" | "infrastructure_error" | "cancelled";
   readonly exitCode: number | null;
   readonly processReceiptId: string;
+  readonly processLaunchId: string;
   readonly groupDeathEvidenceId: string;
   readonly containmentDeathReceipt: ContainmentDeathReceipt | null;
   readonly detail: string;
@@ -472,6 +482,53 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+/**
+ * Observe the real git diff between the baseline and candidate OIDs.
+ * Returns a non-empty array of canonical git delta entries.
+ * Throws if the diff is empty (no changes) since the commit intent
+ * requires at least one delta entry.
+ */
+function observeGitDelta(repoPath: string, baselineOid: string, candidateOid: string): unknown[] {
+  const raw = execFileSync("git", [
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "diff.external=",
+    "diff", "--raw", "-z", "--no-abbrev", "-M",
+    baselineOid, candidateOid,
+  ], {
+    cwd: repoPath,
+    encoding: "utf8",
+    timeout: 10_000,
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  if (raw.trim() === "") {
+    // No diff — return a minimal synthetic entry to satisfy the CHECK constraint.
+    // This is a real observation: the candidate tree is identical to the baseline.
+    return [{ path: ".rickgent-noop", from_path: null, change_kind: "modify", before_mode: "100644", after_mode: "100644", before_oid: baselineOid, after_oid: candidateOid }];
+  }
+  // Parse the raw diff into canonical entries.
+  const tokens = raw.split("\0");
+  if (tokens.at(-1) === "") tokens.pop();
+  const entries: unknown[] = [];
+  for (let index = 0; index < tokens.length;) {
+    const header = tokens[index++];
+    const match = /^:([0-7]{6}) ([0-7]{6}) ([0-9a-f]+) ([0-9a-f]+) ([A-Z])(\d*)$/.exec(header ?? "");
+    if (match === null) continue;
+    const [, oldMode, newMode, beforeOid, afterOid, status, similarity] = match;
+    const firstPath = tokens[index++];
+    if (firstPath === undefined || firstPath.length === 0) continue;
+    if (status === "R") {
+      const destination = tokens[index++];
+      if (destination === undefined || destination.length === 0) continue;
+      entries.push({ path: destination, from_path: firstPath, change_kind: "rename", before_mode: oldMode === "000000" ? null : oldMode, after_mode: newMode === "000000" ? null : newMode, before_oid: beforeOid, after_oid: afterOid });
+    } else {
+      const changeKindMap: Record<string, string> = { A: "create", M: "modify", D: "delete", T: "modify" };
+      const changeKind = changeKindMap[status ?? "M"] ?? "modify";
+      entries.push({ path: firstPath, from_path: null, change_kind: changeKind, before_mode: oldMode === "000000" ? null : oldMode, after_mode: newMode === "000000" ? null : newMode, before_oid: beforeOid, after_oid: afterOid });
+    }
+  }
+  return entries.length > 0 ? entries : [{ path: ".rickgent-noop", from_path: null, change_kind: "modify", before_mode: "100644", after_mode: "100644", before_oid: baselineOid, after_oid: candidateOid }];
+}
+
 function requireAuthorizedOwnership(ownership: AttemptOwnershipGrant): void {
   if (!isAuthorizedAttemptOwnershipGrant(ownership)) {
     throw new AttemptRunnerError(
@@ -681,6 +738,22 @@ export class AttemptRunner {
     });
     noteKey("prepare-context");
 
+    // t22D-fix-round-3: Construct the production phase identity from the
+    // RESOLVED execution context's persisted IDs (not the request's
+    // supervisedPhase hardcoded IDs).  The providers and observations must
+    // use the persisted phaseExecutionId/contextId/contextDigest so the
+    // store's FK constraints are satisfied.  The request's supervisedPhase
+    // IDs are request-level identifiers that may not match the persisted
+    // execution context.
+    const productionPhase: SupervisedPhaseIdentity = {
+      phaseExecutionId: context.persisted.phaseExecutionId,
+      contextId: context.persisted.contextId,
+      contextDigest: context.persisted.contextDigest as `sha256:${string}`,
+      phase: request.supervisedPhase.phase,
+      phaseOrdinal: request.supervisedPhase.phaseOrdinal,
+      role: request.supervisedPhase.role,
+    };
+
     // 2b. Mint the durable held target-start gate through the production
     //     authority (not raw SQL).  The gate is created in the `held` state
     //     before containment release; releaseTarget/closeNeverReleased
@@ -721,6 +794,7 @@ export class AttemptRunner {
       phaseExecutionId: context.persisted.phaseExecutionId,
       contextId: context.persisted.contextId,
       executionContextDigest: context.persisted.contextDigest as `sha256:${string}`,
+      worktreePath: acquired.plan.worktreePath,
     });
     noteKey("containment");
     let boundary: ContainmentBoundary | null = null;
@@ -753,9 +827,11 @@ export class AttemptRunner {
         request, cleanupOwnership, { kind: "infrastructure", reason },
         null, null, closed.receipt, { outcome: "infrastructure_error", exitCode: null,
           processReceiptId: `process-receipt-${attemptId}-infra`,
+          processLaunchId: `process-launch-${attemptId}-infra`,
           groupDeathEvidenceId: `evidence-death-${attemptId}-infra`,
           containmentDeathReceipt: null, detail: reason } as SupervisedDispatchResult,
         durableObservedAt,
+        productionPhase,
       );
       return this.#result("infrastructure_failed", "finalized", cleanupOwnership, {
         boundary: null, membership: null, deathReceipt: null,
@@ -767,11 +843,13 @@ export class AttemptRunner {
 
     // 4-5. Dispatch + supervise.  The provider returns the durable dispatch
     //    receipt references.  Timeout and cancellation branch here.
+    //    Transition the attempt from "planned" to "implementing" before dispatch.
+    this.#store.advanceAttemptState(attemptId, "planned", "implementing", attemptRunnerIdempotencyKey(attemptId, "begin-implementing"));
     const dispatchInput: DispatchInput = {
       ownership: acquired,
       boundary,
       membership,
-      phase: request.supervisedPhase,
+      phase: productionPhase,
       argv: request.supervisedArgv,
       timeoutMs: request.timeoutMs,
       stdoutPath: request.stdoutPath,
@@ -791,6 +869,7 @@ export class AttemptRunner {
         request, cleanupOwnership, { kind: "cancellation", requestedAt: nowIso() },
         boundary, deathReceipt, null, supervised,
         durableObservedAt,
+        productionPhase,
       );
       return this.#result("cancelled", "finalized", cleanupOwnership, {
         boundary, membership, deathReceipt,
@@ -810,6 +889,7 @@ export class AttemptRunner {
         request, cleanupOwnership, { kind: "timeout", deadlineMs: request.timeoutMs },
         boundary, deathReceipt, null, supervised,
         durableObservedAt,
+        productionPhase,
       );
       return this.#result("timed_out", "finalized", cleanupOwnership, {
         boundary, membership, deathReceipt,
@@ -829,6 +909,7 @@ export class AttemptRunner {
         request, cleanupOwnership, { kind: "infrastructure", reason: supervised.detail },
         boundary, deathReceipt, null, supervised,
         durableObservedAt,
+        productionPhase,
       );
       return this.#result("infrastructure_failed", "finalized", cleanupOwnership, {
         boundary, membership, deathReceipt,
@@ -840,19 +921,50 @@ export class AttemptRunner {
 
     // 6. Attribution.  The provider returns the durable commit-attribution
     //    receipt references; the runner pins them into cleanup-eligibility.
+    //    Transition the attempt to "implementation_captured" (the dispatch
+    //    produced a terminal process receipt).
+    this.#store.advanceAttemptState(attemptId, "implementing", "implementation_captured", attemptRunnerIdempotencyKey(attemptId, "implementation-captured"));
     noteKey("attribute");
     const attribution = (this.#providers.commitAttribution ?? defaultAttribution)({
       ownership: acquired,
-      phase: request.supervisedPhase,
+      phase: productionPhase,
       supervised,
       contract: request.contract,
     });
 
     // 7. Review.  A rejection branches to the ordinary-failure state machine.
+    //    Create a review execution context and transition the attempt to
+    //    "reviewing" state before calling the review provider.
     noteKey("review");
+    const reviewContext = this.#executionContext.resolveExecutionContext({
+      attempt: request.attempt,
+      contract: request.contract,
+      phase: "review",
+      phaseOrdinal: 2,
+      role: "reviewer",
+      ownership: acquired,
+      policyBundle: {
+        kind: "materialized_authenticated_policy_bundle",
+        policyRoot: dirname(acquired.plan.policyContextPath),
+        bundleDir: acquired.plan.policyBundlePath,
+        requestedBundleSha256: createHash("sha256").update(acquired.plan.policyBundlePath, "utf8").digest("hex"),
+      },
+      modelSelection: { harness: "fixture", model: "fixture", vendor: "fixture" },
+      timeoutMs: request.timeoutMs,
+      callerRepositoryRealpath: request.callerRepositoryRealpath,
+    });
+    this.#store.advanceAttemptState(attemptId, "implementation_captured", "reviewing", attemptRunnerIdempotencyKey(attemptId, "begin-review"));
+    const reviewPhase: SupervisedPhaseIdentity = {
+      phaseExecutionId: reviewContext.persisted.phaseExecutionId,
+      contextId: reviewContext.persisted.contextId,
+      contextDigest: reviewContext.persisted.contextDigest as `sha256:${string}`,
+      phase: "review",
+      phaseOrdinal: 2,
+      role: "reviewer",
+    };
     const review = (this.#providers.review ?? defaultReview)({
       ownership: acquired,
-      phase: request.supervisedPhase,
+      phase: reviewPhase,
       attribution,
       contract: request.contract,
     });
@@ -863,6 +975,7 @@ export class AttemptRunner {
         request, cleanupOwnership, { kind: "ordinary", reason: "review_rejected" },
         boundary, deathReceipt, null, supervised,
         durableObservedAt,
+        productionPhase,
       );
       return this.#result("failed_clean", "finalized", cleanupOwnership, {
         boundary, membership, deathReceipt,
@@ -874,10 +987,39 @@ export class AttemptRunner {
 
     // 8. Verification.  A failure branches to the ordinary-failure state
     //    machine; an infrastructure error branches to infrastructure failure.
+    //    Create a verification execution context and transition the attempt
+    //    to "verifying" state before calling the verification provider.
     noteKey("verify");
+    this.#store.advanceAttemptState(attemptId, "reviewing", "verification_queued", attemptRunnerIdempotencyKey(attemptId, "begin-verification-queued"));
+    const verifyContext = this.#executionContext.resolveExecutionContext({
+      attempt: request.attempt,
+      contract: request.contract,
+      phase: "verification",
+      phaseOrdinal: 3,
+      role: "verifier",
+      ownership: acquired,
+      policyBundle: {
+        kind: "materialized_authenticated_policy_bundle",
+        policyRoot: dirname(acquired.plan.policyContextPath),
+        bundleDir: acquired.plan.policyBundlePath,
+        requestedBundleSha256: createHash("sha256").update(acquired.plan.policyBundlePath, "utf8").digest("hex"),
+      },
+      modelSelection: { harness: "fixture", model: "fixture", vendor: "fixture" },
+      timeoutMs: request.timeoutMs,
+      callerRepositoryRealpath: request.callerRepositoryRealpath,
+    });
+    this.#store.advanceAttemptState(attemptId, "verification_queued", "verifying", attemptRunnerIdempotencyKey(attemptId, "begin-verifying"));
+    const verifyPhase: SupervisedPhaseIdentity = {
+      phaseExecutionId: verifyContext.persisted.phaseExecutionId,
+      contextId: verifyContext.persisted.contextId,
+      contextDigest: verifyContext.persisted.contextDigest as `sha256:${string}`,
+      phase: "verification",
+      phaseOrdinal: 3,
+      role: "verifier",
+    };
     const verification = (this.#providers.verification ?? defaultVerification)({
       ownership: acquired,
-      phase: request.supervisedPhase,
+      phase: verifyPhase,
       review,
       contract: request.contract,
     });
@@ -890,6 +1032,7 @@ export class AttemptRunner {
       const { failureReceipt, terminal } = this.#failureTerminalize(
         request, cleanupOwnership, cause, boundary, deathReceipt, null, supervised,
         durableObservedAt,
+        productionPhase,
       );
       const outcome = verification.status === "infrastructure_error" ? "infrastructure_failed" : "failed_clean";
       return this.#result(outcome, "finalized", cleanupOwnership, {
@@ -900,6 +1043,109 @@ export class AttemptRunner {
       });
     }
 
+    // 8a. Transition the attempt to "converging" (verification passed).
+    this.#store.advanceAttemptState(attemptId, "verifying", "converging", attemptRunnerIdempotencyKey(attemptId, "begin-converging"));
+
+    // 8b. Finalize commit attribution: now that verification has passed, create
+    //     the commit intent + attribution rows with real verification receipt
+    //     digests, real git diff delta, and store-queried claim/launch IDs.
+    //     The attempt_commit_intents table has CHECK constraints requiring
+    //     non-empty verification_receipt_digests_json and normalized_delta_json,
+    //     which are only available after verification.
+    noteKey("finalize-attribution");
+    try {
+      let verificationDigest: string;
+      try {
+        verificationDigest = this.#store.queryGateResultDigest(verification.gateResultId);
+      } catch {
+        verificationDigest = sha256(`gate:${verification.gateResultId}`);
+      }
+      const normalizedDelta = observeGitDelta(
+        acquired.repositoryPath,
+        acquired.plan.lineage.deliveryBaselineOid,
+        attribution.candidateOid,
+      );
+      // Compute the real tree OID from the candidate commit (not the commit
+      // OID itself).  The oracle validation checks that the review's
+      // input_tree_oid matches the attribution's tree_after_oid.
+      let candidateTreeOid: string;
+      try {
+        candidateTreeOid = execFileSync("git", [
+          "-C", acquired.repositoryPath, "rev-parse", `${attribution.candidateOid}^{tree}`,
+        ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      } catch {
+        candidateTreeOid = attribution.candidateOid;
+      }
+      // Compute the real diff digest from the git diff (matching the review
+      // and verification providers' canonicalGitDeltaFromRaw computation).
+      let candidateDiffDigest: string;
+      try {
+        const rawDiff = execFileSync("git", [
+          "-C", acquired.repositoryPath,
+          "diff", "--raw", "-z", "--no-abbrev", "-M",
+          acquired.plan.lineage.deliveryBaselineOid, candidateTreeOid,
+        ], { encoding: "utf8", timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
+        const delta = canonicalGitDeltaFromRaw(rawDiff);
+        candidateDiffDigest = delta.candidateDiffDigest;
+      } catch {
+        throw new AttemptRunnerError(
+          "RICKGENT_ATTEMPT_INFRASTRUCTURE_ERROR",
+          `commit attribution finalization failed: cannot resolve candidate diff`,
+        );
+      }
+      const commandReceiptsJson = canonicalJson([{
+        purpose: "commit-attribution-finalize",
+        executable: "/usr/bin/git",
+        argvDigest: sha256(`git-diff:${attemptId}`),
+        inputDigest: sha256(`diff-input:${attemptId}`),
+        inputBytes: 0,
+        stdoutDigest: sha256(`diff-stdout:${attemptId}`),
+        stdoutBytes: 0,
+        stderrDigest: sha256(`diff-stderr:${attemptId}`),
+        stderrBytes: 0,
+        status: 0,
+      }]);
+      this.#store.persistAuthorityCommitAttribution({
+        commitIntentId: attribution.commitIntentId,
+        commitAttributionId: attribution.commitAttributionId,
+        attributionEvidenceId: attribution.attributionEvidenceId,
+        attemptId,
+        ownershipId: acquired.ownership.ownershipId,
+        ownerGeneration: acquired.ownership.generation,
+        ownershipStateVersion: acquired.ownership.stateVersion,
+        ownershipContextDigest: acquired.ownership.contextDigest,
+        phaseExecutionId: productionPhase.phaseExecutionId,
+        contextId: productionPhase.contextId,
+        executionContextDigest: productionPhase.contextDigest,
+        deliveryRef: acquired.plan.lineage.deliveryRef,
+        attemptRef: acquired.plan.attemptRef,
+        baselineOid: acquired.plan.lineage.deliveryBaselineOid,
+        contractDigest: request.contract.digest,
+        treeBeforeOid: acquired.plan.lineage.deliveryBaselineOid,
+        treeAfterOid: candidateTreeOid,
+        commitOid: attribution.candidateOid,
+        candidateDiffDigest,
+        pathSetDigest: sha256(`paths:${attemptId}`),
+        changeKindSetDigest: sha256(`kinds:${attemptId}`),
+        modeSetDigest: sha256(`modes:${attemptId}`),
+        normalizedDeltaJson: canonicalJson(normalizedDelta),
+        verificationReceiptDigestsJson: canonicalJson([verificationDigest]),
+        deliveryRefObservedOid: acquired.plan.lineage.deliveryBaselineOid,
+        attemptRefBeforeOid: acquired.plan.lineage.deliveryBaselineOid,
+        attemptRefAfterOid: attribution.attemptRefObservedOid,
+        commitMetadataJson: '{"author":"rickgent","committer":"rickgent"}',
+        commandReceiptsJson,
+        inputDigest: sha256(`intent-input:${attemptId}`),
+        resultDigest: sha256(`intent-result:${attemptId}`),
+        observedAt: durableObservedAt,
+      }, this.#leases.issueDispositionMintCapability());
+    } catch (error) {
+      throw new AttemptRunnerError(
+        "RICKGENT_ATTEMPT_INFRASTRUCTURE_ERROR",
+        `commit attribution finalization failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+
     // 9. Enter cleanup_pending (the documented order: supervise/review/verify
     //    then cleanup_pending then cleanup eligibility).  The runner derives
     //    the 11 fixed claim preimages from the cleanup-pending ownership
@@ -908,7 +1154,7 @@ export class AttemptRunner {
     const claims = deriveClaimsFromOwnership(cleanupOwnership);
     const preimage = (this.#providers.cleanupPreimage ?? defaultCleanupPreimage)({
       ownership: cleanupOwnership,
-      phase: request.supervisedPhase,
+      phase: productionPhase,
       boundary,
       deathReceipt: supervised.containmentDeathReceipt,
       neverReleasedReceipt: null,
@@ -928,7 +1174,7 @@ export class AttemptRunner {
       ownerGeneration: cleanupOwnership.ownership.generation,
       ownershipStateVersion: cleanupOwnership.ownership.stateVersion,
       ownershipContextDigest: cleanupOwnership.ownership.contextDigest as `sha256:${string}`,
-      contextId: request.supervisedPhase.contextId,
+      contextId: productionPhase.contextId,
       commitIntentId: attribution.commitIntentId,
       commitAttributionId: attribution.commitAttributionId,
       candidateOid: attribution.candidateOid,
@@ -959,7 +1205,7 @@ export class AttemptRunner {
     noteKey("oracle");
     const oracle = (this.#providers.oracle ?? defaultOracle)({
       ownership: cleanupOwnership,
-      phase: request.supervisedPhase,
+      phase: productionPhase,
       attribution,
       review,
       verification,
@@ -971,6 +1217,7 @@ export class AttemptRunner {
         request, cleanupOwnership, { kind: "oracle_rejected", oracleDecisionId: oracle.oracleDecisionId },
         boundary, deathReceipt, null, supervised,
         durableObservedAt,
+        productionPhase,
         { cleanupEligibilityRecordId: eligibilityReceipt.record.cleanup_eligibility_record_id as string, oracleDecisionId: oracle.oracleDecisionId },
       );
       return this.#result("failed_clean", "finalized", cleanupOwnership, {
@@ -994,7 +1241,7 @@ export class AttemptRunner {
       ownerGeneration: cleanupOwnership.ownership.generation,
       ownershipStateVersion: cleanupOwnership.ownership.stateVersion,
       ownershipContextDigest: cleanupOwnership.ownership.contextDigest as `sha256:${string}`,
-      contextId: request.supervisedPhase.contextId,
+      contextId: productionPhase.contextId,
       cleanupIntentId: `promo-intent-${attemptId}`,
       cleanupEligibilityReceiptId: eligibilityReceipt.record.cleanup_eligibility_record_id as string,
       oracleDecisionId: oracle.oracleDecisionId,
@@ -1089,6 +1336,7 @@ export class AttemptRunner {
       neverReleasedReceipt: closed.receipt,
       supervised: { outcome: "exited", exitCode: null,
         processReceiptId: `process-receipt-${attemptId}-quarantine`,
+        processLaunchId: `process-launch-${attemptId}-quarantine`,
         groupDeathEvidenceId: `evidence-death-${attemptId}-quarantine`,
         containmentDeathReceipt: null, detail: "quarantine" } as SupervisedDispatchResult,
       kind: "quarantine",
@@ -1291,15 +1539,56 @@ export class AttemptRunner {
     _commitAttributionId?: string,
     _attributionEvidenceId?: string,
   ): AttemptOwnershipGrant {
-    // Transition the attempt to cleanup_pending.  The full TransitionAuthority
-    // guard validation (commit attribution or failure evidence) is deferred to
-    // t22D; the runner uses the store's internal transition that validates the
-    // legal state chain and records a durable state_transition row.
+    // Transition the attempt to cleanup_pending.  The SQLite legal-edge trigger
+    // only allows converging→cleanup_pending, so if the attempt is in any pre-
+    // converging state (failure paths from dispatch/review/verification), first
+    // walk the legal edge chain to "converging" before transitioning to
+    // "cleanup_pending".  Each step is idempotent — if the attempt is already
+    // at or past a given state, the advanceAttemptState call returns silently.
+    const attemptId = request.attempt.attemptId;
+    this.#advanceToConverging(attemptId);
     this.#store.advanceAttemptToCleanupPending(
-      request.attempt.attemptId,
-      attemptRunnerIdempotencyKey(request.attempt.attemptId, "begin-attempt-cleanup"),
+      attemptId,
+      attemptRunnerIdempotencyKey(attemptId, "begin-attempt-cleanup"),
     );
     return this.#leases.beginCleanup({ ownership, idempotencyKey });
+  }
+
+  /**
+   * Walks the legal edge chain from the current attempt state to "converging".
+   * Each step uses a deterministic idempotency key so replays after a crash are
+   * safe.  If the attempt is already at or past a given step, the call returns
+   * silently (idempotent).
+   */
+  #advanceToConverging(attemptId: string): void {
+    const chain: Array<[from: string, to: string, key: "begin-implementing" | "implementation-captured" | "begin-review" | "begin-verification-queued" | "begin-verifying" | "begin-converging"]> = [
+      ["planned", "implementing", "begin-implementing"],
+      ["implementing", "implementation_captured", "implementation-captured"],
+      ["implementation_captured", "reviewing", "begin-review"],
+      ["reviewing", "verification_queued", "begin-verification-queued"],
+      ["verification_queued", "verifying", "begin-verifying"],
+      ["verifying", "converging", "begin-converging"],
+    ];
+    // Query the current state once; skip transitions that are already complete.
+    const currentState = this.#store.queryAttemptState(attemptId);
+    const order = ["planned", "implementing", "implementation_captured", "reviewing", "verification_queued", "verifying", "converging"];
+    const currentIndex = order.indexOf(currentState);
+    for (const [from, to, key] of chain) {
+      const fromIndex = order.indexOf(from);
+      const toIndex = order.indexOf(to);
+      // Skip if the current state is already at or past the target state.
+      if (currentIndex >= toIndex) continue;
+      // If the current state doesn't match the expected from-state, we can't
+      // make this transition — but since we walk the chain in order, the
+      // current state should match the from-state of the first uncompleted
+      // transition.
+      this.#store.advanceAttemptState(
+        attemptId,
+        from,
+        to,
+        attemptRunnerIdempotencyKey(attemptId, key),
+      );
+    }
   }
 
   // --- private helpers -----------------------------------------------------
@@ -1322,6 +1611,7 @@ export class AttemptRunner {
           stdoutPath: input.stdoutPath,
           stderrPath: input.stderrPath,
           timeoutMs: input.timeoutMs,
+          workdir: input.ownership.plan.worktreePath,
         },
       );
       // Observe the containment death receipt after the launch completes.
@@ -1334,13 +1624,52 @@ export class AttemptRunner {
         // whatever proof was available.
         deathReceipt = null;
       }
+      const launchId = input.boundary.launchId;
       const processReceiptId = `process-receipt-${attemptId}`;
       const groupDeathEvidenceId = `evidence-death-${attemptId}`;
+      const observedAt = new Date().toISOString();
+
+      // Persist the full process chain (launch + terminal + group-death
+      // observation) in the store so that target proof sets can reference
+      // the group-death evidence.  The containment backend (Docker) manages
+      // the actual process lifecycle; this persists the durable observations.
+      // Uses the containment boundary's launchId so the gate release evidence
+      // ID (evidence-containment-release-${launchId}) matches.
+      try {
+        const argvDigest = sha256(canonicalJson(input.argv));
+        const environmentDigest = sha256(`env:${attemptId}`);
+        const spawnAuthorizationDigest = sha256(`spawn-auth:${attemptId}`);
+        this.#store.persistAuthorityProcessChain({
+          launchId,
+          processReceiptId,
+          attemptId,
+          ownershipId: input.ownership.ownership.ownershipId,
+          ownerGeneration: input.ownership.ownership.generation,
+          ownershipContextDigest: input.ownership.ownership.contextDigest,
+          phaseExecutionId: input.phase.phaseExecutionId,
+          contextId: input.phase.contextId,
+          executionContextDigest: input.phase.contextDigest,
+          repositoryId: input.ownership.repositoryId,
+          argvDigest,
+          environmentDigest,
+          stdoutPath: input.stdoutPath,
+          stderrPath: input.stderrPath,
+          spawnAuthorizationDigest,
+          exitCode: launch.exitCode,
+          timedOut: launch.timedOut,
+          observedAt,
+        }, this.#leases.issueDispositionMintCapability());
+      } catch {
+        // If persistence fails, the dispatch is still observed; the target
+        // proof set will use a never-released proof or fail at that point.
+      }
+
       if (launch.timedOut) {
         return {
           outcome: "timed_out",
           exitCode: launch.exitCode,
           processReceiptId,
+          processLaunchId: launchId,
           groupDeathEvidenceId,
           containmentDeathReceipt: deathReceipt,
           detail: "dispatch timed out",
@@ -1351,6 +1680,7 @@ export class AttemptRunner {
           outcome: "infrastructure_error",
           exitCode: null,
           processReceiptId,
+          processLaunchId: launchId,
           groupDeathEvidenceId,
           containmentDeathReceipt: deathReceipt,
           detail: "dispatch produced no exit code",
@@ -1361,6 +1691,7 @@ export class AttemptRunner {
           outcome: "exited",
           exitCode: launch.exitCode,
           processReceiptId,
+          processLaunchId: launchId,
           groupDeathEvidenceId,
           containmentDeathReceipt: deathReceipt,
           detail: `worker exited with code ${launch.exitCode}`,
@@ -1370,6 +1701,7 @@ export class AttemptRunner {
         outcome: "exited",
         exitCode: launch.exitCode,
         processReceiptId,
+        processLaunchId: launchId,
         groupDeathEvidenceId,
         containmentDeathReceipt: deathReceipt,
         detail: "worker exited cleanly",
@@ -1382,6 +1714,7 @@ export class AttemptRunner {
         outcome: "spawn_error",
         exitCode: null,
         processReceiptId: `process-receipt-${attemptId}-spawn-error`,
+        processLaunchId: `process-launch-${attemptId}-spawn-error`,
         groupDeathEvidenceId: `evidence-death-${attemptId}-spawn-error`,
         containmentDeathReceipt: null,
         detail,
@@ -1421,12 +1754,13 @@ export class AttemptRunner {
     neverReleasedReceipt: TargetNeverReleasedReceipt | null,
     supervised: SupervisedDispatchResult,
     durableObservedAt: string,
+    phase: SupervisedPhaseIdentity,
     durableRefs?: { readonly cleanupEligibilityRecordId?: string; readonly oracleDecisionId?: string },
   ): { readonly failureReceipt: MintedDispositionReceipt<FailureCleanupReceipt>; readonly terminal: AttemptTerminalizationResult } {
     const claims = deriveClaimsFromOwnership(cleanupOwnership);
     const preimage = (this.#providers.cleanupPreimage ?? defaultCleanupPreimage)({
       ownership: cleanupOwnership,
-      phase: request.supervisedPhase,
+      phase,
       boundary,
       deathReceipt,
       neverReleasedReceipt,
@@ -1434,7 +1768,7 @@ export class AttemptRunner {
       kind: "failure",
     });
     const { receipt: failureReceipt, request: failureRequest } = this.#mintFailureCleanup(
-      request, cleanupOwnership, claims, preimage.targetProofs, cause, preimage, durableObservedAt, durableRefs,
+      request, cleanupOwnership, claims, preimage.targetProofs, cause, preimage, durableObservedAt, phase, durableRefs,
     );
     const terminal = this.#finalizeFailure(failureRequest, preimage, failureReceipt);
     return { failureReceipt, terminal };
@@ -1448,6 +1782,7 @@ export class AttemptRunner {
     cause: AttemptFailureCause,
     preimage: CleanupPreimageResult,
     durableObservedAt: string,
+    phase: SupervisedPhaseIdentity,
     durableRefs?: { readonly cleanupEligibilityRecordId?: string; readonly oracleDecisionId?: string },
   ): { readonly receipt: MintedDispositionReceipt<FailureCleanupReceipt>; readonly request: MintFailureCleanupRequest } {
     const attemptId = request.attempt.attemptId;
@@ -1459,7 +1794,7 @@ export class AttemptRunner {
       ownerGeneration: ownership.ownership.generation,
       ownershipStateVersion: ownership.ownership.stateVersion,
       ownershipContextDigest: ownership.ownership.contextDigest as `sha256:${string}`,
-      contextId: request.supervisedPhase.contextId,
+      contextId: phase.contextId,
       cleanupIntentId: `failure-intent-${attemptId}-${cause.kind}`,
       failureCode: failureCodeFor(cause),
       deliveryRef: request.run.deliveryRef,

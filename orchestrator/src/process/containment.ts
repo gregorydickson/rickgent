@@ -65,6 +65,8 @@ export interface ContainmentLineage {
   readonly phaseExecutionId: string;
   readonly contextId: string;
   readonly executionContextDigest: Sha256Digest;
+  /** t22D-fix-round-3: Worktree path to bind-mount into the container. */
+  readonly worktreePath?: string;
 }
 
 export interface ContainmentBoundaryId {
@@ -310,7 +312,7 @@ export interface ContainmentBackend {
   createBoundary(lineage: ContainmentLineage): Promise<ContainmentBoundary>;
   observeMembership(boundary: ContainmentBoundary): ContainmentMembership;
   /** Launch a target command into the boundary; resolves on exec, not on exit. */
-  releaseTarget(boundary: ContainmentBoundary, argv: readonly string[], opts?: { stdoutPath?: string; stderrPath?: string; timeoutMs?: number }): Promise<ContainmentLaunch>;
+  releaseTarget(boundary: ContainmentBoundary, argv: readonly string[], opts?: { stdoutPath?: string; stderrPath?: string; timeoutMs?: number; workdir?: string }): Promise<ContainmentLaunch>;
   kill(boundary: ContainmentBoundary): Promise<void>;
   awaitEmpty(boundary: ContainmentBoundary, deadlineMs: number): Promise<ContainmentEmptinessObservation>;
   mintDeathReceipt(boundary: ContainmentBoundary, emptiness: ContainmentEmptinessObservation): ContainmentDeathReceipt;
@@ -555,6 +557,11 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
    * (omnigent, python, node) are findable.  Passed via `docker exec -e PATH=...`.
    */
   readonly containerPath: string | null;
+  /**
+   * t22D-fix-round-3: RICKGENT_AGENT_DIR to set inside the container.
+   * Propagated from the build request's opts.agentDir.
+   */
+  readonly containerAgentDir: string | null;
 
   constructor(opts: {
     image?: string;
@@ -565,13 +572,21 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
     hostMounts?: readonly string[];
     /** PATH to set inside the container via `docker exec -e`. */
     containerPath?: string;
+    /**
+     * t22D-fix-round-3: RICKGENT_AGENT_DIR to set inside the container via
+     * `docker exec -e RICKGENT_AGENT_DIR=...`.  Propagated from the build
+     * request's opts.agentDir so the dispatched `omnigent run <agentDir>`
+     * command resolves the agent bundle inside the container.
+     */
+    containerAgentDir?: string;
   } = {}) {
-    this.image = opts.image ?? "alpine:latest";
+    this.image = opts.image ?? "rickgent-runner:latest";
     this.probeTimeoutMs = opts.probeTimeoutMs ?? 30_000;
     this.killTimeoutMs = opts.killTimeoutMs ?? 30_000;
     this.pollIntervalMs = opts.pollIntervalMs ?? 50;
     this.hostMounts = Object.freeze([...(opts.hostMounts ?? [])]);
     this.containerPath = opts.containerPath ?? null;
+    this.containerAgentDir = opts.containerAgentDir ?? null;
   }
 
   invalidateProbe(): void {
@@ -671,6 +686,12 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
         createArgv.push("-v", `${hostPath}:${hostPath}`);
       }
     }
+    // t22D-fix-round-3: Also mount the worktree path if provided in the lineage.
+    // The worktree is where the dispatched agent makes changes; without this
+    // mount, changes made inside the container are lost when the container exits.
+    if (lineage.worktreePath && lineage.worktreePath.startsWith("/")) {
+      createArgv.push("-v", `${lineage.worktreePath}:${lineage.worktreePath}`);
+    }
     createArgv.push(this.image, "sleep", "3600");
     const createResult = dockerExecSilent(createArgv, { timeoutMs: this.probeTimeoutMs });
     if (createResult.status !== 0) {
@@ -762,7 +783,7 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
   async releaseTarget(
     boundary: ContainmentBoundary,
     argv: readonly string[],
-    opts: { stdoutPath?: string; stderrPath?: string; timeoutMs?: number } = {},
+    opts: { stdoutPath?: string; stderrPath?: string; timeoutMs?: number; workdir?: string } = {},
   ): Promise<ContainmentLaunch> {
     if (!isAuthorizedContainmentBoundary(boundary)) {
       throw new ContainmentUnavailableError(this.backendId, "releaseTarget received a forged boundary");
@@ -788,9 +809,22 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
     // mounted tools (omnigent, python, node) are findable.  Without this,
     // the alpine container's default PATH does not include the host tool
     // directories, and the dispatch command fails with "executable not found".
+    // t22D-fix-round-3: Also set RICKGENT_AGENT_DIR inside the container so
+    // the dispatched `omnigent run <agentDir>` command resolves the agent
+    // bundle.  Propagated from the build request's opts.agentDir.
+    // t22D-fix-round-3: Set the working directory to the worktree path so
+    // the dispatch argv runs in the worktree (where changes are visible on
+    // the host via the bind mount).  Without this, the argv runs in the
+    // container's default working directory (/) and changes are lost.
     const execArgv: string[] = ["exec"];
     if (this.containerPath !== null) {
       execArgv.push("-e", `PATH=${this.containerPath}`);
+    }
+    if (this.containerAgentDir !== null) {
+      execArgv.push("-e", `RICKGENT_AGENT_DIR=${this.containerAgentDir}`);
+    }
+    if (opts.workdir && opts.workdir.startsWith("/")) {
+      execArgv.push("-w", opts.workdir);
     }
     execArgv.push(boundary.runtimeHandle, ...argv);
     const result = dockerExecSilent(execArgv, { timeoutMs });
@@ -1515,7 +1549,7 @@ export class FixtureContainmentBackend implements ContainmentBackend {
  * (option D), then unavailable.
  */
 export function probeContainmentBackend(opts: { dockerImage?: string; probeTimeoutMs?: number; cgroupRoot?: string } = {}): ContainmentBackend {
-  const dockerOpts: { image?: string; probeTimeoutMs?: number; hostMounts?: readonly string[]; containerPath?: string } = {};
+  const dockerOpts: { image?: string; probeTimeoutMs?: number; hostMounts?: readonly string[]; containerPath?: string; containerAgentDir?: string } = {};
   if (opts.dockerImage !== undefined) {
     dockerOpts.image = opts.dockerImage;
   }
@@ -1568,6 +1602,29 @@ export function probeContainmentBackend(opts: { dockerImage?: string; probeTimeo
     // mounted omnigent/python/node are found before any container defaults.
     dockerOpts.containerPath = [...pathDirs, "/usr/local/bin", "/usr/bin", "/bin"].join(":");
   }
+  // t22D-fix-round-3: Propagate RICKGENT_AGENT_DIR into the container so the
+  // dispatched `omnigent run <agentDir>` command resolves the agent bundle.
+  // opts.agentDir is propagated from the build request through the containment
+  // probe so the container knows where the agent bundle is mounted.
+  if (agentDir && existsSync(agentDir)) {
+    dockerOpts.containerAgentDir = realpathSync(agentDir);
+  }
+  // t22D-fix-round-3: Use the rickgent-runner image (built by
+  // scripts/build-runner-image.sh) which has Python, Node, and omnigent
+  // pre-installed — not alpine:latest which lacks these tools and cannot
+  // run bind-mounted Darwin binaries.  Allow override via env var.
+  const runnerImage = env.RICKGENT_CONTAINMENT_DOCKER_IMAGE;
+  if (runnerImage && runnerImage.length > 0) {
+    dockerOpts.image = runnerImage;
+  } else {
+    // Default to the rickgent-runner image; fall back to alpine only if the
+    // runner image is not available (the probe will fail closed if the image
+    // can't be pulled, which is the correct fail-closed behavior).
+    dockerOpts.image = "rickgent-runner:latest";
+  }
+  if (opts.dockerImage !== undefined) {
+    dockerOpts.image = opts.dockerImage;
+  }
   const docker = new DockerCgroupV2ContainmentBackend(dockerOpts);
   if (docker.probe().status === "available") {
     return docker;
@@ -1599,6 +1656,7 @@ export function containmentLineageFromAttempt(input: {
   phaseExecutionId: string;
   contextId: string;
   executionContextDigest: Sha256Digest;
+  worktreePath?: string;
 }): ContainmentLineage {
   return Object.freeze({ ...input });
 }

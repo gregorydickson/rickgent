@@ -392,6 +392,14 @@ export class LeaseAuthority {
    * directory under an idempotency-key-derived subdirectory.  This ensures
    * a retry under the same idempotency key reuses the original token,
    * producing the same ownerTokenDigest and enabling durable replay.
+   *
+   * t22D-fix-round-3: Persistence errors are NO LONGER SWALLOWED.  If the
+   * token file cannot be written, the acquisition fails — no silent success
+   * without durable replay material.  The recovery material must be durable
+   * BEFORE a successful acquire can be returned.  A corrupted token file
+   * (read fails or content is empty) falls through to generating a new token,
+   * which will conflict if the ownership already exists — fail-closed for
+   * divergent mints.
    */
   #resolveOrPersistOwnerToken(idempotencyKey: string): string {
     const stateDir = this.#store.location.stateDirectory;
@@ -401,7 +409,9 @@ export class LeaseAuthority {
     try {
       if (existsSync(tokenFile)) {
         const existing = readFileSync(tokenFile, "utf8").trim();
-        if (existing.length > 0) return existing;
+        if (existing.length > 0) {
+          return existing;
+        }
       }
     } catch {
       // If the read fails (corrupted file, permissions, etc.), fall through
@@ -411,17 +421,20 @@ export class LeaseAuthority {
       // mint.
     }
     // Generate a new token and persist it atomically.
+    // t22D-fix-round-3: If persistence fails, THROW — do not swallow the
+    // error.  The caller cannot proceed with a successful acquire if the
+    // recovery material is not durable.  A swallowed error would allow the
+    // acquisition to succeed on the first attempt while leaving no durable
+    // replay material, violating the recovery/replay contract.
     const token = randomBytes(32).toString("base64url");
-    try {
-      mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
-      const tmpFile = `${tokenFile}.tmp-${process.pid}-${Date.now()}`;
-      writeFileSync(tmpFile, token, { encoding: "utf8", mode: 0o600 });
-      renameSync(tmpFile, tokenFile);
-    } catch {
-      // If persistence fails, we still return the token — the acquisition
-      // will succeed on the first attempt, but a retry will generate a new
-      // token and conflict.  This is fail-closed for retry (no silent
-      // replay with a different token).
+    mkdirSync(tokenDir, { recursive: true, mode: 0o700 });
+    const tmpFile = `${tokenFile}.tmp-${process.pid}-${Date.now()}`;
+    writeFileSync(tmpFile, token, { encoding: "utf8", mode: 0o600 });
+    renameSync(tmpFile, tokenFile);
+    // Verify the token was persisted correctly by reading it back.
+    const verified = readFileSync(tokenFile, "utf8").trim();
+    if (verified !== token) {
+      throw new TypeError("RICKGENT_ACQUISITION_TOKEN_PERSISTENCE_FAILED: token file verification mismatch");
     }
     return token;
   }

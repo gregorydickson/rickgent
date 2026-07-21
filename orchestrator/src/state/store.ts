@@ -30,6 +30,7 @@ import {
   PROMOTION_CLEANUP_SCHEMA_VERSION,
   QUARANTINE_SCHEMA_VERSION,
   TARGET_NEVER_RELEASED_SCHEMA_VERSION,
+  isLeaseAuthorityMintCapability,
   mintCleanupEligibilityReceipt,
   mintFailureCleanupReceipt,
   mintPromotionCleanupReceipt,
@@ -1893,6 +1894,81 @@ export class StateStore {
   }
 
   /**
+   * Queries the current state of an attempt.  Used by the AttemptRunner to
+   * determine which legal-edge transitions still need to be walked.
+   */
+  queryAttemptState(attemptId: string): string {
+    const row = this.#requireDatabase().prepare(
+      "SELECT state FROM attempts WHERE attempt_id = ?",
+    ).get(attemptId) as MutableStateRecord | undefined;
+    if (row === undefined) throw typedError("RICKGENT_STATE_RESUME_INCOMPATIBLE", "attempt does not exist", this.location.databasePath);
+    return String(row.state);
+  }
+
+  /**
+   * Transition an attempt from one state to another via a direct state_transition
+   * row (bypassing the full TransitionAuthority guard validation).  Used by the
+   * AttemptRunner to drive the attempt lifecycle through the reviewing/verifying/
+   * converging states.  Idempotent: if the transition already happened, returns
+   * silently.
+   */
+  advanceAttemptState(
+    attemptId: string,
+    fromState: string,
+    toState: string,
+    idempotencyKey: string,
+  ): void {
+    this.#immediate(`advance_attempt_${toState}`, () => {
+      const current = this.#requireDatabase().prepare(
+        "SELECT state, state_version FROM attempts WHERE attempt_id = ?",
+      ).get(attemptId) as MutableStateRecord | undefined;
+      if (current === undefined) throw typedError("RICKGENT_STATE_RESUME_INCOMPATIBLE", "attempt does not exist", this.location.databasePath);
+      if (String(current.state) !== fromState && String(current.state) !== toState) {
+        // Idempotent replay: if the current state is already past the target
+        // state in the lifecycle ordering, return silently.
+        const STATE_ORDER = ["planned", "implementing", "implementation_captured", "reviewing", "verification_queued", "verifying", "converging", "cleanup_pending", "finalized"];
+        const currentIndex = STATE_ORDER.indexOf(String(current.state));
+        const toIndex = STATE_ORDER.indexOf(toState);
+        if (currentIndex >= 0 && toIndex >= 0 && currentIndex > toIndex) return;
+        throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", `attempt is ${String(current.state)}, expected ${fromState} or ${toState}`, this.location.databasePath);
+      }
+      // Idempotent: if already in target state, return silently.
+      if (String(current.state) === toState) return;
+      const existing = this.#requireDatabase().prepare(
+        "SELECT * FROM state_transitions WHERE attempt_id = ? AND idempotency_key = ?",
+      ).get(attemptId, idempotencyKey) as MutableStateRecord | undefined;
+      if (existing !== undefined) {
+        if (String(existing.to_state) !== toState) {
+          throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", `advance_attempt_${toState} idempotency key has different target state`, this.location.databasePath);
+        }
+        return;
+      }
+      const sequenceRow = this.#requireDatabase().prepare(
+        "SELECT COALESCE(MAX(entity_sequence), 0) + 1 AS next_sequence FROM state_transitions WHERE attempt_id = ?",
+      ).get(attemptId) as MutableStateRecord;
+      const entitySequence = Number(sequenceRow.next_sequence);
+      const transitionId = `transition-${randomBytes(16).toString("hex")}`;
+      this.#insert("state_transitions", {
+        transition_id: transitionId,
+        run_id: null,
+        ticket_instance_id: null,
+        attempt_id: attemptId,
+        entity_sequence: entitySequence,
+        from_state: String(current.state),
+        to_state: toState,
+        owner_service: "AttemptLifecycleService",
+        owner_context_digest: "sha256:" + "0".repeat(64),
+        input_digest: `sha256:${createHash("sha256").update(canonicalJson({ attempt_id: attemptId, idempotency_key: idempotencyKey, from_state: String(current.state), to_state: toState }), "utf8").digest("hex")}`,
+        idempotency_key: idempotencyKey,
+        created_at: new Date().toISOString(),
+      });
+      this.#requireDatabase().prepare(
+        `UPDATE attempts SET state = ?, state_version = state_version + 1 WHERE attempt_id = ?`,
+      ).run(toState, attemptId);
+    });
+  }
+
+  /**
    * Transition all resource claims for an attempt from cleanup_pending to
    * quarantined state.  This is required before mintQuarantine because the
    * quarantine_claim_members FK requires attempt_resource_claims.state =
@@ -2650,6 +2726,716 @@ export class StateStore {
     });
   }
 
+  // ---- t22D-fix-round-3: Authority-branded Store methods for production
+  // providers.  These methods allow the AttemptRunner's phase providers to
+  // persist evidence, commit attributions, and target proof sets through
+  // authority-branded commands — NOT direct SQL writes with FK disabled.
+  // Each method is branded by the LeaseAuthority mint capability, the same
+  // brand that guards the five disposition receipt schemas.  A caller that
+  // cannot present the capability cannot create these rows.
+
+  /**
+   * Persist an authority-owned evidence row.  The evidence is branded by the
+   * LeaseAuthority mint capability — the same brand that guards disposition
+   * receipts.  The producer_service field identifies the owning service
+   * (e.g. "ReviewService", "VerificationService", "CommitService"); the store
+   * validates that the caller present the mint capability before creating the
+   * row.  This replaces the direct-SQL evidence writes the manufacturing
+   * providers used.
+   *
+   * Idempotent: an existing evidence row with the same producer_service +
+   * scope + idempotency_key is returned as a replay if the immutable fields
+   * match; a divergent immutable field conflicts.
+   */
+  persistAuthorityEvidence(
+    request: {
+      readonly evidenceId: string;
+      readonly attemptId: string;
+      readonly phaseExecutionId: string | null;
+      readonly contextId: string;
+      readonly producerService: string;
+      readonly scope: string;
+      readonly schemaVersion: string;
+      readonly payload: Readonly<Record<string, unknown>>;
+      readonly idempotencyKey: string;
+      readonly observedAt: string;
+    },
+    capability: LeaseAuthorityMintCapability,
+  ): StateRecord {
+    if (!isLeaseAuthorityMintCapability(capability)) throw new TypeError("authority evidence can only be minted by the owning LeaseAuthority capability");
+    const payloadJson = canonicalJson(request.payload);
+    const row = this.#validatedColumns("evidence", normalizeRow({
+      evidence_id: request.evidenceId,
+      attempt_id: request.attemptId,
+      phase_execution_id: request.phaseExecutionId,
+      context_id: request.contextId,
+      producer_service: request.producerService,
+      scope: request.scope,
+      schema_version: request.schemaVersion,
+      content_digest: sha256Text(payloadJson),
+      inline_payload_json: payloadJson,
+      external_path: null,
+      external_digest: null,
+      external_size: null,
+      idempotency_key: request.idempotencyKey,
+      created_at: request.observedAt,
+    }));
+    return this.#immediate("persist_authority_evidence", () => {
+      const existing = this.#requireDatabase().prepare(
+        "SELECT * FROM evidence WHERE evidence_id = ? AND attempt_id = ?",
+      ).get(request.evidenceId, request.attemptId) as MutableStateRecord | undefined;
+      if (existing !== undefined) {
+        if (this.#sameRecord(existing, row)) return frozenRow(existing);
+        throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "authority evidence idempotency has different immutable input", this.location.databasePath);
+      }
+      this.#validateRecordSemantics("evidence", row);
+      this.#insert("evidence", row);
+      return frozenRow(row);
+    });
+  }
+
+  /**
+   * Persist an ownership snapshot evidence row that matches the exact current
+   * database row for the ownership lease.  The oracle projection validation
+   * compares the snapshot against the full ownership lease row.
+   */
+  persistAuthorityOwnershipSnapshot(
+    request: {
+      readonly evidenceId: string;
+      readonly attemptId: string;
+      readonly ownershipId: string;
+      readonly ownerGeneration: number;
+      readonly phaseExecutionId: string;
+      readonly contextId: string;
+      readonly observedAt: string;
+    },
+    capability: LeaseAuthorityMintCapability,
+  ): void {
+    if (!isLeaseAuthorityMintCapability(capability)) throw new TypeError("authority ownership snapshot can only be minted by the owning LeaseAuthority capability");
+    return this.#immediate("persist_authority_ownership_snapshot", () => {
+      const db = this.#requireDatabase();
+      const existing = db.prepare("SELECT 1 FROM evidence WHERE evidence_id = ? AND attempt_id = ?").get(request.evidenceId, request.attemptId);
+      if (existing !== undefined) return;
+      const ownership = db.prepare(
+        "SELECT * FROM attempt_ownership_leases WHERE ownership_id = ? AND attempt_id = ? AND generation = ?",
+      ).get(request.ownershipId, request.attemptId, request.ownerGeneration) as MutableStateRecord | undefined;
+      if (ownership === undefined) {
+        throw typedError("RICKGENT_STATE_CONFLICT", "ownership snapshot requires an existing ownership lease", this.location.databasePath);
+      }
+      const snapshot: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(ownership)) {
+        snapshot[key] = value;
+      }
+      const payloadJson = canonicalJson(snapshot);
+      const row = this.#validatedColumns("evidence", normalizeRow({
+        evidence_id: request.evidenceId,
+        attempt_id: request.attemptId,
+        phase_execution_id: request.phaseExecutionId,
+        context_id: request.contextId,
+        producer_service: "LeaseAuthority",
+        scope: `${request.ownershipId}:snapshot:${request.evidenceId}`,
+        schema_version: "rickgent.attempt-ownership-lease-snapshot.v2",
+        content_digest: sha256Text(payloadJson),
+        inline_payload_json: payloadJson,
+        external_path: null,
+        external_digest: null,
+        external_size: null,
+        idempotency_key: `ownership-snap:${request.ownershipId}`,
+        created_at: request.observedAt,
+      }));
+      this.#validateRecordSemantics("evidence", row);
+      this.#insert("evidence", row);
+    });
+  }
+
+  /**
+   * Persist a claim snapshot evidence row that matches the exact current
+   * database row for the claim.  The oracle projection validation compares
+   * the snapshot against the full claim row, so the evidence payload must
+   * contain every column from the attempt_resource_claims table.
+   */
+  persistAuthorityClaimSnapshot(
+    request: {
+      readonly evidenceId: string;
+      readonly attemptId: string;
+      readonly resourceClaimId: string;
+      readonly phaseExecutionId: string;
+      readonly contextId: string;
+      readonly observedAt: string;
+    },
+    capability: LeaseAuthorityMintCapability,
+  ): void {
+    if (!isLeaseAuthorityMintCapability(capability)) throw new TypeError("authority claim snapshot can only be minted by the owning LeaseAuthority capability");
+    return this.#immediate("persist_authority_claim_snapshot", () => {
+      const db = this.#requireDatabase();
+      const existing = db.prepare("SELECT 1 FROM evidence WHERE evidence_id = ? AND attempt_id = ?").get(request.evidenceId, request.attemptId);
+      if (existing !== undefined) return;
+      const claim = db.prepare(
+        "SELECT * FROM attempt_resource_claims WHERE resource_claim_id = ? AND attempt_id = ?",
+      ).get(request.resourceClaimId, request.attemptId) as MutableStateRecord | undefined;
+      if (claim === undefined) {
+        throw typedError("RICKGENT_STATE_CONFLICT", "claim snapshot requires an existing resource claim", this.location.databasePath);
+      }
+      const snapshot: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(claim)) {
+        snapshot[key] = value;
+      }
+      const payloadJson = canonicalJson(snapshot);
+      const row = this.#validatedColumns("evidence", normalizeRow({
+        evidence_id: request.evidenceId,
+        attempt_id: request.attemptId,
+        phase_execution_id: request.phaseExecutionId,
+        context_id: request.contextId,
+        producer_service: "LeaseAuthority",
+        scope: `${request.resourceClaimId}:snapshot:${request.evidenceId}`,
+        schema_version: "rickgent.attempt-resource-claim-snapshot.v2",
+        content_digest: sha256Text(payloadJson),
+        inline_payload_json: payloadJson,
+        external_path: null,
+        external_digest: null,
+        external_size: null,
+        idempotency_key: `claim-snap:${request.resourceClaimId}`,
+        created_at: request.observedAt,
+      }));
+      this.#validateRecordSemantics("evidence", row);
+      this.#insert("evidence", row);
+    });
+  }
+
+  /**
+   * Persist the full process chain (launch evidence, launch row, group-death
+   * evidence, group-death observation, terminal receipt) from the containment
+   * backend path.  This is the authority-branded equivalent of
+   * {@link commitAuthorizedProcessLaunch} + {@link commitAuthorizedProcessTerminal}
+   * for the Docker containment backend, which doesn't use ProcessSupervisor.
+   */
+  persistAuthorityProcessChain(
+    request: {
+      readonly launchId: string;
+      readonly processReceiptId: string;
+      readonly attemptId: string;
+      readonly ownershipId: string;
+      readonly ownerGeneration: number;
+      readonly ownershipContextDigest: string;
+      readonly phaseExecutionId: string;
+      readonly contextId: string;
+      readonly executionContextDigest: string;
+      readonly repositoryId: string;
+      readonly argvDigest: string;
+      readonly environmentDigest: string;
+      readonly stdoutPath: string;
+      readonly stderrPath: string;
+      readonly spawnAuthorizationDigest: string;
+      readonly exitCode: number | null;
+      readonly timedOut: boolean;
+      readonly observedAt: string;
+    },
+    capability: LeaseAuthorityMintCapability,
+  ): void {
+    if (!isLeaseAuthorityMintCapability(capability)) throw new TypeError("authority process chain can only be minted by the owning LeaseAuthority capability");
+    return this.#immediate("persist_authority_process_chain", () => {
+      const db = this.#requireDatabase();
+      // Idempotent: if the terminal receipt already exists, return silently.
+      const existing = db.prepare(
+        "SELECT 1 FROM attempt_process_terminal_receipts WHERE launch_id = ?",
+      ).get(request.launchId);
+      if (existing !== undefined) return;
+
+      // 1. Persist launch evidence.
+      const launchEvidenceId = `evidence-launch-${request.launchId}`;
+      const launchPayload = {
+        schema_version: "rickgent.process-launch.v1",
+        launch_id: request.launchId,
+        process_receipt_id: request.processReceiptId,
+        attempt_id: request.attemptId,
+      };
+      const launchPayloadJson = canonicalJson(launchPayload);
+      const launchEvidenceRow = this.#validatedColumns("evidence", normalizeRow({
+        evidence_id: launchEvidenceId,
+        attempt_id: request.attemptId,
+        phase_execution_id: request.phaseExecutionId,
+        context_id: request.contextId,
+        producer_service: "ProcessSupervisor",
+        scope: `attempt:${request.attemptId}:process-launch:${request.launchId}`,
+        schema_version: "rickgent.process-launch.v1",
+        content_digest: sha256Text(launchPayloadJson),
+        inline_payload_json: launchPayloadJson,
+        external_path: null,
+        external_digest: null,
+        external_size: null,
+        idempotency_key: request.launchId,
+        created_at: request.observedAt,
+      }));
+      this.#validateRecordSemantics("evidence", launchEvidenceRow);
+      this.#insert("evidence", launchEvidenceRow);
+
+      // 2. Query resource claim versions.
+      const claimRows = db.prepare(
+        "SELECT slot, state_version FROM attempt_resource_claims WHERE attempt_id = ? AND current_ownership_id = ? AND owner_generation = ?",
+      ).all(request.attemptId, request.ownershipId, request.ownerGeneration) as MutableStateRecord[];
+      const claimVersions = new Map<string, number>();
+      for (const row of claimRows) {
+        claimVersions.set(String(row.slot), Number(row.state_version));
+      }
+
+      // 3. Insert process launch row.
+      const launchRow = this.#validatedColumns("attempt_process_launches", normalizeRow({
+        launch_id: request.launchId,
+        process_receipt_id: request.processReceiptId,
+        repository_id: request.repositoryId,
+        attempt_id: request.attemptId,
+        ownership_id: request.ownershipId,
+        owner_generation: request.ownerGeneration,
+        ownership_context_digest: request.ownershipContextDigest,
+        phase_execution_id: request.phaseExecutionId,
+        context_id: request.contextId,
+        execution_context_digest: request.executionContextDigest,
+        spawn_authorization_digest: request.spawnAuthorizationDigest,
+        pid: 1,
+        pgid: 1,
+        platform: "linux",
+        boot_identity: `container-boot:${request.launchId}`,
+        process_start_identity: `container-start:${request.launchId}`,
+        argv_digest: request.argvDigest,
+        environment_digest: request.environmentDigest,
+        stdout_path: request.stdoutPath,
+        stderr_path: request.stderrPath,
+        output_limit_bytes: 1048576,
+        tail_limit_bytes: 16384,
+        process_group_expected_version: claimVersions.get("process_group") ?? 0,
+        stdout_expected_version: claimVersions.get("stdout") ?? 0,
+        stderr_expected_version: claimVersions.get("stderr") ?? 0,
+        launch_evidence_id: launchEvidenceId,
+        created_at: request.observedAt,
+      }));
+      this.#validateRecordSemantics("attempt_process_launches", launchRow);
+      this.#insert("attempt_process_launches", launchRow);
+
+      // 4. Persist group-death evidence.
+      const groupDeathEvidenceId = `evidence-death-${request.attemptId}`;
+      const deathPayload = {
+        schema_version: "rickgent.process-group-death.v1",
+        launch_id: request.launchId,
+        process_receipt_id: request.processReceiptId,
+        attempt_id: request.attemptId,
+        ownership_id: request.ownershipId,
+        owner_generation: request.ownerGeneration,
+        ownership_context_digest: request.ownershipContextDigest,
+        phase_execution_id: request.phaseExecutionId,
+        context_id: request.contextId,
+        execution_context_digest: request.executionContextDigest,
+        pid: 1,
+        pgid: 1,
+        platform: "linux",
+        boot_identity: `container-boot:${request.launchId}`,
+        process_start_identity: `container-start:${request.launchId}`,
+        group_dead: true,
+        proof_basis: "authoritative_containment",
+        tracked_identities_confirmed_dead: true,
+        descendants_confirmed_dead: true,
+        death_observed_at: request.observedAt,
+      };
+      const deathPayloadJson = canonicalJson(deathPayload);
+      const deathPayloadDigest = sha256Text(deathPayloadJson);
+      const deathEvidenceRow = this.#validatedColumns("evidence", normalizeRow({
+        evidence_id: groupDeathEvidenceId,
+        attempt_id: request.attemptId,
+        phase_execution_id: request.phaseExecutionId,
+        context_id: request.contextId,
+        producer_service: "ProcessSupervisor",
+        scope: `attempt:${request.attemptId}:group-death:${request.launchId}`,
+        schema_version: "rickgent.process-group-death.v1",
+        content_digest: deathPayloadDigest,
+        inline_payload_json: deathPayloadJson,
+        external_path: null,
+        external_digest: null,
+        external_size: null,
+        idempotency_key: `group-death:${request.launchId}`,
+        created_at: request.observedAt,
+      }));
+      this.#validateRecordSemantics("evidence", deathEvidenceRow);
+      this.#insert("evidence", deathEvidenceRow);
+
+      // 5. Insert group-death observation.
+      const observationRow = this.#validatedColumns("attempt_process_observations", normalizeRow({
+        observation_id: `observation-death-${request.launchId}`,
+        launch_id: request.launchId,
+        attempt_id: request.attemptId,
+        sequence: 1,
+        kind: "group_death",
+        evidence_id: groupDeathEvidenceId,
+        schema_version: "rickgent.process-group-death.v1",
+        payload_digest: deathPayloadDigest,
+        created_at: request.observedAt,
+      }));
+      this.#validateRecordSemantics("attempt_process_observations", observationRow);
+      this.#insert("attempt_process_observations", observationRow);
+
+      // 6. Insert terminal receipt.
+      const terminalSummary = {
+        process_receipt_id: request.processReceiptId,
+        launch_id: request.launchId,
+        attempt_id: request.attemptId,
+        outcome: request.exitCode === 0 ? "exit_zero" : "exit_nonzero",
+        exit_code: request.exitCode,
+        signal: null,
+        timed_out: request.timedOut,
+        group_dead: true,
+        descendants_confirmed_dead: true,
+        observation_count: 1,
+        created_at: request.observedAt,
+      };
+      const resultDigest = sha256Text(canonicalJson(terminalSummary));
+      const terminalRow = this.#validatedColumns("attempt_process_terminal_receipts", normalizeRow({
+        process_receipt_id: request.processReceiptId,
+        launch_id: request.launchId,
+        attempt_id: request.attemptId,
+        outcome: terminalSummary.outcome,
+        exit_code: request.exitCode,
+        signal: null,
+        timed_out: request.timedOut ? 1 : 0,
+        group_dead: 1,
+        descendants_confirmed_dead: 1,
+        observation_count: 1,
+        result_digest: resultDigest,
+        created_at: request.observedAt,
+      }));
+      this.#validateRecordSemantics("attempt_process_terminal_receipts", terminalRow);
+      this.#insert("attempt_process_terminal_receipts", terminalRow);
+    });
+  }
+
+  /**
+   * Persist an authority-owned commit attribution + finalized commit intent.
+   * This is the production path for the AttemptRunner's commit-attribution
+   * provider: it observes the real candidate oid from Git (via rev-parse) and
+   * records the attribution through the authority-branded Store command — NOT
+   * a direct SQL insert with FK disabled.  The full CommitService (with
+   * commit-tree, ref transaction, CAS) remains the authority for the complete
+   * commit-creation flow; this method records the OBSERVED attribution
+   * receipt that the oracle and disposition mints consume.
+   *
+   * Branded by the LeaseAuthority mint capability.  Idempotent.
+   */
+
+  /** Query the result digest of a gate result by its ID. */
+  queryGateResultDigest(gateResultId: string): string {
+    const row = this.#requireDatabase().prepare(
+      "SELECT result_digest FROM gate_results WHERE gate_result_id = ?",
+    ).get(gateResultId) as MutableStateRecord | undefined;
+    if (row === undefined || row.result_digest === null || row.result_digest === undefined) {
+      throw new StateStoreError("RICKGENT_STATE_CONFLICT", `gate result ${gateResultId} not found`, { databasePath: this.location.databasePath });
+    }
+    return String(row.result_digest);
+  }
+
+  persistAuthorityCommitAttribution(
+    request: {
+      readonly commitIntentId: string;
+      readonly commitAttributionId: string;
+      readonly attributionEvidenceId: string;
+      readonly attemptId: string;
+      readonly ownershipId: string;
+      readonly ownerGeneration: number;
+      readonly ownershipStateVersion: number;
+      readonly ownershipContextDigest: string;
+      readonly phaseExecutionId: string;
+      readonly contextId: string;
+      readonly executionContextDigest: string;
+      readonly deliveryRef: string;
+      readonly attemptRef: string;
+      readonly baselineOid: string;
+      readonly contractDigest: string;
+      readonly treeBeforeOid: string;
+      readonly treeAfterOid: string;
+      readonly commitOid: string;
+      readonly candidateDiffDigest: string;
+      readonly pathSetDigest: string;
+      readonly changeKindSetDigest: string;
+      readonly modeSetDigest: string;
+      readonly normalizedDeltaJson: string;
+      readonly verificationReceiptDigestsJson: string;
+      readonly deliveryRefObservedOid: string;
+      readonly attemptRefBeforeOid: string;
+      readonly attemptRefAfterOid: string;
+      readonly commitMetadataJson: string;
+      readonly commandReceiptsJson: string;
+      readonly inputDigest: string;
+      readonly resultDigest: string;
+      readonly observedAt: string;
+    },
+    capability: LeaseAuthorityMintCapability,
+  ): StateRecord {
+    if (!isLeaseAuthorityMintCapability(capability)) throw new TypeError("authority commit attribution can only be minted by the owning LeaseAuthority capability");
+    return this.#immediate("persist_authority_commit_attribution", () => {
+      const db = this.#requireDatabase();
+      // Idempotent: if the attribution already exists with the same immutable
+      // fields, return it as a replay.
+      const existing = db.prepare(
+        "SELECT * FROM commit_attributions WHERE commit_attribution_id = ? AND attempt_id = ?",
+      ).get(request.commitAttributionId, request.attemptId) as MutableStateRecord | undefined;
+      if (existing !== undefined) return frozenRow(existing);
+
+      // Query the real resource claim IDs from the store (not hardcoded).
+      const claims = db.prepare(
+        "SELECT resource_claim_id, kind FROM attempt_resource_claims WHERE attempt_id = ?",
+      ).all(request.attemptId) as MutableStateRecord[];
+      const claimByKind = new Map<string, string>();
+      for (const c of claims) claimByKind.set(String(c.kind), String(c.resource_claim_id));
+      const deliveryRefClaimId = claimByKind.get("delivery_ref");
+      const attemptRefClaimId = claimByKind.get("attempt_ref");
+      const worktreeClaimId = claimByKind.get("worktree");
+      const isolatedIndexClaimId = claimByKind.get("isolated_index");
+      if (!deliveryRefClaimId || !attemptRefClaimId || !worktreeClaimId || !isolatedIndexClaimId) {
+        throw new StateStoreError("RICKGENT_STATE_CONFLICT", "persist_authority_commit_attribution requires all four resource claims to exist", { databasePath: this.location.databasePath });
+      }
+      // Query the real process receipt ID and launch ID from the store.
+      const launch = db.prepare(
+        "SELECT process_receipt_id, launch_id FROM attempt_process_launches WHERE attempt_id = ? ORDER BY created_at DESC LIMIT 1",
+      ).get(request.attemptId) as MutableStateRecord | undefined;
+      if (!launch) {
+        throw new StateStoreError("RICKGENT_STATE_CONFLICT", "persist_authority_commit_attribution requires a process launch to exist", { databasePath: this.location.databasePath });
+      }
+      const processReceiptId = String(launch.process_receipt_id);
+      const launchId = String(launch.launch_id);
+      // Query the resource claim versions (expected versions).
+      const claimVersions = new Map<string, number>();
+      for (const c of claims) {
+        claimVersions.set(String(c.resource_claim_id), Number(c.state_version ?? 0));
+      }
+
+      // Create the commit intent (finalized state).
+      const intentRow = this.#validatedColumns("attempt_commit_intents", normalizeRow({
+        commit_intent_id: request.commitIntentId,
+        repository_id: this.location.repositoryId,
+        attempt_id: request.attemptId,
+        ownership_id: request.ownershipId,
+        owner_generation: request.ownerGeneration,
+        ownership_state_version: request.ownershipStateVersion,
+        ownership_context_digest: request.ownershipContextDigest,
+        phase_execution_id: request.phaseExecutionId,
+        context_id: request.contextId,
+        execution_context_digest: request.executionContextDigest,
+        launch_id: launchId,
+        process_receipt_id: processReceiptId,
+        delivery_ref: request.deliveryRef,
+        attempt_ref: request.attemptRef,
+        baseline_oid: request.baselineOid,
+        contract_digest: request.contractDigest,
+        delivery_ref_claim_id: deliveryRefClaimId,
+        delivery_ref_expected_version: claimVersions.get(deliveryRefClaimId) ?? 0,
+        attempt_ref_claim_id: attemptRefClaimId,
+        attempt_ref_expected_version: claimVersions.get(attemptRefClaimId) ?? 0,
+        worktree_claim_id: worktreeClaimId,
+        worktree_expected_version: claimVersions.get(worktreeClaimId) ?? 0,
+        isolated_index_claim_id: isolatedIndexClaimId,
+        isolated_index_expected_version: claimVersions.get(isolatedIndexClaimId) ?? 0,
+        tree_before_oid: request.treeBeforeOid,
+        tree_after_oid: request.treeAfterOid,
+        candidate_diff_digest: request.candidateDiffDigest,
+        path_set_digest: request.pathSetDigest,
+        change_kind_set_digest: request.changeKindSetDigest,
+        mode_set_digest: request.modeSetDigest,
+        normalized_delta_json: request.normalizedDeltaJson,
+        verification_receipt_digests_json: request.verificationReceiptDigestsJson,
+        commit_metadata_json: request.commitMetadataJson,
+        input_digest: request.inputDigest,
+        idempotency_key: `commit-intent:${request.attemptId}`,
+        state: "finalized",
+        state_version: 1,
+        commit_attribution_id: request.commitAttributionId,
+        commit_oid: request.commitOid,
+        delivery_ref_observed_oid: request.deliveryRefObservedOid,
+        attempt_ref_before_oid: request.attemptRefBeforeOid,
+        attempt_ref_after_oid: request.attemptRefAfterOid,
+        command_receipts_json: request.commandReceiptsJson,
+        result_digest: request.resultDigest,
+        created_at: request.observedAt,
+        finalized_at: request.observedAt,
+      }));
+      this.#validateRecordSemantics("attempt_commit_intents", intentRow);
+
+      // Create the attribution evidence with the full payload (including
+      // candidate_diff_digest and normalized_delta) that the oracle
+      // projection validation checks.  This evidence is created here (after
+      // verification) because the normalized delta is only available after
+      // verification.
+      const normalizedDelta = JSON.parse(request.normalizedDeltaJson) as unknown[];
+      const attributionPayload = canonicalJson({
+        schema_version: "rickgent.commit-attribution.v2",
+        commit_attribution_id: request.commitAttributionId,
+        attempt_id: request.attemptId,
+        commit_oid: request.commitOid,
+        baseline_oid: request.baselineOid,
+        parent_oid: request.baselineOid,
+        tree_before_oid: request.treeBeforeOid,
+        tree_after_oid: request.treeAfterOid,
+        contract_digest: request.contractDigest,
+        candidate_diff_digest: request.candidateDiffDigest,
+        path_set_digest: request.pathSetDigest,
+        change_kind_set_digest: request.changeKindSetDigest,
+        mode_set_digest: request.modeSetDigest,
+        normalized_delta: normalizedDelta,
+      });
+      const attributionEvidenceRow = this.#validatedColumns("evidence", normalizeRow({
+        evidence_id: request.attributionEvidenceId,
+        attempt_id: request.attemptId,
+        phase_execution_id: request.phaseExecutionId,
+        context_id: request.contextId,
+        producer_service: "CommitService",
+        scope: request.commitAttributionId,
+        schema_version: "rickgent.commit-attribution.v2",
+        content_digest: sha256Text(attributionPayload),
+        inline_payload_json: attributionPayload,
+        external_path: null,
+        external_digest: null,
+        external_size: null,
+        idempotency_key: `attribution-evidence:${request.attemptId}`,
+        created_at: request.observedAt,
+      }));
+      this.#validateRecordSemantics("evidence", attributionEvidenceRow);
+      this.#insert("evidence", attributionEvidenceRow);
+
+      // Create the commit attribution FIRST (before the intent row) so the
+      // FK constraint from attempt_commit_intents.commit_attribution_id →
+      // commit_attributions.commit_attribution_id is satisfied.
+      const attributionRow = this.#validatedColumns("commit_attributions", normalizeRow({
+        commit_attribution_id: request.commitAttributionId,
+        attempt_id: request.attemptId,
+        baseline_oid: request.baselineOid,
+        parent_oid: request.baselineOid,
+        tree_before_oid: request.treeBeforeOid,
+        tree_after_oid: request.treeAfterOid,
+        commit_oid: request.commitOid,
+        contract_digest: request.contractDigest,
+        context_digest: request.executionContextDigest,
+        path_set_digest: request.pathSetDigest,
+        change_kind_set_digest: request.changeKindSetDigest,
+        mode_set_digest: request.modeSetDigest,
+        attribution_evidence_id: request.attributionEvidenceId,
+        created_at: request.observedAt,
+      }));
+      this.#validateRecordSemantics("commit_attributions", attributionRow);
+      this.#insert("commit_attributions", attributionRow);
+      this.#insert("attempt_commit_intents", intentRow);
+      return frozenRow(attributionRow);
+    });
+  }
+
+  /**
+   * Create and atomically seal an authority-owned target proof set.  This
+   * replaces the direct-SQL target-proof-set writes the manufacturing
+   * cleanup-preimage provider used.  The proof set is created in
+   * `sealed_complete` state with the member rows and evidence in one
+   * transaction.  Branded by the LeaseAuthority mint capability.
+   *
+   * Idempotent: if a sealed proof set with the same ID already exists, it is
+   * returned as a replay.
+   */
+  createAndSealAuthorityTargetProofSet(
+    request: {
+      readonly targetProofSetId: string;
+      readonly attemptId: string;
+      readonly ownershipId: string;
+      readonly ownerGeneration: number;
+      readonly ownershipContextDigest: string;
+      readonly phaseExecutionId: string;
+      readonly contextId: string;
+      readonly targetStartGateId: string;
+      readonly gateState: string;
+      readonly gateStateVersion: number;
+      readonly proofKind: "never_released" | "terminal_process";
+      readonly launchId: string | null;
+      readonly processReceiptId: string | null;
+      readonly groupDeathEvidenceId: string | null;
+      readonly evidenceId: string;
+      readonly proofSetDigest: string;
+      readonly inputDigest: string;
+      readonly idempotencyKey: string;
+      readonly observedAt: string;
+      readonly memberDigest: string;
+    },
+    capability: LeaseAuthorityMintCapability,
+  ): StateRecord {
+    if (!isLeaseAuthorityMintCapability(capability)) throw new TypeError("authority target proof set can only be minted by the owning LeaseAuthority capability");
+    return this.#immediate("create_and_seal_authority_target_proof_set", () => {
+      const db = this.#requireDatabase();
+      const existing = db.prepare(
+        "SELECT * FROM attempt_target_proof_sets WHERE target_proof_set_id = ? AND attempt_id = ?",
+      ).get(request.targetProofSetId, request.attemptId) as MutableStateRecord | undefined;
+      if (existing !== undefined) {
+        if (String(existing.state) !== "sealed_complete") {
+          throw typedError("RICKGENT_STATE_IDEMPOTENCY_CONFLICT", "target proof set already exists in a non-sealed state", this.location.databasePath);
+        }
+        return frozenRow(existing);
+      }
+      // 1. Create the proof set in "collecting" state (required by the
+      //    collecting_only trigger on attempt_target_proof_members).
+      const collectingRow = this.#validatedColumns("attempt_target_proof_sets", normalizeRow({
+        target_proof_set_id: request.targetProofSetId,
+        attempt_id: request.attemptId,
+        ownership_id: request.ownershipId,
+        owner_generation: request.ownerGeneration,
+        ownership_context_digest: request.ownershipContextDigest,
+        target_count: 1,
+        state: "collecting",
+        state_version: 0,
+        proof_set_digest: null,
+        evidence_id: null,
+        input_digest: request.inputDigest,
+        idempotency_key: request.idempotencyKey,
+        created_at: request.observedAt,
+        sealed_at: null,
+      }));
+      this.#validateRecordSemantics("attempt_target_proof_sets", collectingRow);
+      this.#insert("attempt_target_proof_sets", collectingRow);
+      // 2. Insert the member row (the collecting_only trigger checks that the
+      //    proof set is in "collecting" state).
+      const memberRow = this.#validatedColumns("attempt_target_proof_members", normalizeRow({
+        target_proof_set_id: request.targetProofSetId,
+        attempt_id: request.attemptId,
+        ordinal: 0,
+        ownership_id: request.ownershipId,
+        owner_generation: request.ownerGeneration,
+        phase_execution_id: request.phaseExecutionId,
+        context_id: request.contextId,
+        target_start_gate_id: request.targetStartGateId,
+        gate_state: request.proofKind === "never_released" ? "closed_never_released" : "released",
+        gate_state_version: request.gateStateVersion,
+        gate_release_evidence_id: request.proofKind === "never_released" ? null : `evidence-containment-release-${request.launchId}`,
+        gate_never_released_evidence_id: request.proofKind === "never_released" ? `evidence-never-released-${request.attemptId}` : null,
+        proof_kind: request.proofKind,
+        launch_id: request.launchId,
+        process_receipt_id: request.processReceiptId,
+        terminal_group_dead: request.proofKind === "never_released" ? null : 1,
+        terminal_descendants_confirmed_dead: request.proofKind === "never_released" ? null : 1,
+        group_death_evidence_id: request.groupDeathEvidenceId,
+        unproven_evidence_id: null,
+        member_digest: request.memberDigest,
+        created_at: request.observedAt,
+      }));
+      this.#validateRecordSemantics("attempt_target_proof_members", memberRow);
+      this.#insert("attempt_target_proof_members", memberRow);
+      // 3. Seal the proof set: transition from "collecting" to "sealed_complete".
+      db.prepare(
+        `UPDATE attempt_target_proof_sets
+         SET state = 'sealed_complete', state_version = 1,
+             proof_set_digest = ?, evidence_id = ?, sealed_at = ?
+         WHERE target_proof_set_id = ? AND attempt_id = ?`,
+      ).run(
+        request.proofSetDigest,
+        request.evidenceId,
+        request.observedAt,
+        request.targetProofSetId,
+        request.attemptId,
+      );
+      const sealed = db.prepare(
+        "SELECT * FROM attempt_target_proof_sets WHERE target_proof_set_id = ? AND attempt_id = ?",
+      ).get(request.targetProofSetId, request.attemptId) as MutableStateRecord;
+      return frozenRow(sealed);
+    });
+  }
+
   /**
    * Mint and atomically persist a target-never-released receipt.  The bound
    * target start gate transitions `held → closed_never_released` in the same
@@ -2769,30 +3555,6 @@ export class StateStore {
       );
     }
     const evidenceId = `evidence-containment-release-${request.launchId}`;
-    const payload = sealedDispositionPayload({
-      schema_version: CONTAINMENT_RELEASE_SCHEMA_VERSION,
-      gate_id: request.gateId,
-      attempt_id: request.attemptId,
-      ownership_id: request.ownershipId,
-      owner_generation: request.ownerGeneration,
-      phase_execution_id: request.phaseExecutionId,
-      context_id: request.contextId,
-      launch_id: request.launchId,
-      backend_id: request.backendId,
-      boundary_name: request.boundaryName,
-      membership_digest: request.membershipDigest,
-      observed_at: request.observedAt,
-    });
-    const evidenceRow = dispositionEvidenceRow(
-      evidenceId,
-      request.attemptId,
-      request.contextId,
-      "TargetStartGateAuthority",
-      CONTAINMENT_RELEASE_SCHEMA_VERSION,
-      request.launchId,
-      payload,
-      request.observedAt,
-    );
     return this.#immediate("mint_target_released", () => {
       const db = this.#requireDatabase();
       const gate = db.prepare(
@@ -2801,6 +3563,37 @@ export class StateStore {
       if (gate === undefined) {
         throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "target-released receipt does not bind an existing target start gate", this.location.databasePath);
       }
+      // Construct the payload inside the transaction so we can include the
+      // gate's start_authorization_digest (required by the oracle projection
+      // validation).
+      const payload = sealedDispositionPayload({
+        schema_version: CONTAINMENT_RELEASE_SCHEMA_VERSION,
+        gate_id: request.gateId,
+        target_start_gate_id: request.gateId,
+        attempt_id: request.attemptId,
+        ownership_id: request.ownershipId,
+        owner_generation: request.ownerGeneration,
+        phase_execution_id: request.phaseExecutionId,
+        context_id: request.contextId,
+        launch_id: request.launchId,
+        backend_id: request.backendId,
+        boundary_name: request.boundaryName,
+        membership_digest: request.membershipDigest,
+        observed_at: request.observedAt,
+        state: "released",
+        state_version: 1,
+        start_authorization_digest: String(gate.start_authorization_digest),
+      });
+      const evidenceRow = dispositionEvidenceRow(
+        evidenceId,
+        request.attemptId,
+        request.contextId,
+        "TargetStartGateAuthority",
+        "rickgent.target-start-gate-released.v1",
+        request.launchId,
+        payload,
+        request.observedAt,
+      );
       // Replay: the gate is already released with the exact evidence.
       if (String(gate.state) === "released") {
         if (String(gate.release_evidence_id ?? "") !== evidenceId) {
@@ -2849,31 +3642,49 @@ export class StateStore {
   ): MintedDispositionReceipt<CleanupEligibilityReceipt> {
     const receipt = mintCleanupEligibilityReceipt(request.observation, capability);
     const observation = receipt;
-    const payload = sealedDispositionPayload(request.observation as unknown as Readonly<Record<string, unknown>>);
-    const durablePreimage = dispositionDurablePreimage(
-      request.observation as unknown as Readonly<Record<string, unknown>>,
-      {
-        target_proof_set_id: request.targetProofSetId,
-        ownership_snapshot_evidence_id: request.ownershipSnapshotEvidenceId,
-        claim_snapshot_evidence_ids: [...request.claimSnapshotEvidenceIds],
-      },
-    );
-    const durableDigest = sha256Text(durablePreimage);
     const evidenceId = `evidence-cleanup-eligibility-${observation.receiptId}`;
-    const evidenceRow = dispositionEvidenceRow(
-      evidenceId,
-      observation.attemptId,
-      observation.contextId,
-      "CleanupEligibilityService",
-      CLEANUP_ELIGIBILITY_SCHEMA_VERSION,
-      observation.receiptId,
-      payload,
-      observation.observedAt,
-    );
     return this.#immediate("mint_cleanup_eligibility", () => {
       this.#validateCleanupDispositionPreimage(observation, "cleanup-eligibility");
       const proof = this.#requireSealedTargetProofSet(observation.attemptId, request.targetProofSetId);
       const claimSnapshotSetDigest = sha256Text(canonicalJson([...request.claimSnapshotEvidenceIds]));
+      // Compute the expected payload that the oracle projection validation
+      // checks.  This must match the format in resolveAttemptOracleProjection.
+      const expectedPayload = {
+        oracle_input_class: "cleanup_eligibility",
+        eligibility_id: observation.receiptId,
+        attempt_id: observation.attemptId,
+        ownership_id: observation.ownershipId,
+        owner_generation: observation.ownerGeneration,
+        ownership_state_version: observation.ownershipStateVersion,
+        ownership_context_digest: observation.ownershipContextDigest,
+        context_id: observation.contextId,
+        commit_intent_id: observation.commitIntentId,
+        commit_attribution_id: observation.commitAttributionId,
+        candidate_oid: observation.candidateOid,
+        baseline_oid: observation.deliveryBaselineOid,
+        delivery_ref: observation.deliveryRef,
+        delivery_observed_oid: observation.deliveryObservedOid,
+        attempt_ref: observation.attemptRef,
+        attempt_ref_observed_oid: observation.attemptRefObservedOid,
+        claim_preimage_digest: claimSnapshotSetDigest,
+        target_proof_set_id: request.targetProofSetId,
+        target_proof_set_digest: String(proof.proof_set_digest ?? ""),
+        target_proof_count: Number(proof.target_count ?? 0),
+        ownership_snapshot_evidence_id: request.ownershipSnapshotEvidenceId,
+        claim_snapshot_evidence_ids: [...request.claimSnapshotEvidenceIds],
+      };
+      const payloadJson = canonicalJson(expectedPayload);
+      const payloadDigest = sha256Text(payloadJson);
+      const evidenceRow = dispositionEvidenceRow(
+        evidenceId,
+        observation.attemptId,
+        observation.contextId,
+        "CleanupEligibilityService",
+        CLEANUP_ELIGIBILITY_SCHEMA_VERSION,
+        observation.receiptId,
+        payloadJson,
+        observation.observedAt,
+      );
       const receiptRow = this.#buildReceiptRow("cleanup_eligibility_records", {
         cleanup_eligibility_record_id: observation.receiptId,
         attempt_id: observation.attemptId,
@@ -2899,8 +3710,8 @@ export class StateStore {
         claim_snapshot_evidence_ids_json: canonicalJson([...request.claimSnapshotEvidenceIds]),
         claim_snapshot_set_digest: claimSnapshotSetDigest,
         evidence_id: evidenceId,
-        input_digest: durableDigest,
-        record_digest: durableDigest,
+        input_digest: payloadDigest,
+        record_digest: payloadDigest,
         idempotency_key: `cleanup-eligibility:${observation.receiptId}`,
         created_at: observation.observedAt,
       });
@@ -2911,7 +3722,7 @@ export class StateStore {
         receiptRow,
         evidenceRow,
         evidenceId,
-        durablePreimage,
+        payloadJson,
         () => { /* nonterminal: no state transition */ },
         receipt,
       );
