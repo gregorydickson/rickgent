@@ -802,8 +802,8 @@ describe("M7 scrutiny round 8 — defect 3: resume runs real initial dispatch th
     expect(firstResult.ticketsPlanned).toBeGreaterThanOrEqual(1);
 
     // The first build must have succeeded (the real providers completed
-    // the full lifecycle: dispatch → attribution → review → verification →
-    // cleanup → oracle → promotion).
+    // the full lifecycle, from dispatch through attribution, review,
+    // verification, cleanup, oracle evaluation, and promotion).
     expect(firstResult.outcome.status).toBe("succeeded");
     expect(firstResult.ticketsDone).toBeGreaterThanOrEqual(1);
 
