@@ -1,4 +1,5 @@
 import type { StateRecord, StateStore } from "./store.js";
+import { legalPhaseEdge, type PhaseState } from "../lifecycle/phase.js";
 
 export type TransitionEntityKind = "run" | "ticket" | "attempt";
 
@@ -295,6 +296,16 @@ export class TransitionAuthority {
    * provide authority-owned evidence).  The from/to states are validated
    * against the ATTEMPT_TRANSITIONS catalog by the store's
    * commitAuthorizedTransition.
+   *
+   * Scrutiny round 14: for execution_context guards, the expectedRole is
+   * derived from the normative PHASE_TRANSITION_TABLE edge definition, NOT
+   * from the caller-provided guard.  The caller-provided expectedRole is
+   * IGNORED — the role comes from the edge's declared `role` field.  This
+   * eliminates the cross-role substitution vector: a caller cannot authorize
+   * a reviewer edge (e.g. remediation_captured to reviewing) with a
+   * remediator context by passing expectedRole 'remediator' in the guard.
+   * The edge's declared role ('reviewer') is used, and the StateStore
+   * rejects the remediator context because its role does not match.
    */
   commitAttemptEdge(request: AttemptTransitionRequest & {
     readonly from: string;
@@ -302,7 +313,33 @@ export class TransitionAuthority {
     readonly ownerService: string;
     readonly guard: TransitionGuard;
   }): TransitionResult {
-    return this.#commit("attempt", request.attemptId, request.from, request.to, request.ownerService, request, request.guard);
+    const guard = this.#deriveEdgeGuard(request.from, request.to, request.guard);
+    return this.#commit("attempt", request.attemptId, request.from, request.to, request.ownerService, request, guard);
+  }
+
+  /**
+   * Scrutiny round 14: derive the expectedRole for execution_context guards
+   * from the normative PHASE_TRANSITION_TABLE edge definition.  The
+   * caller-provided expectedRole is IGNORED — the edge's declared `role`
+   * field is the sole authority for which role may drive the transition.
+   * For non-execution_context guards, the caller-provided guard is returned
+   * unchanged.  If the edge is not declared in the table and the guard is
+   * execution_context, the caller-provided guard is returned unchanged (the
+   * store's from/to validation will reject the transition if the edge is
+   * illegal).
+   */
+  #deriveEdgeGuard(from: string, to: string, callerGuard: TransitionGuard): TransitionGuard {
+    if (callerGuard.kind === "execution_context") {
+      const edge = legalPhaseEdge(from as PhaseState, to as PhaseState);
+      if (edge !== undefined) {
+        return {
+          kind: "execution_context",
+          contextId: callerGuard.contextId,
+          expectedRole: edge.role,
+        };
+      }
+    }
+    return callerGuard;
   }
 
   quarantineAttempt(request: CleanupGuardedAttemptRequest): TransitionResult {
