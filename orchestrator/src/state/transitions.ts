@@ -306,40 +306,147 @@ export class TransitionAuthority {
    * remediator context by passing expectedRole 'remediator' in the guard.
    * The edge's declared role ('reviewer') is used, and the StateStore
    * rejects the remediator context because its role does not match.
+   *
+   * Scrutiny round 15: the ENTIRE guard (both kind AND expectedRole) is
+   * derived from the normative PHASE_TRANSITION_TABLE edge definition, NOT
+   * from the caller.  The caller-provided guard is IGNORED entirely —
+   * both kind and role come from the normative edge.  This eliminates ALL
+   * caller-controlled guard substitution: a caller cannot pass a
+   * remediation_record guard (a genuine remediator-owned guard) to
+   * authorize a reviewer-only edge.  The edge's declared guard kind
+   * ("execution_context") is used, not the caller's guard kind.  The
+   * caller provides the guard's data fields (contextId, gateResultIds,
+   * commitAttributionId) via dedicated request fields, not via the guard.
    */
   commitAttemptEdge(request: AttemptTransitionRequest & {
     readonly from: string;
     readonly to: string;
     readonly ownerService: string;
-    readonly guard: TransitionGuard;
+    /**
+     * Caller-provided guard.  IGNORED entirely — the guard (kind + role) is
+     * always derived from the normative PHASE_TRANSITION_TABLE edge
+     * definition.  Kept as optional for backward compatibility; the caller
+     * cannot influence the guard kind or role.
+     */
+    readonly guard?: TransitionGuard;
+    /**
+     * The execution-context ID for edges guarded by `execution_context`.
+     * Required when the edge declares guard kind "execution_context".
+     */
+    readonly contextId?: string;
+    /**
+     * The gate result IDs for edges guarded by `gate_results`.
+     * Required when the edge declares guard kind "gate_results".
+     */
+    readonly gateResultIds?: readonly string[];
+    /**
+     * The commit attribution ID for edges guarded by `cleanup_pending`
+     * (the success-path converging → cleanup_pending edge).  Optional.
+     */
+    readonly commitAttributionId?: string;
   }): TransitionResult {
-    const guard = this.#deriveEdgeGuard(request.from, request.to, request.guard);
+    const guard = this.#deriveEdgeGuard(request.from, request.to, request);
     return this.#commit("attempt", request.attemptId, request.from, request.to, request.ownerService, request, guard);
   }
 
   /**
-   * Scrutiny round 14: derive the expectedRole for execution_context guards
+   * Scrutiny round 15: derive the ENTIRE guard (both kind AND expectedRole)
    * from the normative PHASE_TRANSITION_TABLE edge definition.  The
-   * caller-provided expectedRole is IGNORED — the edge's declared `role`
-   * field is the sole authority for which role may drive the transition.
-   * For non-execution_context guards, the caller-provided guard is returned
-   * unchanged.  If the edge is not declared in the table and the guard is
-   * execution_context, the caller-provided guard is returned unchanged (the
-   * store's from/to validation will reject the transition if the edge is
-   * illegal).
+   * caller-provided guard is IGNORED entirely — both kind and role come
+   * from the normative edge.  The caller provides the guard's data fields
+   * (contextId, gateResultIds, commitAttributionId) via dedicated request
+   * fields, not via the guard.
+   *
+   * If the edge is not declared in the table, the transition is rejected
+   * fail-closed (the store's from/to validation will also reject it, but we
+   * fail early with a clear error).
+   *
+   * If the edge declares a guard kind that the generic commitAttemptEdge
+   * path does not support (e.g. live_lease, process_receipt, review_record,
+   * remediation_record, cleanup_record, oracle_promotion,
+   * verified_promotion), the transition is rejected fail-closed — those
+   * edges use the typed TransitionAuthority methods directly.
    */
-  #deriveEdgeGuard(from: string, to: string, callerGuard: TransitionGuard): TransitionGuard {
-    if (callerGuard.kind === "execution_context") {
-      const edge = legalPhaseEdge(from as PhaseState, to as PhaseState);
-      if (edge !== undefined) {
+  #deriveEdgeGuard(from: string, to: string, request: {
+    readonly guard?: TransitionGuard;
+    readonly contextId?: string;
+    readonly gateResultIds?: readonly string[];
+    readonly commitAttributionId?: string;
+  }): TransitionGuard {
+    const edge = legalPhaseEdge(from as PhaseState, to as PhaseState);
+    if (edge === undefined) {
+      // Edge not declared — fail closed.  The store would also reject it,
+      // but we fail early with a clear error.  If the caller provided a
+      // guard, it is IGNORED.
+      throw new TypeError(
+        `commitAttemptEdge: edge ${from} -> ${to} is not declared by PHASE_TRANSITION_TABLE; ` +
+        `the guard is always derived from the edge definition, not the caller`,
+      );
+    }
+    // Derive the guard from the edge's declared guard kind and role.
+    // The caller-provided guard's kind and expectedRole are IGNORED entirely.
+    // However, the guard's data fields (contextId, gateResultIds,
+    // commitAttributionId) are extracted as a fallback when the dedicated
+    // request fields are not provided — this maintains backward
+    // compatibility with callers that pass the data inside the guard.
+    // The dedicated request fields take precedence over the guard's fields.
+    switch (edge.guard) {
+      case "execution_context": {
+        // Prefer the dedicated contextId field; fall back to extracting it
+        // from the caller-provided guard (if it is an execution_context
+        // guard).  The guard's kind and expectedRole are IGNORED — only
+        // the contextId data field is extracted.
+        const contextId = request.contextId
+          ?? (request.guard !== undefined && request.guard.kind === "execution_context"
+            ? request.guard.contextId
+            : undefined);
+        if (contextId === undefined || contextId.length === 0) {
+          throw new TypeError(
+            `commitAttemptEdge: edge ${from} -> ${to} requires guard kind "execution_context" ` +
+            `but no contextId was provided; the guard is derived from the edge, not the caller`,
+          );
+        }
         return {
           kind: "execution_context",
-          contextId: callerGuard.contextId,
+          contextId,
           expectedRole: edge.role,
         };
       }
+      case "gate_results": {
+        const gateResultIds = request.gateResultIds
+          ?? (request.guard !== undefined && request.guard.kind === "gate_results"
+            ? request.guard.gateResultIds
+            : undefined);
+        if (gateResultIds === undefined || gateResultIds.length === 0) {
+          throw new TypeError(
+            `commitAttemptEdge: edge ${from} -> ${to} requires guard kind "gate_results" ` +
+            `but no gateResultIds were provided; the guard is derived from the edge, not the caller`,
+          );
+        }
+        return {
+          kind: "gate_results",
+          gateResultIds: Object.freeze([...gateResultIds]),
+        };
+      }
+      case "cleanup_pending":
+      case "budget_exhausted": {
+        const commitAttributionId = request.commitAttributionId
+          ?? (request.guard !== undefined && request.guard.kind === "cleanup_pending"
+            ? request.guard.commitAttributionId
+            : undefined);
+        return commitAttributionId !== undefined
+          ? { kind: "cleanup_pending", commitAttributionId }
+          : { kind: "cleanup_pending" };
+      }
+      default:
+        // Guard kinds not supported by the generic commitAttemptEdge path.
+        // These edges use the typed TransitionAuthority methods directly
+        // (startAttempt, captureImplementation, beginReview, etc.).
+        throw new TypeError(
+          `commitAttemptEdge: edge ${from} -> ${to} declares guard kind "${edge.guard}" ` +
+          `which is not supported by the generic edge path; use the typed TransitionAuthority method instead`,
+        );
     }
-    return callerGuard;
   }
 
   quarantineAttempt(request: CleanupGuardedAttemptRequest): TransitionResult {
