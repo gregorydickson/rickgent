@@ -157,6 +157,42 @@ function ticketContract(repo: string): TicketContract {
   return sealTicketContracts([ticketDraft()], { repositoryRoot: repo })[0]!;
 }
 
+/**
+ * Create a phase context without depending on the LineageFixture interface,
+ * so it can be called from lineageFixture() before the fixture is fully
+ * assembled.  Uses a raw store/contract/attempt instead of fixture fields.
+ */
+function lifecyclePhaseContextRaw(
+  store: StateStore,
+  contract: TicketContract,
+  attempt: AllocatedAttempt,
+  repo: string,
+  phase: "review" | "remediation" | "verification" | "cleanup",
+  role: "reviewer" | "remediator" | "verifier" | "cleanup",
+  phaseOrdinal: number,
+  shaSeed: string,
+): ResolvedPhaseContext {
+  const policyRoot = join(store.location.resourceDirectory, `policy-${phase}-${phaseOrdinal}-${shaSeed}`);
+  const bundleRoot = join(policyRoot, "bundle");
+  mkdirSync(bundleRoot, { recursive: true, mode: 0o700 });
+  return new IdentityContextResolver(store).resolvePhaseContext({
+    attempt,
+    contract,
+    phase,
+    phaseOrdinal,
+    role,
+    worktreeRealpath: repo,
+    policyBundle: {
+      kind: "materialized_authenticated_policy_bundle",
+      policyRoot,
+      bundleDir: bundleRoot,
+      requestedBundleSha256: shaSeed.repeat(64),
+    },
+    modelSelection: { harness: "codex", model: "gpt-5", vendor: "openai" },
+    timeoutMs: contract.verifications[0]!.timeout_ms,
+  });
+}
+
 interface LineageFixture {
   readonly repo: string;
   readonly store: StateStore;
@@ -164,6 +200,8 @@ interface LineageFixture {
   readonly run: AllocatedRun;
   readonly attempt: AllocatedAttempt;
   readonly phase: ResolvedPhaseContext;
+  readonly reviewContext: ResolvedPhaseContext;
+  readonly verificationContext: ResolvedPhaseContext;
 }
 
 function lineageFixture(): LineageFixture {
@@ -196,7 +234,15 @@ function lineageFixture(): LineageFixture {
     modelSelection: { harness: "codex", model: "gpt-5", vendor: "openai" },
     timeoutMs: contract.verifications[0]!.timeout_ms,
   });
-  return { repo, store, contract, run, attempt, phase };
+  // Scrutiny round 13: pre-create reviewer and verifier contexts before any
+  // candidate commit so the scope validation in resolvePhaseContext does not
+  // fail on an already-existing candidate file.  These contexts are used by
+  // advanceToVerifying and the phase-flow test for beginReview and
+  // beginVerification, which now require execution_context guards with the
+  // correct expectedRole.
+  const reviewContext = lifecyclePhaseContextRaw(store, contract, attempt, repo, "review", "reviewer", 0, "b");
+  const verificationContext = lifecyclePhaseContextRaw(store, contract, attempt, repo, "verification", "verifier", 0, "e");
+  return { repo, store, contract, run, attempt, phase, reviewContext, verificationContext };
 }
 
 function additionalPhaseContext(
@@ -278,7 +324,9 @@ function additionalLineage(fixture: LineageFixture): LineageFixture {
     modelSelection: { harness: "codex", model: "gpt-5", vendor: "openai" },
     timeoutMs: fixture.contract.verifications[0]!.timeout_ms,
   });
-  return { ...fixture, run, attempt, phase };
+  const reviewContext = lifecyclePhaseContextRaw(fixture.store, fixture.contract, attempt, fixture.repo, "review", "reviewer", 0, "b");
+  const verificationContext = lifecyclePhaseContextRaw(fixture.store, fixture.contract, attempt, fixture.repo, "verification", "verifier", 0, "e");
+  return { ...fixture, run, attempt, phase, reviewContext, verificationContext };
 }
 
 function appendEvidence(
@@ -899,10 +947,20 @@ function advanceToVerifying(
     processReceiptId: guards.processReceiptId,
     ...commonRequest(fixture, `${label}:attempt:capture`, proof, 1),
   });
+  // Scrutiny round 13: beginReview and beginVerification now require
+  // execution_context guards with the correct expectedRole.  Use the
+  // fixture's pre-created reviewer and verifier contexts (created before
+  // any candidate commit so scope validation passes).  The
+  // ownerContextDigest for each must match the respective context's digest.
   authority.beginReview({
     attemptId: fixture.attempt.attemptId,
-    contextId: fixture.phase.persisted.contextId,
-    ...commonRequest(fixture, `${label}:attempt:review`, proof, 2),
+    contextId: fixture.reviewContext.persisted.contextId,
+    ...ownedTransitionRequest(
+      fixture.reviewContext.canonical.contextDigest,
+      `${label}:attempt:review`,
+      proof,
+      2,
+    ),
   });
   authority.queueVerification({
     attemptId: fixture.attempt.attemptId,
@@ -911,8 +969,13 @@ function advanceToVerifying(
   });
   authority.beginVerification({
     attemptId: fixture.attempt.attemptId,
-    contextId: fixture.phase.persisted.contextId,
-    ...commonRequest(fixture, `${label}:attempt:verify`, proof, 4),
+    contextId: fixture.verificationContext.persisted.contextId,
+    ...ownedTransitionRequest(
+      fixture.verificationContext.canonical.contextDigest,
+      `${label}:attempt:verify`,
+      proof,
+      4,
+    ),
   });
   return proof;
 }
@@ -1807,21 +1870,28 @@ describe("transactional lifecycle transition authority", () => {
           processReceiptId: guards.processReceiptId,
           ...commonRequest(fixture, "attempt:capture", proof, 1),
         }),
-        authority.beginReview({
-          attemptId: fixture.attempt.attemptId,
-          contextId: fixture.phase.persisted.contextId,
-          ...commonRequest(fixture, "attempt:review", proof, 2),
-        }),
+        // Scrutiny round 13: beginReview and beginVerification require
+        // execution_context guards with the correct expectedRole.  Use the
+        // fixture's pre-created reviewer and verifier contexts.
+        (() => {
+          return authority.beginReview({
+            attemptId: fixture.attempt.attemptId,
+            contextId: fixture.reviewContext.persisted.contextId,
+            ...ownedTransitionRequest(fixture.reviewContext.canonical.contextDigest, "attempt:review", proof, 2),
+          });
+        })(),
         authority.queueVerification({
           attemptId: fixture.attempt.attemptId,
           reviewRecordId: guards.reviewRecordId,
           ...commonRequest(fixture, "attempt:queue-verification", proof, 3),
         }),
-        authority.beginVerification({
-          attemptId: fixture.attempt.attemptId,
-          contextId: fixture.phase.persisted.contextId,
-          ...commonRequest(fixture, "attempt:verify", proof, 4),
-        }),
+        (() => {
+          return authority.beginVerification({
+            attemptId: fixture.attempt.attemptId,
+            contextId: fixture.verificationContext.persisted.contextId,
+            ...ownedTransitionRequest(fixture.verificationContext.canonical.contextDigest, "attempt:verify", proof, 4),
+          });
+        })(),
         authority.completeVerification({
           attemptId: fixture.attempt.attemptId,
           gateResultIds: [guards.gateResultId],
@@ -2040,10 +2110,19 @@ describe("transactional lifecycle transition authority", () => {
             processReceiptId: guards.processReceiptId,
             ...commonRequest(fixture, "context-mismatch-review:capture", proof, 1),
           });
+          // Scrutiny round 13: use a reviewer context (role "reviewer") so
+          // the role matches the guard's expectedRole.  The test then
+          // specifically proves that a DIFFERENT context's digest
+          // (otherContext) is rejected — not a role mismatch.
           expectStateCode(() => authority.beginReview({
             attemptId: fixture.attempt.attemptId,
-            contextId: fixture.phase.persisted.contextId,
-            ...commonRequest(fixture, "context-mismatch-review:begin", proof, 2),
+            contextId: fixture.reviewContext.persisted.contextId,
+            ...ownedTransitionRequest(
+              fixture.reviewContext.canonical.contextDigest,
+              "context-mismatch-review:begin",
+              proof,
+              2,
+            ),
             ownerContextDigest: otherContext.canonical.contextDigest,
           }), "RICKGENT_STATE_TRANSITION_ILLEGAL");
           expect(one(
