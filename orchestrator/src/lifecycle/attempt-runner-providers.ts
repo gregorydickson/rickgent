@@ -1070,6 +1070,17 @@ export function buildAttemptRunnerProviders(
           idempotencyKey: `salvage:${attemptId}:${input.kind}`,
           observedAt: createdAt,
         }, mintCapability);
+        // Scrutiny round 9: Create the salvage_records row so the
+        // failure_cleanup_records FOREIGN KEY constraint on
+        // salvage_record_id is satisfied.  Without this, mintFailureCleanup
+        // throws a FOREIGN KEY constraint violation.
+        store.persistAuthoritySalvageRecord({
+          salvageRecordId,
+          attemptId,
+          disposition: "captured",
+          evidenceId: salvageEvidenceId,
+          observedAt: createdAt,
+        }, mintCapability);
         causeEvidenceId = `evidence-cause-${attemptId}-${input.kind}`;
         store.persistAuthorityEvidence({
           evidenceId: causeEvidenceId,
@@ -1091,6 +1102,20 @@ export function buildAttemptRunnerProviders(
       const launchId = input.supervised.processLaunchId ?? input.boundary?.launchId ?? `launch-${attemptId}-${input.kind}`;
       const processReceiptId = input.supervised.processReceiptId;
       const groupDeathEvidenceId = input.supervised.groupDeathEvidenceId;
+
+      // Scrutiny round 9: The target proof set ID is static
+      // (target-proof-set-${attemptId}), so when the cleanupPreimage is
+      // called a second time (e.g., failure cleanup after an oracle
+      // rejection that already ran the eligibility step), the target proof
+      // set already exists.  Check BEFORE persisting the kind-specific
+      // evidence (otherwise the eligibility kind's own evidence would
+      // trigger a false positive).  Skip creation in that case — the
+      // existing sealed target proof set is reused by the failure/quarantine
+      // cleanup path.  The kind-specific evidence row below is still
+      // persisted (it has a unique evidence ID per kind).
+      const targetProofSetAlreadySealed = store.evidenceExists(
+        `evidence-target-proof-set-${attemptId}-eligibility`, attemptId,
+      );
 
       // Persist the target proof set evidence.
       // Compute the member digest from the exact sealed member fields that
@@ -1135,7 +1160,8 @@ export function buildAttemptRunnerProviders(
       }, mintCapability);
 
       // Create and seal the target proof set via the authority Store command.
-      store.createAndSealAuthorityTargetProofSet({
+      if (!targetProofSetAlreadySealed) {
+        store.createAndSealAuthorityTargetProofSet({
         targetProofSetId,
         attemptId,
         ownershipId: ownership.ownership.ownershipId,
@@ -1157,6 +1183,7 @@ export function buildAttemptRunnerProviders(
         observedAt: createdAt,
         memberDigest,
       }, mintCapability);
+      }
 
       // Build targetProofs reference for the cleanup-eligibility observation.
       const targetProofs: CleanupEligibilityObservation["targetProofs"] = [{

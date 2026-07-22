@@ -881,6 +881,11 @@ async function executeBuildViaRunner(
   const attemptByTicket = new Map<string, AllocatedAttempt>();
   // Scrutiny round 5: map attempt ID to resumeFromStep for step-aware re-entry.
   const resumeFromStepByAttempt = new Map<string, import("./attempt-runner.js").AttemptRunnerStep | "complete">();
+  // Scrutiny round 9: track tickets that were recovered as complete via
+  // recoverAttempt (resume_attempt with nextStep=complete).  The second
+  // accounting loop must skip these — they were already counted as done in
+  // the first loop and must NOT be counted as failed.
+  const recoveredCompleteByResume = new Set<string>();
   // t29-fix: When resuming, only dispatch tickets that need resuming.
   // Tickets with nextAction "complete" are already done and should be
   // skipped.  The resume result from resumeRun determines the next action
@@ -946,6 +951,7 @@ async function executeBuildViaRunner(
           // skip dispatch and count as done.
           if (recoveryState.nextStep === "complete") {
             base.ticketsDone++;
+            recoveredCompleteByResume.add(ticket.id);
             report.push(`build: ticket ${ticket.id} attempt ${dispatchAttempt.attemptId} already complete (recovered) — skipping dispatch`);
             continue;
           }
@@ -1110,6 +1116,12 @@ async function executeBuildViaRunner(
         if (action === "await_reconciliation") {
           // Awaiting reconciliation — count as recovered, not done or failed.
           base.ticketsRecovered++;
+          continue;
+        }
+        // Scrutiny round 9: A resume_attempt ticket that was recovered as
+        // complete (nextStep=complete) was already counted as done in the
+        // first loop.  Skip it here — do NOT count it as failed.
+        if (recoveredCompleteByResume.has(ticket.id)) {
           continue;
         }
       }

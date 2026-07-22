@@ -1,7 +1,7 @@
 //
-// M7 scrutiny round 8 — provider record IDs + real integration proofs.
+// M7 scrutiny round 8/9 — provider record IDs + real integration proofs.
 //
-// Three production-path defects from scrutiny round 8:
+// Three production-path defects from scrutiny round 8, with round 9 fixes:
 //
 // 1. Review provider static record/evidence IDs: The review provider in
 //    attempt-runner-providers.ts derives review-record and evidence identities
@@ -15,10 +15,17 @@
 //
 // 2. Remediation/re-review test must use real authority APIs: NO direct SQL
 //    with FK disabled.  ALL fixtures through real authority APIs.
+//    Scrutiny round 9: The test must use the REAL buildAttemptRunnerProviders
+//    review provider (not a test-local lookalike).  The test must NOT catch
+//    runner failures.  Override ONLY dispatch and remediation.
 //
 // 3. Resume proof must run real initial dispatch: Call runBuildViaRunnerForTesting
 //    WITHOUT --resume to run a build that completes dispatch, then call WITH
 //    --resume, assert dispatchCallCount === 0 AND a POSITIVE success condition.
+//    Scrutiny round 9: The resume test must assert outcome.status === 'succeeded'
+//    AND ticketsFailed === 0.  The resume accounting bug (resume_attempt with
+//    nextStep=complete counted as failed in the second accounting loop) must
+//    NOT manifest.
 //
 // Red-then-green: each test asserts the CORRECT behavior.  Before the fix,
 // the production code uses static attemptId-based IDs, so the second review
@@ -40,12 +47,9 @@ import { AttemptExecutionContextAuthority } from "../../src/context/attempt-exec
 import {
   AttemptRunner,
   type AttemptRunnerRequest,
-  type CommitAttributionResult,
   type DispatchInput,
   type RemediationInput,
   type RemediationResult,
-  type ReviewInput,
-  type ReviewResult,
   type SupervisedDispatchResult,
 } from "../../src/lifecycle/attempt-runner.js";
 import { AttemptTerminalizationService } from "../../src/lifecycle/attempt-terminalization.js";
@@ -194,12 +198,14 @@ function buildRealAuthorityFixture(label = "real-authority-r8"): RealAuthorityFi
   mkdirSync(ownership.plan.policyBundlePath, { recursive: true, mode: 0o700 });
 
   // Commit a candidate in the worktree (the implementation worker's output).
-  // The fixture review provider rejects on the first call regardless of
-  // content, so the candidate content doesn't need a banned pattern.
+  // Scrutiny round 9: The candidate contains a banned pattern ("as any")
+  // so the REAL production review provider rejects it on cycle 1.  The
+  // remediation provider produces a clean candidate (no banned pattern)
+  // so the re-review on cycle 2 accepts.
   mkdirSync(join(provisioned.workspace.worktreePath, "src"), { recursive: true });
   writeFileSync(
     join(provisioned.workspace.worktreePath, "src", "output.ts"),
-    "export const x = 1;\n",
+    "export const x = 1 as any;\n",
     "utf8",
   );
   execFileSync("git", ["-C", provisioned.workspace.worktreePath, "add", "src/output.ts"]);
@@ -219,20 +225,23 @@ function buildRealAuthorityFixture(label = "real-authority-r8"): RealAuthorityFi
 }
 
 /**
- * Build a runner that uses a fixture review provider that mimics the
- * production provider's ID derivation (from phaseExecutionId and input.cycle)
- * and uses real authority APIs (persistAuthorityEvidence, recordReview).
+ * Build a runner that uses the REAL production review provider from
+ * buildAttemptRunnerProviders.  Scrutiny round 9: The test must call
+ * buildAttemptRunnerProviders(...) to get the REAL production review
+ * provider and use it in the AttemptRunner.  The test overrides ONLY the
+ * dispatch provider (to use a fixture that completes quickly) and the
+ * remediation provider (to produce a genuinely different candidate).
  *
- * The fixture review provider:
+ * The REAL production review provider:
  * - Derives reviewRecordId from phase.phaseExecutionId (NOT attemptId)
- * - Uses input.cycle (NOT a hardcoded 1 or reviewCallCount)
- * - Rejects on the first call (cycle 1, original candidate), accepts on
- *   subsequent calls (cycle 2+, remediated candidate)
+ * - Uses input.cycle (NOT a hardcoded 1)
+ * - Rejects candidates with banned patterns ("as any", "as never", eval,
+ *   Function constructor)
+ * - Accepts clean candidates that are in-scope with non-empty diffs
  * - Persists evidence and review records via real authority APIs
  *
- * The dispatch, remediation, verification, oracle, and cleanupPreimage
- * providers are also fixtures that use real authority APIs.  NO direct SQL
- * with FK disabled.
+ * The REAL commitAttribution and verification providers are also used.
+ * NO direct SQL with FK disabled.  The test does NOT catch runner failures.
  */
 function makeRealAuthorityRunner(
   fixture: RealAuthorityFixture,
@@ -246,17 +255,23 @@ function makeRealAuthorityRunner(
   const terminalization = new AttemptTerminalizationService(store, leases);
   const executionContext = new AttemptExecutionContextAuthority(store);
 
+  // Scrutiny round 9: Call buildAttemptRunnerProviders to get the REAL
+  // production providers.  The review, commitAttribution, verification,
+  // oracle, and cleanupPreimage providers are all the real production
+  // providers.  Only dispatch and remediation are overridden.
   const realProviders = buildAttemptRunnerProviders(store, leases);
   const mintCapability = leases.issueDispositionMintCapability();
-  const lifecycleRecords = new LifecycleRecordAuthority(store);
-
-  let reviewCallCount = 0;
 
   const runner = new AttemptRunner(store, leases, containment, targetStartGate, terminalization, executionContext, {
-    // Use the REAL cleanup preimage and oracle providers.
+    // Use the REAL production providers for review, commitAttribution,
+    // verification, oracle, and cleanupPreimage.
     cleanupPreimage: realProviders.cleanupPreimage,
     oracle: realProviders.oracle,
+    commitAttribution: realProviders.commitAttribution,
+    review: realProviders.review,
+    verification: realProviders.verification,
 
+    // Override ONLY the dispatch provider (fixture that completes quickly).
     async dispatch(input: DispatchInput): Promise<SupervisedDispatchResult> {
       const launch = await containment.releaseTarget(
         input.boundary,
@@ -314,107 +329,6 @@ function makeRealAuthorityRunner(
       };
     },
 
-    commitAttribution(input): CommitAttributionResult {
-      const attemptId = input.ownership.attemptId;
-      const baselineOid = input.ownership.plan.lineage.deliveryBaselineOid;
-      const attemptRef = input.ownership.plan.attemptRef;
-      let candidateOid: string;
-      try {
-        candidateOid = execFileSync("git", [
-          "-C", input.ownership.repositoryPath, "rev-parse", "--verify", `${attemptRef}^{commit}`,
-        ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-      } catch {
-        candidateOid = baselineOid;
-      }
-      // Resolve the tree OID for the candidate (needed by review/verification).
-      let candidateTreeOid = candidateOid;
-      try {
-        candidateTreeOid = execFileSync("git", [
-          "-C", input.ownership.repositoryPath, "rev-parse", `${candidateOid}^{tree}`,
-        ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-      } catch { /* use commit oid as fallback */ }
-      return {
-        commitIntentId: `commit-intent-${attemptId}`,
-        commitAttributionId: `attribution-${attemptId}`,
-        attributionEvidenceId: `evidence-attribution-${attemptId}`,
-        candidateOid,
-        attemptRefObservedOid: candidateOid,
-      };
-    },
-
-    // Fixture review provider that mimics the production provider's ID
-    // derivation: record/evidence IDs from phaseExecutionId, cycle from
-    // input.cycle.  Uses real authority APIs.  Rejects on first call,
-    // accepts on subsequent calls.
-    review(input: ReviewInput): ReviewResult {
-      reviewCallCount++;
-      const attemptId = input.ownership.attemptId;
-      const phase = input.phase;
-      const createdAt = input.ownership.ownership.heartbeatAt;
-      const candidateOid = input.attribution.candidateOid;
-      const baselineOid = input.ownership.plan.lineage.deliveryBaselineOid;
-      const cycle = input.cycle ?? 1;
-      const reviewRecordId = `review-${phase.phaseExecutionId}`;
-      const verdictEvidenceId = `evidence-review-verdict-${phase.phaseExecutionId}`;
-      const findingsEvidenceId = `evidence-review-findings-${phase.phaseExecutionId}`;
-
-      const finalVerdict: "accept" | "reject" = reviewCallCount === 1 ? "reject" : "accept";
-
-      let reviewDiffDigest: string;
-      try {
-        const rawDiff = execFileSync("git", [
-          "-C", input.ownership.repositoryPath,
-          "diff", "--raw", "-z", "--no-abbrev", "-M",
-          baselineOid, candidateOid,
-        ], { encoding: "utf8", timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
-        reviewDiffDigest = canonicalGitDeltaFromRaw(rawDiff).candidateDiffDigest;
-      } catch {
-        reviewDiffDigest = sha256(`review-diff-unresolvable:${attemptId}`).slice("sha256:".length);
-      }
-
-      let inputTreeOid = candidateOid;
-      try {
-        inputTreeOid = execFileSync("git", [
-          "-C", input.ownership.repositoryPath, "rev-parse", `${candidateOid}^{tree}`,
-        ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-      } catch {
-        inputTreeOid = candidateOid;
-      }
-
-      const verdictValue = finalVerdict === "accept" ? "accepted" : "rejected";
-
-      try {
-        store.persistAuthorityEvidence({
-          evidenceId: verdictEvidenceId, attemptId,
-          phaseExecutionId: phase.phaseExecutionId, contextId: phase.contextId,
-          producerService: "ReviewService", scope: reviewRecordId,
-          schemaVersion: "rickgent.review-verdict.v1",
-          payload: { attempt_id: attemptId, cycle, verdict: verdictValue, input_tree_oid: inputTreeOid, input_diff_digest: reviewDiffDigest },
-          idempotencyKey: `review-verdict:${phase.phaseExecutionId}`, observedAt: createdAt,
-        }, mintCapability);
-
-        store.persistAuthorityEvidence({
-          evidenceId: findingsEvidenceId, attemptId,
-          phaseExecutionId: phase.phaseExecutionId, contextId: phase.contextId,
-          producerService: "ReviewService", scope: `review-findings:${reviewRecordId}`,
-          schemaVersion: "rickgent.review-findings.v1",
-          payload: { attempt_id: attemptId, cycle, findings: finalVerdict === "accept" ? "accepted" : "rejected" },
-          idempotencyKey: `review-findings:${phase.phaseExecutionId}`, observedAt: createdAt,
-        }, mintCapability);
-
-        lifecycleRecords.recordReview({
-          reviewRecordId, attemptId, cycle,
-          reviewerContextId: phase.contextId, ownerContextDigest: phase.contextDigest,
-          verdict: verdictValue, verdictEvidenceId, findingsEvidenceId,
-          inputTreeOid, inputDiffDigest: reviewDiffDigest, createdAt,
-        });
-      } catch (err) {
-        throw new Error(`review provider failed (callCount=${reviewCallCount}, cycle=${cycle}, phaseExecId=${phase.phaseExecutionId}): ${err instanceof Error ? err.message : String(err)}`);
-      }
-
-      return { reviewRecordId, verdict: finalVerdict, reviewEvidenceId: verdictEvidenceId };
-    },
-
     // Fixture remediation provider: writes a clean candidate and commits.
     remediation(input: RemediationInput): RemediationResult {
       const attemptId = input.ownership.attemptId;
@@ -466,67 +380,6 @@ function makeRealAuthorityRunner(
 
       return { remediationRecordId, resultTreeOid: newCandidateOid, resultDiffDigest, remediationEvidenceId };
     },
-
-    // Fixture verification provider: always passes, persists via real APIs.
-    verification(input): { gateResultId: string; gateResultIds: readonly string[]; status: "pass" | "fail" | "infrastructure_error"; gateEvidenceId: string } {
-      const attemptId = input.ownership.attemptId;
-      const phase = input.phase;
-      const createdAt = input.ownership.ownership.heartbeatAt;
-      const contract = input.contract;
-      const gateResultId = `gate-${attemptId}-0`;
-      const gateEvidenceId = `evidence-gate-${attemptId}-0`;
-      const baselineOid = input.ownership.plan.lineage.deliveryBaselineOid;
-      const attemptRef = input.ownership.plan.attemptRef;
-
-      let candidateOid: string;
-      try {
-        candidateOid = execFileSync("git", [
-          "-C", input.ownership.repositoryPath, "rev-parse", "--verify", `${attemptRef}^{commit}`,
-        ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-      } catch {
-        candidateOid = baselineOid;
-      }
-
-      let candidateTreeOid: string;
-      try {
-        candidateTreeOid = execFileSync("git", [
-          "-C", input.ownership.repositoryPath, "rev-parse", `${candidateOid}^{tree}`,
-        ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-      } catch {
-        candidateTreeOid = candidateOid;
-      }
-
-      let candidateDiffDigest: string;
-      try {
-        const rawDiff = execFileSync("git", [
-          "-C", input.ownership.repositoryPath, "diff", "--raw", "-z", "--no-abbrev", "-M",
-          baselineOid, candidateTreeOid,
-        ], { encoding: "utf8", timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
-        candidateDiffDigest = canonicalGitDeltaFromRaw(rawDiff).candidateDiffDigest;
-      } catch {
-        candidateDiffDigest = sha256(`gate-diff-unresolvable:${attemptId}`).slice("sha256:".length);
-      }
-
-      const gateStatus = "passed" as const;
-      store.persistAuthorityEvidence({
-        evidenceId: gateEvidenceId, attemptId,
-        phaseExecutionId: phase.phaseExecutionId, contextId: phase.contextId,
-        producerService: "VerificationService", scope: gateResultId,
-        schemaVersion: "rickgent.gate-result.v1",
-        payload: { gate_id: contract.verifications[0]!.id, evaluation_ordinal: 0, required: true, status: gateStatus, candidate_tree_oid: candidateTreeOid, candidate_diff_digest: candidateDiffDigest },
-        idempotencyKey: `gate-evidence:${attemptId}:0`, observedAt: createdAt,
-      }, mintCapability);
-
-      lifecycleRecords.recordGateResult({
-        gateResultId, attemptId, gateId: contract.verifications[0]!.id,
-        evaluationOrdinal: 0, status: gateStatus, required: true,
-        contextId: phase.contextId, ownerContextDigest: phase.contextDigest,
-        contractDigest: contract.digest, evidenceId: gateEvidenceId,
-        candidateTreeOid, candidateDiffDigest, createdAt,
-      });
-
-      return { gateResultId, gateResultIds: [gateResultId], status: "pass", gateEvidenceId };
-    },
   });
   return { runner };
 }
@@ -565,27 +418,17 @@ describe("M7 scrutiny round 8 — defect 1 & 2: per-cycle review record IDs via 
     const fixture = buildRealAuthorityFixture("remediation-real-providers");
     const { runner } = makeRealAuthorityRunner(fixture);
 
-    // The remediation cycle drives the review provider at least twice:
-    //   1. Initial review (cycle 1, rejects the original candidate)
-    //   2. Re-review (cycle 2, accepts the remediated candidate)
+    // The remediation cycle drives the REAL production review provider at
+    // least twice:
+    //   1. Initial review (cycle 1, rejects the original candidate with
+    //      "as any" banned pattern)
+    //   2. Re-review (cycle 2, accepts the remediated clean candidate)
     //
-    // The attempt may ultimately fail at the oracle or failure-cleanup step
-    // due to a pre-existing runner issue (the runner does not update
-    // `attribution` after the remediation loop, so the finalize-attribution
-    // step persists the original candidate's tree, not the remediated one).
-    // This pre-existing issue is out of scope for this fix.  The key
-    // assertion is that the StateStore contains TWO distinct review_records
-    // with different phaseExecutionId values — proving the review provider
-    // derived per-cycle IDs from the execution context, not static attemptId.
-    //
-    // We catch any throw from the failure-cleanup path so we can still
-    // query the StateStore for the persisted review records.
-    try {
-      await runner.runAttempt(makeRunnerRequest(fixture));
-    } catch {
-      // Expected: the failure-cleanup path may throw due to the pre-existing
-      // attribution mismatch.  The review records are already persisted.
-    }
+    // Scrutiny round 9: The test must NOT catch runner failures.  If the
+    // runner throws, the test fails.  The REAL production review provider
+    // (from buildAttemptRunnerProviders) is used — not a test-local
+    // lookalike.  Only dispatch and remediation are overridden.
+    await runner.runAttempt(makeRunnerRequest(fixture));
 
     // Query the StateStore for review_records joined with evidence to get
     // the phaseExecutionId of each review record.  Uses a READ-ONLY database
@@ -631,12 +474,8 @@ describe("M7 scrutiny round 8 — defect 1 & 2: per-cycle review record IDs via 
   it("each review record's phaseExecutionId exists as a durable row in phase_executions", async () => {
     const fixture = buildRealAuthorityFixture("durable-phase-exec-ids");
     const { runner } = makeRealAuthorityRunner(fixture);
-    try {
-      await runner.runAttempt(makeRunnerRequest(fixture));
-    } catch {
-      // Expected: the failure-cleanup path may throw due to the pre-existing
-      // attribution mismatch.  The review records are already persisted.
-    }
+    // Scrutiny round 9: do NOT catch runner failures — let them propagate.
+    await runner.runAttempt(makeRunnerRequest(fixture));
 
     const db = new DatabaseSync(fixture.store.location.databasePath, { readOnly: true });
     try {
@@ -867,21 +706,13 @@ describe("M7 scrutiny round 8 — defect 3: resume runs real initial dispatch th
     }
 
     // (d) POSITIVE success condition — the resume build identified the
-    // ticket as already complete and counted it as done.  The
-    // ticketsDone >= 1 is a POSITIVE success condition (not just
-    // "not crashed").  The resume's report confirms: "ticket t01 attempt
-    // ... already complete (recovered) — skipping dispatch".
-    if (resumeResult.outcome.status !== "succeeded") {
-      // eslint-disable-next-line no-console
-      console.error("RESUME OUTCOME:", JSON.stringify({
-        outcome: resumeResult.outcome,
-        ticketsDone: resumeResult.ticketsDone,
-        ticketsFailed: resumeResult.ticketsFailed,
-        report: resumeResult.report,
-      }));
-    }
-    // POSITIVE success: the ticket was counted as done (ticketsDone >= 1).
+    // ticket as already complete and counted it as done.  Scrutiny round 9:
+    // The resume path must SUCCEED with zero failures.  The accounting
+    // bug (resume_attempt with nextStep=complete counted as failed in the
+    // second accounting loop) must NOT manifest.
+    expect(resumeResult.outcome.status).toBe("succeeded");
     expect(resumeResult.ticketsDone).toBeGreaterThanOrEqual(1);
+    expect(resumeResult.ticketsFailed).toBe(0);
     // The resume report must mention the ticket was already complete.
     expect(resumeResult.report.some((r) => r.includes("already complete"))).toBe(true);
   });

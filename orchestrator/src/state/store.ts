@@ -3528,6 +3528,51 @@ export class StateStore {
   }
 
   /**
+   * Persist an authority-owned salvage record.  The salvage record references
+   * the evidence row persisted by the caller (via persistAuthorityEvidence).
+   * The salvage_records table is referenced by a FOREIGN KEY in
+   * failure_cleanup_records and quarantine_records, so the salvage record
+   * must exist before those receipts can be minted.
+   *
+   * Scrutiny round 9: The cleanupPreimage provider creates salvage evidence
+   * but must also create the salvage_records row so the failure_cleanup
+   * FOREIGN KEY constraint is satisfied.
+   *
+   * Idempotent: if a salvage record with the same ID already exists, it is
+   * a replay (no error).
+   */
+  persistAuthoritySalvageRecord(
+    request: {
+      readonly salvageRecordId: string;
+      readonly attemptId: string;
+      readonly disposition: string;
+      readonly evidenceId: string;
+      readonly observedAt: string;
+    },
+    capability: LeaseAuthorityMintCapability,
+  ): void {
+    if (!isLeaseAuthorityMintCapability(capability)) throw new TypeError("authority salvage record can only be minted by the owning LeaseAuthority capability");
+    return this.#immediate("persist_authority_salvage_record", () => {
+      const db = this.#requireDatabase();
+      const existing = db.prepare(
+        "SELECT 1 FROM salvage_records WHERE salvage_record_id = ? AND attempt_id = ?",
+      ).get(request.salvageRecordId, request.attemptId);
+      if (existing !== undefined) return; // idempotent replay
+      const row = this.#validatedColumns("salvage_records", normalizeRow({
+        salvage_record_id: request.salvageRecordId,
+        attempt_id: request.attemptId,
+        disposition: request.disposition,
+        artifact_path: null,
+        artifact_digest: null,
+        artifact_size: null,
+        evidence_id: request.evidenceId,
+        created_at: request.observedAt,
+      }));
+      this.#insert("salvage_records", row);
+    });
+  }
+
+  /**
    * Create and atomically seal an authority-owned target proof set.  This
    * replaces the direct-SQL target-proof-set writes the manufacturing
    * cleanup-preimage provider used.  The proof set is created in
