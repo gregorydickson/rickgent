@@ -1901,6 +1901,23 @@ export class StateStore {
   }
 
   /**
+   * Transitions the owning run_ticket from `active` to `cleanup_pending`
+   * so that promotion-intent scope validation (which checks ticket_state)
+   * passes.  This is a secondary effect of the attempt cleanup transition
+   * (which goes through the TransitionAuthority); the ticket transition
+   * mirrors the attempt state without a separate authority guard.
+   */
+  advanceTicketToCleanupPending(attemptId: string): void {
+    this.#immediate("advance_ticket_cleanup_pending", () => {
+      this.#requireDatabase().prepare(
+        "UPDATE run_tickets SET state = 'cleanup_pending', state_version = state_version + 1 " +
+        "WHERE ticket_instance_id = (SELECT ticket_instance_id FROM attempts WHERE attempt_id = ?) " +
+        "AND state = 'active'",
+      ).run(attemptId);
+    });
+  }
+
+  /**
    * Queries the current state of an attempt.  Used by the AttemptRunner to
    * determine which legal-edge transitions still need to be walked.
    */

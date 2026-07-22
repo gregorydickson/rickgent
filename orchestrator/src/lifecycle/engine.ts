@@ -100,6 +100,16 @@ export interface LifecycleTransitionInput {
    */
   readonly contextDigest?: string;
   /**
+   * The commit attribution id for the success-path cleanup transition
+   * (`converging -> cleanup_pending`).  When provided, the engine builds a
+   * `cleanup_pending` guard with the `commitAttributionId` so the store
+   * validates the commit attribution exists and is finalized, and the
+   * evidence must pin the attribution evidence.  When omitted (failure
+   * paths), the guard has no `commitAttributionId` and the evidence must
+   * include a `purpose: "failure"` reference.
+   */
+  readonly commitAttributionId?: string;
+  /**
    * The immutable evidence references the transition cites.  The production
    * path (store CAS) does not persist evidence refs in
    * `transition_evidence_refs` (that is the typed {@link TransitionAuthority}
@@ -122,10 +132,12 @@ export interface LifecycleTransitionInput {
  * carry — in that case the production AttemptRunner calls the authority's
  * typed methods directly, and the engine falls back to the store CAS.
  */
-function guardForEdge(edge: PhaseEdge): TransitionGuard | null {
+function guardForEdge(edge: PhaseEdge, commitAttributionId?: string): TransitionGuard | null {
   switch (edge.guard) {
     case "cleanup_pending":
-      return { kind: "cleanup_pending" };
+      return commitAttributionId !== undefined
+        ? { kind: "cleanup_pending", commitAttributionId }
+        : { kind: "cleanup_pending" };
     case "budget_exhausted":
       return { kind: "cleanup_pending" };
     case "cleanup_record_failed":
@@ -204,7 +216,7 @@ export class LifecycleEngine {
       );
     }
     if (this.#authority !== null) {
-      const guard = guardForEdge(edge);
+      const guard = guardForEdge(edge, input.commitAttributionId);
       if (guard !== null) {
         if (input.evidence === undefined || input.evidence.length === 0) {
           throw new LifecycleEngineError(

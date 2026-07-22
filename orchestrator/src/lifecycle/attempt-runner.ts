@@ -89,9 +89,9 @@ import {
   type AttemptOwnershipGrant,
   type LeaseAuthority,
 } from "../state/leases.js";
-import { PromotionAuthority, TransitionAuthority } from "../state/transitions.js";
+import { PromotionAuthority, TransitionAuthority, type ExistingTransitionEvidenceReference, type InlineTransitionEvidenceReference, type TransitionEvidenceReference } from "../state/transitions.js";
 import { LifecycleEngine } from "./engine.js";
-import { isLegalPhaseEdge, type PhaseState } from "./phase.js";
+import { isLegalPhaseEdge, legalPhaseEdge, type PhaseState } from "./phase.js";
 import { provisionAttemptWorkspace } from "../git/attempt-workspace.js";
 import type {
   AllocatedAttempt,
@@ -898,7 +898,7 @@ export class AttemptRunner {
         reason: "containment_unavailable",
         observedAt: nowIso(),
       });
-      const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("failure-cleanup"));
+      const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("failure-cleanup"), productionPhase);
       const { failureReceipt, terminal } = this.#failureTerminalize(
         request, cleanupOwnership, { kind: "infrastructure", reason },
         null, null, closed.receipt, { outcome: "infrastructure_error", exitCode: null,
@@ -952,7 +952,7 @@ export class AttemptRunner {
     // Cancellation state machine: a caller cancellation request before
     // terminalization produces a failure cleanup with the cancellation code.
     if (supervised.outcome === "cancelled" || request.cancellationRequested) {
-      const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("failure-cleanup"));
+      const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("failure-cleanup"), productionPhase);
       const deathReceipt = await this.#killAndMintDeath(boundary);
       const { failureReceipt, terminal } = this.#failureTerminalize(
         request, cleanupOwnership, { kind: "cancellation", requestedAt: nowIso() },
@@ -973,7 +973,7 @@ export class AttemptRunner {
     // enters cleanup_pending and a failure-cleanup receipt is minted with the
     // timeout code; timeout itself is never terminal.
     if (supervised.outcome === "timed_out") {
-      const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("failure-cleanup"));
+      const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("failure-cleanup"), productionPhase);
       const deathReceipt = await this.#killAndMintDeath(boundary);
       const { failureReceipt, terminal } = this.#failureTerminalize(
         request, cleanupOwnership, { kind: "timeout", deadlineMs: request.timeoutMs },
@@ -994,7 +994,7 @@ export class AttemptRunner {
     // state machine.  The target was released but the process never produced
     // a terminal receipt; the containment death receipt proves emptiness.
     if (supervised.outcome === "spawn_error" || supervised.outcome === "infrastructure_error") {
-      const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("failure-cleanup"));
+      const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("failure-cleanup"), productionPhase);
       const deathReceipt = await this.#killAndMintDeath(boundary);
       const { failureReceipt, terminal } = this.#failureTerminalize(
         request, cleanupOwnership, { kind: "infrastructure", reason: supervised.detail },
@@ -1071,7 +1071,7 @@ export class AttemptRunner {
       contract: request.contract,
     });
     if (review.verdict === "reject") {
-      const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("failure-cleanup"));
+      const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("failure-cleanup"), productionPhase);
       const deathReceipt = await this.#killAndMintDeath(boundary);
       const { failureReceipt, terminal } = this.#failureTerminalize(
         request, cleanupOwnership, { kind: "ordinary", reason: "review_rejected" },
@@ -1137,7 +1137,7 @@ export class AttemptRunner {
       contract: request.contract,
     });
     if (verification.status !== "pass") {
-      const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("failure-cleanup"));
+      const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("failure-cleanup"), productionPhase);
       const deathReceipt = await this.#killAndMintDeath(boundary);
       const cause: AttemptFailureCause = verification.status === "infrastructure_error"
         ? { kind: "infrastructure", reason: "verification_infrastructure_error" }
@@ -1287,7 +1287,7 @@ export class AttemptRunner {
     //    then cleanup_pending then cleanup eligibility).  The runner derives
     //    the 11 fixed claim preimages from the cleanup-pending ownership
     //    grant; the caller never supplies them.
-    const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("promotion-cleanup"), attribution.commitAttributionId, attribution.attributionEvidenceId);
+    const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("promotion-cleanup"), productionPhase, attribution.commitAttributionId, attribution.attributionEvidenceId);
     const claims = deriveClaimsFromOwnership(cleanupOwnership);
     const preimage = (this.#providers.cleanupPreimage ?? defaultCleanupPreimage)({
       ownership: cleanupOwnership,
@@ -1516,7 +1516,7 @@ export class AttemptRunner {
       reason: "containment_unavailable",
       observedAt: nowIso(),
     });
-    const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("quarantine"));
+    const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("quarantine"), request.supervisedPhase);
     const claims = deriveClaimsFromOwnership(cleanupOwnership);
     const quarantinePreimage = (this.#providers.cleanupPreimage ?? defaultCleanupPreimage)({
       ownership: cleanupOwnership,
@@ -1727,39 +1727,89 @@ export class AttemptRunner {
     request: AttemptRunnerRequest,
     ownership: AttemptOwnershipGrant,
     idempotencyKey: string,
-    _commitAttributionId?: string,
-    _attributionEvidenceId?: string,
+    phase: SupervisedPhaseIdentity,
+    commitAttributionId?: string,
+    attributionEvidenceId?: string,
   ): AttemptOwnershipGrant {
-    // Transition the attempt to cleanup_pending.  t24 failure edges: every
-    // pre-cleanup state has a legal `-> cleanup_pending` edge in the normative
-    // PHASE_TRANSITION_TABLE, so failure paths (dispatch/review/verification/
-    // oracle rejection) can transition directly without walking the forward
-    // success chain to "converging" first.  Query the current attempt state
-    // once and decide:
-    //   - If the attempt is already "cleanup_pending", do nothing (idempotent).
-    //   - If there is a legal edge (from current state to cleanup_pending),
-    //     call advanceAttemptToCleanupPending directly.
-    //   - If no legal edge is declared, fall back to advanceAttemptToCleanupPending
-    //     anyway and let the SQLite trigger reject it if the edge is illegal.
+    // Transition the attempt to cleanup_pending through the TransitionAuthority
+    // (via LifecycleEngine.transitionAttempt), NOT via a direct
+    // StateStore.advanceAttemptToCleanupPending call.  The authority path
+    // validates the edge against the normative PHASE_TRANSITION_TABLE,
+    // validates the owner context digest against the attempt's execution
+    // context, validates the guard (cleanup_pending with or without commit
+    // attribution), and persists authority-owned evidence refs in
+    // transition_evidence_refs.  The direct store bypass accepts no evidence
+    // and uses a placeholder context digest, leaving the production path
+    // fail-open (M6 scrutiny round 3 blocking defect).
+    //
+    // t24 failure edges: every pre-cleanup state has a legal edge to
+    // cleanup_pending in the normative table, so failure paths can transition
+    // directly.  The success path (converging -> cleanup_pending) provides the
+    // commitAttributionId so the guard validates the finalized commit
+    // attribution and the evidence pins the attribution evidence.  Failure
+    // paths provide inline evidence with purpose "failure" produced by the
+    // edge's owning service.
     const attemptId = request.attempt.attemptId;
     const currentState = this.#store.queryAttemptState(attemptId) as PhaseState;
     if (currentState !== "cleanup_pending") {
-      // If there is a legal edge from the current state to cleanup_pending,
-      // call advanceAttemptToCleanupPending directly.  If no legal edge is
-      // declared, fall back to advanceAttemptToCleanupPending anyway and let
-      // the SQLite trigger reject it if the edge is illegal.  Keep it simple
-      // — use the store method directly.
-      if (isLegalPhaseEdge(currentState, "cleanup_pending")) {
-        this.#store.advanceAttemptToCleanupPending(
-          attemptId,
-          attemptRunnerIdempotencyKey(attemptId, "begin-attempt-cleanup"),
-        );
-      } else {
-        this.#store.advanceAttemptToCleanupPending(
-          attemptId,
-          attemptRunnerIdempotencyKey(attemptId, "begin-attempt-cleanup"),
+      const edge = legalPhaseEdge(currentState, "cleanup_pending");
+      if (edge === undefined) {
+        throw new AttemptRunnerError(
+          "RICKGENT_ATTEMPT_CLEANUP_EDGE_ILLEGAL",
+          `no legal cleanup edge from ${currentState} to cleanup_pending`,
         );
       }
+      // Build authority-owned inline evidence for the cleanup transition.
+      // The evidence producer MUST match the edge's evidenceProducer (the
+      // store validates this).  For failure paths, the evidence has
+      // purpose "failure" so the cleanup_pending guard accepts it.  For the
+      // success path, the guard has commitAttributionId and the evidence
+      // must pin the attribution evidence.
+      const cleanupKey = attemptRunnerIdempotencyKey(attemptId, "begin-attempt-cleanup");
+      const evidenceRefs: TransitionEvidenceReference[] = [];
+      // For the success path, add the existing attribution evidence reference.
+      if (commitAttributionId !== undefined && attributionEvidenceId !== undefined) {
+        evidenceRefs.push(Object.freeze({
+          purpose: "authority",
+          evidenceId: attributionEvidenceId,
+        }) as ExistingTransitionEvidenceReference);
+      }
+      // Add inline authority-owned evidence for the transition itself.
+      // For failure paths, purpose "failure" is required by the cleanup_pending
+      // guard.  For the success path, purpose "cleanup" documents the
+      // transition's cause.
+      const isFailure = commitAttributionId === undefined;
+      evidenceRefs.push(Object.freeze({
+        purpose: isFailure ? "failure" : "cleanup",
+        inlineEvidence: Object.freeze({
+          contextId: phase.contextId,
+          producerService: edge.evidenceProducer,
+          scope: `cleanup-transition:${attemptId}`,
+          schemaVersion: "rickgent.cleanup-transition.v1",
+          payload: Object.freeze({
+            attempt_id: attemptId,
+            from_state: currentState,
+            to_state: "cleanup_pending",
+            failure_reason: isFailure ? "attempt_failure" : "promotion_eligible",
+            context_digest: phase.contextDigest,
+          }),
+          idempotencyKey: cleanupKey,
+        }),
+      }));
+      this.#lifecycle.transitionAttempt({
+        attemptId,
+        from: currentState,
+        to: "cleanup_pending",
+        idempotencyKey: cleanupKey,
+        contextDigest: phase.contextDigest,
+        evidence: evidenceRefs,
+        ...(commitAttributionId !== undefined ? { commitAttributionId } : {}),
+      });
+      // Also transition the owning run_ticket to cleanup_pending so that
+      // promotion-intent scope validation (which checks ticket_state) passes.
+      // The attempt transition went through the authority; the ticket
+      // transition is a secondary effect that mirrors the attempt state.
+      this.#store.advanceTicketToCleanupPending(attemptId);
     }
     return this.#leases.beginCleanup({ ownership, idempotencyKey });
   }
