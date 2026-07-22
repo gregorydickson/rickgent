@@ -280,11 +280,11 @@ export function executeVerifiedPullRequest(request: VerifiedPrRequest): Verified
 /**
  * Classify a provider error message into the appropriate result.
  *
- * - "gh: command not found" or "not found" → infrastructure_error (missing gh)
- * - "auth" or "not authenticated" → infrastructure_error (auth failure)
- * - "timeout" or "deadline" → infrastructure_error (timeout)
- * - "malformed" or "json" or "parse" → infrastructure_error (malformed JSON)
- * - Other → infrastructure_error
+ * - "gh: command not found" or "not found" yields infrastructure_error (missing gh)
+ * - "auth" or "not authenticated" yields infrastructure_error (auth failure)
+ * - "timeout" or "deadline" yields infrastructure_error (timeout)
+ * - "malformed" or "json" or "parse" yields infrastructure_error (malformed JSON)
+ * - Other messages yield infrastructure_error
  */
 function classifyProviderError(message: string): VerifiedPrResult {
   const lower = message.toLowerCase();

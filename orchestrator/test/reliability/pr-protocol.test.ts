@@ -4,16 +4,16 @@
 // delivery authority and state store:
 //   - Success: PR created after verified push, head OID equals delivery OID
 //   - No-push rejection: PR creation impossible before verified push observation
-//   - Wrong repository: PR repository identity mismatch → fail closed
-//   - Wrong head: PR head OID differs from delivery OID → fail closed
-//   - Existing wrong-head PR: PR exists with wrong head → fail closed
-//   - Missing gh: provider unavailable → fail closed
-//   - Malformed JSON: provider returns invalid JSON → fail closed
-//   - Auth failure: provider returns auth error → fail closed
-//   - Timeout: provider exceeds deadline → fail closed
+//   - Wrong repository: PR repository identity mismatch, fail closed
+//   - Wrong head: PR head OID differs from delivery OID, fail closed
+//   - Existing wrong-head PR: PR exists with wrong head, fail closed
+//   - Missing gh: provider unavailable, fail closed
+//   - Malformed JSON: provider returns invalid JSON, fail closed
+//   - Auth failure: provider returns auth error, fail closed
+//   - Timeout: provider exceeds deadline, fail closed
 //   - Response-loss (crash after create, before observation): resume resolves same PR
 //   - Idempotent retry: repeated call resolves same PR without duplicate
-//   - Repository identity equality required: different repo → fail closed
+//   - Repository identity equality required: different repo, fail closed
 //
 // All cases assert no delivered/Done state on failure paths.
 

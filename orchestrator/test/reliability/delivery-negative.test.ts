@@ -1,5 +1,5 @@
 // t34: Delivery negative proofs — fail-closed propagation across the
-// push→PR delivery chain.
+// push-to-PR delivery chain.
 //
 // Exercises the combined push+PR delivery protocol to prove that every
 // failure mode leaves the run non-delivered and PR-unreachable:
