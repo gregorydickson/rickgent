@@ -1258,17 +1258,31 @@ export class AttemptRunner {
       // reviewPhase, making it impossible to distinguish a fresh review from
       // a replay of the original — the provider would see the same
       // contextDigest on every call.
+      //
+      // t27-fix-round-6 (scrutiny round 6): The hook MUST also generate
+      // FRESH phaseExecutionId and contextId per re-review cycle.  Without
+      // this, the freshReviewPhase preserves the original reviewPhase's
+      // phaseExecutionId and contextId, causing the re-review record to
+      // conflict with the immutable original review record (same IDs).
+      const freshReviewerContextIdFn = (cycle: number): string =>
+        `reviewer-ctx-${attemptId}-cycle-${cycle}`;
       const loopReviewProvider = this.#providers.review ?? defaultReview;
       let loopReviewCycleCount = 0;
       const loopReviewHook: ReviewHook = (inputs) => {
         loopReviewCycleCount++;
         // Construct a FRESH review phase per cycle using the contextDigest
-        // from the loop's ReviewImmutableInputs.  The
+        // from the loop's ReviewImmutableInputs AND fresh phaseExecutionId
+        // and contextId derived from the cycle number.  The
         // runBoundedRemediationLoop updates inputs.contextDigest after each
         // remediation cycle, so each re-review receives a different
-        // contextDigest than the original review.
+        // contextDigest than the original review.  The phaseExecutionId and
+        // contextId are derived from the cycle number so each re-review
+        // record has a unique identity that does not conflict with the
+        // immutable original review record.
         const freshReviewPhase: SupervisedPhaseIdentity = {
           ...reviewPhase,
+          phaseExecutionId: `${reviewPhase.phaseExecutionId}-remediation-cycle-${loopReviewCycleCount}`,
+          contextId: freshReviewerContextIdFn(loopReviewCycleCount),
           contextDigest: inputs.contextDigest as `sha256:${string}`,
         };
         // Build a fresh attribution using the remediated candidate OID
@@ -1339,7 +1353,7 @@ export class AttemptRunner {
         worker: loopWorker,
         reviewHook: loopReviewHook,
         remediationHook: loopRemediationHook,
-        freshReviewerContextId: (cycle) => `reviewer-ctx-${attemptId}-cycle-${cycle}`,
+        freshReviewerContextId: freshReviewerContextIdFn,
         freshReviewerContextDigest: (cycle) => `sha256:reviewer-ctx-${attemptId}-cycle-${cycle}`,
       };
 
