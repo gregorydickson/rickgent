@@ -296,7 +296,12 @@ function buildRemediationFixture(label = "remediation"): RemediationFixture {
   const candidateOid = git(provisioned.workspace.worktreePath, "rev-parse", "HEAD");
   const attemptRef = `refs/rickgent/runs/${run.runId}/attempts/${attempt.attemptId}`;
   git(repo, "update-ref", attemptRef, candidateOid);
-  // Commit a second candidate (the remediated one) on a separate branch.
+  // Commit a second candidate (the remediated one) with the baseline as
+  // its sole parent (required by the promotion intent validation).
+  // Scrutiny round 10: The remediated commit must have the delivery
+  // baseline as its sole parent, not the original candidate.
+  execFileSync("git", ["-C", provisioned.workspace.worktreePath, "reset", "--hard", baselineOid]);
+  mkdirSync(join(provisioned.workspace.worktreePath, "src"), { recursive: true });
   writeFileSync(join(provisioned.workspace.worktreePath, "src", "output.ts"), "export const x = 2;\n", "utf8");
   execFileSync("git", ["-C", provisioned.workspace.worktreePath, "add", "src/output.ts"]);
   execFileSync("git", ["-C", provisioned.workspace.worktreePath, "commit", "-qm", "remediated"]);
@@ -770,7 +775,7 @@ function makeRemediationTrackingRunner(
         input_diff_digest: digest(`diff:${attemptId}:${reviewCallCount}`),
         created_at: NOW,
       });
-      return { reviewRecordId, verdict, reviewEvidenceId };
+      return { reviewRecordId, verdict, reviewEvidenceId, findingsEvidenceId: reviewEvidenceId };
     },
     remediation(input: RemediationInput): RemediationResult {
       remediationCallCount++;
@@ -906,11 +911,14 @@ describe("M7 scrutiny round 4 — defect 1: remediation loop forwards remediated
       remediatedDiffDigest,
     });
     const result = await runner.runAttempt(makeRunnerRequest(fixture));
-    // The review provider must have been called at least 3 times:
+    // The review provider must have been called at least 2 times:
     //   1. Initial review in runAttempt rejects the original candidate.
-    //   2. Loop cycle 1 review rejects the original candidate and initial inputs.
-    //   3. Loop cycle 2 review accepts the remediated candidate.
-    expect(reviewCalls.length).toBeGreaterThanOrEqual(3);
+    //   2. Loop cycle 1 review accepts the remediated candidate.
+    // Scrutiny round 10: The first remediation is done OUTSIDE the loop,
+    // so the loop's first review is of the remediated candidate (not a
+    // redundant re-review of the original).  This eliminates the extra
+    // review call that was previously cycle 2.
+    expect(reviewCalls.length).toBeGreaterThanOrEqual(2);
     // The first review call sees the original candidate.
     expect(reviewCalls[0]!.candidateOid).toBe(fixture.candidateOid);
     // At least one review call after the initial review MUST see the

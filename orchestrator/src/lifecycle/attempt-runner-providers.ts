@@ -671,7 +671,7 @@ export function buildAttemptRunnerProviders(
         createdAt,
       });
 
-      return { reviewRecordId, verdict, reviewEvidenceId: verdictEvidenceId };
+      return { reviewRecordId, verdict, reviewEvidenceId: verdictEvidenceId, findingsEvidenceId };
     },
 
     // --- remediation: dispatch remediation worker, produce new candidate --

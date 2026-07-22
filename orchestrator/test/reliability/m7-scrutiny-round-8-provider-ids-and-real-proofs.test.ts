@@ -338,6 +338,11 @@ function makeRealAuthorityRunner(
       const remediationEvidenceId = `evidence-remediation-${attemptId}-${input.cycle}`;
 
       // Write a clean version of the file (different from the original).
+      // Scrutiny round 10: Reset to the baseline first so the remediated
+      // commit has the delivery baseline as its sole parent (required by
+      // the promotion intent validation).
+      execFileSync("git", ["-C", fixture.worktreePath, "reset", "--hard", fixture.baselineOid]);
+      mkdirSync(join(fixture.worktreePath, "src"), { recursive: true });
       writeFileSync(
         join(fixture.worktreePath, "src", "output.ts"),
         `export const x = ${input.cycle + 1};\n`,
