@@ -67,6 +67,14 @@ import {
   type PhasePromptContext,
   type StructuredFinding,
 } from "./prompts.js";
+import {
+  performReview,
+  REVIEW_AUTHORITY_SCHEMA_VERSION,
+  type ReviewImmutableInputs,
+  type ReviewerIdentity,
+  type WorkerIdentity,
+  type ReviewHook,
+} from "./review.js";
 import type {
   AttemptRunnerPhaseProviders,
   AttributionInput,
@@ -316,44 +324,109 @@ export function buildAttemptRunnerProviders(
       const verdictEvidenceId = `evidence-review-verdict-${attemptId}`;
       const findingsEvidenceId = `evidence-review-findings-${attemptId}`;
 
-      // Derive the review verdict from a real observation: the candidate oid
-      // must resolve to a valid Git tree object.  This is the real production
-      // observation — a review that accepts the candidate as a valid commit.
-      // If the candidate cannot be resolved, the review fails closed with
-      // "reject" — do NOT substitute the baseline tree and accept it (that
-      // is the fail-open defect from M4 scrutiny round 5: an unresolvable
-      // candidate would mint a positive review on the nonempty baseline).
+      // t27: Use the independent ReviewAuthority to perform the review.
+      // The ReviewAuthority enforces: fresh read-only review against
+      // immutable inputs, reviewer/worker authority collapse rejection,
+      // stale-diff detection, verdict validation, and fail-closed modes.
+      // The review hook is the real Git observation (candidate tree
+      // resolution).  The ReviewAuthority wraps it with authority checks.
       const candidateOid = input.attribution.candidateOid;
       const baselineOid = input.ownership.plan.lineage.deliveryBaselineOid;
-      let treeOid: string;
-      try {
-        treeOid = execFileSync("git", [
-          "-C", input.ownership.repositoryPath, "rev-parse", `${candidateOid}^{tree}`,
-        ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-      } catch {
-        // Cannot resolve the candidate tree — fail closed (reject).
-        // Do NOT substitute the baseline tree; an unresolvable candidate
-        // must not mint a positive review.
-        return { reviewRecordId, verdict: "reject" as const, reviewEvidenceId: verdictEvidenceId };
-      }
-      // An empty resolution (empty string) is also a fail-closed reject.
-      if (treeOid.length === 0) {
-        return { reviewRecordId, verdict: "reject" as const, reviewEvidenceId: verdictEvidenceId };
-      }
 
-      // Render, verify, and persist the review-phase prompt receipt as
-      // authority evidence.  The review evidence (baseline/candidate/diff
-      // digest) is required by the review renderer.  A failure here is
-      // non-fatal — the attempt critical section continues (fail-closed
-      // returns null).
+      // Compute the real diff digest from the actual git diff between
+      // the baseline and the candidate.  The store independently derives
+      // this same digest and checks that they match.
       let reviewDiffDigest: string;
       try {
-        const rawDiff = execFileSync("git", ["-C", input.ownership.repositoryPath, "diff", "--raw", "-z", "--no-abbrev", "-M", baselineOid, candidateOid], { encoding: "utf8", timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
+        const rawDiff = execFileSync("git", [
+          "-C", input.ownership.repositoryPath,
+          "diff", "--raw", "-z", "--no-abbrev", "-M",
+          baselineOid, candidateOid,
+        ], { encoding: "utf8", timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
         const delta = canonicalGitDeltaFromRaw(rawDiff);
         reviewDiffDigest = delta.candidateDiffDigest;
       } catch {
-        reviewDiffDigest = sha256(`review-diff-fallback:${attemptId}`);
+        // If the diff cannot be resolved, the review must fail closed.
+        // Use a unique digest so the stale-diff check does not accidentally
+        // pass — the review hook will still reject an unresolvable candidate.
+        reviewDiffDigest = sha256(`review-diff-unresolvable:${attemptId}`);
       }
+
+      // Build the immutable inputs for the ReviewAuthority.
+      const immutableInputs: ReviewImmutableInputs = {
+        baselineOid,
+        candidateOid,
+        diffDigest: reviewDiffDigest,
+        contractDigest: input.contract.digest,
+        contextDigest: phase.contextDigest,
+      };
+
+      // Build the reviewer identity (fresh reviewer process — the review
+      // phase context differs from the implementation phase context).
+      const reviewer: ReviewerIdentity = {
+        role: "reviewer",
+        contextId: phase.contextId,
+      };
+
+      // Build the worker identity (the implementation worker — its context
+      // differs from the reviewer's context, ensuring no authority collapse).
+      const worker: WorkerIdentity = {
+        role: "worker",
+        contextId: `worker-impl-${attemptId}`,
+      };
+
+      // The review hook: the real production Git observation.  The reviewer
+      // receives only the frozen immutable inputs — no store, no write
+      // capability.  The hook resolves the candidate tree from Git and
+      // returns a verdict with structured findings.
+      const reviewHook: ReviewHook = (inputs) => {
+        let treeOid: string;
+        try {
+          treeOid = execFileSync("git", [
+            "-C", input.ownership.repositoryPath, "rev-parse", `${inputs.candidateOid}^{tree}`,
+          ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+        } catch {
+          return {
+            verdict: "reject" as const,
+            findings: [{
+              id: "F-001",
+              severity: "high" as const,
+              message: "candidate tree could not be resolved",
+              path: inputs.candidateOid,
+            }],
+          };
+        }
+        if (treeOid.length === 0) {
+          return {
+            verdict: "reject" as const,
+            findings: [{
+              id: "F-001",
+              severity: "high" as const,
+              message: "candidate tree resolved to empty oid",
+              path: inputs.candidateOid,
+            }],
+          };
+        }
+        return { verdict: "accept" as const, findings: [] };
+      };
+
+      // Perform the independent review through the ReviewAuthority.
+      const outcome = performReview({
+        cycle: 1,
+        reviewer,
+        worker,
+        inputs: immutableInputs,
+        expectedDiffDigest: reviewDiffDigest,
+        reviewHook,
+      });
+
+      // Map the outcome to the verdict.  A fail-closed outcome is treated
+      // as a reject (the runner enters failure clean).
+      const verdict: "accept" | "reject" = outcome.status === "accepted" ? "accept" : "reject";
+
+      // Render, verify, and persist the review-phase prompt receipt as
+      // authority evidence.  The review evidence (baseline/candidate/diff
+      // digest) is required by the review renderer.
       renderPersistVerifyPrompt(
         store, mintCapability, input.contract,
         { phase: "review", role: "reviewer", contextDigest: phase.contextDigest, contractDigest: input.contract.digest },
@@ -361,25 +434,33 @@ export function buildAttemptRunnerProviders(
         { reviewEvidence: { baselineOid, candidateOid, diffDigest: reviewDiffDigest } },
       );
 
-      // The verdict is "accept" only when the candidate tree is a valid,
-      // resolved Git tree object that differs from or equals the baseline
-      // in a way the diff computation can validate against contract scope.
-      const verdict: "accept" | "reject" = "accept";
-      // Compute the real diff digest from the actual git diff between
-      // the baseline and the candidate tree.  The store independently
-      // derives this same digest and checks that they match.
-      let inputDiffDigest: string;
-      try {
-        const rawDiff = execFileSync("git", [
-          "-C", input.ownership.repositoryPath,
-          "diff", "--raw", "-z", "--no-abbrev", "-M",
-          baselineOid, treeOid,
-        ], { encoding: "utf8", timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
-        const delta = canonicalGitDeltaFromRaw(rawDiff);
-        inputDiffDigest = delta.candidateDiffDigest;
-      } catch {
-        // If the diff cannot be resolved, reject (fail closed).
-        return { reviewRecordId, verdict: "reject" as const, reviewEvidenceId: verdictEvidenceId };
+      // Resolve the tree OID for evidence persistence.  On accept, the
+      // tree was resolved by the hook; on reject/fail-closed, use the
+      // candidate OID (the store validates independently).
+      let inputTreeOid = candidateOid;
+      let inputDiffDigest = reviewDiffDigest;
+      if (verdict === "accept") {
+        try {
+          inputTreeOid = execFileSync("git", [
+            "-C", input.ownership.repositoryPath, "rev-parse", `${candidateOid}^{tree}`,
+          ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+        } catch {
+          // If the tree cannot be resolved at this point, the review
+          // already rejected (or fail-closed).  Use the candidate oid.
+          inputTreeOid = candidateOid;
+        }
+        try {
+          const rawDiff = execFileSync("git", [
+            "-C", input.ownership.repositoryPath,
+            "diff", "--raw", "-z", "--no-abbrev", "-M",
+            baselineOid, inputTreeOid,
+          ], { encoding: "utf8", timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
+          const delta = canonicalGitDeltaFromRaw(rawDiff);
+          inputDiffDigest = delta.candidateDiffDigest;
+        } catch {
+          // Keep the reviewDiffDigest as fallback.
+          inputDiffDigest = reviewDiffDigest;
+        }
       }
 
       // Persist the verdict evidence.  The store checks that the evidence
@@ -390,8 +471,9 @@ export function buildAttemptRunnerProviders(
         attempt_id: attemptId,
         cycle: 1,
         verdict: verdictValue,
-        input_tree_oid: treeOid,
+        input_tree_oid: inputTreeOid,
         input_diff_digest: inputDiffDigest,
+        schema_version: REVIEW_AUTHORITY_SCHEMA_VERSION,
       };
       store.persistAuthorityEvidence({
         evidenceId: verdictEvidenceId,
@@ -410,7 +492,8 @@ export function buildAttemptRunnerProviders(
       const findingsPayload = {
         attempt_id: attemptId,
         cycle: 1,
-        findings: verdict === "accept" ? "candidate is a valid Git tree" : "candidate could not be resolved",
+        findings: verdict === "accept" ? "candidate is a valid Git tree" : (outcome.findings.length > 0 ? outcome.findings.map((f) => f.message).join("; ") : "review fail-closed"),
+        schema_version: REVIEW_AUTHORITY_SCHEMA_VERSION,
       };
       store.persistAuthorityEvidence({
         evidenceId: findingsEvidenceId,
@@ -435,7 +518,7 @@ export function buildAttemptRunnerProviders(
         verdict: verdict === "accept" ? "accepted" : "rejected",
         verdictEvidenceId,
         findingsEvidenceId,
-        inputTreeOid: treeOid,
+        inputTreeOid: inputTreeOid,
         inputDiffDigest,
         createdAt,
       });

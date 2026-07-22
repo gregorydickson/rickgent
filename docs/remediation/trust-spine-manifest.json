@@ -1231,10 +1231,14 @@
         "orchestrator/test/reliability/review-remediation.test.ts"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t26"
-      ]
+      ],
+      "completed_at": {
+        "commit": "f46e247",
+        "phase_report": "docs/remediation/phase-7-t27-independent-review-execution-report-2026-07-22.md"
+      }
     },
     {
       "id": "t28",
