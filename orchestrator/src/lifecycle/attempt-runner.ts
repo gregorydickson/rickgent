@@ -1146,12 +1146,28 @@ export class AttemptRunner {
       // This ensures the loop uses the same review authority as the initial
       // review, not a separate synthetic probe.  The review provider's
       // verdict determines whether the loop continues or enters remediation.
+      //
+      // t27-fix-round-4 (scrutiny round 4): The review hook MUST construct a
+      // fresh CommitAttributionResult using the remediated candidate OID
+      // from the loop's ReviewImmutableInputs (inputs.candidateOid), NOT the
+      // original attribution.  The re-review must be against the remediated
+      // tree, not the original.  The runBoundedRemediationLoop correctly
+      // forwards the remediated candidate OID through currentInputs; the
+      // hook must use it, not ignore it.
       const loopReviewProvider = this.#providers.review ?? defaultReview;
-      const loopReviewHook: ReviewHook = (_inputs) => {
+      const loopReviewHook: ReviewHook = (inputs) => {
+        // Build a fresh attribution using the remediated candidate OID
+        // from the loop's immutable inputs.  The re-review must see the
+        // remediated candidate, not the original.
+        const remediatedAttribution: CommitAttributionResult = {
+          ...attribution,
+          candidateOid: inputs.candidateOid,
+          attemptRefObservedOid: inputs.candidateOid,
+        };
         const reviewResult = loopReviewProvider({
           ownership: acquired,
           phase: reviewPhase,
-          attribution,
+          attribution: remediatedAttribution,
           contract: request.contract,
         });
         return {
@@ -1164,16 +1180,34 @@ export class AttemptRunner {
 
       // The remediation hook: calls the remediation provider if available,
       // otherwise fails closed (no synthetic remediation).
+      //
+      // t27-fix-round-4 (scrutiny round 4): The remediation hook MUST track
+      // the current remediated candidate across cycles.  The previous
+      // remediation result becomes the "attribution" for the next cycle's
+      // degenerate-loop detection.  The cycle number must be the actual
+      // remediation cycle, not a hardcoded 1.
       const remediationProvider = this.#providers.remediation ?? defaultRemediation;
+      let currentRemediatedOid = attribution.candidateOid;
+      let remediationCycleCount = 0;
       const loopRemediationHook: RemediationHook = (findings) => {
+        remediationCycleCount++;
+        // Build a fresh attribution using the current remediated candidate
+        // so the remediation provider sees the correct previous candidate.
+        const currentAttribution: CommitAttributionResult = {
+          ...attribution,
+          candidateOid: currentRemediatedOid,
+          attemptRefObservedOid: currentRemediatedOid,
+        };
         const remediationResult = remediationProvider({
           ownership: acquired,
           phase: reviewPhase,
-          attribution,
+          attribution: currentAttribution,
           contract: request.contract,
           findings,
-          cycle: 1,
+          cycle: remediationCycleCount,
         });
+        // Track the remediated candidate for the next cycle.
+        currentRemediatedOid = remediationResult.resultTreeOid;
         return {
           resultTreeOid: remediationResult.resultTreeOid,
           resultDiffDigest: remediationResult.resultDiffDigest,

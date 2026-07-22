@@ -93,6 +93,7 @@ import {
   AttemptRunner,
   type AttemptRunnerRequest,
   type AttemptRunnerResult,
+  type AttemptRunnerRecoveryState,
 } from "./attempt-runner.js";
 import { AttemptTerminalizationService } from "./attempt-terminalization.js";
 import { TargetStartGateAuthority } from "./target-start-gate.js";
@@ -917,17 +918,51 @@ async function executeBuildViaRunner(
       if (dispatchAttempt !== null) {
         attempt = dispatchAttempt;
         if (action === "resume_attempt") {
-          // t29-fix-round-3: Call runner.recoverAttempt to get the recovery
-          // state and determine the correct step to re-enter the runner.
-          // The recovery state is logged but the runner re-enters via
-          // runAttempt with the recovered attempt — the runner internally
-          // checks the persisted state and resumes from the correct step.
+          // t29-fix-round-4 (scrutiny round 4): Call runner.recoverAttempt
+          // to get the recovery state and determine the correct step to
+          // re-enter the runner.  If recoverAttempt throws, FAIL CLOSED —
+          // do NOT silently allocate a fresh attempt or continue with
+          // runAttempt from acquisition.  If nextStep is "complete", skip
+          // the attempt (it is already done).
+          let recoveryState: AttemptRunnerRecoveryState;
           try {
-            const recoveryState = runner.recoverAttempt(dispatchAttempt.attemptId);
-            report.push(`build: ticket ${ticket.id} resuming attempt ${dispatchAttempt.attemptId} at step ${recoveryState.nextStep}`);
+            recoveryState = runner.recoverAttempt(dispatchAttempt.attemptId);
           } catch (error) {
-            report.push(`build: ticket ${ticket.id} recoverAttempt failed — ${error instanceof Error ? error.message : String(error)}`);
+            // Fail closed: the recovery could not determine the attempt's
+            // progress.  Do NOT silently allocate a fresh attempt or
+            // proceed with runAttempt from acquisition.  Count the ticket
+            // as failed and continue to the next ticket.
+            const detail = `recoverAttempt failed for ${dispatchAttempt.attemptId}: ${error instanceof Error ? error.message : String(error)}`;
+            report.push(`build: ticket ${ticket.id} FAIL CLOSED — ${detail}`);
+            base.ticketsFailed++;
+            issues.push(runIssue({
+              reason: "infrastructure_error", class: "infrastructure",
+              detail, ticketId: ticket.id,
+            }));
+            continue;
           }
+          // If the recovery state says the attempt is already complete,
+          // skip dispatch and count as done.
+          if (recoveryState.nextStep === "complete") {
+            base.ticketsDone++;
+            report.push(`build: ticket ${ticket.id} attempt ${dispatchAttempt.attemptId} already complete (recovered) — skipping dispatch`);
+            continue;
+          }
+          report.push(`build: ticket ${ticket.id} resuming attempt ${dispatchAttempt.attemptId} at step ${recoveryState.nextStep}`);
+        }
+        if (action === "cleanup_orphan") {
+          // t29-fix-round-4 (scrutiny round 4): The recovery plan already
+          // cleaned up the orphaned planned attempt and allocated a new
+          // retry attempt.  The dispatchAttempt is the new retry attempt.
+          // Log the cleanup and proceed with dispatching the new attempt.
+          const orphanedId = plan?.orphanedPlannedAttempt?.attemptId ?? "unknown";
+          report.push(`build: ticket ${ticket.id} cleanup_orphan — cleaned up orphaned attempt ${orphanedId}, dispatching retry attempt ${dispatchAttempt.attemptId} (number ${dispatchAttempt.attemptNumber})`);
+        }
+        if (action === "allocate_retry") {
+          // t29-fix-round-4 (scrutiny round 4): The recovery plan allocated
+          // a new retry attempt.  The dispatchAttempt is the new retry
+          // attempt with the correct attempt number.
+          report.push(`build: ticket ${ticket.id} allocate_retry — dispatching retry attempt ${dispatchAttempt.attemptId} (number ${dispatchAttempt.attemptNumber})`);
         }
         report.push(`build: ticket ${ticket.id} ${action} — using ${dispatchAttempt.attemptNumber > 1 ? "retry" : "initial"} attempt ${dispatchAttempt.attemptId}`);
       } else {
