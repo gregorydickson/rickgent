@@ -45,6 +45,7 @@ import type { TicketContract } from "../contracts/ticket-contract.js";
 import type { LeaseAuthority } from "../state/leases.js";
 import type { StateStore } from "../state/store.js";
 import { canonicalGitDeltaFromRaw } from "../state/store.js";
+import { isPathInScope } from "../core/scope.js";
 import { runGateVerification } from "../verification/gate-runner.js";
 import type { VerificationSupervisorHook } from "../verification/gate-runner.js";
 import {
@@ -244,6 +245,13 @@ function renderPersistVerifyPrompt(
  *
  * @param store  The canonical StateStore.
  * @param leases The LeaseAuthority (for mint capability and token-bound operations).
+ * @param processSupervisor Optional process supervisor for verification gates.
+ * @param agentDir Optional agent bundle directory for remediation worker
+ *                  dispatch.  When supplied, the remediation provider
+ *                  re-dispatches the agent with a remediation prompt to
+ *                  produce a genuinely new candidate.  When absent, the
+ *                  remediation provider detects the degenerate loop and
+ *                  fails closed.
  * @returns AttemptRunnerPhaseProviders wired to persist durable receipt rows
  *          through the Store's authority-branded commands.
  */
@@ -251,6 +259,7 @@ export function buildAttemptRunnerProviders(
   store: StateStore,
   leases: LeaseAuthority,
   processSupervisor?: ProcessSupervisor,
+  agentDir?: string,
 ): AttemptRunnerPhaseProviders {
   const mintCapability = leases.issueDispositionMintCapability();
   const lifecycleRecords = new LifecycleRecordAuthority(store);
@@ -378,9 +387,18 @@ export function buildAttemptRunnerProviders(
 
       // The review hook: the real production Git observation.  The reviewer
       // receives only the frozen immutable inputs — no store, no write
-      // capability.  The hook resolves the candidate tree from Git and
-      // returns a verdict with structured findings.
+      // capability.  The hook inspects the actual git diff between the
+      // baseline and the candidate:
+      //   1. Resolves the candidate tree (necessary but not sufficient).
+      //   2. Computes the actual git diff and verifies it is non-empty.
+      //   3. Verifies all changed paths are within the contract's declared
+      //      scope (using isPathInScope — the single path matcher).
+      //   4. Rejects banned patterns in the diff content (eval, Function
+      //      constructor, as any, as never).
+      // Only if all checks pass does the hook return "accept".
+      const contractScope = input.contract.scope.map((s) => s.path).filter((p) => p.length > 0);
       const reviewHook: ReviewHook = (inputs) => {
+        // 1. Resolve the candidate tree (necessary but not sufficient).
         let treeOid: string;
         try {
           treeOid = execFileSync("git", [
@@ -408,6 +426,117 @@ export function buildAttemptRunnerProviders(
             }],
           };
         }
+
+        // 2. Compute the actual git diff and verify it is non-empty.
+        //    A candidate with no changes (identical to baseline) is not a
+        //    valid implementation — the diff must contain at least one
+        //    changed path.
+        let rawDiff: string;
+        try {
+          rawDiff = execFileSync("git", [
+            "-C", input.ownership.repositoryPath,
+            "diff", "--raw", "-z", "--no-abbrev", "-M",
+            inputs.baselineOid, inputs.candidateOid,
+          ], { encoding: "utf8", timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
+        } catch {
+          return {
+            verdict: "reject" as const,
+            findings: [{
+              id: "F-002",
+              severity: "high" as const,
+              message: "git diff between baseline and candidate could not be computed",
+            }],
+          };
+        }
+        if (rawDiff.trim() === "") {
+          return {
+            verdict: "reject" as const,
+            findings: [{
+              id: "F-003",
+              severity: "high" as const,
+              message: "candidate diff is empty — no changes from baseline",
+            }],
+          };
+        }
+
+        // Parse the raw diff to extract changed paths.
+        const tokens = rawDiff.split("\0");
+        if (tokens.at(-1) === "") tokens.pop();
+        const changedPaths: string[] = [];
+        for (let index = 0; index < tokens.length;) {
+          const header = tokens[index++] ?? "";
+          const match = /^:([0-7]{6}) ([0-7]{6}) ([0-9a-f]+) ([0-9a-f]+) ([A-Z])(\d*)$/.exec(header);
+          if (match === null) continue;
+          const status = match[5]!;
+          const firstPath = tokens[index++];
+          if (firstPath === undefined || firstPath.length === 0) continue;
+          if (status === "R") {
+            // Renamed: skip the source path, take the destination.
+            const destination = tokens[index++];
+            if (destination !== undefined && destination.length > 0) {
+              changedPaths.push(destination);
+            }
+          } else {
+            changedPaths.push(firstPath);
+          }
+        }
+
+        // 3. Verify all changed paths are within the contract's declared
+        //    scope.  Out-of-scope changes must be rejected.  Use
+        //    isPathInScope — the single path matcher (invariant 4).
+        const outOfScopePaths = changedPaths.filter(
+          (p) => !contractScope.some((s) => isPathInScope(p, s)),
+        );
+        if (outOfScopePaths.length > 0) {
+          return {
+            verdict: "reject" as const,
+            findings: outOfScopePaths.map((p, i) => ({
+              id: `F-004-${i}`,
+              severity: "high" as const,
+              message: `changed path ${p} is outside the contract scope`,
+              path: p,
+            })),
+          };
+        }
+
+        // 4. Reject banned patterns in the diff content.  Inspect the
+        //    actual changed file content for banned constructs (eval,
+        //    Function constructor, as any, as never) that violate the
+        //    coding conventions.
+        const bannedPatterns: readonly { readonly pattern: RegExp; readonly message: string }[] = [
+          { pattern: /\beval\s*\(/, message: "banned pattern: eval() call" },
+          { pattern: /\bnew\s+Function\s*\(|\bFunction\s*\(/, message: "banned pattern: Function constructor" },
+          { pattern: /\bas\s+any\b/, message: "banned pattern: as any cast" },
+          { pattern: /\bas\s+never\b/, message: "banned pattern: as never cast" },
+        ];
+        for (const changedPath of changedPaths) {
+          let fileContent: string;
+          try {
+            fileContent = execFileSync("git", [
+              "-C", input.ownership.repositoryPath,
+              "show", `${inputs.candidateOid}:${changedPath}`,
+            ], { encoding: "utf8", timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
+          } catch {
+            // File may be deleted or binary — skip content check for this file.
+            continue;
+          }
+          for (const { pattern, message } of bannedPatterns) {
+            if (pattern.test(fileContent)) {
+              return {
+                verdict: "reject" as const,
+                findings: [{
+                  id: "F-005",
+                  severity: "high" as const,
+                  message: `${message} in ${changedPath}`,
+                  path: changedPath,
+                }],
+              };
+            }
+          }
+        }
+
+        // All checks passed — the diff is non-empty, in-scope, and free of
+        // banned patterns.  Accept the candidate.
         return { verdict: "accept" as const, findings: [] };
       };
 
@@ -525,7 +654,7 @@ export function buildAttemptRunnerProviders(
       return { reviewRecordId, verdict, reviewEvidenceId: verdictEvidenceId };
     },
 
-    // --- remediation: re-observe candidate after remediation, persist via authority API --
+    // --- remediation: dispatch remediation worker, produce new candidate --
     remediation(input: RemediationInput): RemediationResult {
       const attemptId = input.ownership.attemptId;
       const phase = input.phase;
@@ -533,11 +662,70 @@ export function buildAttemptRunnerProviders(
       const baselineOid = input.ownership.plan.lineage.deliveryBaselineOid;
       const remediationRecordId = `remediation-${attemptId}-${input.cycle}`;
       const remediationEvidenceId = `evidence-remediation-${attemptId}-${input.cycle}`;
+      const previousCandidateOid = input.attribution.candidateOid;
 
-      // t27-fix: The remediation provider re-observes the candidate from the
-      // worktree (the worker applied the remediation changes) and produces a
-      // new candidate tree OID and diff digest for the re-review.  No
-      // manufactured result — the candidate is observed from real Git state.
+      // t27-fix-round-3: The remediation provider must produce a genuinely
+      // new candidate, not just re-read the same worktree state that
+      // produces the same candidate and the same verdict (degenerate loop).
+      //
+      // The provider:
+      //   1. Renders the remediation prompt with the structured findings.
+      //   2. Dispatches the remediation worker (re-runs the agent with the
+      //      remediation prompt) into the worktree.
+      //   3. Observes the new candidate from the worktree.
+      //   4. Detects the degenerate loop: if the new candidate is the same
+      //      as the previous candidate, fail closed (the remediation did not
+      //      produce any changes).
+      //   5. Computes the diff digest and tree OID for the re-review.
+
+      // 1. Render the remediation prompt with the structured findings.
+      let remediationPromptText: string;
+      try {
+        const remediationReceipt = renderRemediationPrompt(input.contract, {
+          phase: "remediate",
+          role: "remediator",
+          contextDigest: phase.contextDigest,
+          contractDigest: input.contract.digest,
+        }, input.findings as unknown as readonly StructuredFinding[]);
+        remediationPromptText = remediationReceipt.prompt_text;
+      } catch {
+        // If the remediation prompt cannot be rendered, fail closed.
+        throw new Error("RICKGENT_ATTEMPT_REMEDIATION_ERROR: cannot render remediation prompt");
+      }
+
+      // 2. Dispatch the remediation worker.  When agentDir is available,
+      //    re-run the agent with the remediation prompt into the worktree.
+      //    This produces a genuinely new candidate (the agent applies the
+      //    structured findings to the worktree).  When agentDir is not
+      //    available, the provider cannot dispatch a worker and must fail
+      //    closed — re-reading the same worktree would produce the same
+      //    candidate (degenerate loop).
+      if (agentDir !== undefined && agentDir.length > 0) {
+        try {
+          const remediationArgv = [
+            "omnigent", "run", agentDir, "--no-session", "-p", remediationPromptText,
+          ];
+          execFileSync(remediationArgv[0]!, remediationArgv.slice(1), {
+            cwd: input.ownership.plan.worktreePath,
+            encoding: "utf8",
+            timeout: 120_000,
+            maxBuffer: 8 * 1024 * 1024,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+        } catch {
+          // If the remediation worker dispatch fails, fail closed — do not
+          // re-read the same worktree and produce the same candidate.
+          throw new Error("RICKGENT_ATTEMPT_REMEDIATION_ERROR: remediation worker dispatch failed");
+        }
+      } else {
+        // No agentDir available — cannot dispatch a remediation worker.
+        // Fail closed rather than re-reading the same worktree (degenerate
+        // loop).  The caller (AttemptRunner) will enter failure cleanup.
+        throw new Error("RICKGENT_ATTEMPT_REMEDIATION_ERROR: no agentDir configured for remediation worker dispatch");
+      }
+
+      // 3. Observe the new candidate from the worktree after the remediation
+      //    worker has applied changes.
       const ownedPaths = input.contract.scope.map((s) => s.path).filter((p) => p.length > 0);
       const attemptRef = input.ownership.plan.attemptRef;
       const { candidateOid } = observeCandidateOid(
@@ -545,7 +733,17 @@ export function buildAttemptRunnerProviders(
         attemptRef, baselineOid, ownedPaths,
       );
 
-      // Compute the real diff digest from the actual git diff.
+      // 4. Detect degenerate loop: if the new candidate is the same as the
+      //    previous candidate, the remediation did not produce any changes.
+      //    Fail closed to prevent an infinite loop of identical remediation
+      //    cycles that always produce the same verdict.
+      if (candidateOid === previousCandidateOid) {
+        throw new Error(
+          "RICKGENT_ATTEMPT_REMEDIATION_ERROR: degenerate loop detected — remediation produced the same candidate as the previous cycle",
+        );
+      }
+
+      // 5. Compute the diff digest and tree OID for the re-review.
       let resultDiffDigest: string;
       try {
         const rawDiff = execFileSync("git", [
@@ -592,6 +790,8 @@ export function buildAttemptRunnerProviders(
           findings_count: input.findings.length,
           result_tree_oid: resultTreeOid,
           result_diff_digest: resultDiffDigest,
+          previous_candidate_oid: previousCandidateOid,
+          new_candidate_oid: candidateOid,
         },
         idempotencyKey: `remediation:${attemptId}:${input.cycle}`,
         observedAt: createdAt,

@@ -27,6 +27,7 @@ import { RUNTIME_CAPABILITY_GATE } from "../capabilities/runtime-gate.js";
 import {
   openStateStore,
   type AllocatedAttempt,
+  type PersistedAttemptSelection,
   type ResumeCompatibilityInput,
   type RetryCompatibilityInput,
   type StateStore,
@@ -94,6 +95,15 @@ export interface ResumeTicketPlan {
     readonly attemptId: string;
     readonly attemptNumber: number;
   } | null;
+  /**
+   * The full attempt data for the attempt that should be dispatched or
+   * re-entered by the build path.  Non-null for resume_attempt,
+   * allocate_retry, and cleanup_orphan actions; null for complete and
+   * await_reconciliation.  For resume_attempt, this is the latest persisted
+   * attempt (the runner calls recoverAttempt on it).  For allocate_retry and
+   * cleanup_orphan, this is the newly allocated retry attempt.
+   */
+  readonly dispatchAttempt: AllocatedAttempt | null;
   readonly nextAction: ResumeNextAction;
 }
 
@@ -166,18 +176,7 @@ function planTicketRecovery(
     readonly ticketId: string;
     readonly contractDigest: string;
     readonly state: string;
-    readonly latestAttempt: {
-      readonly attemptId: string;
-      readonly attemptNumber: number;
-      readonly state: string;
-      readonly runId: string;
-      readonly ticketId: string;
-      readonly contractDigest: string;
-      readonly contextSchemaVersion: string;
-      readonly oracleVersion: string;
-      readonly capabilitySnapshotDigest: string;
-      readonly resourceIdentityVersion: string;
-    } | null;
+    readonly latestAttempt: PersistedAttemptSelection | null;
   },
 ): ResumeTicketPlan {
   const latest = ticket.latestAttempt;
@@ -192,6 +191,7 @@ function planTicketRecovery(
       orphanedPlannedAttempt: null,
       orphanedPlannedCleanupRecordId: null,
       newAttempt: null,
+      dispatchAttempt: null,
       nextAction: "complete" as const,
     });
   }
@@ -236,6 +236,7 @@ function planTicketRecovery(
         },
         orphanedPlannedCleanupRecordId: cleanupEvidenceId,
         newAttempt: null,
+        dispatchAttempt: null,
         nextAction: "await_reconciliation" as const,
       });
     }
@@ -258,6 +259,7 @@ function planTicketRecovery(
         attemptId: newAttempt.attemptId,
         attemptNumber: newAttempt.attemptNumber,
       },
+      dispatchAttempt: newAttempt,
       nextAction: "allocate_retry" as const,
     });
   }
@@ -268,6 +270,12 @@ function planTicketRecovery(
     // already allocated (idempotent resume)
     const alreadyAllocated = checkForLaterAttempt(store, ticket.ticketInstanceId, latest.attemptNumber);
     if (alreadyAllocated !== null) {
+      // The later attempt is the one to resume — construct an
+      // AllocatedAttempt-compatible object from the persisted data.
+      // The full PersistedAttemptSelection was the latest from
+      // selectCompatibleResume, but checkForLaterAttempt may find a newer
+      // one.  Use the latest from the selection as the dispatch attempt
+      // since it has the full field set.
       return Object.freeze({
         ticketId: ticket.ticketId,
         ticketInstanceId: ticket.ticketInstanceId,
@@ -280,6 +288,7 @@ function planTicketRecovery(
         orphanedPlannedAttempt: null,
         orphanedPlannedCleanupRecordId: null,
         newAttempt: null,
+        dispatchAttempt: latest as unknown as AllocatedAttempt,
         nextAction: "resume_attempt" as const,
       });
     }
@@ -310,6 +319,7 @@ function planTicketRecovery(
           attemptId: newAttempt.attemptId,
           attemptNumber: newAttempt.attemptNumber,
         },
+        dispatchAttempt: newAttempt,
         nextAction: "allocate_retry" as const,
       });
     } catch {
@@ -326,6 +336,7 @@ function planTicketRecovery(
         orphanedPlannedAttempt: null,
         orphanedPlannedCleanupRecordId: null,
         newAttempt: null,
+        dispatchAttempt: null,
         nextAction: "complete" as const,
       });
     }
@@ -345,6 +356,7 @@ function planTicketRecovery(
     orphanedPlannedAttempt: null,
     orphanedPlannedCleanupRecordId: null,
     newAttempt: null,
+    dispatchAttempt: isTerminal ? null : (latest as unknown as AllocatedAttempt),
     nextAction: isTerminal ? ("complete" as const) : ("resume_attempt" as const),
   });
 }

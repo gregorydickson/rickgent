@@ -206,6 +206,35 @@ export interface ObservedRunState {
   readonly currentDeliveryOid: string;
   readonly promotionSequence: number;
   readonly tickets: readonly ObservedTicketState[];
+  /**
+   * The persisted manifest digest (SHA-256 of the canonical manifest JSON).
+   * Recovered from the runs table's manifest_digest column.  Used by the
+   * resume path to pass the exact persisted value into resumeRun, not a
+   * fabricated one.
+   */
+  readonly manifestDigest: string;
+  /**
+   * The persisted context schema version.  Recovered from the run_manifests
+   * table.  Used by the resume path for compatibility validation.
+   */
+  readonly contextSchemaVersion: string;
+  /**
+   * The persisted capability snapshot digest.  Recovered from the
+   * run_manifests table.  Used by the resume path for compatibility
+   * validation.
+   */
+  readonly capabilitySnapshotDigest: string;
+  /**
+   * The persisted resource identity version.  Recovered from the parsed
+   * canonical_manifest_json in the run_manifests table.  Used by the resume
+   * path for compatibility validation.
+   */
+  readonly resourceIdentityVersion: string;
+  /**
+   * The persisted oracle version.  Recovered from the run_manifests table.
+   * Used by the resume path for compatibility validation.
+   */
+  readonly oracleVersion: string;
 }
 
 export interface StateObservationAggregates {
@@ -10021,8 +10050,12 @@ export function observeState(repoPath: string): StateObservation {
     }
 
     const run = database.prepare(`
-      SELECT run_id, run_sequence, state, state_version, created_at, current_delivery_oid, promotion_sequence
-      FROM runs WHERE repository_id = ? ORDER BY run_sequence DESC LIMIT 1
+      SELECT r.run_id, r.run_sequence, r.state, r.state_version, r.created_at,
+             r.current_delivery_oid, r.promotion_sequence, r.manifest_digest,
+             rm.context_schema_version, rm.capability_snapshot_digest,
+             rm.oracle_version, rm.canonical_manifest_json
+      FROM runs r LEFT JOIN run_manifests rm ON rm.manifest_digest = r.manifest_digest
+      WHERE r.repository_id = ? ORDER BY r.run_sequence DESC LIMIT 1
     `).get(location.repositoryId) as MutableStateRecord | undefined;
 
     let latestRun: ObservedRunState | null = null;
@@ -10080,6 +10113,20 @@ export function observeState(repoPath: string): StateObservation {
         currentDeliveryOid: String(run.current_delivery_oid),
         promotionSequence: Number(run.promotion_sequence),
         tickets: Object.freeze(tickets),
+        manifestDigest: String(run.manifest_digest ?? ""),
+        contextSchemaVersion: String(run.context_schema_version ?? ""),
+        capabilitySnapshotDigest: String(run.capability_snapshot_digest ?? ""),
+        // Parse resource_identity_version from the canonical_manifest_json
+        // (it is not a top-level column in run_manifests).
+        resourceIdentityVersion: (() => {
+          try {
+            const manifest = JSON.parse(String(run.canonical_manifest_json ?? "{}")) as { readonly resource_identity_version?: string };
+            return String(manifest.resource_identity_version ?? "");
+          } catch {
+            return "";
+          }
+        })(),
+        oracleVersion: String(run.oracle_version ?? ""),
       });
     }
 

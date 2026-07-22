@@ -101,7 +101,7 @@ import {
 } from "../context/attempt-execution-context.js";
 import { buildAttemptRunnerProviders } from "./attempt-runner-providers.js";
 import { ProcessSupervisor } from "../process/supervisor.js";
-import { resumeRun, type ResumeRunResult } from "./recovery.js";
+import { resumeRun, type ResumeRunResult, type ResumeTicketPlan } from "./recovery.js";
 import { observeState } from "../state/store.js";
 
 export interface BuildOptions {
@@ -698,14 +698,21 @@ async function prepareBuildPhase(
       // Call resumeRun to resume from persisted receipts.  resumeRun reads
       // the canonical repository state, validates compatibility, and
       // determines the next safe action for each ticket.
+      // t29-fix-round-3: Recover the actual persisted run metadata from the
+      // state store (manifest_digest, context_schema_version,
+      // capability_snapshot_digest, resource_identity_version, oracle_version)
+      // and pass those exact values into resumeRun/selectCompatibleResume.
+      // Do NOT fabricate metadata — using stateVersion integer as manifestDigest
+      // or hardcoded strings for the other fields causes compatibility
+      // validation to fail or silently pass with wrong values.
       resumeResult = resumeRun({
         runId: latestRun.runId,
         repoPath: opts.workingDir,
-        manifestDigest: latestRun.stateVersion.toString(), // compatibility projection
-        contextSchemaVersion: "1.0.0",
-        oracleVersion: RICKGENT_ORACLE_VERSION,
-        capabilitySnapshotDigest: "current",
-        resourceIdentityVersion: "1.0.0",
+        manifestDigest: latestRun.manifestDigest,
+        contextSchemaVersion: latestRun.contextSchemaVersion,
+        oracleVersion: latestRun.oracleVersion,
+        capabilitySnapshotDigest: latestRun.capabilitySnapshotDigest,
+        resourceIdentityVersion: latestRun.resourceIdentityVersion,
         tickets: tickets.map((t) => ({ ticketId: t.id, contractDigest: t.digest })),
       });
       report.push(`build: resumed run ${resumeResult.runId} from persisted receipts (${resumeResult.tickets.length} ticket(s))`);
@@ -855,7 +862,7 @@ async function executeBuildViaRunner(
   const terminalization = new AttemptTerminalizationService(stateStore, leases);
   const executionContext = new AttemptExecutionContextAuthority(stateStore);
   const processSupervisor = new ProcessSupervisor(stateStore, leases);
-  const realProviders = buildAttemptRunnerProviders(stateStore, leases, processSupervisor);
+  const realProviders = buildAttemptRunnerProviders(stateStore, leases, processSupervisor, opts.agentDir);
   const runner = new AttemptRunner(
     stateStore,
     leases,
@@ -875,31 +882,78 @@ async function executeBuildViaRunner(
   // Tickets with nextAction "complete" are already done and should be
   // skipped.  The resume result from resumeRun determines the next action
   // for each ticket based on persisted receipts.
-  const resumeTicketAction = new Map<string, string>();
+  // t29-fix-round-3: Handle ALL recovery actions, not just "complete":
+  //   - resume_attempt: call runner.recoverAttempt and re-enter the runner
+  //   - allocate_retry: use the recovery plan's newAttempt (already allocated)
+  //   - cleanup_orphan: use the recovery plan's newAttempt (orphan cleaned)
+  //   - await_reconciliation: skip with appropriate accounting
+  //   - complete: skip and count as done without crashing the accounting loop
+  const resumeTicketPlan = new Map<string, ResumeTicketPlan>();
   if (resumeResult !== null) {
     for (const rt of resumeResult.tickets) {
-      resumeTicketAction.set(rt.ticketId, rt.nextAction);
+      resumeTicketPlan.set(rt.ticketId, rt);
     }
   }
   for (const ticket of tickets) {
-    // Skip tickets that are already complete when resuming.
     if (resumeResult !== null) {
-      const action = resumeTicketAction.get(ticket.id);
+      const plan = resumeTicketPlan.get(ticket.id);
+      const action = plan?.nextAction ?? "complete";
       if (action === "complete") {
         base.ticketsDone++;
         report.push(`build: ticket ${ticket.id} already complete (resumed) — skipping dispatch`);
         continue;
       }
+      if (action === "await_reconciliation") {
+        // The ticket is awaiting reconciliation — skip dispatch but do not
+        // count as done or failed.  The accounting loop handles it.
+        report.push(`build: ticket ${ticket.id} awaiting reconciliation — skipping dispatch`);
+        continue;
+      }
+      // For resume_attempt, allocate_retry, and cleanup_orphan: use the
+      // dispatch attempt from the recovery plan instead of allocating a
+      // fresh initial attempt.
+      const dispatchAttempt = plan?.dispatchAttempt ?? null;
+      let attempt: AllocatedAttempt;
+      if (dispatchAttempt !== null) {
+        attempt = dispatchAttempt;
+        if (action === "resume_attempt") {
+          // t29-fix-round-3: Call runner.recoverAttempt to get the recovery
+          // state and determine the correct step to re-enter the runner.
+          // The recovery state is logged but the runner re-enters via
+          // runAttempt with the recovered attempt — the runner internally
+          // checks the persisted state and resumes from the correct step.
+          try {
+            const recoveryState = runner.recoverAttempt(dispatchAttempt.attemptId);
+            report.push(`build: ticket ${ticket.id} resuming attempt ${dispatchAttempt.attemptId} at step ${recoveryState.nextStep}`);
+          } catch (error) {
+            report.push(`build: ticket ${ticket.id} recoverAttempt failed — ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        report.push(`build: ticket ${ticket.id} ${action} — using ${dispatchAttempt.attemptNumber > 1 ? "retry" : "initial"} attempt ${dispatchAttempt.attemptId}`);
+      } else {
+        // Fallback: allocate a fresh initial attempt (non-resume path or
+        // no dispatch attempt available).
+        attempt = resolver.allocateInitialAttempt({ runId: allocatedRun.runId, ticketId: ticket.id });
+      }
+      attemptByTicket.set(ticket.id, attempt);
+      const id: DispatchId = {
+        runId: attempt.runId, ticketId: attempt.ticketId, phase: "implement",
+        attempt: attempt.attemptNumber, role: "worker",
+      };
+      idByTicket.set(ticket.id, id);
+      ticketByDispatchId.set(dispatchIdString(id), ticket);
+      queue.enqueue(id);
+    } else {
+      const attempt = resolver.allocateInitialAttempt({ runId: allocatedRun.runId, ticketId: ticket.id });
+      attemptByTicket.set(ticket.id, attempt);
+      const id: DispatchId = {
+        runId: attempt.runId, ticketId: attempt.ticketId, phase: "implement",
+        attempt: attempt.attemptNumber, role: "worker",
+      };
+      idByTicket.set(ticket.id, id);
+      ticketByDispatchId.set(dispatchIdString(id), ticket);
+      queue.enqueue(id);
     }
-    const attempt = resolver.allocateInitialAttempt({ runId: allocatedRun.runId, ticketId: ticket.id });
-    attemptByTicket.set(ticket.id, attempt);
-    const id: DispatchId = {
-      runId: attempt.runId, ticketId: attempt.ticketId, phase: "implement",
-      attempt: attempt.attemptNumber, role: "worker",
-    };
-    idByTicket.set(ticket.id, id);
-    ticketByDispatchId.set(dispatchIdString(id), ticket);
-    queue.enqueue(id);
   }
   report.push(`build: allocated ${attemptByTicket.size} planned initial attempt(s) via AttemptRunner`);
 
@@ -991,7 +1045,37 @@ async function executeBuildViaRunner(
 
   base.dispatchObservations = journal.observations();
   for (const ticket of tickets) {
-    const entry = drain.results.get(dispatchIdString(idByTicket.get(ticket.id)!));
+    // t29-fix-round-3: Handle missing idByTicket entries gracefully.
+    // Tickets that were skipped (complete, await_reconciliation) have no
+    // entry in idByTicket.  Accessing it with a non-null assertion crashes
+    // the accounting loop.  Instead, check for the entry and handle its
+    // absence appropriately.
+    const dispatchId = idByTicket.get(ticket.id);
+    if (dispatchId === undefined) {
+      // Ticket was skipped during dispatch — check if it was counted as
+      // done (complete) or awaiting reconciliation.
+      if (resumeResult !== null) {
+        const plan = resumeTicketPlan.get(ticket.id);
+        const action = plan?.nextAction ?? "complete";
+        if (action === "complete") {
+          // Already counted as done in the dispatch loop — do not double-count.
+          continue;
+        }
+        if (action === "await_reconciliation") {
+          // Awaiting reconciliation — count as recovered, not done or failed.
+          base.ticketsRecovered++;
+          continue;
+        }
+      }
+      // Unknown skip reason — count as failed (fail-closed).
+      base.ticketsFailed++;
+      issues.push(runIssue({
+        reason: "infrastructure_error", class: "infrastructure",
+        detail: "ticket was not dispatched and has no recovery plan", ticketId: ticket.id,
+      }));
+      continue;
+    }
+    const entry = drain.results.get(dispatchIdString(dispatchId));
     if (!entry) {
       base.ticketsFailed++;
       issues.push(runIssue({
