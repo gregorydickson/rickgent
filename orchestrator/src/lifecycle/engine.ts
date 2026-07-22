@@ -185,8 +185,11 @@ function guardForEdge(
       // binding, and persisted evidence references.  When omitted, fall
       // back to the store CAS path (which does not validate the guard or
       // persist evidence refs).
+      // Scrutiny round 12: carry the edge's declared role as the expected
+      // role so the guard can reject cross-role context substitution (e.g.
+      // a remediator context cannot authorize a ReviewService/reviewer edge).
       if (opts.contextId !== undefined && opts.contextId.length > 0) {
-        return { kind: "execution_context", contextId: opts.contextId };
+        return { kind: "execution_context", contextId: opts.contextId, expectedRole: edge.role };
       }
       return null;
     case "cleanup_record_failed":

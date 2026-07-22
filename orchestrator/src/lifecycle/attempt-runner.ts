@@ -1359,11 +1359,19 @@ export class AttemptRunner {
         // StateStore.advanceAttemptState call.  The edge is declared in
         // the PHASE_TRANSITION_TABLE with guard "execution_context" and
         // evidenceProducer "ReviewService".  The engine builds an
-        // execution_context guard from the remediationPhase's contextId
-        // and routes through the TransitionAuthority, which validates the
-        // guard, persists real authority-owned metadata (owner_service
-        // "ReviewService", real owner_context_digest), and persists
-        // evidence references in transition_evidence_refs.
+        // execution_context guard from the contextId and routes through
+        // the TransitionAuthority, which validates the guard, persists
+        // real authority-owned metadata (owner_service "ReviewService",
+        // real owner_context_digest), and persists evidence references in
+        // transition_evidence_refs.
+        //
+        // Scrutiny round 12: The transition MUST carry a REVIEWER execution
+        // context, NOT the remediator context.  The edge is declared for
+        // ReviewService/reviewer authority; a remediator context is a
+        // cross-role authority substitution that the execution-context
+        // guard must reject fail-closed.  Create a fresh REVIEWER execution
+        // context via resolveExecutionContext with role "reviewer" before
+        // calling transitionAttempt.
         //
         // The engine's short-circuit logic uses isForwardPhaseEdge to
         // distinguish forward edges (where phaseStateIsAtOrPast safely
@@ -1373,18 +1381,35 @@ export class AttemptRunner {
         // that must proceed).  isForwardPhaseEdge returns false for this
         // edge, so the phaseStateIsAtOrPast check is skipped and the
         // transition proceeds through the authority.
+        const reviewerContextAfterRemediation = this.#executionContext.resolveExecutionContext({
+          attempt: request.attempt,
+          contract: request.contract,
+          phase: "review",
+          phaseOrdinal: 2 + rejectedCycle,
+          role: "reviewer",
+          ownership: acquired,
+          policyBundle: {
+            kind: "materialized_authenticated_policy_bundle",
+            policyRoot: dirname(acquired.plan.policyContextPath),
+            bundleDir: acquired.plan.policyBundlePath,
+            requestedBundleSha256: createHash("sha256").update(acquired.plan.policyBundlePath, "utf8").digest("hex"),
+          },
+          modelSelection: { harness: "fixture", model: "fixture", vendor: "fixture" },
+          timeoutMs: request.timeoutMs,
+          callerRepositoryRealpath: request.callerRepositoryRealpath,
+        });
         const beginReviewAfterRemediationKey = `attempt-runner:${attemptId}:begin-review-after-remediation-${rejectedCycle}`;
         this.#lifecycle.transitionAttempt({
           attemptId,
           from: "remediation_captured",
           to: "reviewing",
           idempotencyKey: beginReviewAfterRemediationKey,
-          contextId: remediationPhase.contextId,
-          contextDigest: remediationPhase.contextDigest,
+          contextId: reviewerContextAfterRemediation.persisted.contextId,
+          contextDigest: reviewerContextAfterRemediation.persisted.contextDigest as `sha256:${string}`,
           evidence: [Object.freeze({
             purpose: "review_after_remediation",
             inlineEvidence: Object.freeze({
-              contextId: remediationPhase.contextId,
+              contextId: reviewerContextAfterRemediation.persisted.contextId,
               producerService: "ReviewService",
               scope: `review-after-remediation:${attemptId}:${rejectedCycle}`,
               schemaVersion: "rickgent.review-after-remediation.v1",
@@ -1393,7 +1418,7 @@ export class AttemptRunner {
                 from_state: "remediation_captured",
                 to_state: "reviewing",
                 remediation_cycle: rejectedCycle,
-                context_digest: remediationPhase.contextDigest,
+                context_digest: reviewerContextAfterRemediation.persisted.contextDigest,
               }),
               idempotencyKey: beginReviewAfterRemediationKey,
             }),

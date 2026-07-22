@@ -136,7 +136,7 @@ export type TransitionGuard =
   | { readonly kind: "ticket_attempt_allocation"; readonly attemptId: string; readonly retry: boolean }
   | { readonly kind: "live_lease"; readonly ownershipId: string }
   | { readonly kind: "process_receipt"; readonly processReceiptId: string }
-  | { readonly kind: "execution_context"; readonly contextId: string }
+  | { readonly kind: "execution_context"; readonly contextId: string; readonly expectedRole?: string }
   | { readonly kind: "review_record"; readonly reviewRecordId: string; readonly verdict: "accepted" | "rejected" }
   | { readonly kind: "remediation_record"; readonly remediationRecordId: string }
   | { readonly kind: "gate_results"; readonly gateResultIds: readonly string[] }

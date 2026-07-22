@@ -6740,13 +6740,29 @@ export class StateStore {
         this.#requireCommandEvidence(evidence, [receipt.launch_evidence_id, receipt.exit_evidence_id], "process receipt evidence");
         return;
       }
-      case "execution_context":
-        this.#requireTransitionGuard(
-          "SELECT 1 FROM execution_contexts WHERE context_id = ? AND attempt_id = ? AND context_digest = ?",
-          [guard.contextId, command.entityId, command.ownerContextDigest],
-          "phase transition context does not match its attempt owner",
-        );
+      case "execution_context": {
+        // Scrutiny round 12: when the guard carries an expectedRole (set by
+        // the LifecycleEngine from the edge's declared role), the context's
+        // role column must match it.  This rejects cross-role authority
+        // substitution (e.g. a remediator context cannot authorize a
+        // ReviewService/reviewer edge).  When expectedRole is absent (older
+        // callers that do not set it), fall back to the context+digest check
+        // only.
+        if (guard.expectedRole !== undefined) {
+          this.#requireTransitionGuard(
+            "SELECT 1 FROM execution_contexts WHERE context_id = ? AND attempt_id = ? AND context_digest = ? AND role = ?",
+            [guard.contextId, command.entityId, command.ownerContextDigest, guard.expectedRole],
+            `phase transition context role does not match the edge's declared role '${guard.expectedRole}'`,
+          );
+        } else {
+          this.#requireTransitionGuard(
+            "SELECT 1 FROM execution_contexts WHERE context_id = ? AND attempt_id = ? AND context_digest = ?",
+            [guard.contextId, command.entityId, command.ownerContextDigest],
+            "phase transition context does not match its attempt owner",
+          );
+        }
         return;
+      }
       case "review_record": {
         const review = this.#requireTransitionGuard(
           `SELECT r.verdict, r.verdict_evidence_id, r.findings_evidence_id
