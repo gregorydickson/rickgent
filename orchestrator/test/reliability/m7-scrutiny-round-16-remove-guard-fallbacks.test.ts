@@ -641,8 +641,8 @@ describe("M7 scrutiny round 16 — commitAttemptEdge ignores request.guard for A
     const transitions = new TransitionAuthority(fixture.store);
 
     // The "failure" evidence reference — the store checks for
-    // evidence.some(ref => ref.purpose === "failure") when the guard has
-    // no commitAttributionId.
+    // a failure-purpose evidence reference when the guard has no
+    // commitAttributionId.
     const failureRef: ExistingTransitionEvidenceReference = {
       purpose: "failure",
       evidenceId: failureEvidenceId,
