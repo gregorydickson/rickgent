@@ -30,6 +30,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { StateStore } from "../state/store.js";
 import type { TransitionAuthority, TransitionEvidenceReference, TransitionGuard } from "../state/transitions.js";
 import {
+  isForwardPhaseEdge,
   isLegalPhaseEdge,
   isTerminalPhase,
   legalPhaseEdge,
@@ -100,6 +101,18 @@ export interface LifecycleTransitionInput {
    */
   readonly contextDigest?: string;
   /**
+   * The execution-context ID for edges guarded by `execution_context` (the
+   * `implementation_captured -> reviewing`, `remediation_captured ->
+   * reviewing`, and `verification_queued -> verifying` edges).  When
+   * provided alongside a non-empty `contextDigest` and `evidence` array,
+   * the engine builds an `execution_context` guard and routes the
+   * transition through the {@link TransitionAuthority} with full guard
+   * validation, owner-context binding, and persisted evidence references.
+   * When omitted, the engine falls back to the store CAS path for these
+   * edges (which does not validate the guard or persist evidence refs).
+   */
+  readonly contextId?: string;
+  /**
    * The commit attribution id for the success-path cleanup transition
    * (`converging -> cleanup_pending`).  When provided, the engine builds a
    * `cleanup_pending` guard with the `commitAttributionId` so the store
@@ -143,7 +156,7 @@ export interface LifecycleTransitionInput {
  */
 function guardForEdge(
   edge: PhaseEdge,
-  opts: { commitAttributionId?: string; gateResultIds?: readonly string[] },
+  opts: { commitAttributionId?: string; gateResultIds?: readonly string[]; contextId?: string },
 ): TransitionGuard | null {
   switch (edge.guard) {
     case "cleanup_pending":
@@ -161,6 +174,19 @@ function guardForEdge(
       // (used by forward edges that do not supply gate result IDs).
       if (opts.gateResultIds !== undefined && opts.gateResultIds.length > 0) {
         return { kind: "gate_results", gateResultIds: Object.freeze([...opts.gateResultIds]) };
+      }
+      return null;
+    case "execution_context":
+      // The execution_context guard covers the implementation_captured ->
+      // reviewing, remediation_captured -> reviewing, and
+      // verification_queued -> verifying edges.  When a contextId is
+      // provided, build the guard so the engine routes through the
+      // TransitionAuthority with full guard validation, owner-context
+      // binding, and persisted evidence references.  When omitted, fall
+      // back to the store CAS path (which does not validate the guard or
+      // persist evidence refs).
+      if (opts.contextId !== undefined && opts.contextId.length > 0) {
+        return { kind: "execution_context", contextId: opts.contextId };
       }
       return null;
     case "cleanup_record_failed":
@@ -242,6 +268,7 @@ export class LifecycleEngine {
       const guard = guardForEdge(edge, {
         ...(input.commitAttributionId !== undefined ? { commitAttributionId: input.commitAttributionId } : {}),
         ...(input.gateResultIds !== undefined ? { gateResultIds: input.gateResultIds } : {}),
+        ...(input.contextId !== undefined ? { contextId: input.contextId } : {}),
       });
       if (guard !== null) {
         if (input.evidence === undefined || input.evidence.length === 0) {
@@ -258,7 +285,7 @@ export class LifecycleEngine {
         }
         const databasePath = this.#store.location.databasePath;
         const currentState = this.#readAttemptState(databasePath, input.attemptId);
-        if (currentState.state === input.to || phaseStateIsAtOrPast(currentState.state as PhaseState, input.to)) {
+        if (currentState.state === input.to || (isForwardPhaseEdge(input.from, input.to) && phaseStateIsAtOrPast(currentState.state as PhaseState, input.to))) {
           const rows = this.#readTransitions(databasePath, input.attemptId);
           const enteringRow = [...rows].reverse().find((row) => String(row.to_state) === input.to);
           if (enteringRow !== undefined) {
@@ -330,10 +357,15 @@ export class LifecycleEngine {
     // replay result) so the caller observes a consistent postimage.
     const databasePath = this.#store.location.databasePath;
     const currentState = this.#readAttemptState(databasePath, input.attemptId);
-    if (currentState.state === input.to || phaseStateIsAtOrPast(currentState.state as PhaseState, input.to)) {
+    if (currentState.state === input.to || (isForwardPhaseEdge(input.from, input.to) && phaseStateIsAtOrPast(currentState.state as PhaseState, input.to))) {
       // Idempotent short-circuit: the attempt is already at or past the
-      // target state.  Return the latest transition row that entered this
-      // state (if any) as the replay result.
+      // target state on a forward edge.  Return the latest transition row
+      // that entered this state (if any) as the replay result.
+      // Cycle edges (e.g. remediation_captured -> reviewing) are NOT
+      // short-circuited by the phaseStateIsAtOrPast check because
+      // isForwardPhaseEdge returns false for them — the attempt may be
+      // in a state that is "past" the target in the forward ordering but
+      // still needs to cycle back.
       const rows = this.#readTransitions(databasePath, input.attemptId);
       const enteringRow = [...rows].reverse().find((row) => String(row.to_state) === input.to);
       if (enteringRow !== undefined) {
@@ -494,4 +526,4 @@ export class LifecycleEngine {
  * Re-export the table helpers so callers that import from `engine.js` have a
  * single entry point.  The canonical definitions live in `phase.js`.
  */
-export { isLegalPhaseEdge, isTerminalPhase, legalPhaseEdge, phaseEdgesFrom, phaseStateIsAtOrPast, PHASE_TABLE_VERSION };
+export { isForwardPhaseEdge, isLegalPhaseEdge, isTerminalPhase, legalPhaseEdge, phaseEdgesFrom, phaseStateIsAtOrPast, PHASE_TABLE_VERSION };

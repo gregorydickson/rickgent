@@ -400,3 +400,23 @@ export function phaseStateIsAtOrPast(current: PhaseState, target: PhaseState): b
   if (currentIndex < 0 || targetIndex < 0) return false;
   return currentIndex > targetIndex;
 }
+
+/**
+ * Return `true` iff `(from, to)` is a forward edge in the normative lifecycle
+ * ordering (i.e. `from` strictly precedes `to` in
+ * {@link FORWARD_PHASE_ORDER}).  Cycle edges like
+ * `remediation_captured -> reviewing` (where `from` comes after `to` in the
+ * forward order) return `false`.  States not in the forward ordering return
+ * `false`.
+ *
+ * Used by the {@link LifecycleEngine} to distinguish forward edges (where the
+ * `phaseStateIsAtOrPast` idempotent short-circuit is safe) from cycle edges
+ * (where the short-circuit would incorrectly suppress a legitimate
+ * backward-in-order transition).
+ */
+export function isForwardPhaseEdge(from: PhaseState, to: PhaseState): boolean {
+  const fromIndex = FORWARD_PHASE_ORDER.indexOf(from);
+  const toIndex = FORWARD_PHASE_ORDER.indexOf(to);
+  if (fromIndex < 0 || toIndex < 0) return false;
+  return fromIndex < toIndex;
+}

@@ -1354,19 +1354,51 @@ export class AttemptRunner {
         });
 
         // Transition remediation_captured → reviewing (for the next re-review).
-        // Scrutiny round 10: Bypass the LifecycleEngine for this backward
-        // transition.  The engine's phaseStateIsAtOrPast considers
-        // remediation_captured to be "past" reviewing (it comes after
-        // reviewing in the forward order), so the engine would short-circuit
-        // and skip the transition — leaving the attempt in
-        // remediation_captured state.  The store's advanceAttemptState
-        // handles this correctly because it checks the from-state directly.
-        this.#store.advanceAttemptState(
+        // Scrutiny round 11: Route this transition through the
+        // LifecycleEngine's TransitionAuthority, NOT via a direct
+        // StateStore.advanceAttemptState call.  The edge is declared in
+        // the PHASE_TRANSITION_TABLE with guard "execution_context" and
+        // evidenceProducer "ReviewService".  The engine builds an
+        // execution_context guard from the remediationPhase's contextId
+        // and routes through the TransitionAuthority, which validates the
+        // guard, persists real authority-owned metadata (owner_service
+        // "ReviewService", real owner_context_digest), and persists
+        // evidence references in transition_evidence_refs.
+        //
+        // The engine's short-circuit logic uses isForwardPhaseEdge to
+        // distinguish forward edges (where phaseStateIsAtOrPast safely
+        // suppresses replays) from cycle edges like this one (where the
+        // attempt is in remediation_captured, which is "past" reviewing in
+        // the forward order, but the transition is a legitimate cycle-back
+        // that must proceed).  isForwardPhaseEdge returns false for this
+        // edge, so the phaseStateIsAtOrPast check is skipped and the
+        // transition proceeds through the authority.
+        const beginReviewAfterRemediationKey = `attempt-runner:${attemptId}:begin-review-after-remediation-${rejectedCycle}`;
+        this.#lifecycle.transitionAttempt({
           attemptId,
-          "remediation_captured",
-          "reviewing",
-          `attempt-runner:${attemptId}:begin-review-after-remediation-${rejectedCycle}`,
-        );
+          from: "remediation_captured",
+          to: "reviewing",
+          idempotencyKey: beginReviewAfterRemediationKey,
+          contextId: remediationPhase.contextId,
+          contextDigest: remediationPhase.contextDigest,
+          evidence: [Object.freeze({
+            purpose: "review_after_remediation",
+            inlineEvidence: Object.freeze({
+              contextId: remediationPhase.contextId,
+              producerService: "ReviewService",
+              scope: `review-after-remediation:${attemptId}:${rejectedCycle}`,
+              schemaVersion: "rickgent.review-after-remediation.v1",
+              payload: Object.freeze({
+                attempt_id: attemptId,
+                from_state: "remediation_captured",
+                to_state: "reviewing",
+                remediation_cycle: rejectedCycle,
+                context_digest: remediationPhase.contextDigest,
+              }),
+              idempotencyKey: beginReviewAfterRemediationKey,
+            }),
+          })],
+        });
       };
 
       // --- First remediation (outside the loop, for the initial review's
