@@ -101,6 +101,8 @@ import {
 } from "../context/attempt-execution-context.js";
 import { buildAttemptRunnerProviders } from "./attempt-runner-providers.js";
 import { ProcessSupervisor } from "../process/supervisor.js";
+import { resumeRun, type ResumeRunResult } from "./recovery.js";
+import { observeState } from "../state/store.js";
 
 export interface BuildOptions {
   prdPath: string;
@@ -517,6 +519,7 @@ interface PreparedBuildPlan {
   readonly report: string[];
   readonly base: BuildObservation;
   readonly issues: RunIssue[];
+  readonly resumeResult: ResumeRunResult | null;
 }
 
 type PrepareBuildPhaseResult =
@@ -663,6 +666,7 @@ async function prepareBuildPhase(
 
   let stateStore: StateStore | null = null;
   let allocatedRun: AllocatedRun;
+  let resumeResult: ResumeRunResult | null = null;
   try {
     stateStore = openStateStore({ repoPath: opts.workingDir });
     new LegacyDiagnosticService(stateStore).requireMutationClear();
@@ -671,13 +675,65 @@ async function prepareBuildPhase(
       ["-C", opts.workingDir, "rev-parse", "--verify", "HEAD^{commit}"],
       { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env },
     ).trim();
-    const resolver = new IdentityContextResolver(stateStore);
-    allocatedRun = resolver.allocateFreshRun({
-      contracts: tickets,
-      initialDeliveryOid: observedTargetHead,
-      oracleVersion: RICKGENT_ORACLE_VERSION,
-    });
-    report.push(`build: allocated canonical planned run ${allocatedRun.runId}`);
+
+    if (opts.resume) {
+      // t29-fix: Wire --resume through resumeRun, which reads persisted
+      // receipts and resumes from durable state.  The --resume flag must
+      // NOT silently allocate a fresh run; it must resume the latest
+      // existing run from the state store.
+      const observation = observeState(opts.workingDir);
+      if (observation.state === "absent" || observation.latestRun === null) {
+        report.push("build: RESUME GATE hit — no persisted run found to resume");
+        issues.push(runIssue({
+          reason: "input_contract_error",
+          class: "input_contract",
+          detail: "resume requested but no persisted run exists in the state store",
+          gate: "resume",
+        }));
+        try { stateStore.close(); } catch { /* fail-closed close */ }
+        return { ok: false, result: finishBuild({ ...base, gateHit: "resume-gate" }, issues) };
+      }
+
+      const latestRun = observation.latestRun;
+      // Call resumeRun to resume from persisted receipts.  resumeRun reads
+      // the canonical repository state, validates compatibility, and
+      // determines the next safe action for each ticket.
+      resumeResult = resumeRun({
+        runId: latestRun.runId,
+        repoPath: opts.workingDir,
+        manifestDigest: latestRun.stateVersion.toString(), // compatibility projection
+        contextSchemaVersion: "1.0.0",
+        oracleVersion: RICKGENT_ORACLE_VERSION,
+        capabilitySnapshotDigest: "current",
+        resourceIdentityVersion: "1.0.0",
+        tickets: tickets.map((t) => ({ ticketId: t.id, contractDigest: t.digest })),
+      });
+      report.push(`build: resumed run ${resumeResult.runId} from persisted receipts (${resumeResult.tickets.length} ticket(s))`);
+
+      // Construct an AllocatedRun-compatible object from the resumed run.
+      // The runner only uses runId and deliveryRef from this object.
+      allocatedRun = {
+        runnable: false as const,
+        runId: resumeResult.runId,
+        repositoryId: resumeResult.repositoryId,
+        runSequence: 0,
+        manifestDigest: "",
+        initialDeliveryOid: observedTargetHead,
+        currentDeliveryOid: observedTargetHead,
+        deliveryRef: `refs/rickgent/runs/${resumeResult.runId}/delivery`,
+        state: "planned" as const,
+        stateVersion: 0 as const,
+        tickets: [],
+      } as AllocatedRun;
+    } else {
+      const resolver = new IdentityContextResolver(stateStore);
+      allocatedRun = resolver.allocateFreshRun({
+        contracts: tickets,
+        initialDeliveryOid: observedTargetHead,
+        oracleVersion: RICKGENT_ORACLE_VERSION,
+      });
+      report.push(`build: allocated canonical planned run ${allocatedRun.runId}`);
+    }
   } catch (error) {
     try {
       stateStore?.close();
@@ -704,7 +760,7 @@ async function prepareBuildPhase(
     ok: true,
     plan: {
       env, tickets, allocatedRun, stateStore, roster, costBudgetUsd, softThresholdUsd,
-      implementerVendorByTicket, report, base, issues,
+      implementerVendorByTicket, report, base, issues, resumeResult,
     },
   };
 }
@@ -722,7 +778,7 @@ async function executeBuildViaRunner(
 ): Promise<BuildResult> {
   const prepared = await prepareBuildPhase(opts, dependencies);
   if (!prepared.ok) return prepared.result;
-  const { env, tickets, allocatedRun, stateStore, roster, report, base, issues } = prepared.plan;
+  const { env, tickets, allocatedRun, stateStore, roster, report, base, issues, resumeResult } = prepared.plan;
 
   // ── Containment probe (t22B/t22D) ──────────────────────────────────────
   // The AttemptRunner requires a validated authority-owned containment
@@ -815,7 +871,26 @@ async function executeBuildViaRunner(
   const idByTicket = new Map<string, DispatchId>();
   const ticketByDispatchId = new Map<string, TicketContract>();
   const attemptByTicket = new Map<string, AllocatedAttempt>();
+  // t29-fix: When resuming, only dispatch tickets that need resuming.
+  // Tickets with nextAction "complete" are already done and should be
+  // skipped.  The resume result from resumeRun determines the next action
+  // for each ticket based on persisted receipts.
+  const resumeTicketAction = new Map<string, string>();
+  if (resumeResult !== null) {
+    for (const rt of resumeResult.tickets) {
+      resumeTicketAction.set(rt.ticketId, rt.nextAction);
+    }
+  }
   for (const ticket of tickets) {
+    // Skip tickets that are already complete when resuming.
+    if (resumeResult !== null) {
+      const action = resumeTicketAction.get(ticket.id);
+      if (action === "complete") {
+        base.ticketsDone++;
+        report.push(`build: ticket ${ticket.id} already complete (resumed) — skipping dispatch`);
+        continue;
+      }
+    }
     const attempt = resolver.allocateInitialAttempt({ runId: allocatedRun.runId, ticketId: ticket.id });
     attemptByTicket.set(ticket.id, attempt);
     const id: DispatchId = {

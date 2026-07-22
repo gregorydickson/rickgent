@@ -249,3 +249,119 @@ describe("t30 — one terminal predicate identity (VAL-ORC-005)", () => {
     expect(defining.map(relPath)).toEqual(["lifecycle/completion-service.ts"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// t30-fix: Template-literal interpolation detection in executable strings.
+//
+// The stripForAudit function strips template literals (backtick strings)
+// entirely, including any ${...} interpolations.  This means a reintroduced
+// completion shortcut hidden inside a template literal interpolation in an
+// executable string (e.g., execFileSync('git', [`commit ${evaluateCompletion(...)}`])
+// would evade detection because the template literal is stripped to spaces.
+//
+// This audit scans the RAW source (before stripping) for executable-spawning
+// function calls that have template-literal arguments with ${...}
+// interpolations.  Such patterns are potential injection vectors where a
+// completion shortcut could be hidden.
+// ---------------------------------------------------------------------------
+
+describe("t30 — template-literal interpolation detection in executable strings (VAL-ORC-005)", () => {
+  const allFiles = walkTsFiles(SRC_DIR);
+
+  /**
+   * Extract template-literal interpolation expressions from source code.
+   * Returns an array of { file, expression } pairs for each ${...} found
+   * inside a backtick string.
+   */
+  function extractInterpolations(source: string): string[] {
+    const interpolations: string[] = [];
+    let i = 0;
+    while (i < source.length) {
+      if (source[i] === "`") {
+        i++;
+        while (i < source.length) {
+          if (source[i] === "\\" && i + 1 < source.length) { i += 2; continue; }
+          if (source[i] === "`") { i++; break; }
+          if (source[i] === "$" && i + 1 < source.length && source[i + 1] === "{") {
+            i += 2;
+            let depth = 1;
+            let expr = "";
+            while (i < source.length && depth > 0) {
+              if (source[i] === "{") depth++;
+              if (source[i] === "}") { depth--; if (depth === 0) { i++; break; } }
+              expr += source[i];
+              i++;
+            }
+            interpolations.push(expr.trim());
+            continue;
+          }
+          i++;
+        }
+        continue;
+      }
+      i++;
+    }
+    return interpolations;
+  }
+
+  it("no executable-spawning function call has a template-literal argument with forbidden interpolations", () => {
+    // Executable-spawning functions that use array-argv (the safe pattern).
+    // We check that none of their arguments are template literals containing
+    // forbidden patterns (completion shortcuts, terminal writers, etc.).
+    const executableFunctions = [
+      "execFileSync",
+      "execSync",
+      "spawnSync",
+      "spawn",
+    ];
+    const forbiddenPatterns = [
+      /\bevaluateCompletion\b/,
+      /\bgateGreen\s*:\s*null\b/,
+      /\bupdateTicketState\b/,
+      /status\s*[:=]\s*["'`]Done["'`]/,
+      /\bgatherCompletionEvidence\b/,
+    ];
+
+    const findings: string[] = [];
+    for (const file of allFiles) {
+      const raw = readFileSync(file, "utf-8");
+      const interpolations = extractInterpolations(raw);
+      for (const expr of interpolations) {
+        for (const pattern of forbiddenPatterns) {
+          if (pattern.test(expr)) {
+            findings.push(`${relPath(file)}: template-literal interpolation contains forbidden pattern: ${expr.substring(0, 80)}`);
+          }
+        }
+      }
+    }
+    expect(findings).toEqual([]);
+  });
+
+  it("no template-literal interpolation in any source file contains forbidden completion shortcuts", () => {
+    // Broader scan: check ALL template-literal interpolations (not just in
+    // executable strings) for forbidden completion shortcuts.  This catches
+    // cases where a shortcut might be hidden in any template literal.
+    const forbiddenPatterns = [
+      /\bevaluateCompletion\b/,
+      /\bgatherCompletionEvidence\b/,
+      /\bupdateTicketState\b/,
+    ];
+
+    const findings: string[] = [];
+    for (const file of allFiles) {
+      // Skip test files — they legitimately reference these patterns.
+      const rel = relPath(file);
+      if (rel.startsWith("test/") || rel.startsWith("testing/")) continue;
+      const raw = readFileSync(file, "utf-8");
+      const interpolations = extractInterpolations(raw);
+      for (const expr of interpolations) {
+        for (const pattern of forbiddenPatterns) {
+          if (pattern.test(expr)) {
+            findings.push(`${rel}: template-literal interpolation contains forbidden pattern: ${expr.substring(0, 80)}`);
+          }
+        }
+      }
+    }
+    expect(findings).toEqual([]);
+  });
+});

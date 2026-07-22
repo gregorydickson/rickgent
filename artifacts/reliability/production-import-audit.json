@@ -1,0 +1,50 @@
+{
+  "schema_version": "rickgent.production-import-audit.v1",
+  "ticket": "t30",
+  "audit_date": "2026-07-22",
+  "scope": "orchestrator/src/",
+  "invariants": {
+    "one_lifecycle_engine": "LifecycleEngine in lifecycle/engine.ts is the single production lifecycle engine",
+    "one_terminal_predicate": "Oracle v2 (evaluateAttemptOracle) via CompletionService is the single production completion predicate",
+    "one_terminalization_service": "CompletionService in lifecycle/completion-service.ts is the sole lifecycle-layer route to Oracle v2",
+    "one_transactional_state_authority": "StateStore in state/store.ts is the single transactional state authority",
+    "one_process_supervisor": "ProcessSupervisor in process/supervisor.ts is the single process supervisor",
+    "no_nullable_completion_shortcut": "No production code passes gateGreen: null as a completion input",
+    "no_direct_done_writer": "No production code sets ticket status to Done outside the LifecycleEngine",
+    "no_terminal_writer_shortcut": "Registry.updateTicketState terminal writer is removed from production code",
+    "no_dispatch_completion_caller": "The dispatch.completion caller is not in the evaluateCompletion allowlist",
+    "no_gather_completion_evidence": "gatherCompletionEvidence is not exported from dispatch/evidence.ts",
+    "no_template_literal_completion_shortcut": "No template-literal interpolation in production source contains forbidden completion shortcuts"
+  },
+  "terminal_predicate": {
+    "function": "evaluateAttemptOracle",
+    "location": "state/oracle.ts",
+    "lifecycle_route": "lifecycle/completion-service.ts",
+    "diagnostic_only_alternative": "core/completion.ts (evaluateCompletion, cli.verdict caller only)"
+  },
+  "lifecycle_engine": {
+    "class": "LifecycleEngine",
+    "location": "lifecycle/engine.ts"
+  },
+  "completion_service": {
+    "class": "CompletionService",
+    "location": "lifecycle/completion-service.ts",
+    "allowed_callers": [
+      "attempt-runner.oracle",
+      "lifecycle-engine.oracle",
+      "resume.reconcile"
+    ]
+  },
+  "audit_tests": {
+    "terminal_writer_audit": "orchestrator/test/reliability/terminal-writer-audit.test.ts",
+    "caller_audit": "orchestrator/test/core/caller-audit.test.ts"
+  },
+  "production_wiring": {
+    "t27_review": "performReview in lifecycle/review.ts is the production review authority; rejection routed through runBoundedRemediationLoop in lifecycle/remediation.ts",
+    "t27_remediation": "runBoundedRemediationLoop in lifecycle/remediation.ts is the production bounded remediation authority",
+    "t28_oracle": "CompletionService.evaluateAttemptCompletion is the sole lifecycle-layer route to Oracle v2; AttemptRunner oracle provider routes through CompletionService",
+    "t29_resume": "resumeRun in lifecycle/recovery.ts is the production resume entrypoint; build --resume calls resumeRun",
+    "t30_audit": "terminal-writer-audit.test.ts detects template-literal interpolations in executable strings"
+  },
+  "status": "passing"
+}

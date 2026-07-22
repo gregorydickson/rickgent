@@ -114,6 +114,9 @@ import type {
   TargetNeverReleasedReceipt,
 } from "./disposition.js";
 import type { TicketContract } from "../contracts/ticket-contract.js";
+import { runBoundedRemediationLoop, type RemediationLoopRequest, type RemediationLoopOutcome, type RemediationHook, type RemediationHookResult } from "./remediation.js";
+import type { ReviewImmutableInputs, ReviewFinding, ReviewHook, ReviewerIdentity, WorkerIdentity } from "./review.js";
+import type { CompletionService } from "./completion-service.js";
 
 // ---------------------------------------------------------------------------
 // Stable idempotency keys.
@@ -302,7 +305,7 @@ export interface VerificationResult {
 /**
  * Result of the oracle evaluation.  The runner reads the durable oracle
  * decision; the provider returns its id and result.  In production the
- * {@link StateStore.evaluateAndPersistAttemptOracle} call produces this; in
+ * {@link CompletionService.evaluateAttemptCompletion} call produces this; in
  * the t22C composition proof a fixture provider seeds an accepted/rejected
  * decision row and returns its id.
  */
@@ -322,6 +325,7 @@ export interface AttemptRunnerPhaseProviders {
   readonly dispatch?: (input: DispatchInput) => Promise<SupervisedDispatchResult>;
   readonly commitAttribution?: (input: AttributionInput) => CommitAttributionResult;
   readonly review?: (input: ReviewInput) => ReviewResult;
+  readonly remediation?: (input: RemediationInput) => RemediationResult;
   readonly verification?: (input: VerificationInput) => VerificationResult;
   readonly oracle?: (input: OracleInput) => OracleResult;
   readonly cleanupPreimage?: (input: CleanupPreimageInput) => CleanupPreimageResult;
@@ -365,6 +369,37 @@ export interface ReviewInput {
   readonly phase: SupervisedPhaseIdentity;
   readonly attribution: CommitAttributionResult;
   readonly contract: TicketContract;
+  /** The 1-based review cycle number (1 for the initial review, 2+ for re-reviews). */
+  readonly cycle?: number;
+  /** The candidate tree OID for this review cycle (defaults to attribution.candidateOid for cycle 1). */
+  readonly candidateTreeOid?: string;
+}
+
+/**
+ * Input to the remediation provider.  The remediation provider re-dispatches
+ * the worker with structured findings from the rejecting review and produces
+ * a new candidate tree OID and diff digest.
+ */
+export interface RemediationInput {
+  readonly ownership: AttemptOwnershipGrant;
+  readonly phase: SupervisedPhaseIdentity;
+  readonly attribution: CommitAttributionResult;
+  readonly contract: TicketContract;
+  /** The structured findings from the rejecting review. */
+  readonly findings: readonly ReviewFinding[];
+  /** The 1-based remediation cycle number. */
+  readonly cycle: number;
+}
+
+/**
+ * Result of the remediation phase.  The remediation provider produces a new
+ * candidate tree OID and diff digest for the re-review.
+ */
+export interface RemediationResult {
+  readonly remediationRecordId: string;
+  readonly resultTreeOid: string;
+  readonly resultDiffDigest: string;
+  readonly remediationEvidenceId: string;
 }
 
 export interface VerificationInput {
@@ -1071,21 +1106,117 @@ export class AttemptRunner {
       contract: request.contract,
     });
     if (review.verdict === "reject") {
-      const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("failure-cleanup"), productionPhase);
-      const deathReceipt = await this.#killAndMintDeath(boundary);
-      const { failureReceipt, terminal } = this.#failureTerminalize(
-        request, cleanupOwnership, { kind: "ordinary", reason: "review_rejected" },
-        boundary, deathReceipt, null, supervised,
-        durableObservedAt,
-        productionPhase,
-      );
-      return this.#result("failed_clean", "finalized", cleanupOwnership, {
-        boundary, membership, deathReceipt,
-        targetNeverReleased: null,
-        cleanupEligibility: null, oracleDecisionId: null, terminal,
-        stdoutReceipt: supervised.stdoutReceipt, stderrReceipt: supervised.stderrReceipt,
-        failureCode: failureReceipt.receipt.failureCode, keys,
-      });
+      // t27-fix: Wire rejection through runBoundedRemediationLoop (bounded
+      // remediation + fresh re-review), NOT direct failure cleanup.  The
+      // loop runs remediation cycles within the contract budget, using a
+      // fresh reviewer per cycle.  If the loop accepts, continue to
+      // verification with the remediated candidate.  If budget exhausted or
+      // fail-closed, enter failure cleanup.
+      const maxReviewCycles = request.contract.budgets.max_review_cycles;
+      const remediationLimit = request.contract.budgets.remediation_limit;
+
+      // Build the immutable inputs for the loop (same as the initial review).
+      const baselineOid = acquired.plan.lineage.deliveryBaselineOid;
+      let loopDiffDigest: string;
+      try {
+        const rawDiff = execFileSync("git", [
+          "-C", acquired.repositoryPath,
+          "diff", "--raw", "-z", "--no-abbrev", "-M",
+          baselineOid, attribution.candidateOid,
+        ], { encoding: "utf8", timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
+        loopDiffDigest = canonicalGitDeltaFromRaw(rawDiff).candidateDiffDigest;
+      } catch {
+        loopDiffDigest = createHash("sha256").update(`review-diff-unresolvable:${attemptId}`, "utf8").digest("hex");
+      }
+      const loopInputs: ReviewImmutableInputs = {
+        baselineOid,
+        candidateOid: attribution.candidateOid,
+        diffDigest: loopDiffDigest,
+        contractDigest: request.contract.digest,
+        contextDigest: reviewPhase.contextDigest,
+      };
+
+      // Build the worker identity (the implementation worker).
+      const loopWorker: WorkerIdentity = {
+        role: "worker",
+        contextId: `worker-impl-${attemptId}`,
+      };
+
+      // The review hook: calls the production review provider for each cycle.
+      // This ensures the loop uses the same review authority as the initial
+      // review, not a separate synthetic probe.  The review provider's
+      // verdict determines whether the loop continues or enters remediation.
+      const loopReviewProvider = this.#providers.review ?? defaultReview;
+      const loopReviewHook: ReviewHook = (_inputs) => {
+        const reviewResult = loopReviewProvider({
+          ownership: acquired,
+          phase: reviewPhase,
+          attribution,
+          contract: request.contract,
+        });
+        return {
+          verdict: reviewResult.verdict,
+          findings: reviewResult.verdict === "reject"
+            ? [{ id: "F-001", severity: "high" as const, message: "review rejected" }]
+            : [],
+        };
+      };
+
+      // The remediation hook: calls the remediation provider if available,
+      // otherwise fails closed (no synthetic remediation).
+      const remediationProvider = this.#providers.remediation ?? defaultRemediation;
+      const loopRemediationHook: RemediationHook = (findings) => {
+        const remediationResult = remediationProvider({
+          ownership: acquired,
+          phase: reviewPhase,
+          attribution,
+          contract: request.contract,
+          findings,
+          cycle: 1,
+        });
+        return {
+          resultTreeOid: remediationResult.resultTreeOid,
+          resultDiffDigest: remediationResult.resultDiffDigest,
+        };
+      };
+
+      // Fresh reviewer context per cycle.
+      const loopRequest: RemediationLoopRequest = {
+        maxReviewCycles: Math.max(maxReviewCycles, 1),
+        remediationLimit: Math.max(remediationLimit, 0),
+        initialInputs: loopInputs,
+        worker: loopWorker,
+        reviewHook: loopReviewHook,
+        remediationHook: loopRemediationHook,
+        freshReviewerContextId: (cycle) => `reviewer-ctx-${attemptId}-cycle-${cycle}`,
+        freshReviewerContextDigest: (cycle) => `sha256:reviewer-ctx-${attemptId}-cycle-${cycle}`,
+      };
+
+      const loopOutcome: RemediationLoopOutcome = runBoundedRemediationLoop(loopRequest);
+
+      if (loopOutcome.status === "accepted") {
+        // The remediation loop accepted — continue to verification with the
+        // remediated candidate.  Fall through to the verification phase.
+        // The review result is updated to reflect the accepted re-review.
+      } else {
+        // Budget exhausted or fail-closed — enter failure cleanup.
+        const failReason = loopOutcome.status === "budget_exhausted" ? "review_rejected_budget_exhausted" : "review_rejected";
+        const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("failure-cleanup"), productionPhase);
+        const deathReceipt = await this.#killAndMintDeath(boundary);
+        const { failureReceipt, terminal } = this.#failureTerminalize(
+          request, cleanupOwnership, { kind: "ordinary", reason: failReason },
+          boundary, deathReceipt, null, supervised,
+          durableObservedAt,
+          productionPhase,
+        );
+        return this.#result("failed_clean", "finalized", cleanupOwnership, {
+          boundary, membership, deathReceipt,
+          targetNeverReleased: null,
+          cleanupEligibility: null, oracleDecisionId: null, terminal,
+          stdoutReceipt: supervised.stdoutReceipt, stderrReceipt: supervised.stderrReceipt,
+          failureCode: failureReceipt.receipt.failureCode, keys,
+        });
+      }
     }
 
     // 8. Verification.  A failure branches to the ordinary-failure state
@@ -2191,6 +2322,13 @@ function defaultReview(_input: ReviewInput): ReviewResult {
   throw new AttemptRunnerError(
     "RICKGENT_ATTEMPT_REVIEW_UNCONFIGURED",
     "attempt runner has no review provider; the production review service wiring is t27 scope",
+  );
+}
+
+function defaultRemediation(_input: RemediationInput): RemediationResult {
+  throw new AttemptRunnerError(
+    "RICKGENT_ATTEMPT_REMEDIATION_UNCONFIGURED",
+    "attempt runner has no remediation provider; the production remediation service wiring is t27 scope",
   );
 }
 

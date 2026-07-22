@@ -146,7 +146,11 @@ describe("defect #1: providers use real authority APIs", () => {
     expect(providerSource).toMatch(/store\.createAndSealAuthorityTargetProofSet\b/);
     expect(providerSource).toMatch(/lifecycleRecords\.recordReview\b/);
     expect(providerSource).toMatch(/lifecycleRecords\.recordGateResult\b/);
-    expect(providerSource).toMatch(/store\.evaluateAndPersistAttemptOracle\b/);
+    // t28-fix: the oracle provider routes through CompletionService
+    // (the sole lifecycle-layer route to Oracle v2), not a direct
+    // StateStore.evaluateAndPersistAttemptOracle call.
+    expect(providerSource).toMatch(/CompletionService/);
+    expect(providerSource).toMatch(/evaluateAttemptCompletion/);
   });
 
   it("the store has the new authority-branded methods", () => {

@@ -1237,7 +1237,8 @@
       ],
       "completed_at": {
         "commit": "f46e247",
-        "phase_report": "docs/remediation/phase-7-t27-independent-review-execution-report-2026-07-22.md"
+        "phase_report": "docs/remediation/phase-7-t27-independent-review-execution-report-2026-07-22.md",
+        "scrutiny_round_2_fix": "docs/remediation/phase-7-m7-scrutiny-round-2-production-wiring-fix-execution-report-2026-07-22.md"
       }
     },
     {
@@ -1276,7 +1277,8 @@
       ],
       "completed_at": {
         "commit": "276dc64",
-        "phase_report": "docs/remediation/phase-7-t28-completion-oracle-integration-execution-report-2026-07-22.md"
+        "phase_report": "docs/remediation/phase-7-t28-completion-oracle-integration-execution-report-2026-07-22.md",
+        "scrutiny_round_2_fix": "docs/remediation/phase-7-m7-scrutiny-round-2-production-wiring-fix-execution-report-2026-07-22.md"
       }
     },
     {
@@ -1313,7 +1315,8 @@
       ],
       "completed_at": {
         "commit": "8971fef59031b88d069707de6f2d5c7ad2fd3068",
-        "execution_report": "docs/remediation/phase-7-resume-reconcile-parity-execution-report-2026-07-22.md"
+        "execution_report": "docs/remediation/phase-7-resume-reconcile-parity-execution-report-2026-07-22.md",
+        "scrutiny_round_2_fix": "docs/remediation/phase-7-m7-scrutiny-round-2-production-wiring-fix-execution-report-2026-07-22.md"
       }
     },
     {
@@ -1344,7 +1347,8 @@
       ],
       "completed_at": {
         "commit": "fbfaea293f0e41c1521ff210a728dfc2d2da56c8",
-        "execution_report": "docs/remediation/phase-7-t30-remove-shortcuts-execution-report-2026-07-22.md"
+        "execution_report": "docs/remediation/phase-7-t30-remove-shortcuts-execution-report-2026-07-22.md",
+        "scrutiny_round_2_fix": "docs/remediation/phase-7-m7-scrutiny-round-2-production-wiring-fix-execution-report-2026-07-22.md"
       }
     },
     {

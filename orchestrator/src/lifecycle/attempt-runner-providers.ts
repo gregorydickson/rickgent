@@ -22,10 +22,9 @@
  *     real exit code.  Persists the gate result through
  *     {@link LifecycleRecordAuthority.recordGateResult}.  A failing argv
  *     produces a "failed" gate, not a manufactured "pass".
- *   - oracle: calls {@link StateStore.evaluateAndPersistAttemptOracle} which
- *     evaluates the real store state (review, gates, attribution, target
- *     proof set, cleanup eligibility).  The result is derived from the real
- *     inputs, not manufactured.
+ *   - oracle: calls {@link CompletionService.evaluateAttemptCompletion} (the
+ *     sole lifecycle-layer route to Oracle v2) which evaluates the real store
+ *     state (review, gates, attribution, target proof set, cleanup eligibility).
  *   - cleanupPreimage: creates the target proof set and snapshot evidence
  *     through the authority-branded Store commands
  *     ({@link StateStore.createAndSealAuthorityTargetProofSet},
@@ -74,6 +73,7 @@ import {
   type WorkerIdentity,
   type ReviewHook,
 } from "./review.js";
+import { CompletionService } from "./completion-service.js";
 import type {
   AttemptRunnerPhaseProviders,
   AttributionInput,
@@ -84,6 +84,8 @@ import type {
   OracleResult,
   ReviewInput,
   ReviewResult,
+  RemediationInput,
+  RemediationResult,
   SupervisedDispatchResult,
   VerificationInput,
   VerificationResult,
@@ -523,6 +525,81 @@ export function buildAttemptRunnerProviders(
       return { reviewRecordId, verdict, reviewEvidenceId: verdictEvidenceId };
     },
 
+    // --- remediation: re-observe candidate after remediation, persist via authority API --
+    remediation(input: RemediationInput): RemediationResult {
+      const attemptId = input.ownership.attemptId;
+      const phase = input.phase;
+      const createdAt = input.ownership.ownership.heartbeatAt;
+      const baselineOid = input.ownership.plan.lineage.deliveryBaselineOid;
+      const remediationRecordId = `remediation-${attemptId}-${input.cycle}`;
+      const remediationEvidenceId = `evidence-remediation-${attemptId}-${input.cycle}`;
+
+      // t27-fix: The remediation provider re-observes the candidate from the
+      // worktree (the worker applied the remediation changes) and produces a
+      // new candidate tree OID and diff digest for the re-review.  No
+      // manufactured result — the candidate is observed from real Git state.
+      const ownedPaths = input.contract.scope.map((s) => s.path).filter((p) => p.length > 0);
+      const attemptRef = input.ownership.plan.attemptRef;
+      const { candidateOid } = observeCandidateOid(
+        input.ownership.repositoryPath, input.ownership.plan.worktreePath,
+        attemptRef, baselineOid, ownedPaths,
+      );
+
+      // Compute the real diff digest from the actual git diff.
+      let resultDiffDigest: string;
+      try {
+        const rawDiff = execFileSync("git", [
+          "-C", input.ownership.repositoryPath,
+          "diff", "--raw", "-z", "--no-abbrev", "-M",
+          baselineOid, candidateOid,
+        ], { encoding: "utf8", timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
+        resultDiffDigest = canonicalGitDeltaFromRaw(rawDiff).candidateDiffDigest;
+      } catch {
+        // If the diff cannot be resolved, fail closed with a unique digest.
+        resultDiffDigest = sha256(`remediation-diff-unresolvable:${attemptId}:${input.cycle}`);
+      }
+
+      // Resolve the tree OID.
+      let resultTreeOid: string;
+      try {
+        resultTreeOid = execFileSync("git", [
+          "-C", input.ownership.repositoryPath, "rev-parse", `${candidateOid}^{tree}`,
+        ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      } catch {
+        throw new Error("RICKGENT_ATTEMPT_REMEDIATION_ERROR: cannot resolve remediated candidate tree");
+      }
+
+      // Render, verify, and persist the remediation-phase prompt receipt.
+      renderPersistVerifyPrompt(
+        store, mintCapability, input.contract,
+        { phase: "remediate", role: "remediator", contextDigest: phase.contextDigest, contractDigest: input.contract.digest },
+        attemptId, phase.phaseExecutionId, phase.contextId, createdAt,
+        { evidence: input.findings as unknown as readonly StructuredFinding[] },
+      );
+
+      // Persist the remediation evidence.
+      store.persistAuthorityEvidence({
+        evidenceId: remediationEvidenceId,
+        attemptId,
+        phaseExecutionId: phase.phaseExecutionId,
+        contextId: phase.contextId,
+        producerService: "RemediationService",
+        scope: remediationRecordId,
+        schemaVersion: "rickgent.remediation.v1",
+        payload: {
+          attempt_id: attemptId,
+          cycle: input.cycle,
+          findings_count: input.findings.length,
+          result_tree_oid: resultTreeOid,
+          result_diff_digest: resultDiffDigest,
+        },
+        idempotencyKey: `remediation:${attemptId}:${input.cycle}`,
+        observedAt: createdAt,
+      }, mintCapability);
+
+      return { remediationRecordId, resultTreeOid, resultDiffDigest, remediationEvidenceId };
+    },
+
     // --- verification: run real verification argv, persist via authority API --
     verification(input: VerificationInput): VerificationResult {
       const attemptId = input.ownership.attemptId;
@@ -690,7 +767,7 @@ export function buildAttemptRunnerProviders(
       };
     },
 
-    // --- oracle: call real evaluateAndPersistAttemptOracle ----------------
+    // --- oracle: route through CompletionService (sole lifecycle route to Oracle v2) ---
     oracle(input: OracleInput): OracleResult {
       const attemptId = input.ownership.attemptId;
 
@@ -703,17 +780,20 @@ export function buildAttemptRunnerProviders(
         attemptId, input.phase.phaseExecutionId, input.phase.contextId, input.ownership.ownership.heartbeatAt,
       );
 
-      // Call the real oracle evaluation.  This reads the actual store state
-      // (review, gates, attribution, target proof set, cleanup eligibility)
-      // and derives the result from the real inputs.  No manufactured result.
-      const decision = store.evaluateAndPersistAttemptOracle({
+      // t28-fix: Route the oracle evaluation through CompletionService —
+      // the sole lifecycle-layer route to Oracle v2.  The AttemptRunner must
+      // NOT call StateStore.evaluateAndPersistAttemptOracle directly; that
+      // bypasses the completion service's caller-allowlist enforcement and
+      // the single-route invariant (VAL-ORC-002, VAL-ORC-003).
+      const completionService = new CompletionService(store);
+      const completion = completionService.evaluateAttemptCompletion(
         attemptId,
-        idempotencyKey: `oracle:${attemptId}`,
-      });
-      const result = String(decision.decision.result) as "accepted" | "rejected";
+        `oracle:${attemptId}`,
+        "attempt-runner.oracle",
+      );
       return {
-        oracleDecisionId: String(decision.decision.oracle_decision_id),
-        result,
+        oracleDecisionId: completion.oracleDecisionId,
+        result: completion.result,
       };
     },
 
