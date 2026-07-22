@@ -364,6 +364,23 @@ export class LifecycleEngine {
         edge,
       });
     }
+    // Fail-closed guard for the verifying->cleanup_pending edge (M6 scrutiny
+    // round 5).  This edge has a gate_results guard in the normative table.
+    // When gateResultIds is empty/missing, guardForEdge returns null and the
+    // engine would fall back to StateStore.advanceAttemptState — persisting
+    // a transition WITHOUT authority-validated gate evidence, owner context,
+    // or persisted transition evidence (the store CAS path uses a placeholder
+    // owner_context_digest and the wrong owner_service "AttemptLifecycleService").
+    // Reject fail-closed instead: every declared verifying->cleanup_pending
+    // edge MUST route through the TransitionAuthority with non-empty
+    // gateResultIds.  Idempotent replays (attempt already at/past
+    // cleanup_pending) short-circuit above and never reach this check.
+    if (edge.guard === "gate_results" && edge.to === "cleanup_pending") {
+      throw new LifecycleEngineError(
+        "RICKGENT_LIFECYCLE_TRANSITION_ILLEGAL",
+        "verifying->cleanup_pending edge requires non-empty gateResultIds (gate_results guard); empty/missing gate result IDs are rejected fail-closed (no fallback to StateStore.advanceAttemptState)",
+      );
+    }
     this.#store.advanceAttemptState(
       input.attemptId,
       input.from,
