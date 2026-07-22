@@ -31,7 +31,12 @@ def cross_vendor_review(event: object, config: object):
         # The effective-session-v1 attempt context authenticates only the
         # requested reviewer.  Vendor labels in arguments, context, or session
         # state cannot prove a distinct protected implementer identity.
-        return _deny("protected implementer/reviewer identity pair is unavailable")
+        # The t32 cross-vendor distinction authority (TS-side) verifies
+        # observed implementer/reviewer identity pairs after dispatch.
+        # This policy shim remains fail-closed for label-only claims; the
+        # distinction check is performed by the TS authority using
+        # observed identity receipts from the chat.db seam.
+        return _deny("protected implementer/reviewer identity pair requires observed-identity distinction proof from the t32 authority")
     except Exception:
         return fail_closed(CROSS_VENDOR_DENIAL_CODE, "cross-vendor review policy")
 

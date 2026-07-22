@@ -1,0 +1,116 @@
+{
+  "schema_version": "rickgent-model-identity-summary/v1",
+  "ticket": "t32",
+  "description": "Summary of the model identity and cross-vendor distinction proof corpus. Every identity mismatch is exercised; cross-vendor review is permitted only when canonical observed identities are genuinely distinct.",
+  "complete": true,
+  "profile": "effective-session-v1",
+  "distinction_rule": "Both canonical observed harness AND canonical observed model must differ between implementer and reviewer. Different harness alone or different model alone is not cross-vendor. Both observed provenances must be the isolated omnigent chat.db root conversation seam. Conversation IDs and roles must also differ.",
+  "uncovered_cases": [],
+  "label_only_acceptances": false,
+  "test_cases": {
+    "permitted": [
+      {
+        "name": "codex-gpt5_vs_claude-sdk-sonnet",
+        "description": "Different harness (codex vs claude-sdk) AND different model (gpt-5 vs claude-sonnet-4-5) — genuine distinction",
+        "implementer": { "harness": "codex", "model": "gpt-5" },
+        "reviewer": { "harness": "claude-sdk", "model": "claude-sonnet-4-5" }
+      },
+      {
+        "name": "droid-glm_vs_codex-gpt5",
+        "description": "Different harness (droid vs codex) AND different model (glm-5.2 vs gpt-5) — genuine distinction",
+        "implementer": { "harness": "droid", "model": "glm-5.2" },
+        "reviewer": { "harness": "codex", "model": "gpt-5" }
+      }
+    ],
+    "denied": [
+      {
+        "name": "same_observed_identity",
+        "description": "Same harness AND same model — not genuinely distinct",
+        "denial_reason": "same_observed_identity"
+      },
+      {
+        "name": "same_observed_harness",
+        "description": "Same harness, different model — harness alone is not cross-vendor",
+        "denial_reason": "same_observed_harness"
+      },
+      {
+        "name": "same_observed_model",
+        "description": "Different harness, same model — model alone is not cross-vendor",
+        "denial_reason": "same_observed_model"
+      },
+      {
+        "name": "missing_implementer_observed_identity",
+        "description": "Implementer observed receipt has wrong producer — label-only, no real observation",
+        "denial_reason": "missing_implementer_observed_identity"
+      },
+      {
+        "name": "missing_reviewer_observed_identity",
+        "description": "Reviewer observed receipt has wrong producer — label-only, no real observation",
+        "denial_reason": "missing_reviewer_observed_identity"
+      },
+      {
+        "name": "missing_implementer_harness",
+        "description": "Implementer observed harness is null",
+        "denial_reason": "missing_implementer_harness"
+      },
+      {
+        "name": "missing_reviewer_harness",
+        "description": "Reviewer observed harness is null",
+        "denial_reason": "missing_reviewer_harness"
+      },
+      {
+        "name": "missing_implementer_model",
+        "description": "Implementer observed model is null",
+        "denial_reason": "missing_implementer_model"
+      },
+      {
+        "name": "missing_reviewer_model",
+        "description": "Reviewer observed model is null",
+        "denial_reason": "missing_reviewer_model"
+      },
+      {
+        "name": "missing_implementer_conversation_id",
+        "description": "Implementer conversation ID is null — no root conversation",
+        "denial_reason": "missing_implementer_conversation_id"
+      },
+      {
+        "name": "missing_reviewer_conversation_id",
+        "description": "Reviewer conversation ID is null — no root conversation",
+        "denial_reason": "missing_reviewer_conversation_id"
+      },
+      {
+        "name": "same_conversation_id",
+        "description": "Same conversation ID — same process/session, not independent",
+        "denial_reason": "same_conversation_id"
+      },
+      {
+        "name": "same_role",
+        "description": "Same role — authority collapse",
+        "denial_reason": "same_role"
+      },
+      {
+        "name": "spoofed_implementer_provenance",
+        "description": "Implementer observed provenance is not the chat.db seam",
+        "denial_reason": "spoofed_implementer_provenance"
+      },
+      {
+        "name": "spoofed_reviewer_provenance",
+        "description": "Reviewer observed provenance is not the chat.db seam",
+        "denial_reason": "spoofed_reviewer_provenance"
+      }
+    ]
+  },
+  "capability_activation": {
+    "capability": "cross_vendor_review",
+    "state": "enabled",
+    "activating_ticket": "t32",
+    "proof_version": "model-identity-corpus-v1",
+    "reason": "Cross-vendor review is permitted only when the canonical observed identities of implementer and reviewer are genuinely distinct (different harness AND model); same-identity requests are rejected."
+  },
+  "invariants_preserved": {
+    "same_vendor_independent_review_supported": true,
+    "no_router_label_alone_satisfies_gate": true,
+    "fail_closed_on_missing_mismatch_spoofed_stale": true,
+    "every_field_falsified_independently": true
+  }
+}

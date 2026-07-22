@@ -72,11 +72,11 @@ const ENTRIES: readonly CapabilityEntry[] = [
   },
   {
     name: "cross_vendor_review",
-    state: "unavailable",
-    error_code: "RICKGENT_CROSS_VENDOR_UNAVAILABLE",
-    reason: "Requested identity is not independently observed identity.",
+    state: "enabled",
+    error_code: "RICKGENT_CROSS_VENDOR_ACTIVE",
+    reason: "Activated by t32: cross-vendor review is permitted only when the canonical observed identities of implementer and reviewer are genuinely distinct (different harness AND model); same-identity requests are rejected.",
     proof_version: "model-identity-corpus-v1",
-    minimum_profile: "m6_protected_identity",
+    minimum_profile: "m8_cross_vendor_distinction",
   },
   {
     name: "automatic_delivery",
@@ -213,7 +213,7 @@ const PUBLIC_SURFACES: readonly PublicSurfaceEntry[] = Object.freeze([
     result: "autonomous dispatch via the AttemptRunner critical section; delivery, parallelism, resume, and raw shell remain unavailable",
     exit_code: null,
     stable_code: null,
-    boundary: "Autonomous dispatch is activated (t22D): the single AttemptRunner owns execution and terminalization. Production requires a validated containment backend and a real model roster; unavailable containment fails closed with a target-never-released proof before any spawn. Delivery, parallel dispatch, resume, raw shell, and cross-vendor review remain unavailable.",
+    boundary: "Autonomous dispatch is activated (t22D): the single AttemptRunner owns execution and terminalization. Production requires a validated containment backend and a real model roster; unavailable containment fails closed with a target-never-released proof before any spawn. Delivery, parallel dispatch, resume, and raw shell remain unavailable. Cross-vendor review is activated (t32).",
   }),
   capabilitySurface({
     surface: "rickgent pipeline <prd>",
@@ -223,7 +223,7 @@ const PUBLIC_SURFACES: readonly PublicSurfaceEntry[] = Object.freeze([
     result: "autonomous dispatch via the AttemptRunner critical section followed by the cleanup chain; delivery remains unavailable",
     exit_code: null,
     stable_code: null,
-    boundary: "Autonomous dispatch is activated (t22D): the single AttemptRunner owns execution and terminalization. Production requires a validated containment backend; unavailable containment fails closed. Delivery, parallel dispatch, resume, raw shell, and cross-vendor review remain unavailable.",
+    boundary: "Autonomous dispatch is activated (t22D): the single AttemptRunner owns execution and terminalization. Production requires a validated containment backend; unavailable containment fails closed. Delivery, parallel dispatch, resume, and raw shell remain unavailable. Cross-vendor review is activated (t32).",
   }),
   capabilitySurface({
     surface: "explicit build test dependency injection",
@@ -331,14 +331,14 @@ const PUBLIC_SURFACES: readonly PublicSurfaceEntry[] = Object.freeze([
     boundary: "A parsed flag is not an enabled capability.",
   }),
   capabilitySurface({
-    surface: "cross-vendor review (no public command)",
-    mode: "public_blocked",
+    surface: "cross-vendor review (routing selects distinct vendor for code_review)",
+    mode: "public_read_only",
     mutation_authority: "none",
     capability: "cross_vendor_review",
-    result: "independent vendor proof unavailable",
+    result: "cross-vendor review permitted only when observed implementer and reviewer identities are genuinely distinct",
     exit_code: null,
     stable_code: null,
-    boundary: "Requested vendor labels are not independently observed identity.",
+    boundary: "Cross-vendor review is activated (t32): the router selects a different vendor for code_review, and the distinction authority verifies that observed harness AND model both differ. Same-identity, missing, spoofed, or stale reviewer identity blocks the cross-vendor claim without invalidating same-vendor independent review.",
   }),
   nonCapabilitySurface({
     surface: "rickgent status [--deep]",

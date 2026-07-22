@@ -170,7 +170,11 @@ describe("reliability-preview claim contract", () => {
       expect(result.status, `${command}: ${output(result)}`).toBe(0);
       expect(result.stdout.startsWith(RELEASE_LABEL), command).toBe(true);
       expect(result.stdout).toContain(getCapability("raw_shell").error_code);
-      expect(result.stdout).toContain(getCapability("cross_vendor_review").error_code);
+      // cross_vendor_review is activated (t32); it is no longer in the
+      // unavailable list of the reliability preview banner. The still-
+      // unavailable capabilities (parallel_dispatch, automatic_delivery,
+      // raw_shell) continue to appear.
+      expect(result.stdout).toContain(getCapability("automatic_delivery").error_code);
       expect(result.stdout).toContain(LEGACY_HELP_DISCLAIMER);
     }
   });

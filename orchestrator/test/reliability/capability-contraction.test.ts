@@ -65,7 +65,7 @@ describe("M1 capability contraction", () => {
       "unavailable",
       "enabled",
       "enabled",
-      "unavailable",
+      "enabled",
       "unavailable",
       "unavailable",
     ]);
@@ -156,8 +156,11 @@ describe("M1 capability contraction", () => {
       tier: "capable",
       pricing: { cost_per_dispatch: 1 },
     }];
-    expect(() => routeDispatch(roster, "code_review", { implementerVendor: "anthropic" }))
-      .toThrow("RICKGENT_CROSS_VENDOR_UNAVAILABLE");
+    // cross_vendor_review is activated (t32); routeDispatch with
+    // code_review role passes the capability gate and the router selects
+    // a different vendor model (openai vs anthropic implementer).
+    const routeResult = routeDispatch(roster, "code_review", { implementerVendor: "anthropic" });
+    expect(routeResult.ok).toBe(true);
     expect(() => ensureBranch(root, "topic")).toThrow("RICKGENT_DELIVERY_UNAVAILABLE");
     expect(() => runConformanceGate([], root, cleanEnv())).toThrow("RICKGENT_RAW_SHELL_UNAVAILABLE");
     await expect(runMicroverseCommand(["--metric", "echo 1", "--task", "improve"]))

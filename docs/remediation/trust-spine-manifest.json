@@ -1473,10 +1473,14 @@
         "sha_source": ""
       },
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t31"
-      ]
+      ],
+      "completed_at": {
+        "commit": "f5def7e3718ac026e622301c798f5be7d4966116",
+        "phase_report": "docs/remediation/phase-8-t32-routing-cross-vendor-execution-report-2026-07-22.md"
+      }
     },
     {
       "id": "t33",
