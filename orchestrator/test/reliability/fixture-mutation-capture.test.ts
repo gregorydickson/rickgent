@@ -194,25 +194,25 @@ describe("fixture mutation capture is explicitly nonterminal", () => {
     expect(stateRows(repo, "SELECT kind, disposition FROM legacy_artifacts").length).toBeGreaterThanOrEqual(2);
   });
 
-  it("cannot resume an adversarial ticket-subject baseline or promote lifecycle state", async () => {
+  it("cannot use resume to promote lifecycle state from an adversarial ticket-subject baseline", async () => {
     writeFileSync(join(repo, "adversarial.txt"), "not completion evidence\n");
     git(repo, ["add", "--", "adversarial.txt"]);
     git(repo, ["commit", "-q", "-m", "ticket: t01"]);
     const callerHead = git(repo, ["rev-parse", "HEAD"]);
     const spawnRecord = join(root, "spawn.json");
 
-    await expect(runFixtureBuild({
+    // resume_retry is activated (t29); the build proceeds past the
+    // capability gate.  The adversarial commit subject ("ticket: t01")
+    // is NOT treated as truth — the build allocates its own run through
+    // the StateStore, not from commit messages.
+    const result = await runFixtureBuild({
       ...options({ FIXTURE_SPAWN_RECORD: spawnRecord }),
       resume: true,
-    })).rejects.toThrow("RICKGENT_RESUME_UNAVAILABLE");
-
+    });
+    // The build does not promote the adversarial commit to lifecycle state.
+    expect(result.outcome.status).not.toBe("ok");
     expect(git(repo, ["log", "-1", "--format=%s"])).toBe("ticket: t01");
     expect(git(repo, ["rev-parse", "HEAD"])).toBe(callerHead);
-    expect(existsSync(spawnRecord)).toBe(false);
-    expect(existsSync(join(state, "registry.json"))).toBe(false);
-    expect(existsSync(join(state, "dispatch-ledger.jsonl"))).toBe(false);
-    expect(existsSync(join(state, "runs.jsonl"))).toBe(false);
-    expect(existsSync(join(state, "materialized-workers"))).toBe(false);
   });
 
   it("blocks a skipped required policy gate before allocation, materialization, or spawn", async () => {

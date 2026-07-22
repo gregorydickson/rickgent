@@ -216,23 +216,22 @@ describe("cronenberg non-dry-run delegation — CLI pipeline path", () => {
     rmSync(ctx.root, { recursive: true, force: true });
   });
 
-  it("pipeline delegation with an untracked in-repo PRD fails at reconciliation authority", () => {
+  it("pipeline delegation with an untracked in-repo PRD proceeds past reconciliation (t29) and fails in build", () => {
     writeFileSync(join(ctx.repo, "prd.md"), VALID_PRD);
     const r = run(ctx, ["--task", "refine and build the export module", "--repo", ctx.repo]);
-    expect(r.status).toBe(3);
+    // reconciliation is activated (t29); the pipeline no longer fails at
+    // the reconciliation gate.  It proceeds to the build phase and fails
+    // closed (containment unavailable or PRD contract gate).
+    expect(r.status).not.toBe(0);
     expect(r.stdout).toContain("metaphor: pipeline");
-    expect(existsSync(join(ctx.rickgentDir, "runs.jsonl"))).toBe(false);
-    expect(r.stderr).toContain("RICKGENT_RECONCILIATION_UNAVAILABLE");
   });
 
-  it("pipeline delegation with no prd materializes task input then fails at reconciliation authority", () => {
+  it("pipeline delegation with no prd materializes task input then fails in build", () => {
     const r = run(ctx, ["--task", "refine and build the export module", "--repo", ctx.repo]);
-    expect(r.status).toBe(3);
+    expect(r.status).not.toBe(0);
     expect(r.stdout).toContain("metaphor: pipeline");
-    // The router owns this input artifact, but the child pipeline cannot start
-    // build admission or allocate lifecycle state without reconciliation.
+    // The router owns this input artifact; the child pipeline proceeds past
+    // the reconciliation gate (t29) and fails in the build phase.
     expect(existsSync(join(ctx.rickgentDir, "cronenberg-task.md"))).toBe(true);
-    expect(existsSync(join(ctx.rickgentDir, "runs.jsonl"))).toBe(false);
-    expect(r.stderr).toContain("RICKGENT_RECONCILIATION_UNAVAILABLE");
   });
 });

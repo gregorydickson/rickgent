@@ -1,6 +1,6 @@
 # Decision: Model Routing
 
-> Status: target-design / historical decision record. This is not a statement of current `reliability_preview` availability. The compiled capability registry and `docs/reliability-preview.md` control; autonomous dispatch, resume/reconciliation, cross-vendor review, and delivery remain unavailable.
+> Status: target-design / historical decision record. This is not a statement of current `reliability_preview` availability. The compiled capability registry and `docs/reliability-preview.md` control; parallel dispatch, cross-vendor review, and delivery remain unavailable.
 
 ## Component
 §2 matrix row: Model Routing — how the system selects which LLM model each worker dispatch should use, based on task difficulty and cost.

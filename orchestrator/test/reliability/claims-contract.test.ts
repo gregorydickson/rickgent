@@ -76,7 +76,6 @@ describe("reliability-preview claim contract", () => {
       "zero required interventions",
       "configurable concurrent dispatch",
       "seven fail-closed",
-      "public resume and reconciliation",
       "multi-vendor review is enforced",
     ];
     for (const relative of ["README.md", "docs/reliability-preview.md"]) {
@@ -136,6 +135,7 @@ describe("reliability-preview claim contract", () => {
       "rickgent pipeline <prd>",
       "rickgent prd --non-interactive [--output <path>]",
       "rickgent citadel [--report <path>]",
+      "build|pipeline --resume",
       "build|pipeline [--max-concurrent 1]",
     ]);
     // The non-mutating local-artifact writers (prd template, citadel report)
@@ -178,8 +178,9 @@ describe("reliability-preview claim contract", () => {
   it("fails unavailable-capability flag combinations before spawn or state writes", () => {
     // autonomous_dispatch is activated (t22D); the agent-backed commands
     // (prd/szechuan/anatomy) now proceed past the autonomous_dispatch gate.
-    // The STILL-unavailable capability flags (--resume, --raw-shell,
-    // --feature) fail closed before spawn and do not write state.
+    // resume_retry is activated (t29); --resume passes the gate.
+    // The STILL-unavailable capability flags (--raw-shell, --feature)
+    // fail closed before spawn and do not write state.
     const fixtureBin = join(orchestratorRoot, "test/fixtures/omnigent-fixture");
     const spawnRecord = join(stateRoot, "blocked-legacy-spawn.json");
     const env = {
@@ -187,12 +188,10 @@ describe("reliability-preview claim contract", () => {
       FIXTURE_SPAWN_RECORD: spawnRecord,
     };
     const prd = join(stateRoot, "missing-prd.md");
-    const resume = getCapability("resume_retry").error_code;
     const delivery = getCapability("automatic_delivery").error_code;
     const rawShell = getCapability("raw_shell").error_code;
 
     for (const args of [
-      ["build", prd, "--resume"],
       ["build", prd, "--feature", "topic"],
       ["build", prd, "--raw-shell"],
     ]) {
@@ -200,7 +199,6 @@ describe("reliability-preview claim contract", () => {
       expect(result.status, `${args.join(" ")}: ${output(result)}`).toBe(3);
       const error = result.stderr.trim();
       expect(
-        error.startsWith(`${CAPABILITY_UNAVAILABLE_ERROR_CODE}: ${resume}:`) ||
         error.startsWith(`${CAPABILITY_UNAVAILABLE_ERROR_CODE}: ${delivery}:`) ||
         error.startsWith(`${CAPABILITY_UNAVAILABLE_ERROR_CODE}: ${rawShell}:`),
         `${args.join(" ")}: ${error}`,
@@ -252,28 +250,26 @@ describe("reliability-preview claim contract", () => {
 
   it("matches the public capability exits and ordered stable/detail codes", () => {
     const prd = join(stateRoot, "missing-prd.md");
-    const resume = getCapability("resume_retry").error_code;
-    const reconcile = getCapability("reconciliation").error_code;
     const delivery = getCapability("automatic_delivery").error_code;
     const rawShell = getCapability("raw_shell").error_code;
 
     // autonomous_dispatch is activated (t22D): `build <prd>` no longer fails
     // at the autonomous_dispatch gate.  It proceeds past the gate and fails
     // closed at the PRD/ticket-contract gate on the missing PRD (exit 2,
-    // input contract; the report is printed to stdout).  Use `build --resume`
-    // (resume_retry still unavailable) to exercise the capability-gate failure
-    // path that prints the registry.
+    // input contract; the report is printed to stdout).  resume_retry and
+    // reconciliation are activated (t29); --resume and reconcile pass the
+    // gate.  Use --raw-shell (still unavailable) to exercise the
+    // capability-gate failure path that prints the registry.
     const buildMissing = cli(["build", prd]);
     expect(buildMissing.status, output(buildMissing)).toBe(2);
     expect(buildMissing.stdout).toContain("TICKET CONTRACT GATE");
     const buildConcurrent1 = cli(["build", prd, "--max-concurrent", "1"]);
     expect(buildConcurrent1.status, output(buildConcurrent1)).toBe(2);
     expect(buildConcurrent1.stdout).toContain("TICKET CONTRACT GATE");
-    const build = expectCapabilityFailure(["build", "--resume"], resume);
-    expectCapabilityFailure(["pipeline", "--resume"], resume);
-    expectCapabilityFailure(["reconcile"], reconcile);
+    const build = expectCapabilityFailure(["build", prd, "--raw-shell"], rawShell);
+    expectCapabilityFailure(["pipeline", prd, "--raw-shell"], rawShell);
     expectCapabilityFailure(["build", prd, "--feature", "topic"], delivery);
-    expectCapabilityFailure(["build", prd, "--raw-shell"], rawShell);
+    expectCapabilityFailure(["build", prd, "--no-autonomous-pr"], delivery);
 
     for (const entry of capabilityRegistry()) {
       expect(build.stdout).toContain(`${entry.name}: state=${entry.state} code=${entry.error_code}`);

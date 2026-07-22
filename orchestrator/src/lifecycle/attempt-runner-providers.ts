@@ -69,7 +69,6 @@ import {
 } from "./prompts.js";
 import {
   performReview,
-  REVIEW_AUTHORITY_SCHEMA_VERSION,
   type ReviewImmutableInputs,
   type ReviewerIdentity,
   type WorkerIdentity,
@@ -473,7 +472,6 @@ export function buildAttemptRunnerProviders(
         verdict: verdictValue,
         input_tree_oid: inputTreeOid,
         input_diff_digest: inputDiffDigest,
-        schema_version: REVIEW_AUTHORITY_SCHEMA_VERSION,
       };
       store.persistAuthorityEvidence({
         evidenceId: verdictEvidenceId,
@@ -493,7 +491,6 @@ export function buildAttemptRunnerProviders(
         attempt_id: attemptId,
         cycle: 1,
         findings: verdict === "accept" ? "candidate is a valid Git tree" : (outcome.findings.length > 0 ? outcome.findings.map((f) => f.message).join("; ") : "review fail-closed"),
-        schema_version: REVIEW_AUTHORITY_SCHEMA_VERSION,
       };
       store.persistAuthorityEvidence({
         evidenceId: findingsEvidenceId,

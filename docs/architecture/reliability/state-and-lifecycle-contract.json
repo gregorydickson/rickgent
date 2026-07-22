@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "contract_id": "rickgent-state-and-lifecycle-v1",
   "decision_status": "frozen_decision_only",
-  "decision_digest": "sha256:65cb651ce9941a0c499a170860ab042f3ce23a93a94385da8ef653aa8d10d414",
+  "decision_digest": "sha256:d810efd6084e866558bf99f4ebe5afbaba1ec0c59a768e6f492c679bee72991e",
   "parent_authority": {
     "contract_id": "rickgent-trust-spine-v1",
     "path": "docs/architecture/reliability/trust-spine-contract.json"
@@ -3445,6 +3445,83 @@
         "owner": "LegacyDiagnosticService",
         "cas": false,
         "owner_check": false
+      },
+      {
+        "name": "seal_target_proof_set",
+        "begin": "BEGIN IMMEDIATE",
+        "owner": "TargetStartGateAuthority",
+        "cas": false,
+        "owner_check": true
+      },
+      {
+        "name": "create_target_start_gate",
+        "begin": "BEGIN IMMEDIATE",
+        "owner": "TargetStartGateAuthority",
+        "cas": false,
+        "owner_check": true
+      },
+      {
+        "name": "mint_cleanup_eligibility",
+        "begin": "BEGIN IMMEDIATE",
+        "owner": "CleanupEligibilityService",
+        "cas": false,
+        "owner_check": true
+      },
+      {
+        "name": "mint_failure_cleanup",
+        "begin": "BEGIN IMMEDIATE",
+        "owner": "CleanupService",
+        "cas": false,
+        "owner_check": true
+      },
+      {
+        "name": "mint_promotion_cleanup",
+        "begin": "BEGIN IMMEDIATE",
+        "owner": "CleanupService",
+        "cas": false,
+        "owner_check": true
+      },
+      {
+        "name": "mint_quarantine",
+        "begin": "BEGIN IMMEDIATE",
+        "owner": "QuarantineService",
+        "cas": false,
+        "owner_check": true
+      },
+      {
+        "name": "mint_target_never_released",
+        "begin": "BEGIN IMMEDIATE",
+        "owner": "TargetStartGateAuthority",
+        "cas": false,
+        "owner_check": true
+      },
+      {
+        "name": "mint_target_released",
+        "begin": "BEGIN IMMEDIATE",
+        "owner": "TargetStartGateAuthority",
+        "cas": false,
+        "owner_check": true
+      },
+      {
+        "name": "persist_authority_claim_snapshot",
+        "begin": "BEGIN IMMEDIATE",
+        "owner": "AttributionService",
+        "cas": false,
+        "owner_check": true
+      },
+      {
+        "name": "persist_authority_ownership_snapshot",
+        "begin": "BEGIN IMMEDIATE",
+        "owner": "LeaseAuthority",
+        "cas": false,
+        "owner_check": true
+      },
+      {
+        "name": "recover_orphaned_planned_attempt",
+        "begin": "BEGIN IMMEDIATE",
+        "owner": "RecoveryService",
+        "cas": false,
+        "owner_check": true
       }
     ]
   },

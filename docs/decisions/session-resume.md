@@ -1,6 +1,6 @@
 # Decision: Session Resume
 
-> Status: target-design / historical decision record. This is not a statement of current `reliability_preview` availability. The compiled capability registry and `docs/reliability-preview.md` control; autonomous dispatch, resume/reconciliation, cross-vendor review, and delivery remain unavailable.
+> Status: target-design / historical decision record. This is not a statement of current `reliability_preview` availability. The compiled capability registry and `docs/reliability-preview.md` control; parallel dispatch, cross-vendor review, and delivery remain unavailable.
 
 ## Component
 §2 matrix row — session resume (restore a paused/crashed pipeline to where it was and continue).

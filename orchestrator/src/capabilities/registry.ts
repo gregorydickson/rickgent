@@ -270,7 +270,7 @@ const PUBLIC_SURFACES: readonly PublicSurfaceEntry[] = Object.freeze([
     result: "unknown command",
     exit_code: 2,
     stable_code: INPUT_CONTRACT_ERROR_CODE,
-    boundary: "Retry has no public CLI command; the resume/retry capability remains unavailable.",
+    boundary: "Retry has no public CLI command; use `build --resume` for explicit run resume.",
   }),
   capabilitySurface({
     surface: "rickgent reconcile",

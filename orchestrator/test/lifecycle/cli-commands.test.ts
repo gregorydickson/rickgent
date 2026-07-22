@@ -147,8 +147,11 @@ describe("CLI commands", () => {
         timeout: 10000,
         env: { ...process.env, RICKGENT_DIR: join(tmp, ".rickgent") },
       });
-      expect(result.status).toBe(3);
-      expect(result.stderr).toContain("RICKGENT_RECONCILIATION_UNAVAILABLE");
+      // reconciliation is activated (t29); reconcile passes the gate and
+      // returns ok with 0 tickets (no state store to reconcile from).
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("rebuilt=false");
+      expect(result.stdout).toContain("ticketsFound=0");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

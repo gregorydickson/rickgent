@@ -81,10 +81,11 @@ describe("t22D production cutover and legacy removal", () => {
     expect(entry.proof_version).toBe("attempt-runner-critical-section-v1");
     expect(entry.reason.length).toBeGreaterThan(0);
     // The remaining capabilities are NOT activated by t22D.
+    // t29 activated resume_retry and reconciliation; they are now enabled.
     const byName = new Map(capabilityRegistry().map((e) => [e.name, e]));
     expect(byName.get("parallel_dispatch")!.state).toBe("unavailable");
-    expect(byName.get("resume_retry")!.state).toBe("unavailable");
-    expect(byName.get("reconciliation")!.state).toBe("unavailable");
+    expect(byName.get("resume_retry")!.state).toBe("enabled");
+    expect(byName.get("reconciliation")!.state).toBe("enabled");
     expect(byName.get("cross_vendor_review")!.state).toBe("unavailable");
     expect(byName.get("automatic_delivery")!.state).toBe("unavailable");
     expect(byName.get("raw_shell")!.state).toBe("unavailable");
@@ -146,17 +147,20 @@ describe("t22D production cutover and legacy removal", () => {
     const rickgentDir = join(repo, ".rickgent");
     const dataDir = join(repo, "data");
     const agentDir = join(repoRoot, "agents", "rickgent");
-    // runPipeline requires reconciliation (still unavailable — t29 scope) for
-    // its cleanup chain; it fails closed at the capability gate BEFORE any
-    // legacy run-workspace provisioning.  The legacy path is not used.
-    await expect(runPipeline({
+    // runPipeline now passes the reconciliation capability gate (t29 activated
+    // it) and proceeds to the build phase.  Containment is unavailable (no
+    // docker on PATH), so the production path fails closed with an
+    // infrastructure error.  The legacy run-workspace path is not used.
+    const result = await runPipeline({
       prdPath: join(repoRoot, "fixtures", "prd-min.md"),
       workingDir: repo,
       rickgentDir,
       agentDir,
       dataDir,
       env: noDockerEnv({ RICKGENT_DIR: rickgentDir }),
-    })).rejects.toThrow("RICKGENT_RECONCILIATION_UNAVAILABLE");
+    });
+    // The production path fails closed (containment unavailable).
+    expect(result.outcome.status).not.toBe("ok");
     const refs = execFileSync("git", ["-C", repo, "for-each-ref", "--format=%(refname)"], {
       encoding: "utf-8",
     }).trim();

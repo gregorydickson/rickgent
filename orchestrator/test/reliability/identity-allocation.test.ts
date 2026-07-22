@@ -513,17 +513,17 @@ describe("immutable run and contract allocation", () => {
 });
 
 describe("attempt allocation, retry, and explicit resume", () => {
-  it("keeps public resume unavailable while exposing only the explicit internal selector", () => {
+  it("activates resume_retry with the correct proof reference while retry remains rejected", () => {
     expect(getCapability("resume_retry")).toMatchObject({
-      state: "unavailable",
-      error_code: "RICKGENT_RESUME_UNAVAILABLE",
+      state: "enabled",
+      error_code: "RICKGENT_RESUME_ACTIVE",
     });
     expect(publicSurfaceRegistry()).toContainEqual(expect.objectContaining({
       surface: "build|pipeline --resume",
-      mode: "public_blocked",
-      mutation_authority: "none",
+      mode: "public_local_artifact",
+      mutation_authority: "local_artifact_only",
       capability: "resume_retry",
-      exit_code: 3,
+      exit_code: null,
     }));
     expect(publicSurfaceRegistry()).toContainEqual(expect.objectContaining({
       surface: "rickgent retry",

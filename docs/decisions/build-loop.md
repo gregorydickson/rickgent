@@ -1,6 +1,6 @@
 # Decision: Build Loop (B1 / M3)
 
-> Status: target-design / historical decision record. This is not a statement of current `reliability_preview` availability. The compiled capability registry and `docs/reliability-preview.md` control; autonomous dispatch, resume/reconciliation, cross-vendor review, and delivery remain unavailable.
+> Status: target-design / historical decision record. This is not a statement of current `reliability_preview` availability. The compiled capability registry and `docs/reliability-preview.md` control; parallel dispatch, cross-vendor review, and delivery remain unavailable.
 
 ## Target component
 `rickgent build <prd>`, `rickgent build --resume`, `rickgent pipeline <prd>` — the

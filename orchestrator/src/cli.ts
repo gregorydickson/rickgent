@@ -84,7 +84,7 @@ Options:
   --roster <file>           JSON model roster
   --cost-budget <usd>       Hard cost budget per dispatch
   --soft-threshold <usd>    Soft cost threshold
-  --resume                  Resume capability unavailable: exit 3
+  --resume                  Resume from persisted receipts (t29 activated)
   --no-autonomous-pr        Delivery config unavailable: exit 3
   --raw-shell               Raw shell unavailable: exit 3
   --max-iterations <N>      Parsed legacy flag rejected: input exit 2
@@ -106,7 +106,7 @@ Usage:
   rickgent pipeline <prd> [build options]
 
 The strict build option contract and gate order apply. No public pipeline run
-can mutate, resume, reconcile, dispatch in parallel, prove cross-vendor review,
+can dispatch in parallel, prove cross-vendor review,
 run raw shell, deliver, become ready_for_delivery, become delivered, or write
 Done in ${RELEASE_CHANNEL}.
 

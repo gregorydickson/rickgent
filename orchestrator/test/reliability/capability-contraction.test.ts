@@ -63,8 +63,8 @@ describe("M1 capability contraction", () => {
     expect(entries.map((entry) => entry.state)).toEqual([
       "enabled",
       "unavailable",
-      "unavailable",
-      "unavailable",
+      "enabled",
+      "enabled",
       "unavailable",
       "unavailable",
       "unavailable",
@@ -84,10 +84,12 @@ describe("M1 capability contraction", () => {
     expect(json.toolchain.node.status).toMatch(/pass|fail/);
 
     // autonomous_dispatch is activated (t22D); `build <prd>` no longer fails
-    // at the autonomous_dispatch gate.  Use `build --resume` (resume_retry is
-    // still unavailable) to exercise the capability-gate failure path that
-    // prints the registry on startup.
-    const startup = cli(["build", "--resume"]);
+    // at the autonomous_dispatch gate.  resume_retry is activated (t29);
+    // `build --resume` passes the gate and fails at the ticket-contract gate
+    // (missing PRD).  Use `build --raw-shell` (raw_shell still unavailable)
+    // to exercise the capability-gate failure path that prints the registry
+    // on startup.
+    const startup = cli(["build", "/nonexistent/prd.md", "--raw-shell"]);
     expect(startup.status).toBe(3);
     for (const entry of entries) {
       expect(startup.stdout).toContain(`${entry.name}: state=${entry.state}`);
@@ -107,9 +109,10 @@ describe("M1 capability contraction", () => {
     expect(result.gateHit).toBe("ticket-contract-gate");
     expect(existsSync(opts.rickgentDir)).toBe(false);
 
+    // resume_retry is activated (t29); `build --resume` passes the gate and
+    // fails at the ticket-contract gate (missing PRD, exit 2).
     const resume = cli(["build", "--resume"]);
-    expect(resume.status).toBe(3);
-    expect(resume.stderr).toContain("RICKGENT_RESUME_UNAVAILABLE");
+    expect(resume.status).toBe(2);
 
     const parallel = cli(["build", opts.prdPath, "--max-concurrent", "2"]);
     expect(parallel.status).toBe(2);
@@ -125,9 +128,10 @@ describe("M1 capability contraction", () => {
     expect(raw.status).toBe(3);
     expect(raw.stderr).toContain("RICKGENT_RAW_SHELL_UNAVAILABLE");
 
+    // reconciliation is activated (t29); `reconcile` passes the gate and
+    // returns ok with 0 tickets (no state store to reconcile from).
     const rec = cli(["reconcile"]);
-    expect(rec.status).toBe(3);
-    expect(rec.stderr).toContain("RICKGENT_RECONCILIATION_UNAVAILABLE");
+    expect(rec.status).toBe(0);
   });
 
   it("guards direct dispatch, queue, reconcile, review, delivery, and raw-shell boundaries", async () => {
@@ -140,8 +144,10 @@ describe("M1 capability contraction", () => {
     // gate and are exercised through the fixture bridge / dist-fixture tree,
     // not here (proceeding past the gate spawns omnigent, which is
     // non-deterministic in the source-tree test environment).
+    // reconciliation is activated (t29); reconcile() returns ok with 0
+    // tickets (no state store) instead of throwing.
     expect(() => new DispatchQueue(ledger, 2)).toThrow("maxConcurrent must be exactly 1");
-    expect(() => reconcile(root, state)).toThrow("RICKGENT_RECONCILIATION_UNAVAILABLE");
+    expect(reconcile(root, state).ok).toBe(true);
 
     const roster: ModelEntry[] = [{
       harness: "codex",

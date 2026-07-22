@@ -117,7 +117,7 @@ function spawnEntries(ctx: Ctx): string[][] {
 function expectCapabilityBlocked(
   ctx: Ctx,
   args: string[],
-  capabilityDetail: "RICKGENT_RAW_SHELL_UNAVAILABLE" | "RICKGENT_RESUME_UNAVAILABLE",
+  capabilityDetail: "RICKGENT_RAW_SHELL_UNAVAILABLE",
   extraEnv: Record<string, string> = {},
 ): void {
   const statePath = join(ctx.rickgentDir, "microverse.json");
@@ -257,13 +257,14 @@ describe("rickgent microverse CLI (M0)", () => {
     expect(src).not.toMatch(/add -A/);
   });
 
-  // VAL-M0-017: resume wins capability selection before raw-shell parsing.
-  it("--resume is unavailable before raw metric execution or state mutation", () => {
+  // VAL-M0-017: --resume passes (t29 activated); --metric triggers
+  // raw_shell capability gate before execution or state mutation.
+  it("--resume passes (t29); --metric is unavailable before raw metric execution or state mutation", () => {
     initRepo(ctx.repo, 3);
     expectCapabilityBlocked(
       ctx,
       ["--metric", "echo 999", "--task", "noop", "--agent", ctx.agentDir, "--repo", ctx.repo, "--resume"],
-      "RICKGENT_RESUME_UNAVAILABLE",
+      "RICKGENT_RAW_SHELL_UNAVAILABLE",
     );
   });
 });

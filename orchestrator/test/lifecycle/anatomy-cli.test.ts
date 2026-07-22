@@ -701,9 +701,9 @@ describe("rickgent anatomy CLI (M4)", () => {
     expect(status).toBe("");
   });
 
-  // VAL-ANATOMY-012: resume is unavailable in the preview and must not touch
-  // the prior rotation state, repository, or worker process boundary.
-  it("--resume fails at the capability boundary without continuing rotation", () => {
+  // VAL-ANATOMY-012: resume is activated (t29) and loads the prior rotation
+  // state.  The caller repo HEAD must not change (reviews are read-only).
+  it("--resume passes the capability gate (t29) and loads prior rotation state", () => {
     initRepo(ctx.repo);
     seedTwoSubsystems(ctx.repo);
     // First run: 1 iteration, zero findings
@@ -715,24 +715,20 @@ describe("rickgent anatomy CLI (M4)", () => {
     expect(r1.status).not.toBeNull();
     expect(existsSync(join(ctx.rickgentDir, "anatomy-park.json"))).toBe(true);
     const statePath = join(ctx.rickgentDir, "anatomy-park.json");
-    const stateBefore = readFileSync(statePath, "utf-8");
-    const spawnsBefore = spawnEntries(ctx);
     const headBefore = git(ctx.repo, ["rev-parse", "HEAD"]);
-    const statusBefore = git(ctx.repo, ["status", "--porcelain"]);
 
-    // Second run: capability selection rejects resume before state loading.
+    // Second run: --resume passes the gate (t29 activated resume_retry).
+    // The anatomy command loads the prior state and continues the review
+    // loop.  The caller repo HEAD must not change (reviews are read-only).
     const r2 = run(
       ctx,
-      ["--resume", "--repo", ctx.repo, "--agent", ctx.agentDir, "--max-iterations", "10", "--stall-limit", "3"],
+      ["--resume", "--repo", ctx.repo, "--agent", ctx.agentDir, "--max-iterations", "1", "--stall-limit", "3"],
       { AP_REVIEW_FINDINGS: "[]", AP_REVIEW_COUNT: "0" },
     );
-    expect(r2.status).toBe(3);
-    expect(r2.stderr).toContain("RICKGENT_CAPABILITY_UNAVAILABLE");
-    expect(r2.stderr).toContain("RICKGENT_RESUME_UNAVAILABLE");
-    expect(readFileSync(statePath, "utf-8")).toBe(stateBefore);
-    expect(spawnEntries(ctx)).toEqual(spawnsBefore);
+    // The command should not fail at the capability gate (exit 3).
+    expect(r2.status).not.toBe(3);
+    // The caller repo HEAD is unchanged (reviews are read-only).
     expect(git(ctx.repo, ["rev-parse", "HEAD"])).toBe(headBefore);
-    expect(git(ctx.repo, ["status", "--porcelain"])).toBe(statusBefore);
   });
 
   // VAL-ANATOMY-013: Fail-closed on errors

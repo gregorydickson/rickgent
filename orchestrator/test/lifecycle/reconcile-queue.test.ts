@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { reconcile } from "../../src/lifecycle/reconcile.js";
 
-// Prove a fixture capability-gate replacement cannot reactivate the removed
-// legacy queue reconstruction path.
+// Prove that reconciliation (activated by t29) ignores legacy JSONL ledgers
+// and reads only from the durable SQLite state store.
 vi.mock("../../src/capabilities/runtime-gate.js", () => ({
   RUNTIME_CAPABILITY_GATE: Object.freeze({ require(): void {} }),
 }));
 
-describe("resume queue reconstruction is unavailable", () => {
+describe("reconciliation ignores legacy JSONL and reads only the state store", () => {
   const roots: string[] = [];
 
   afterEach(() => {
@@ -18,7 +18,7 @@ describe("resume queue reconstruction is unavailable", () => {
   });
 
   it("cannot reconstruct planned, in-flight, or terminal tickets from JSONL", () => {
-    const root = mkdtempSync(join(tmpdir(), "rickgent-reconcile-queue-unavailable-"));
+    const root = mkdtempSync(join(tmpdir(), "rickgent-reconcile-queue-"));
     roots.push(root);
     const diagnosticDir = join(root, ".rickgent");
     mkdirSync(diagnosticDir, { recursive: true });
@@ -29,8 +29,13 @@ describe("resume queue reconstruction is unavailable", () => {
       { dispatchId: "run/T-DONE/implement/1/worker", state: "completed", commitSha: "deadbeef" },
     ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
 
-    expect(() => reconcile(root, diagnosticDir, ledger)).toThrow(
-      "RICKGENT_RECONCILIATION_UNAVAILABLE",
-    );
+    // reconciliation is activated (t29); the gate passes.  The function
+    // reads only from the state store (<root>/.git/rickgent/state.sqlite3),
+    // which does not exist.  The JSONL ledger is ignored — no tickets are
+    // reconstructed from it.
+    const result = reconcile(root, diagnosticDir, ledger);
+    expect(result.ok).toBe(true);
+    expect(result.ticketsFound).toBe(0);
+    expect(result.rebuilt).toBe(false);
   });
 });
