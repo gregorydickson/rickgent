@@ -906,9 +906,9 @@ describe("M7 scrutiny round 4 — defect 1: remediation loop forwards remediated
     });
     const result = await runner.runAttempt(makeRunnerRequest(fixture));
     // The review provider must have been called at least 3 times:
-    //   1. Initial review in runAttempt (original candidate → reject)
-    //   2. Loop cycle 1 review (original candidate, initial inputs → reject)
-    //   3. Loop cycle 2 review (remediated candidate → accept)
+    //   1. Initial review in runAttempt rejects the original candidate.
+    //   2. Loop cycle 1 review rejects the original candidate and initial inputs.
+    //   3. Loop cycle 2 review accepts the remediated candidate.
     expect(reviewCalls.length).toBeGreaterThanOrEqual(3);
     // The first review call sees the original candidate.
     expect(reviewCalls[0]!.candidateOid).toBe(fixture.candidateOid);
@@ -1182,7 +1182,7 @@ describe("M7 scrutiny round 4 — defect 2: --resume re-enters at recovered step
     updateRow(store.location.databasePath, "runs", "run_id", run.runId, { state: "active", state_version: 1 });
     // Walk attempt1 through the legal transition chain to "failed_clean".
     walkAttemptToState(store.location.databasePath, attempt1.attemptId, "failed_clean");
-    // Walk the ticket state through legal transitions: planned → active → cleanup_pending.
+    // Walk the ticket state from planned through active to cleanup_pending.
     updateRow(store.location.databasePath, "run_tickets", "ticket_instance_id", attempt1.ticketInstanceId, {
       state: "active",
       state_version: 1,
@@ -1241,7 +1241,7 @@ describe("M7 scrutiny round 4 — defect 2: --resume re-enters at recovered step
     // Activate the run (required before retry allocation).
     updateRow(store.location.databasePath, "runs", "run_id", run.runId, { state: "active", state_version: 1 });
     walkAttemptToState(store.location.databasePath, attempt1.attemptId, "failed_clean");
-    // Walk the ticket state through legal transitions: planned → active → cleanup_pending.
+    // Walk the ticket state from planned through active to cleanup_pending.
     updateRow(store.location.databasePath, "run_tickets", "ticket_instance_id", attempt1.ticketInstanceId, {
       state: "active",
       state_version: 1,
