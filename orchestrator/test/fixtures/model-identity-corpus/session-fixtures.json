@@ -1,0 +1,70 @@
+{
+  "schema_version": "rickgent-model-identity-session-fixtures/v1",
+  "description": "Session fixture definitions for the model-identity corpus. Each fixture defines the harness/model overrides and expected observed identity for a test case.",
+  "fixtures": {
+    "codex-gpt5": {
+      "selection": {
+        "harness": "codex",
+        "model": "gpt-5",
+        "vendor": "openai"
+      },
+      "expected_observed_harness": "codex",
+      "expected_observed_model": "gpt-5"
+    },
+    "claude-sdk-sonnet": {
+      "selection": {
+        "harness": "claude-sdk",
+        "model": "claude-sonnet-4-5",
+        "vendor": "anthropic"
+      },
+      "expected_observed_harness": "claude-sdk",
+      "expected_observed_model": "claude-sonnet-4-5"
+    },
+    "alias-claude": {
+      "selection": {
+        "harness": "claude",
+        "model": "claude-sonnet-4-5",
+        "vendor": "anthropic"
+      },
+      "expected_canonical_harness": "claude-sdk",
+      "expected_observed_harness": "claude-sdk",
+      "expected_observed_model": "claude-sonnet-4-5"
+    },
+    "droid-glm": {
+      "selection": {
+        "harness": "droid",
+        "model": "glm-5.2",
+        "vendor": "zhipu"
+      },
+      "expected_observed_harness": "droid",
+      "expected_observed_model": "glm-5.2"
+    }
+  },
+  "mismatch_scenarios": {
+    "harness_mismatch": {
+      "requested_harness": "codex",
+      "observed_harness": "claude-sdk",
+      "expected_error_code": "IDENTITY_MISMATCH",
+      "expected_error_field": "harness"
+    },
+    "model_mismatch": {
+      "requested_model": "gpt-5",
+      "observed_model": "claude-sonnet-4-5",
+      "expected_error_code": "IDENTITY_MISMATCH",
+      "expected_error_field": "model"
+    },
+    "missing_observed": {
+      "observed_harness": null,
+      "observed_model": null,
+      "expected_error_code": "IDENTITY_MISSING"
+    },
+    "stale_session": {
+      "description": "A conversation that existed before the dispatch baseline is not attributed to this dispatch",
+      "expected_error_code": "IDENTITY_MISSING"
+    },
+    "bundle_default_fallback": {
+      "description": "Invoked argv without --harness or --model flags",
+      "expected_error_code": "IDENTITY_BUNDLE_DEFAULT_FALLBACK"
+    }
+  }
+}

@@ -568,14 +568,24 @@ export class Dispatcher {
       let child: ReturnType<typeof spawn>;
       try {
         const runtime = materializedBundle.trustedSpawnCommand;
-        child = spawn(runtime.executable, [
+        // t31: pass the actual selected overrides as --harness/--model CLI
+        // arguments so a selection differing from bundle defaults changes the
+        // actual Omnigent invocation, not just ledger metadata. The overrides
+        // are derived from the router selection (opts.selection), which is
+        // the canonical requested identity. Missing selection fields fail
+        // closed before spawn (the materialization already validates this).
+        const spawnArgv: string[] = [
           ...runtime.argvPrefix,
           "run",
           materializedBundle.bundleDir,
           "--no-session",
-          "-p",
-          opts.prompt,
-        ], {
+        ];
+        if (opts.selection) {
+          spawnArgv.push("--harness", opts.selection.harness);
+          spawnArgv.push("--model", opts.selection.model);
+        }
+        spawnArgv.push("-p", opts.prompt);
+        child = spawn(runtime.executable, spawnArgv, {
           stdio: ["pipe", "pipe", "pipe"],
           cwd: opts.workspace!.worktreeDir,
           // A dedicated process group makes the dispatch own the worker's

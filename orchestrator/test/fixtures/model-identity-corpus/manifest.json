@@ -1,0 +1,63 @@
+{
+  "schema_version": "rickgent-model-identity-corpus/v1",
+  "ticket": "t31",
+  "description": "Identity corpus inventory for observed harness/model identity capture and verification. Exercises the full identity receipt lifecycle through the deterministic fixture omnigent with real compatible Omnigent.",
+  "complete": true,
+  "mismatch_fields": ["model", "harness"],
+  "test_cases": [
+    {
+      "name": "selection-changes-actual-invocation",
+      "description": "A selection differing from bundle defaults changes the actual Omnigent --harness/--model invocation rather than only ledger metadata",
+      "expected": "pass"
+    },
+    {
+      "name": "requested-invoked-observed-receipts-independent",
+      "description": "Requested, invoked, and observed receipts independently record canonical harness/provider/model, bundle/config digest, role, session/conversation ID, provenance, and context digest",
+      "expected": "pass"
+    },
+    {
+      "name": "missing-observed-receipt-fails-closed",
+      "description": "Missing observed identity receipt (no root conversation created) fails closed",
+      "expected": "fail_closed"
+    },
+    {
+      "name": "harness-mismatch-fails-closed",
+      "description": "Harness mismatch between requested and observed fails closed",
+      "expected": "fail_closed"
+    },
+    {
+      "name": "model-mismatch-fails-closed",
+      "description": "Model mismatch between requested and observed fails closed",
+      "expected": "fail_closed"
+    },
+    {
+      "name": "spoofed-transcript-is-not-observation",
+      "description": "Spoofed transcript text in stdout is not treated as identity observation",
+      "expected": "fail_closed"
+    },
+    {
+      "name": "stale-session-fails-closed",
+      "description": "A pre-existing (stale) conversation is not treated as the observed identity for this dispatch",
+      "expected": "fail_closed"
+    },
+    {
+      "name": "bundle-default-fallback-blocks",
+      "description": "Absence of --harness/--model in the invoked argv (bundle-default fallback) blocks identity verification",
+      "expected": "fail_closed"
+    },
+    {
+      "name": "unsupported-alias-fails-closed",
+      "description": "An unsupported alias that does not canonicalize to the same value as requested fails closed",
+      "expected": "fail_closed"
+    },
+    {
+      "name": "identity-receipt-set-digest-stable",
+      "description": "The identity receipt set digest is stable across replays of the same inputs",
+      "expected": "pass"
+    }
+  ],
+  "proof_corpus": [
+    "orchestrator/test/fixtures/model-identity-corpus/manifest.json",
+    "orchestrator/test/fixtures/model-identity-corpus/session-fixtures.json"
+  ]
+}

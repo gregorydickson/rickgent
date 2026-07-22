@@ -55,6 +55,17 @@ function promptArg() {
   return i >= 0 && i + 1 < argv.length ? argv[i + 1] : "";
 }
 
+// t31: read --harness and --model overrides from the omnigent run argv.
+// These are the actual CLI overrides passed by the Dispatcher, independent
+// of the config.yaml. The fixture records them into the chat.db
+// conversations row (harness_override, model_override, session_usage) so
+// the model-identity observer can read them from the external t00 seam.
+function flagArg(flag) {
+  const argv = process.argv;
+  const i = argv.indexOf(flag);
+  return i >= 0 && i + 1 < argv.length ? argv[i + 1] : null;
+}
+
 function pathFromPrompt(prompt) {
   const m = prompt.match(/[\w./-]+\.\w+/);
   return m ? m[0] : "";
@@ -217,7 +228,18 @@ function promptMode() {
   const dataDir = env("OMNIGENT_DATA_DIR");
   if (dataDir) {
     const convId = `conv-${relPath.replace(/[^\w]/g, "_")}-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
-    insertConversation(dataDir, convId, 2, Date.now());
+    const harnessOverride = flagArg("--harness");
+    const modelOverride = flagArg("--model");
+    // Build session_usage JSON with by_model matching the real omnigent's
+    // persisted_model_path: conversations.session_usage.by_model
+    const sessionUsage = modelOverride
+      ? JSON.stringify({ by_model: { [modelOverride]: { input_tokens: 100, output_tokens: 50 } } })
+      : null;
+    insertConversation(dataDir, convId, 2, Date.now(), {
+      harnessOverride,
+      modelOverride,
+      sessionUsage,
+    });
   }
   writeFixtureFile(repo, relPath, `feature implementation for ${relPath}\n`);
   process.exit(0);
@@ -247,7 +269,16 @@ function main() {
     if (dataDir) {
       const convId = env("FIXTURE_CONV_ID", `conv-${Date.now()}-${Math.floor(Math.random() * 1e9)}`);
       const items = parseInt(env("FIXTURE_TRANSCRIPT_ITEMS", "1"), 10);
-      insertConversation(dataDir, convId, Number.isNaN(items) ? 1 : items, Date.now());
+      const harnessOverride = flagArg("--harness");
+      const modelOverride = flagArg("--model");
+      const sessionUsage = modelOverride
+        ? JSON.stringify({ by_model: { [modelOverride]: { input_tokens: 100, output_tokens: 50 } } })
+        : null;
+      insertConversation(dataDir, convId, Number.isNaN(items) ? 1 : items, Date.now(), {
+        harnessOverride,
+        modelOverride,
+        sessionUsage,
+      });
     }
   }
 

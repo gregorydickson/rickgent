@@ -1422,10 +1422,14 @@
         "sha_source": ""
       },
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t30"
-      ]
+      ],
+      "completed_at": {
+        "commit": "c087c575a046a914dfe4a94234e18355f50d8bb0",
+        "phase_report": "docs/remediation/phase-8-t31-observed-identity-execution-report-2026-07-22.md"
+      }
     },
     {
       "id": "t32",

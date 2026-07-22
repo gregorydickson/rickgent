@@ -294,6 +294,10 @@ describe("M1 capture-only dispatch evidence", () => {
       "run",
       bundle.bundleDir,
       "--no-session",
+      "--harness",
+      "codex",
+      "--model",
+      "fixture",
       "-p",
       "implement src/feature.ts",
     ]);
