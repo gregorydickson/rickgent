@@ -72,27 +72,13 @@ describe("registry", () => {
     expect(result?.status).toBe("Todo");
   });
 
-  it("updateTicketState throws for unknown ticket", () => {
-    expect(() => registry.updateTicketState("T-999", { status: "Done" })).toThrow();
-  });
-
-  it("updateTicketState merges updates into existing ticket", () => {
-    const ticket: TicketState = {
-      id: "T-001",
-      title: "Test ticket",
-      status: "Todo",
-      phase: "research",
-      declaredPaths: ["src/"],
-      attempt: 1,
-      completionCommitSha: null,
-      updatedAt: new Date().toISOString(),
-    };
-    registry.save({ runId: "run-1", tickets: { "T-001": ticket }, startedAt: "", updatedAt: "" });
-    registry.updateTicketState("T-001", { status: "In Progress", phase: "implement" });
-    const result = registry.getTicketState("T-001");
-    expect(result?.status).toBe("In Progress");
-    expect(result?.phase).toBe("implement");
-    expect(result?.title).toBe("Test ticket"); // unchanged
+  // (t30) The updateTicketState method has been removed from the Registry
+  // class.  It was a terminal writer shortcut that could set ticket status to
+  // "Done" directly, bypassing the LifecycleEngine.  Ticket status transitions
+  // must go through the LifecycleEngine's transitionAttempt API.  The Registry
+  // remains for read-only status tracking only.
+  it("updateTicketState is no longer a method on Registry (terminal writer removed)", () => {
+    expect(typeof (registry as any).updateTicketState).toBe("undefined");
   });
 
   it("getPipelineStatus returns full state", () => {

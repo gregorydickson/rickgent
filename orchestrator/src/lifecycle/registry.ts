@@ -103,14 +103,14 @@ export class Registry {
     return this.load().tickets[ticketId] ?? null;
   }
 
-  updateTicketState(ticketId: string, updates: Partial<TicketState>): void {
-    const state = this.load();
-    if (!state.tickets[ticketId]) {
-      throw new Error(`ticket ${ticketId} not found in registry`);
-    }
-    state.tickets[ticketId] = { ...state.tickets[ticketId], ...updates, updatedAt: new Date().toISOString() };
-    this.save(state);
-  }
+  // (t30) The updateTicketState method has been removed.  It was a terminal
+  // writer shortcut that could set ticket status to "Done" directly, bypassing
+  // the LifecycleEngine (lifecycle/engine.ts) — the single lifecycle engine.
+  // Ticket status transitions must go through the LifecycleEngine's
+  // transitionAttempt API, which validates against the normative
+  // PHASE_TRANSITION_TABLE and persists durable state_transitions rows.
+  // The Registry class remains for read-only status tracking (load/save/
+  // getTicketState/getPipelineStatus) but cannot terminalize.
 
   getPipelineStatus(): PipelineStatus {
     return this.load();

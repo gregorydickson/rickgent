@@ -1,20 +1,23 @@
-// Evidence-based dispatch completion (B2).
+// Evidence-based dispatch observation utilities (B2).
 //
-// A dispatch reaches `completed` ONLY when all four evidence conditions hold
-// AND the completion oracle passes (architecture §3.3, §8.2 — git-tree-truth >
-// exit code > logs > claims):
-//   (a) db_session_observed — a conversations row created by THIS dispatch,
-//   (b) non-empty transcript — conversation_items for that conversation,
-//   (c) an in-scope git delta measured against the pre-dispatch baseline,
-//   (d) evaluateCompletion returns COMMITTED, invoked with a valid caller.
-// Exit code 0 alone is never completion. Every failure fails closed.
+// This module provides the pure observation functions used to gather git-delta
+// and DB-session evidence for a dispatch.  The terminal completion decision
+// itself is handled solely by Oracle v2 (evaluateAttemptOracle in
+// state/oracle.ts) via CompletionService (lifecycle/completion-service.ts) —
+// the single production completion predicate (t28/t30 VAL-ORC-005).
+//
+// The legacy gatherCompletionEvidence function that called the core
+// evaluateCompletion with a nullable gate flag was a second terminal predicate
+// shortcut and has been removed (t30).  The useful pure observation
+// functions (captureGitBaseline, measureGitDelta, observeDbSession,
+// captureConversationIds, isolatedDataDir) remain for diagnostic and
+// evidence-gathering use.
 
 import { execFileSync } from "child_process";
 import { existsSync } from "fs";
 import { join } from "path";
 import { DatabaseSync } from "node:sqlite";
 import { isPathInScope } from "../core/scope.js";
-import { evaluateCompletion, type CompletionInput } from "../core/completion.js";
 
 export interface GitBaseline {
   /** HEAD sha at dispatch start; null if the repo has no commits / is unreadable. */
@@ -192,65 +195,10 @@ export function observeDbSession(dataDir: string, baselineConvIds: Set<string>):
   return { conversationId: newest.id, transcriptCount: countTranscript(dataDir, newest.id) };
 }
 
-export interface CompletionEvidenceContext {
-  repoDir: string;
-  dataDir: string;
-  baseline: GitBaseline;
-  baselineConvIds: Set<string>;
-  declaredPaths: string[];
-}
-
-export interface CompletionEvidence {
-  dbObserved: boolean;
-  conversationId: string | null;
-  transcriptCount: number;
-  inScopePaths: string[];
-  oraclePass: boolean;
-  oracleVerdict: string;
-  /** Commit sha the delta landed on (persisted to the ledger for reconcile). */
-  commitSha: string | null;
-  /** Baseline HEAD sha the delta was measured against. */
-  baselineSha: string;
-  /** Whether the tree changed relative to the baseline. */
-  treeChanged: boolean;
-  /** True iff ALL four evidence conditions hold and the oracle passed. */
-  completed: boolean;
-}
-
-/**
- * Gather all completion evidence for a dispatch and decide, fail-closed,
- * whether it may be marked `completed`. The completion oracle is the single
- * predicate; it is invoked here with the allowlisted `dispatch.completion`
- * caller.
- */
-export function gatherCompletionEvidence(ctx: CompletionEvidenceContext): CompletionEvidence {
-  const observation = observeDbSession(ctx.dataDir, ctx.baselineConvIds);
-  const dbObserved = observation.conversationId !== null;
-  const transcriptNonEmpty = observation.transcriptCount > 0;
-
-  const delta = measureGitDelta(ctx.repoDir, ctx.baseline, ctx.declaredPaths);
-  const inScope = delta.inScopePaths.length > 0;
-
-  const input: CompletionInput = {
-    claimedSha: delta.claimedSha,
-    baselineSha: delta.baselineSha,
-    shaExists: delta.shaExists,
-    treeChanged: delta.treeChanged,
-    gateGreen: null,
-  };
-  const verdict = evaluateCompletion(input, "dispatch.completion");
-  const oraclePass = verdict.verdict === "COMMITTED";
-
-  return {
-    dbObserved,
-    conversationId: observation.conversationId,
-    transcriptCount: observation.transcriptCount,
-    inScopePaths: delta.inScopePaths,
-    oraclePass,
-    oracleVerdict: verdict.verdict,
-    commitSha: delta.claimedSha,
-    baselineSha: delta.baselineSha,
-    treeChanged: delta.treeChanged,
-    completed: dbObserved && transcriptNonEmpty && inScope && oraclePass,
-  };
-}
+// (t30) The gatherCompletionEvidence function and CompletionEvidence types
+// have been removed.  They provided a second terminal predicate via the core
+// evaluateCompletion with a nullable gate flag, bypassing Oracle v2.  The single
+// production completion predicate is Oracle v2 (evaluateAttemptOracle) via
+// CompletionService.  The pure observation functions above (captureGitBaseline,
+// measureGitDelta, observeDbSession, captureConversationIds, isolatedDataDir)
+// remain for evidence gathering.

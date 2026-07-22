@@ -25,8 +25,13 @@ export interface CompletionInput {
  * Branded identity of every code path allowed to invoke the completion oracle.
  * Each member must correspond to a real `evaluateCompletion` call site — a value
  * with no call site is a phantom entry and fails the AC-5 import-graph audit.
+ *
+ * (t30) The `dispatch.completion` caller has been removed — the production
+ * completion predicate is Oracle v2 (evaluateAttemptOracle) via
+ * CompletionService.  evaluateCompletion is now a diagnostic-only pure
+ * function used solely by the `rickgent verdict` CLI.
  */
-export type CompletionCaller = "cli.verdict" | "dispatch.completion";
+export type CompletionCaller = "cli.verdict";
 
 /**
  * ALLOWED callers of evaluateCompletion — pinned by test (AC-5).
@@ -34,7 +39,6 @@ export type CompletionCaller = "cli.verdict" | "dispatch.completion";
  */
 export const ALLOWED_COMPLETION_CALLERS: ReadonlySet<CompletionCaller> = new Set<CompletionCaller>([
   "cli.verdict",
-  "dispatch.completion",
 ]);
 
 export function evaluateCompletion(input: CompletionInput, caller: CompletionCaller): CompletionVerdict {
