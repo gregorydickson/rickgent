@@ -1038,6 +1038,26 @@ describe("M7 scrutiny round 4 — defect 1: remediation loop forwards remediated
     const reReviewPhaseExecIds = reviewCalls.slice(1).map((c) => c.phaseExecutionId);
     const uniqueIds = new Set(reReviewPhaseExecIds);
     expect(uniqueIds.size).toBe(reReviewPhaseExecIds.length);
+
+    // Scrutiny round 7: EVERY review call's phaseExecutionId MUST exist as
+    // a durable row in the phase_executions table.  This proves the
+    // phaseExecutionId is NOT a fabricated string — it's backed by a real
+    // StateStore row created by resolveExecutionContext.
+    for (const call of reviewCalls) {
+      const phaseDb = new DatabaseSync(fixture.store.location.databasePath, { readOnly: true });
+      try {
+        const phaseRow = phaseDb.prepare(
+          "SELECT 1 FROM phase_executions WHERE phase_execution_id = ?",
+        ).get(call.phaseExecutionId);
+        expect(phaseRow).toBeDefined();
+        const ctxRow = phaseDb.prepare(
+          "SELECT 1 FROM execution_contexts WHERE context_id = ?",
+        ).get(call.contextId);
+        expect(ctxRow).toBeDefined();
+      } finally {
+        phaseDb.close();
+      }
+    }
   });
 
 // ===========================================================================

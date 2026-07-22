@@ -1264,26 +1264,47 @@ export class AttemptRunner {
       // this, the freshReviewPhase preserves the original reviewPhase's
       // phaseExecutionId and contextId, causing the re-review record to
       // conflict with the immutable original review record (same IDs).
-      const freshReviewerContextIdFn = (cycle: number): string =>
-        `reviewer-ctx-${attemptId}-cycle-${cycle}`;
+      //
+      // t27-fix-round-7 (scrutiny round 7): The hook MUST call the real
+      // execution context resolver (this.#executionContext.resolveExecutionContext)
+      // to create a FRESH durable execution context per re-review cycle.
+      // The fresh context has durable phaseExecutionId, contextId, and
+      // contextDigest backed by a real StateStore row.  Do NOT generate IDs
+      // via string concatenation — use the real authority API so review
+      // records have proper lineage to durable StateStore rows.
       const loopReviewProvider = this.#providers.review ?? defaultReview;
       let loopReviewCycleCount = 0;
       const loopReviewHook: ReviewHook = (inputs) => {
         loopReviewCycleCount++;
-        // Construct a FRESH review phase per cycle using the contextDigest
-        // from the loop's ReviewImmutableInputs AND fresh phaseExecutionId
-        // and contextId derived from the cycle number.  The
-        // runBoundedRemediationLoop updates inputs.contextDigest after each
-        // remediation cycle, so each re-review receives a different
-        // contextDigest than the original review.  The phaseExecutionId and
-        // contextId are derived from the cycle number so each re-review
-        // record has a unique identity that does not conflict with the
-        // immutable original review record.
+        // Resolve a FRESH durable execution context per re-review cycle
+        // through the real authority API.  Each cycle uses a unique
+        // phaseOrdinal (2 + cycle) so the StateStore creates a new
+        // execution_contexts row and phase_executions row with durable
+        // phaseExecutionId, contextId, and contextDigest.
+        const freshReviewContext = this.#executionContext.resolveExecutionContext({
+          attempt: request.attempt,
+          contract: request.contract,
+          phase: "review",
+          phaseOrdinal: 2 + loopReviewCycleCount,
+          role: "reviewer",
+          ownership: acquired,
+          policyBundle: {
+            kind: "materialized_authenticated_policy_bundle",
+            policyRoot: dirname(acquired.plan.policyContextPath),
+            bundleDir: acquired.plan.policyBundlePath,
+            requestedBundleSha256: createHash("sha256").update(acquired.plan.policyBundlePath, "utf8").digest("hex"),
+          },
+          modelSelection: { harness: "fixture", model: "fixture", vendor: "fixture" },
+          timeoutMs: request.timeoutMs,
+          callerRepositoryRealpath: request.callerRepositoryRealpath,
+        });
         const freshReviewPhase: SupervisedPhaseIdentity = {
-          ...reviewPhase,
-          phaseExecutionId: `${reviewPhase.phaseExecutionId}-remediation-cycle-${loopReviewCycleCount}`,
-          contextId: freshReviewerContextIdFn(loopReviewCycleCount),
-          contextDigest: inputs.contextDigest as `sha256:${string}`,
+          phaseExecutionId: freshReviewContext.persisted.phaseExecutionId,
+          contextId: freshReviewContext.persisted.contextId,
+          contextDigest: freshReviewContext.persisted.contextDigest as `sha256:${string}`,
+          phase: "review",
+          phaseOrdinal: 2 + loopReviewCycleCount,
+          role: "reviewer",
         };
         // Build a fresh attribution using the remediated candidate OID
         // from the loop's immutable inputs.  The re-review must see the
@@ -1346,6 +1367,14 @@ export class AttemptRunner {
       };
 
       // Fresh reviewer context per cycle.
+      // The freshReviewerContextId and freshReviewerContextDigest are used
+      // by the loop's internal mechanics (ReviewerIdentity for
+      // authority-collapse detection and contextDigest update between
+      // cycles).  The hook resolves its own durable context via the real
+      // authority API, so these are only used for the loop's
+      // authority-collapse check (ensuring reviewer != worker) and the
+      // inter-cycle contextDigest update (which the hook ignores in favor
+      // of the resolved context's digest).
       const loopRequest: RemediationLoopRequest = {
         maxReviewCycles: Math.max(maxReviewCycles, 1),
         remediationLimit: Math.max(remediationLimit, 0),
@@ -1353,8 +1382,10 @@ export class AttemptRunner {
         worker: loopWorker,
         reviewHook: loopReviewHook,
         remediationHook: loopRemediationHook,
-        freshReviewerContextId: freshReviewerContextIdFn,
-        freshReviewerContextDigest: (cycle) => `sha256:reviewer-ctx-${attemptId}-cycle-${cycle}`,
+        freshReviewerContextId: (cycle: number): string =>
+          `reviewer-loop-${attemptId}-cycle-${cycle}`,
+        freshReviewerContextDigest: (cycle: number): string =>
+          `sha256:reviewer-loop-${attemptId}-cycle-${cycle}`,
       };
 
       const loopOutcome: RemediationLoopOutcome = runBoundedRemediationLoop(loopRequest);
