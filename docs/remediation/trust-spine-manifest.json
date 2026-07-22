@@ -1307,10 +1307,14 @@
         "orchestrator/test/fixtures/crash-matrix/fault-points.json"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t28"
-      ]
+      ],
+      "completed_at": {
+        "commit": "8971fef59031b88d069707de6f2d5c7ad2fd3068",
+        "execution_report": "docs/remediation/phase-7-resume-reconcile-parity-execution-report-2026-07-22.md"
+      }
     },
     {
       "id": "t30",

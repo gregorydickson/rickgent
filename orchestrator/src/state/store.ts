@@ -1918,6 +1918,142 @@ export class StateStore {
   }
 
   /**
+   * Recover an orphaned planned attempt (allocated but never activated) as a
+   * typed no-side-effect cleanup image.  This is the t29 response-lost retry
+   * recovery path: a retry allocation was committed to SQLite before response
+   * loss, but the caller never observed the response and no execution context,
+   * lease, or process was ever persisted.
+   *
+   * The method atomically:
+   *   1. Validates the attempt is in "planned" state with zero execution
+   *      contexts, zero ownership leases, and zero process receipts (no side
+   *      effects were ever activated).
+   *   2. Transitions the attempt from "planned" to "cleanup_pending" to
+   *      "failed_clean" via durable state_transitions rows with
+   *      owner_service = "RecoveryService" and a typed input_digest that
+   *      records the cleanup reason ("response_lost_retry_allocation") and
+   *      the no-side-effect confirmation.
+   *   3. Transitions the owning run_ticket to "cleanup_pending" if it is
+   *      "active" (so retry allocation sees the correct ticket state).
+   *
+   * The typed cleanup image is the pair of state_transitions rows with
+   * owner_service = "RecoveryService" and input_digest carrying the cleanup
+   * metadata.  No evidence row is inserted because the evidence table
+   * requires a non-null context_id, and the orphaned planned attempt has no
+   * execution context.
+   *
+   * Idempotent: if the attempt is already "failed_clean" with a matching
+   * RecoveryService transition, the method returns the existing cleanup
+   * transition id without re-transitioning.  If the attempt is in any other
+   * non-terminal state, it fails closed.
+   *
+   * @returns The transition id of the typed cleanup record (the
+   *          cleanup_pending -> failed_clean transition).
+   */
+  recoverOrphanedPlannedAttempt(attemptId: string, idempotencyKey: string): string {
+    return this.#immediate("recover_orphaned_planned_attempt", () => {
+      const db = this.#requireDatabase();
+      const attempt = db.prepare(
+        "SELECT state, state_version, ticket_instance_id, run_id, ticket_id, attempt_number FROM attempts WHERE attempt_id = ?",
+      ).get(attemptId) as MutableStateRecord | undefined;
+      if (attempt === undefined) {
+        throw typedError("RICKGENT_STATE_RESUME_INCOMPATIBLE", "orphaned planned cleanup: attempt does not exist", this.location.databasePath);
+      }
+      const currentState = String(attempt.state);
+      // Idempotent: if already failed_clean, check for existing RecoveryService transition
+      if (currentState === "failed_clean") {
+        const existing = db.prepare(
+          "SELECT transition_id FROM state_transitions WHERE attempt_id = ? AND idempotency_key = ? AND to_state = 'failed_clean'",
+        ).get(attemptId, `${idempotencyKey}#failed_clean`) as MutableStateRecord | undefined;
+        if (existing !== undefined) return String(existing.transition_id);
+        throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "orphaned planned cleanup: attempt is failed_clean but has no matching cleanup transition", this.location.databasePath);
+      }
+      if (currentState !== "planned") {
+        throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", `orphaned planned cleanup: attempt is ${currentState}, not planned`, this.location.databasePath);
+      }
+      // Validate no side effects were ever activated
+      const sideEffects = db.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM execution_contexts WHERE attempt_id = ?) AS contexts,
+          (SELECT COUNT(*) FROM attempt_ownership_leases WHERE attempt_id = ?) AS leases,
+          (SELECT COUNT(*) FROM process_receipts p JOIN phase_executions x ON x.phase_execution_id = p.phase_execution_id WHERE x.attempt_id = ?) AS receipts
+      `).get(attemptId, attemptId, attemptId) as MutableStateRecord;
+      const contextCount = Number(sideEffects.contexts);
+      const leaseCount = Number(sideEffects.leases);
+      const receiptCount = Number(sideEffects.receipts);
+      if (contextCount > 0 || leaseCount > 0 || receiptCount > 0) {
+        throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL",
+          `orphaned planned cleanup: attempt has side effects (contexts=${contextCount}, leases=${leaseCount}, receipts=${receiptCount})`,
+          this.location.databasePath);
+      }
+      // Check idempotency: if cleanup transition already exists for this key, complete if needed
+      const existingTransition = db.prepare(
+        "SELECT transition_id, to_state FROM state_transitions WHERE attempt_id = ? AND idempotency_key = ?",
+      ).get(attemptId, `${idempotencyKey}#failed_clean`) as MutableStateRecord | undefined;
+      if (existingTransition !== undefined) {
+        // The cleanup was already completed — return the existing transition id
+        return String(existingTransition.transition_id);
+      }
+      // Build the typed cleanup metadata for the input_digest
+      const cleanupMetadata = canonicalJson({
+        attempt_id: attemptId,
+        attempt_number: Number(attempt.attempt_number),
+        cleanup_reason: "response_lost_retry_allocation",
+        no_side_effects_confirmed: true,
+        context_count: 0,
+        lease_count: 0,
+        receipt_count: 0,
+      });
+      // Transition attempt: planned -> cleanup_pending
+      const seqRow1 = db.prepare(
+        "SELECT COALESCE(MAX(entity_sequence), 0) + 1 AS next_sequence FROM state_transitions WHERE attempt_id = ?",
+      ).get(attemptId) as MutableStateRecord;
+      const transitionId1 = `transition-${randomBytes(16).toString("hex")}`;
+      this.#insert("state_transitions", {
+        transition_id: transitionId1,
+        run_id: null,
+        ticket_instance_id: null,
+        attempt_id: attemptId,
+        entity_sequence: Number(seqRow1.next_sequence),
+        from_state: "planned",
+        to_state: "cleanup_pending",
+        owner_service: "RecoveryService",
+        owner_context_digest: "sha256:" + "0".repeat(64),
+        input_digest: sha256Text(canonicalJson({ attempt_id: attemptId, idempotency_key: idempotencyKey, from_state: "planned", to_state: "cleanup_pending", cleanup_reason: "response_lost_retry_allocation" })),
+        idempotency_key: `${idempotencyKey}#cleanup_pending`,
+        created_at: new Date().toISOString(),
+      });
+      db.prepare("UPDATE attempts SET state = 'cleanup_pending', state_version = state_version + 1 WHERE attempt_id = ?").run(attemptId);
+      // Transition ticket to cleanup_pending if active
+      db.prepare(
+        "UPDATE run_tickets SET state = 'cleanup_pending', state_version = state_version + 1 " +
+        "WHERE ticket_instance_id = ? AND state = 'active'",
+      ).run(String(attempt.ticket_instance_id));
+      // Transition attempt: cleanup_pending -> failed_clean
+      const seqRow2 = db.prepare(
+        "SELECT COALESCE(MAX(entity_sequence), 0) + 1 AS next_sequence FROM state_transitions WHERE attempt_id = ?",
+      ).get(attemptId) as MutableStateRecord;
+      const transitionId2 = `transition-${randomBytes(16).toString("hex")}`;
+      this.#insert("state_transitions", {
+        transition_id: transitionId2,
+        run_id: null,
+        ticket_instance_id: null,
+        attempt_id: attemptId,
+        entity_sequence: Number(seqRow2.next_sequence),
+        from_state: "cleanup_pending",
+        to_state: "failed_clean",
+        owner_service: "RecoveryService",
+        owner_context_digest: "sha256:" + "0".repeat(64),
+        input_digest: sha256Text(canonicalJson({ attempt_id: attemptId, idempotency_key: idempotencyKey, from_state: "cleanup_pending", to_state: "failed_clean", cleanupMetadata })),
+        idempotency_key: `${idempotencyKey}#failed_clean`,
+        created_at: new Date().toISOString(),
+      });
+      db.prepare("UPDATE attempts SET state = 'failed_clean', state_version = state_version + 1 WHERE attempt_id = ?").run(attemptId);
+      return transitionId2;
+    });
+  }
+
+  /**
    * Queries the current state of an attempt.  Used by the AttemptRunner to
    * determine which legal-edge transitions still need to be walked.
    */

@@ -193,6 +193,26 @@ const REQUIRED_POINT_IDS = [
   "terminal_commit_delivered",
   "terminal_commit_failed",
   "legacy_inventory",
+  "runner_run_activation",
+  "runner_ticket_activation",
+  "attempt_cleanup_pending_transition",
+  "claims_quarantine_transition",
+  "ticket_cleanup_pending_transition",
+  "target_proof_set_seal",
+  "target_start_gate_create",
+  "quarantine_ownership_finalize",
+  "cleanup_eligibility_mint",
+  "failure_cleanup_mint",
+  "promotion_cleanup_mint",
+  "quarantine_mint",
+  "target_never_released_mint",
+  "target_released_mint",
+  "authority_claim_snapshot",
+  "authority_commit_attribution",
+  "authority_evidence",
+  "authority_ownership_snapshot",
+  "authority_process_chain",
+  "orphaned_planned_cleanup",
 ] as const;
 
 const REQUIRED_ASSERTIONS = [
@@ -211,7 +231,7 @@ const REQUIRED_ASSERTIONS = [
   "busy_is_not_success",
   "no_replay",
   "no_manufactured_terminal",
-  "public_resume_remains_disabled",
+  "public_resume_activated_after_proof",
 ] as const;
 
 const DYNAMIC_IMPLEMENTATION_OPERATIONS = [
@@ -308,6 +328,26 @@ const REQUIRED_POINT_PROJECTIONS: Readonly<Record<(typeof REQUIRED_POINT_IDS)[nu
   terminal_commit_delivered: ["delivery_terminal_rows", "finalize_delivery", "finalize_delivery", "semantic_suite", TRANSITION_SUITE, DELIVERY_PROOF, "t29"],
   terminal_commit_failed: ["delivery_terminal_rows", "finalize_delivery", "finalize_delivery", "semantic_suite", TRANSITION_SUITE, DELIVERY_PROOF, "t29"],
   legacy_inventory: ["legacy_inventory_rows", "inventory_legacy", "inventory_legacy", "semantic_suite", LEGACY_SUITE, LEGACY_PROOF, null],
+  runner_run_activation: ["runner_activation", "transition_entity_cas", "activate_run_for_runner", "semantic_suite", "orchestrator/test/reliability/attempt-critical-section.test.ts", "the AttemptRunner is the sole production owner exported from attempt-runner.ts", null],
+  runner_ticket_activation: ["runner_activation", "transition_entity_cas", "activate_ticket_for_runner", "semantic_suite", "orchestrator/test/reliability/attempt-critical-section.test.ts", "the AttemptRunner is the sole production owner exported from attempt-runner.ts", null],
+  attempt_cleanup_pending_transition: ["attempt_cleanup_transition", "transition_entity_cas", "advance_attempt_cleanup_pending", "semantic_suite", "orchestrator/test/reliability/lifecycle-transitions.test.ts", "declares every failure edge (any pre-cleanup state to cleanup_pending)", null],
+  claims_quarantine_transition: ["claims_quarantine", "transition_entity_cas", "advance_claims_quarantined", "semantic_suite", "orchestrator/test/reliability/lifecycle-transitions.test.ts", "declares cleanup terminal edges", null],
+  ticket_cleanup_pending_transition: ["ticket_cleanup_transition", "transition_entity_cas", "advance_ticket_cleanup_pending", "semantic_suite", "orchestrator/test/reliability/lifecycle-transitions.test.ts", "declares every failure edge (any pre-cleanup state to cleanup_pending)", null],
+  target_proof_set_seal: ["target_proof_rows", "seal_target_proof_set", "create_and_seal_authority_target_proof_set", "semantic_suite", "orchestrator/test/reliability/disposition-store-bridge.test.ts", "atomically persists the receipt, evidence, and gate transition in one transaction", null],
+  target_start_gate_create: ["target_start_gate_rows", "create_target_start_gate", "create_held_target_start_gate", "semantic_suite", "orchestrator/test/reliability/containment-authority.test.ts", "exports the full interface surface (create/membership/release/kill/empty-death/receipts)", null],
+  quarantine_ownership_finalize: ["quarantine_ownership_rows", "transition_entity_cas", "finalize_quarantine_ownership", "semantic_suite", "orchestrator/test/reliability/disposition-authority.test.ts", "rejects structural and prototype forgeries across all five proof types", null],
+  cleanup_eligibility_mint: ["cleanup_eligibility_rows", "mint_cleanup_eligibility", "mint_cleanup_eligibility", "semantic_suite", "orchestrator/test/reliability/disposition-store-bridge.test.ts", "atomically persists the receipt, evidence, and gate transition in one transaction", null],
+  failure_cleanup_mint: ["failure_cleanup_rows", "mint_failure_cleanup", "mint_failure_cleanup", "semantic_suite", "orchestrator/test/reliability/disposition-store-bridge.test.ts", "a failure-cleanup receipt cannot satisfy promotion finalization", null],
+  promotion_cleanup_mint: ["promotion_cleanup_rows", "mint_promotion_cleanup", "mint_promotion_cleanup", "semantic_suite", "orchestrator/test/reliability/disposition-store-bridge.test.ts", "a promotion-cleanup receipt cannot satisfy failure or quarantine finalization", null],
+  quarantine_mint: ["quarantine_rows", "mint_quarantine", "mint_quarantine", "semantic_suite", "orchestrator/test/reliability/disposition-store-bridge.test.ts", "a quarantine receipt cannot satisfy promotion or failure finalization", null],
+  target_never_released_mint: ["target_never_released_rows", "mint_target_never_released", "mint_target_never_released", "semantic_suite", "orchestrator/test/reliability/disposition-store-bridge.test.ts", "rejects a stale-generation receipt that does not bind the exact gate lineage", null],
+  target_released_mint: ["target_released_rows", "mint_target_released", "mint_target_released", "semantic_suite", "orchestrator/test/reliability/containment-authority.test.ts", "exports the full interface surface (create/membership/release/kill/empty-death/receipts)", null],
+  authority_claim_snapshot: ["authority_snapshot_rows", "persist_authority_claim_snapshot", "persist_authority_claim_snapshot", "semantic_suite", "orchestrator/test/reliability/disposition-store-bridge.test.ts", "replays identical inputs to the identical immutable postimage", null],
+  authority_commit_attribution: ["authority_attribution_rows", "commit_attribution_finalize", "persist_authority_commit_attribution", "semantic_suite", "orchestrator/test/reliability/git-attribution-corpus.test.ts", "finalizes exact attribution after the ref CAS and exactly replays response loss", null],
+  authority_evidence: ["authority_evidence_rows", "append_evidence", "persist_authority_evidence", "semantic_suite", "orchestrator/test/reliability/disposition-store-bridge.test.ts", "replays identical inputs to the identical immutable postimage", null],
+  authority_ownership_snapshot: ["authority_ownership_rows", "persist_authority_ownership_snapshot", "persist_authority_ownership_snapshot", "semantic_suite", "orchestrator/test/reliability/disposition-store-bridge.test.ts", "replays identical inputs to the identical immutable postimage", null],
+  authority_process_chain: ["authority_process_chain_rows", "process_supervisor_terminal", "persist_authority_process_chain", "semantic_suite", "orchestrator/test/reliability/process-supervisor-corpus.test.ts", "persists a nonzero terminal outcome and contains every owned resource for cleanup", null],
+  orphaned_planned_cleanup: ["orphaned_cleanup_rows", "recover_orphaned_planned_attempt", "recover_orphaned_planned_attempt", "semantic_suite", "orchestrator/test/reliability/recovery-parity.test.ts", "recovers the orphaned planned attempt as a typed no-side-effect cleanup image", null],
 };
 
 afterEach(async () => {
@@ -817,14 +857,14 @@ describe("bounded state crash and retry proof", () => {
     }
     expect(manifest.deferred_recovery).toEqual({
       operational_lease_and_resource_ownership: "t18",
-      process_group_spawn_and_death: "t29",
-      external_git_commit_recovery: "t29",
+      process_group_spawn_and_death: "t29_complete",
+      external_git_commit_recovery: "t29_complete",
       salvage_and_cleanup_side_effects: "t21",
-      operation_specific_recovery_and_oracle_parity: "t29",
+      operation_specific_recovery_and_oracle_parity: "t29_complete",
     });
-    expect(manifest.public_capability).toEqual({ resume_retry: "unavailable", reconciliation: "unavailable" });
-    expect(getCapability("resume_retry").state).toBe("unavailable");
-    expect(getCapability("reconciliation").state).toBe("unavailable");
+    expect(manifest.public_capability).toEqual({ resume_retry: "enabled", reconciliation: "enabled" });
+    expect(getCapability("resume_retry").state).toBe("enabled");
+    expect(getCapability("reconciliation").state).toBe("enabled");
   });
 
   it("proves old/new WAL visibility at the real pre-COMMIT and post-COMMIT/pre-return checkpoints", async () => {

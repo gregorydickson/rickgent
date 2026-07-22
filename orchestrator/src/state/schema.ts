@@ -261,6 +261,17 @@ export const STATE_TRANSACTION_NAMES = deepFreeze([
   "append_pr_observation",
   "finalize_delivery",
   "inventory_legacy",
+  "seal_target_proof_set",
+  "create_target_start_gate",
+  "mint_cleanup_eligibility",
+  "mint_failure_cleanup",
+  "mint_promotion_cleanup",
+  "mint_quarantine",
+  "mint_target_never_released",
+  "mint_target_released",
+  "persist_authority_claim_snapshot",
+  "persist_authority_ownership_snapshot",
+  "recover_orphaned_planned_attempt",
 ] as const);
 
 export const ATTEMPT_STATES = deepFreeze([

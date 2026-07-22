@@ -4,28 +4,28 @@
   "complete": true,
   "proof_scope": "common_sqlite_commit_boundary_and_internal_retry_identity",
   "inventory_kind": "transaction_projection_not_operation_specific_crash_case",
-  "proof_model": "Phase 17 deterministically kills the one shared BEGIN IMMEDIATE transaction wrapper immediately before COMMIT and immediately after COMMIT but before the Store method returns. The inventory maps every current Store operation to an exact frozen contract transaction where one exists, otherwise explicitly records a null implementation-only mapping, and binds each point to a stable semantic test ID. Retry allocation is exercised directly at both crash checkpoints and under a synchronized allocator race. Operation-specific external-side-effect recovery remains gated to its declared later ticket, with full recovery parity in t29.",
+  "proof_model": "Phase 17 deterministically kills the one shared BEGIN IMMEDIATE transaction wrapper immediately before COMMIT and immediately after COMMIT but before the Store method returns. The inventory maps every current Store operation to an exact frozen contract transaction where one exists, otherwise explicitly records a null implementation-only mapping, and binds each point to a stable semantic test ID. Retry allocation is exercised directly at both crash checkpoints and under a synchronized allocator race. Full recovery parity is proven in t29: resume from persisted receipts, response-lost planned retry cleanup, and reconciliation are activated.",
   "fault_sides": [
     "before_commit",
     "after_commit_before_return"
   ],
   "assertions": [
-    "inventory_exact",
-    "same_canonical_database_path",
-    "state_readable",
-    "integrity_clean",
-    "old_or_new_committed_state",
-    "immutable_prior_evidence",
-    "expected_sigkill_observed",
-    "precommit_rolls_back",
-    "postcommit_survives_without_return",
-    "new_attempt_before_retry_side_effects",
-    "retry_response_loss_selects_planned_attempt",
-    "one_retry_allocator_wins",
     "busy_is_not_success",
-    "no_replay",
+    "expected_sigkill_observed",
+    "immutable_prior_evidence",
+    "integrity_clean",
+    "inventory_exact",
+    "new_attempt_before_retry_side_effects",
     "no_manufactured_terminal",
-    "public_resume_remains_disabled"
+    "no_replay",
+    "old_or_new_committed_state",
+    "one_retry_allocator_wins",
+    "postcommit_survives_without_return",
+    "precommit_rolls_back",
+    "public_resume_activated_after_proof",
+    "retry_response_loss_selects_planned_attempt",
+    "same_canonical_database_path",
+    "state_readable"
   ],
   "fault_points": [
     "open_and_migrate",
@@ -66,31 +66,57 @@
     "pr_observation",
     "terminal_commit_delivered",
     "terminal_commit_failed",
-    "legacy_inventory"
+    "legacy_inventory",
+    "runner_run_activation",
+    "runner_ticket_activation",
+    "attempt_cleanup_pending_transition",
+    "claims_quarantine_transition",
+    "ticket_cleanup_pending_transition",
+    "target_proof_set_seal",
+    "target_start_gate_create",
+    "quarantine_ownership_finalize",
+    "cleanup_eligibility_mint",
+    "failure_cleanup_mint",
+    "promotion_cleanup_mint",
+    "quarantine_mint",
+    "target_never_released_mint",
+    "target_released_mint",
+    "authority_claim_snapshot",
+    "authority_commit_attribution",
+    "authority_evidence",
+    "authority_ownership_snapshot",
+    "authority_process_chain",
+    "orphaned_planned_cleanup"
   ],
   "direct_crash_points": [
     "immutable_evidence_insert",
     "retry_attempt_allocation"
   ],
   "semantic_proof_suites": [
-    "orchestrator/test/reliability/state-store.test.ts",
-    "orchestrator/test/reliability/identity-allocation.test.ts",
-    "orchestrator/test/reliability/transition-authority.test.ts",
-    "orchestrator/test/reliability/oracle-store-integration.test.ts",
+    "orchestrator/test/reliability/attempt-critical-section.test.ts",
     "orchestrator/test/reliability/attempt-ownership.test.ts",
-    "orchestrator/test/reliability/process-supervisor-corpus.test.ts",
+    "orchestrator/test/reliability/containment-authority.test.ts",
+    "orchestrator/test/reliability/disposition-authority.test.ts",
+    "orchestrator/test/reliability/disposition-store-bridge.test.ts",
     "orchestrator/test/reliability/git-attribution-corpus.test.ts",
-    "orchestrator/test/reliability/legacy-state-quarantine.test.ts"
+    "orchestrator/test/reliability/identity-allocation.test.ts",
+    "orchestrator/test/reliability/legacy-state-quarantine.test.ts",
+    "orchestrator/test/reliability/lifecycle-transitions.test.ts",
+    "orchestrator/test/reliability/oracle-store-integration.test.ts",
+    "orchestrator/test/reliability/process-supervisor-corpus.test.ts",
+    "orchestrator/test/reliability/recovery-parity.test.ts",
+    "orchestrator/test/reliability/state-store.test.ts",
+    "orchestrator/test/reliability/transition-authority.test.ts"
   ],
   "deferred_recovery": {
     "operational_lease_and_resource_ownership": "t18",
-    "process_group_spawn_and_death": "t29",
-    "external_git_commit_recovery": "t29",
+    "process_group_spawn_and_death": "t29_complete",
+    "external_git_commit_recovery": "t29_complete",
     "salvage_and_cleanup_side_effects": "t21",
-    "operation_specific_recovery_and_oracle_parity": "t29"
+    "operation_specific_recovery_and_oracle_parity": "t29_complete"
   },
   "public_capability": {
-    "resume_retry": "unavailable",
-    "reconciliation": "unavailable"
+    "resume_retry": "enabled",
+    "reconciliation": "enabled"
   }
 }
