@@ -14,7 +14,6 @@
 // delivery-decision flow.  The push module independently observes the remote
 // OID via `git ls-remote` BEFORE push and enforces OID match after.
 
-import { execFileSync } from "node:child_process";
 import { RUNTIME_CAPABILITY_GATE } from "../capabilities/runtime-gate.js";
 import { executeVerifiedPush, type VerifiedPushRequest, type VerifiedPushResult } from "../delivery/push.js";
 import { executeVerifiedPullRequest, type VerifiedPrRequest, type VerifiedPrResult, type PrProvider } from "../delivery/pull-request.js";
@@ -77,10 +76,12 @@ export function executeDeliveryFlow(
   const { store, repoPath, runId, deliveryOid, remoteName, branchName, baseBranch, provider } = params;
   const authority = params.authority ?? new DeliveryAuthority(store);
 
-  // t33: Independently observe the expected remote OID via git ls-remote
-  // BEFORE push.  This is done inside executeVerifiedPush, which records
-  // the observation through the DeliveryAuthority.
-  const expectedRemoteOid = observeExpectedRemoteOid(repoPath, remoteName, branchName);
+  // t33/t34 scrutiny round 2: The expected remote OID is persisted at delivery
+  // decision time (when the delivery intent is created).  It is NOT freshly
+  // observed here — the caller passes it from the delivery decision.  This
+  // ensures the pre-push ls-remote can detect stale expected OIDs (the remote
+  // ref moved between decision time and push time).
+  const expectedRemoteOid = params.expectedRemoteOid ?? null;
 
   // t33: Execute the verified push.
   const pushRequest: VerifiedPushRequest = {
@@ -139,40 +140,6 @@ export function executeDeliveryFlow(
 }
 
 /**
- * t33: Independently observe the expected remote OID via `git ls-remote`
- * BEFORE push.  This reads the current remote ref state so the push module
- * can detect ref races and non-fast-forward situations.
- *
- * Uses `execFileSync` with array argv — never shell strings.
- */
-function observeExpectedRemoteOid(
-  repoPath: string,
-  remoteName: string,
-  branchName: string,
-): string | null {
-  const ref = `refs/heads/${branchName}`;
-  try {
-    const output = execFileSync("git", ["-C", repoPath, "ls-remote", remoteName, ref], {
-      encoding: "utf8",
-      timeout: 10_000,
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
-    if (output === "") {
-      return null;
-    }
-    const parts = output.split("\t");
-    if (parts.length < 2 || !parts[0]!) {
-      return null;
-    }
-    return parts[0]!.trim();
-  } catch {
-    // Remote ref does not exist or ls-remote failed — return null (no
-    // expected remote OID).  The push module handles this as a new branch.
-    return null;
-  }
-}
-
-/**
  * Parameters for the delivery-decision flow.
  */
 export interface DeliveryFlowParams {
@@ -189,6 +156,14 @@ export interface DeliveryFlowParams {
   readonly ownerContextId: string;
   readonly ownerContextDigest: string;
   readonly providerIdentityDigest: string;
+  /**
+   * t33/t34 scrutiny round 2: The expected remote OID persisted at delivery
+   * decision time.  When supplied, executeVerifiedPush compares the fresh
+   * pre-push ls-remote observation with this persisted expected OID.  If they
+   * differ, the push fails closed (stale expected OID rejected).  When null,
+   * no stale check is performed (the remote ref is new).
+   */
+  readonly expectedRemoteOid?: string | null;
   readonly deliveryIntentId?: string;
   readonly idempotencyKey?: string;
   readonly prIdempotencyKey?: string;

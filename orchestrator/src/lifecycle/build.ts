@@ -104,6 +104,9 @@ import { buildAttemptRunnerProviders } from "./attempt-runner-providers.js";
 import { ProcessSupervisor } from "../process/supervisor.js";
 import { resumeRun, type ResumeRunResult, type ResumeTicketPlan } from "./recovery.js";
 import { observeState } from "../state/store.js";
+import { executeDeliveryFlow } from "./pr-flow.js";
+import { GhCliPrProvider } from "../delivery/pull-request.js";
+import { DeliveryAuthority } from "../state/transitions.js";
 
 export interface BuildOptions {
   prdPath: string;
@@ -182,8 +185,24 @@ export interface BuildOptions {
  * The argv is `["omnigent", "run", <agentDir>, "--no-session", "-p", <prompt>]`.
  * The containment backend's `releaseTarget` spawns this inside the boundary.
  */
-function buildOmnigentDispatchArgv(agentDir: string, prompt: string): readonly string[] {
-  return Object.freeze(["omnigent", "run", agentDir, "--no-session", "-p", prompt]);
+function buildOmnigentDispatchArgv(
+  agentDir: string,
+  prompt: string,
+  harness?: string,
+  model?: string,
+): readonly string[] {
+  // t31 scrutiny round 2: Pass the actual selected harness/model overrides
+  // to the omnigent run invocation as --harness and --model CLI flags.
+  // This allows the identity capture to verify that the invoked argv
+  // contains the override flags (no bundle-default fallback).
+  const argv = ["omnigent", "run", agentDir, "--no-session", "-p", prompt];
+  if (harness !== undefined && harness.length > 0) {
+    argv.push("--harness", harness);
+  }
+  if (model !== undefined && model.length > 0) {
+    argv.push("--model", model);
+  }
+  return Object.freeze(argv);
 }
 
 /**
@@ -1027,7 +1046,25 @@ async function executeBuildViaRunner(
       contextDigest: attempt.contractDigest,
       contractDigest: ticket.digest,
     }).prompt_text;
-    const supervisedArgv = dependencies.dispatchArgvOverride ?? buildOmnigentDispatchArgv(opts.agentDir, prompt);
+    // t31 scrutiny round 2: Pass the selected harness/model overrides to
+    // the omnigent run invocation as --harness and --model CLI flags.
+    // Route the dispatch through the model router to select the
+    // harness/model for this ticket's implementer.
+    let selectedHarness: string | undefined;
+    let selectedModel: string | undefined;
+    if (roster.length > 0) {
+      const routeResult = routeDispatch([...roster], "implement", {
+        costBudgetUsd: prepared.plan.costBudgetUsd ?? null,
+        softThresholdUsd: prepared.plan.softThresholdUsd ?? null,
+      });
+      if (routeResult.ok) {
+        selectedHarness = routeResult.selection.harness;
+        selectedModel = routeResult.selection.model;
+      }
+      // If routing fails (DENY), the dispatch proceeds without overrides;
+      // the identity capture will fail closed (no --harness/--model in argv).
+    }
+    const supervisedArgv = dependencies.dispatchArgvOverride ?? buildOmnigentDispatchArgv(opts.agentDir, prompt, selectedHarness, selectedModel);
     const request: AttemptRunnerRequest = {
       attempt,
       run: allocatedRun,
@@ -1182,6 +1219,58 @@ async function executeBuildViaRunner(
       stderr: result.stderrReceipt,
     });
   });
+
+  // t34 scrutiny round 2: Wire executeDeliveryFlow into the real build/
+  // pipeline terminal delivery path.  After all tickets complete, call
+  // executeDeliveryFlow with real providers (GhCliPrProvider for production)
+  // and DeliveryAuthority.  The delivery flow is only invoked when delivery
+  // is configured (autonomous PR flow enabled) and at least one ticket
+  // succeeded.  Delivery failures are recorded as issues but do not prevent
+  // the build from returning its result.
+  if (
+    (opts.autonomousPrFlow !== false) &&
+    base.ticketsDone > 0 &&
+    base.ticketsFailed === 0
+  ) {
+    try {
+      const deliveryStore = openStateStore({ repoPath: opts.workingDir });
+      try {
+        const deliveryAuthority = new DeliveryAuthority(deliveryStore);
+        const deliveryOid = allocatedRun.currentDeliveryOid;
+        const prProvider = new GhCliPrProvider(opts.workingDir);
+        const deliveryResult = executeDeliveryFlow({
+          store: deliveryStore,
+          authority: deliveryAuthority,
+          repoPath: opts.workingDir,
+          runId: allocatedRun.runId,
+          deliveryOid,
+          remoteName: "origin",
+          branchName: opts.featureBranch ?? `rickgent-${allocatedRun.runId}`,
+          baseBranch: "main",
+          expectedRepositoryId: opts.workingDir,
+          provider: prProvider,
+          ownerContextId: `delivery-${allocatedRun.runId}`,
+          ownerContextDigest: allocatedRun.manifestDigest || `sha256:delivery-${allocatedRun.runId}`,
+          providerIdentityDigest: `sha256:gh-cli-provider`,
+        });
+        if (deliveryResult.delivered) {
+          report.push(`build: delivery flow complete — push verified, PR created`);
+        } else {
+          report.push(`build: delivery flow incomplete — push status: ${deliveryResult.pushResult.status}`);
+        }
+      } finally {
+        try { deliveryStore.close(); } catch { /* fail-closed close */ }
+      }
+    } catch (error) {
+      const detail = `delivery flow failed: ${error instanceof Error ? error.message : String(error)}`;
+      report.push(`build: delivery flow error — ${detail}`);
+      issues.push(runIssue({
+        reason: "infrastructure_error", class: "infrastructure",
+        detail,
+      }));
+    }
+  }
+
   return finishBuild({ ...base }, issues);
 }
 

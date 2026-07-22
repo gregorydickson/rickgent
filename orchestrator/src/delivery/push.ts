@@ -51,6 +51,7 @@ export type VerifiedPushResult =
   | { readonly status: "rejected"; readonly deliveryIntentId: string; readonly reason: string; readonly exitCode: number | null }
   | { readonly status: "timeout"; readonly deliveryIntentId: string; readonly reason: string }
   | { readonly status: "mismatch"; readonly deliveryIntentId: string; readonly observedRemoteOid: string; readonly expectedOid: string }
+  | { readonly status: "stale"; readonly deliveryIntentId: string; readonly reason: string }
   | { readonly status: "infrastructure_error"; readonly deliveryIntentId: string; readonly reason: string };
 
 
@@ -157,6 +158,28 @@ export function executeVerifiedPush(request: VerifiedPushRequest): VerifiedPushR
       deliveryIntentId: request.deliveryIntentId,
       reason: `delivery intent creation failed: ${message}`,
     };
+  }
+
+  // t33 scrutiny round 2: Pre-push stale expected OID check.  The expected
+  // remote OID was persisted at delivery decision time (in the delivery
+  // intent).  Before pushing, observe the current remote ref via ls-remote
+  // and compare with the persisted expected OID.  If they differ, the
+  // expected OID is stale (the remote ref moved between decision time and
+  // push time) — fail closed (stale expected OID rejected).
+  if (request.expectedRemoteOid !== null && request.expectedRemoteOid !== undefined) {
+    const prePushLsRemote = executeLsRemote(repoPath, remoteName, branchName, request.timeoutMs);
+    if (prePushLsRemote.kind === "ok") {
+      if (prePushLsRemote.oid !== request.expectedRemoteOid) {
+        return {
+          status: "stale" as const,
+          deliveryIntentId: request.deliveryIntentId,
+          reason: `stale expected remote OID: pre-push ls-remote observed ${prePushLsRemote.oid.slice(0, 12)} but persisted expected OID is ${request.expectedRemoteOid.slice(0, 12)}`,
+        };
+      }
+    }
+    // If ls-remote returns error (e.g., remote ref doesn't exist yet),
+    // proceed — the push will create the ref.  Only a mismatch with a
+    // non-null expected OID is a stale rejection.
   }
 
   // 3. Check existing remote observations for idempotent resume.

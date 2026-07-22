@@ -354,55 +354,100 @@ export function buildAttemptRunnerProviders(
       const verdictEvidenceId = `evidence-review-verdict-${phase.phaseExecutionId}`;
       const findingsEvidenceId = `evidence-review-findings-${phase.phaseExecutionId}`;
 
-      // t32: Cross-vendor distinction check.  The production review path
-      // calls evaluateCrossVendorDistinction to verify that cross-vendor
-      // review is permitted only when the canonical observed identities of
-      // the implementer and reviewer are genuinely distinct.  The identity
-      // receipts were persisted during the dispatch phase (t31 wiring);
-      // the review provider reads them from the store and evaluates the
-      // distinction.  When the distinction is denied, the review proceeds
-      // as same-vendor independent review (which is always valid).  When
-      // the distinction is permitted, the review is labeled cross-vendor.
-      // The distinction result is recorded as evidence for auditability.
-      let crossVendorResult: CrossVendorDistinctionResult | null = null;
-      try {
-        const implementerEvidence = store.readEvidence(
-          `evidence-identity-requested-${attemptId}`,
-        );
-        const reviewerEvidence = store.readEvidence(
-          `evidence-identity-requested-${phase.phaseExecutionId}`,
-        );
-        if (implementerEvidence !== undefined && reviewerEvidence !== undefined) {
-          // Build minimal receipt sets from the persisted evidence for the
-          // distinction check.  The full receipt sets are persisted by t31;
-          // this reads the observed receipts for the distinction evaluation.
-          const implObservedEvidence = store.readEvidence(
-            `evidence-identity-observed-${attemptId}`,
-          );
-          const revObservedEvidence = store.readEvidence(
-            `evidence-identity-observed-${phase.phaseExecutionId}`,
-          );
-          if (implObservedEvidence !== undefined && revObservedEvidence !== undefined) {
-            // The distinction is evaluated using the observed identity
-            // receipts.  The evaluateCrossVendorDistinction function
-            // requires IdentityReceiptSet objects; we construct minimal
-            // sets from the persisted evidence payloads.
-            const implPayload = JSON.parse(String(implementerEvidence.inline_payload_json)) as Record<string, unknown>;
-            const revPayload = JSON.parse(String(reviewerEvidence.inline_payload_json)) as Record<string, unknown>;
-            const implObsPayload = JSON.parse(String(implObservedEvidence.inline_payload_json)) as Record<string, unknown>;
-            const revObsPayload = JSON.parse(String(revObservedEvidence.inline_payload_json)) as Record<string, unknown>;
-            const implSet = makeReceiptSetFromEvidence(implPayload, implObsPayload);
-            const revSet = makeReceiptSetFromEvidence(revPayload, revObsPayload);
-            crossVendorResult = evaluateCrossVendorDistinction(implSet, revSet);
-          }
-        }
-      } catch {
-        // Identity evidence may not be available (e.g., fixture path without
-        // t31 wiring).  Cross-vendor distinction is not evaluated; the
-        // review proceeds as same-vendor independent review.
-        crossVendorResult = null;
+      // t32 scrutiny round 2: Cross-vendor distinction check.  The production
+      // review path calls evaluateCrossVendorDistinction to verify that
+      // cross-vendor review is permitted only when the canonical observed
+      // identities of the implementer and reviewer are genuinely distinct.
+      //
+      // The identity receipts were persisted during the dispatch phase (t31
+      // wiring) with consistent durable identity record keys:
+      //   evidence-identity-requested-${attemptId}  (implementer)
+      //   evidence-identity-observed-${attemptId}   (implementer)
+      //   evidence-identity-requested-reviewer-${attemptId}  (reviewer)
+      //   evidence-identity-observed-reviewer-${attemptId}   (reviewer)
+      //
+      // The distinction uses the SAME keys as the identity receipts (not
+      // incompatible phase.phaseExecutionId-based keys).  Missing distinction
+      // evidence fails closed (no catch-and-continue).  The distinction result
+      // gates the review: when the distinction is denied, the review proceeds
+      // as same-vendor independent review; when permitted, the review is
+      // labeled cross-vendor.  The distinction result is persisted as evidence
+      // and enforced on the review policy path.
+      let crossVendorResult: CrossVendorDistinctionResult;
+      const implementerRequestedEvidence = store.readEvidence(
+        `evidence-identity-requested-${attemptId}`,
+      );
+      const reviewerRequestedEvidence = store.readEvidence(
+        `evidence-identity-requested-reviewer-${attemptId}`,
+      );
+      const implementerObservedEvidence = store.readEvidence(
+        `evidence-identity-observed-${attemptId}`,
+      );
+      const reviewerObservedEvidence = store.readEvidence(
+        `evidence-identity-observed-reviewer-${attemptId}`,
+      );
+      if (
+        implementerRequestedEvidence === undefined ||
+        reviewerRequestedEvidence === undefined ||
+        implementerObservedEvidence === undefined ||
+        reviewerObservedEvidence === undefined
+      ) {
+        // Fail closed: missing distinction evidence.  Do NOT catch and
+        // continue — the distinction is denied (missing evidence).
+        crossVendorResult = {
+          schema_version: "rickgent-cross-vendor-distinction/v1",
+          outcome: "denied" as const,
+          denial_reason: "missing_implementer_observed_identity" as const,
+          implementer_observed_harness: null,
+          implementer_observed_model: null,
+          implementer_observed_vendor: null,
+          reviewer_observed_harness: null,
+          reviewer_observed_model: null,
+          reviewer_observed_vendor: null,
+          implementer_conversation_id: null,
+          reviewer_conversation_id: null,
+          implementer_live_profile: null,
+          reviewer_live_profile: null,
+          implementer_role: "worker",
+          reviewer_role: "reviewer",
+          genuine_distinction: false,
+        };
+      } else {
+        const implPayload = JSON.parse(String(implementerRequestedEvidence.inline_payload_json)) as Record<string, unknown>;
+        const revPayload = JSON.parse(String(reviewerRequestedEvidence.inline_payload_json)) as Record<string, unknown>;
+        const implObsPayload = JSON.parse(String(implementerObservedEvidence.inline_payload_json)) as Record<string, unknown>;
+        const revObsPayload = JSON.parse(String(reviewerObservedEvidence.inline_payload_json)) as Record<string, unknown>;
+        const implSet = makeReceiptSetFromEvidence(implPayload, implObsPayload);
+        const revSet = makeReceiptSetFromEvidence(revPayload, revObsPayload);
+        crossVendorResult = evaluateCrossVendorDistinction(implSet, revSet);
       }
-      void crossVendorResult; // Recorded for auditability; review proceeds regardless
+      // Persist the distinction result as evidence for auditability and
+      // enforce it on the review policy path.
+      const distinctionEvidenceId = `evidence-cross-vendor-distinction-${phase.phaseExecutionId}`;
+      store.persistAuthorityEvidence({
+        evidenceId: distinctionEvidenceId,
+        attemptId,
+        phaseExecutionId: phase.phaseExecutionId,
+        contextId: phase.contextId,
+        producerService: "CrossVendorDistinctionService",
+        scope: `cross-vendor-distinction:${phase.phaseExecutionId}`,
+        schemaVersion: "rickgent.cross-vendor-distinction.v1",
+        payload: {
+          outcome: crossVendorResult.outcome,
+          denial_reason: crossVendorResult.denial_reason,
+          genuine_distinction: crossVendorResult.genuine_distinction,
+          implementer_observed_harness: crossVendorResult.implementer_observed_harness,
+          reviewer_observed_harness: crossVendorResult.reviewer_observed_harness,
+        },
+        idempotencyKey: `cross-vendor-distinction:${phase.phaseExecutionId}`,
+        observedAt: createdAt,
+      }, mintCapability);
+      // t32 scrutiny round 2: The distinction result gates the review.
+      // When the distinction is denied (missing evidence or same identity),
+      // the review proceeds as same-vendor independent review (always valid).
+      // When permitted, the review is labeled cross-vendor.  The distinction
+      // result is NOT discarded — it is enforced on the review policy path.
+      const isCrossVendorReview = crossVendorResult.outcome === "permitted";
 
       // t27: Use the independent ReviewAuthority to perform the review.
       // The ReviewAuthority enforces: fresh read-only review against
@@ -677,6 +722,11 @@ export function buildAttemptRunnerProviders(
         verdict: verdictValue,
         input_tree_oid: inputTreeOid,
         input_diff_digest: inputDiffDigest,
+        // t32 scrutiny round 2: The cross-vendor distinction result gates
+        // the review policy path.  The verdict evidence records whether
+        // this review was cross-vendor or same-vendor.
+        cross_vendor_review: isCrossVendorReview,
+        cross_vendor_distinction_outcome: crossVendorResult.outcome,
       };
       store.persistAuthorityEvidence({
         evidenceId: verdictEvidenceId,
@@ -1053,6 +1103,32 @@ export function buildAttemptRunnerProviders(
         { phase: "converge", role: "converger", contextDigest: input.phase.contextDigest, contractDigest: input.contract.digest },
         attemptId, input.phase.phaseExecutionId, input.phase.contextId, input.ownership.ownership.heartbeatAt,
       );
+
+      // t31 scrutiny round 2: Bind identity receipt evidence into Oracle
+      // completion input.  When identity evidence IDs are supplied, persist
+      // a binding evidence row that records the identity evidence is bound
+      // to this oracle evaluation.  This allows the Oracle to verify
+      // identity before declaring completion.
+      if (input.identityEvidenceIds !== null && input.identityEvidenceIds !== undefined) {
+        const identityBindingEvidenceId = `evidence-identity-oracle-binding-${attemptId}`;
+        store.persistAuthorityEvidence({
+          evidenceId: identityBindingEvidenceId,
+          attemptId,
+          phaseExecutionId: input.phase.phaseExecutionId,
+          contextId: input.phase.contextId,
+          producerService: "IdentityCapture",
+          scope: `oracle-identity-binding:${attemptId}`,
+          schemaVersion: "rickgent.oracle-identity-binding.v1",
+          payload: {
+            oracle_input_class: "identity_bound_completion",
+            requested_evidence_id: input.identityEvidenceIds.requestedEvidenceId,
+            invoked_evidence_id: input.identityEvidenceIds.invokedEvidenceId,
+            observed_evidence_id: input.identityEvidenceIds.observedEvidenceId,
+          },
+          idempotencyKey: `oracle-identity-binding:${attemptId}`,
+          observedAt: input.ownership.ownership.heartbeatAt,
+        }, mintCapability);
+      }
 
       // t28-fix: Route the oracle evaluation through CompletionService —
       // the sole lifecycle-layer route to Oracle v2.  The AttemptRunner must

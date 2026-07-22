@@ -435,6 +435,13 @@ export interface OracleInput {
   readonly verification: VerificationResult;
   readonly cleanupEligibilityRecordId: string;
   readonly contract: TicketContract;
+  /**
+   * t31 scrutiny round 2: Identity receipt evidence IDs bound into the
+   * Oracle completion input.  When present, the Oracle can verify identity
+   * before declaring completion.  When null, no identity capture was
+   * performed (e.g., fixture path without t31 wiring).
+   */
+  readonly identityEvidenceIds?: { readonly requestedEvidenceId: string; readonly invokedEvidenceId: string; readonly observedEvidenceId: string } | null;
 }
 
 /**
@@ -1083,6 +1090,22 @@ export class AttemptRunner {
       });
     }
     noteKey("dispatch");
+    // t31 scrutiny round 2: Capture the conversation baseline BEFORE dispatch
+    // (not after).  The baseline is the set of conversation IDs that already
+    // exist in the isolated chat.db before the dispatch creates new ones.
+    // If the baseline is captured after dispatch, it would include the
+    // dispatch's new conversation, making captureObservedIdentity find no
+    // new root conversation (it's in the baseline).  Capturing before
+    // dispatch ensures only conversations created BY this dispatch are
+    // observed.
+    let preDispatchBaselineIds: Set<string> | null = null;
+    if (
+      !isStepPast("dispatch") &&
+      request.omnigentDataDir !== undefined
+    ) {
+      const preDispatchDataDir = isolatedDataDir(request.omnigentDataDir, productionPhase.phaseExecutionId);
+      preDispatchBaselineIds = captureConversationIds(preDispatchDataDir);
+    }
     // Scrutiny round 5: when resuming past dispatch, skip the dispatch
     // provider call — the dispatch was already completed (a process
     // terminal receipt exists).  Reconstruct the supervised result from
@@ -1117,10 +1140,14 @@ export class AttemptRunner {
     // wiring — the identity capture functions are called here, not just from
     // standalone tests.
     //
+    // The conversation baseline was captured BEFORE dispatch (above) so
+    // only conversations created BY this dispatch are observed.
+    //
     // Only capture identity when the dispatch produced a terminal process
     // (not spawn_error/infrastructure_error) and when the omnigent data dir
     // and execution context are available.  A failure in identity
     // verification fails closed to infrastructure_failed.
+    let identityEvidenceIds: { readonly requestedEvidenceId: string; readonly invokedEvidenceId: string; readonly observedEvidenceId: string } | null = null;
     if (
       supervised.outcome !== "spawn_error" &&
       supervised.outcome !== "infrastructure_error" &&
@@ -1129,7 +1156,8 @@ export class AttemptRunner {
     ) {
       try {
         const dispatchDataDir = isolatedDataDir(request.omnigentDataDir, productionPhase.phaseExecutionId);
-        const baselineConvIds = captureConversationIds(dispatchDataDir);
+        // Use the pre-dispatch baseline (captured before the dispatch call).
+        const baselineConvIds = preDispatchBaselineIds ?? new Set<string>();
         // Construct the dispatch_id and role from the resolved context.
         const durableCtx = context.canonical.context;
         const dispatchId = `${durableCtx.run_id}/${durableCtx.ticket_id}/${durableCtx.phase}/${durableCtx.attempt_number}/${durableCtx.role}`;
@@ -1191,7 +1219,7 @@ export class AttemptRunner {
           invoked: invokedReceipt,
           observed: observedReceipt,
         });
-        persistIdentityReceipts(
+        identityEvidenceIds = persistIdentityReceipts(
           this.#store,
           receiptSet,
           attemptId,
@@ -2157,6 +2185,10 @@ export class AttemptRunner {
       verification,
       contract: request.contract,
       cleanupEligibilityRecordId: eligibilityReceipt.record.cleanup_eligibility_record_id as string,
+      // t31 scrutiny round 2: Bind identity receipt evidence into Oracle
+      // completion input so the Oracle can verify identity before declaring
+      // completion.
+      identityEvidenceIds,
     });
     if (oracle.result === "rejected") {
       const deathReceipt = await this.#killAndMintDeath(boundary);

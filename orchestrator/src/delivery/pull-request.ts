@@ -23,6 +23,7 @@
  * - Fail closed when any dependency is unavailable.
  */
 
+import { execFileSync } from "node:child_process";
 import type { StateStore } from "../state/store.js";
 import type { DeliveryAuthority } from "../state/transitions.js";
 
@@ -301,4 +302,119 @@ function classifyProviderError(message: string): VerifiedPrResult {
     return { status: "infrastructure_error", reason: `malformed provider JSON: ${message}` };
   }
   return { status: "infrastructure_error", reason: `provider error: ${message}` };
+}
+
+/**
+ * t34 scrutiny round 2: Production PR provider that wraps the `gh` CLI with
+ * array argv (execFileSync).  Implements the {@link PrProvider} interface
+ * for real production delivery.
+ *
+ * All gh commands use array argv — never shell strings.  JSON output is
+ * parsed via `gh --json` structured output.  Fail closed on any gh error.
+ */
+export class GhCliPrProvider implements PrProvider {
+  readonly #repoPath: string;
+
+  constructor(repoPath: string) {
+    this.#repoPath = repoPath;
+  }
+
+  findExistingPr(headBranch: string, baseBranch: string): PrProviderResult | null {
+    try {
+      const output = execFileSync("gh", [
+        "pr", "list",
+        "--repo", this.#repoPath,
+        "--head", headBranch,
+        "--base", baseBranch,
+        "--state", "open",
+        "--json", "number,url,headRefOid,baseRefName,headRefName,repository",
+      ], {
+        encoding: "utf8",
+        timeout: 30_000,
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+      if (output === "") return null;
+      const prs = JSON.parse(output) as Array<{
+        number: number;
+        url: string;
+        headRefOid: string;
+        baseRefName: string;
+        headRefName: string;
+        repository: { id: string };
+      }>;
+      if (!Array.isArray(prs) || prs.length === 0) return null;
+      const pr = prs[0]!;
+      return {
+        prNumber: pr.number,
+        prUrl: pr.url,
+        repositoryId: String(pr.repository?.id ?? ""),
+        baseBranch: pr.baseRefName,
+        headBranch: pr.headRefName,
+        headOid: pr.headRefOid,
+      };
+    } catch {
+      // No existing PR or gh error — return null (no existing PR found).
+      return null;
+    }
+  }
+
+  createPr(headBranch: string, baseBranch: string, title: string, body: string): PrProviderResult {
+    const output = execFileSync("gh", [
+      "pr", "create",
+      "--repo", this.#repoPath,
+      "--head", headBranch,
+      "--base", baseBranch,
+      "--title", title,
+      "--body", body,
+      "--json", "number,url,headRefOid,baseRefName,headRefName,repository",
+    ], {
+      encoding: "utf8",
+      timeout: 30_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    const pr = JSON.parse(output) as {
+      number: number;
+      url: string;
+      headRefOid: string;
+      baseRefName: string;
+      headRefName: string;
+      repository: { id: string };
+    };
+    return {
+      prNumber: pr.number,
+      prUrl: pr.url,
+      repositoryId: String(pr.repository?.id ?? ""),
+      baseBranch: pr.baseRefName,
+      headBranch: pr.headRefName,
+      headOid: pr.headRefOid,
+    };
+  }
+
+  queryPrHead(prNumber: number): PrProviderResult {
+    const output = execFileSync("gh", [
+      "pr", "view", String(prNumber),
+      "--repo", this.#repoPath,
+      "--json", "number,url,headRefOid,baseRefName,headRefName,repository",
+    ], {
+      encoding: "utf8",
+      timeout: 30_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    const pr = JSON.parse(output) as {
+      number: number;
+      url: string;
+      headRefOid: string;
+      baseRefName: string;
+      headRefName: string;
+      repository: { id: string };
+    };
+    return {
+      prNumber: pr.number,
+      prUrl: pr.url,
+      repositoryId: String(pr.repository?.id ?? ""),
+      baseBranch: pr.baseRefName,
+      headBranch: pr.headRefName,
+      headOid: pr.headRefOid,
+    };
+  }
 }
