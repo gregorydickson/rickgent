@@ -127,8 +127,9 @@ describe("reliability-preview claim contract", () => {
     const surfaces = publicSurfaceRegistry();
     // autonomous_dispatch is activated (t22D): build/pipeline are now
     // enabled production surfaces (local_artifact_only mutation authority via
-    // the AttemptRunner).  The non-mutating local-artifact writers remain
-    // prd --non-interactive and citadel.
+    // the AttemptRunner).  automatic_delivery is activated (t34): --feature/
+    // --no-autonomous-pr are now local_artifact surfaces too.  The non-
+    // mutating local-artifact writers remain prd --non-interactive and citadel.
     const localArtifactSurfaces = surfaces.filter((entry) => entry.mutation_authority === "local_artifact_only");
     expect(localArtifactSurfaces.map((entry) => entry.surface)).toEqual([
       "rickgent build <prd>",
@@ -136,6 +137,7 @@ describe("reliability-preview claim contract", () => {
       "rickgent prd --non-interactive [--output <path>]",
       "rickgent citadel [--report <path>]",
       "build|pipeline --resume",
+      "build|pipeline --feature|--no-autonomous-pr",
       "build|pipeline [--max-concurrent 1]",
     ]);
     // The non-mutating local-artifact writers (prd template, citadel report)
@@ -170,11 +172,11 @@ describe("reliability-preview claim contract", () => {
       expect(result.status, `${command}: ${output(result)}`).toBe(0);
       expect(result.stdout.startsWith(RELEASE_LABEL), command).toBe(true);
       expect(result.stdout).toContain(getCapability("raw_shell").error_code);
-      // cross_vendor_review is activated (t32); it is no longer in the
-      // unavailable list of the reliability preview banner. The still-
-      // unavailable capabilities (parallel_dispatch, automatic_delivery,
-      // raw_shell) continue to appear.
-      expect(result.stdout).toContain(getCapability("automatic_delivery").error_code);
+      // cross_vendor_review is activated (t32) and automatic_delivery is
+      // activated (t34); neither is in the unavailable list of the
+      // reliability preview banner. The still-unavailable capabilities
+      // (parallel_dispatch, raw_shell) continue to appear.
+      expect(result.stdout).toContain(getCapability("parallel_dispatch").error_code);
       expect(result.stdout).toContain(LEGACY_HELP_DISCLAIMER);
     }
   });
@@ -183,8 +185,10 @@ describe("reliability-preview claim contract", () => {
     // autonomous_dispatch is activated (t22D); the agent-backed commands
     // (prd/szechuan/anatomy) now proceed past the autonomous_dispatch gate.
     // resume_retry is activated (t29); --resume passes the gate.
-    // The STILL-unavailable capability flags (--raw-shell, --feature)
-    // fail closed before spawn and do not write state.
+    // automatic_delivery is activated (t34); --feature and --no-autonomous-pr
+    // pass the gate and fail at the PRD gate (exit 2).
+    // The STILL-unavailable capability flag (--raw-shell) fails closed before
+    // spawn and does not write state.
     const fixtureBin = join(orchestratorRoot, "test/fixtures/omnigent-fixture");
     const spawnRecord = join(stateRoot, "blocked-legacy-spawn.json");
     const env = {
@@ -192,21 +196,28 @@ describe("reliability-preview claim contract", () => {
       FIXTURE_SPAWN_RECORD: spawnRecord,
     };
     const prd = join(stateRoot, "missing-prd.md");
-    const delivery = getCapability("automatic_delivery").error_code;
     const rawShell = getCapability("raw_shell").error_code;
 
     for (const args of [
-      ["build", prd, "--feature", "topic"],
       ["build", prd, "--raw-shell"],
     ]) {
       const result = cli(args, env);
       expect(result.status, `${args.join(" ")}: ${output(result)}`).toBe(3);
       const error = result.stderr.trim();
       expect(
-        error.startsWith(`${CAPABILITY_UNAVAILABLE_ERROR_CODE}: ${delivery}:`) ||
         error.startsWith(`${CAPABILITY_UNAVAILABLE_ERROR_CODE}: ${rawShell}:`),
         `${args.join(" ")}: ${error}`,
       ).toBe(true);
+    }
+
+    // --feature and --no-autonomous-pr now pass the capability gate and
+    // fail at the PRD/ticket-contract gate (exit 2).
+    for (const args of [
+      ["build", prd, "--feature", "topic"],
+      ["build", prd, "--no-autonomous-pr"],
+    ]) {
+      const result = cli(args, env);
+      expect(result.status, `${args.join(" ")}: ${output(result)}`).toBe(2);
     }
 
     expect(existsSync(spawnRecord)).toBe(false);
@@ -254,7 +265,6 @@ describe("reliability-preview claim contract", () => {
 
   it("matches the public capability exits and ordered stable/detail codes", () => {
     const prd = join(stateRoot, "missing-prd.md");
-    const delivery = getCapability("automatic_delivery").error_code;
     const rawShell = getCapability("raw_shell").error_code;
 
     // autonomous_dispatch is activated (t22D): `build <prd>` no longer fails
@@ -262,8 +272,10 @@ describe("reliability-preview claim contract", () => {
     // closed at the PRD/ticket-contract gate on the missing PRD (exit 2,
     // input contract; the report is printed to stdout).  resume_retry and
     // reconciliation are activated (t29); --resume and reconcile pass the
-    // gate.  Use --raw-shell (still unavailable) to exercise the
-    // capability-gate failure path that prints the registry.
+    // gate.  automatic_delivery is activated (t34); --feature and
+    // --no-autonomous-pr pass the gate and fail at the PRD gate (exit 2).
+    // Use --raw-shell (still unavailable) to exercise the capability-gate
+    // failure path that prints the registry.
     const buildMissing = cli(["build", prd]);
     expect(buildMissing.status, output(buildMissing)).toBe(2);
     expect(buildMissing.stdout).toContain("TICKET CONTRACT GATE");
@@ -272,8 +284,11 @@ describe("reliability-preview claim contract", () => {
     expect(buildConcurrent1.stdout).toContain("TICKET CONTRACT GATE");
     const build = expectCapabilityFailure(["build", prd, "--raw-shell"], rawShell);
     expectCapabilityFailure(["pipeline", prd, "--raw-shell"], rawShell);
-    expectCapabilityFailure(["build", prd, "--feature", "topic"], delivery);
-    expectCapabilityFailure(["build", prd, "--no-autonomous-pr"], delivery);
+    // --feature and --no-autonomous-pr now pass the capability gate (exit 2)
+    const featureResult = cli(["build", prd, "--feature", "topic"]);
+    expect(featureResult.status, output(featureResult)).toBe(2);
+    const noAutonomousPr = cli(["build", prd, "--no-autonomous-pr"]);
+    expect(noAutonomousPr.status, output(noAutonomousPr)).toBe(2);
 
     for (const entry of capabilityRegistry()) {
       expect(build.stdout).toContain(`${entry.name}: state=${entry.state} code=${entry.error_code}`);

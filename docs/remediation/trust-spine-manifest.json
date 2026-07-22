@@ -1544,10 +1544,14 @@
         "orchestrator/test/fixtures/delivery-corpus/manifest.json"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t33"
-      ]
+      ],
+      "completed_at": {
+        "commit": "35d502a69da229b4fba1307ec06d1316266d131a",
+        "phase_report": "docs/remediation/phase-8-t34-idempotent-pr-execution-report-2026-07-22.md"
+      }
     },
     {
       "id": "t35",

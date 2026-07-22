@@ -6491,6 +6491,14 @@ export class StateStore {
     return Object.freeze(rows.map(frozenRow));
   }
 
+  /** List all PR observations for a delivery intent in sequence order. */
+  listPrObservations(deliveryIntentId: string): readonly StateRecord[] {
+    const rows = this.#requireDatabase().prepare(
+      "SELECT * FROM pr_observations WHERE delivery_intent_id = ? ORDER BY sequence ASC",
+    ).all(deliveryIntentId) as MutableStateRecord[];
+    return Object.freeze(rows.map(frozenRow));
+  }
+
   #resolveTransitionEvidence(
     reference: TransitionEvidenceReference,
     ownerService: string,

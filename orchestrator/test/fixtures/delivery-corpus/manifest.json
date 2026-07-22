@@ -1,7 +1,7 @@
 {
   "schema_version": "rickgent.delivery-corpus.v1",
   "complete": true,
-  "description": "Verified push protocol corpus: success, rejection, timeout, response-loss, ref-race against disposable local bare repositories",
+  "description": "Verified push and PR protocol corpus: success, rejection, timeout, response-loss, ref-race for push; no-push, wrong-repo, wrong-head, existing-wrong-head, missing-gh, auth-failure, malformed-json, timeout, head-lag, crash-resume, idempotent-retry for PR; all against disposable local bare repositories and fixture providers",
   "push_failures": [
     {
       "case": "rejection",
@@ -50,5 +50,128 @@
       "delivery intent is persisted with exact OID/remote/branch",
       "remote observation sequence is push=1, ls-remote=2"
     ]
+  },
+  "pr_failures": [
+    {
+      "case": "no-push-before-pr",
+      "description": "PR creation is impossible before a verified push observation exists",
+      "assertions": [
+        "PR protocol returns infrastructure_error",
+        "no PR observation is recorded",
+        "provider is not called",
+        "run remains ready_for_delivery not delivered"
+      ]
+    },
+    {
+      "case": "push-mismatch-before-pr",
+      "description": "PR creation is impossible when ls-remote OID does not match delivery OID",
+      "assertions": [
+        "PR protocol returns infrastructure_error",
+        "run remains ready_for_delivery not delivered"
+      ]
+    },
+    {
+      "case": "wrong-repository",
+      "description": "PR from a wrong repository identity is rejected",
+      "assertions": [
+        "PR protocol returns mismatch with repository reason",
+        "run remains ready_for_delivery not delivered"
+      ]
+    },
+    {
+      "case": "wrong-head",
+      "description": "PR head OID differs from delivery OID is rejected",
+      "assertions": [
+        "PR protocol returns mismatch with head reason",
+        "run remains ready_for_delivery not delivered"
+      ]
+    },
+    {
+      "case": "existing-wrong-head",
+      "description": "Existing PR with wrong head is rejected and not accepted; no duplicate creation",
+      "assertions": [
+        "PR protocol returns mismatch with head reason",
+        "provider find is called but create is not",
+        "run remains ready_for_delivery not delivered"
+      ]
+    },
+    {
+      "case": "missing-gh",
+      "description": "Missing gh command fails closed",
+      "assertions": [
+        "PR protocol returns infrastructure_error with gh in reason",
+        "run remains ready_for_delivery not delivered"
+      ]
+    },
+    {
+      "case": "auth-failure",
+      "description": "Provider auth failure fails closed",
+      "assertions": [
+        "PR protocol returns infrastructure_error with auth in reason",
+        "run remains ready_for_delivery not delivered"
+      ]
+    },
+    {
+      "case": "malformed-json",
+      "description": "Malformed provider JSON fails closed",
+      "assertions": [
+        "PR protocol returns infrastructure_error with malformed/json/parse in reason",
+        "run remains ready_for_delivery not delivered"
+      ]
+    },
+    {
+      "case": "provider-timeout",
+      "description": "Provider timeout fails closed",
+      "assertions": [
+        "PR protocol returns infrastructure_error with timeout/deadline in reason",
+        "run remains ready_for_delivery not delivered"
+      ]
+    },
+    {
+      "case": "head-lag",
+      "description": "Independent query shows lagging head OID different from delivery OID",
+      "assertions": [
+        "PR protocol returns mismatch with head reason",
+        "run remains ready_for_delivery not delivered"
+      ]
+    },
+    {
+      "case": "crash-after-create",
+      "description": "Crash after PR creation but before observation persistence; resume resolves the same PR without duplicate",
+      "assertions": [
+        "resume returns verified",
+        "provider create is not called on resume (find resolves existing PR)",
+        "only one PR observation exists after resume"
+      ]
+    },
+    {
+      "case": "idempotent-retry",
+      "description": "Repeated PR request resolves the same PR without duplicate creation",
+      "assertions": [
+        "both calls return verified",
+        "provider create is called exactly once across both calls",
+        "only one PR observation exists"
+      ]
+    },
+    {
+      "case": "repository-identity-required",
+      "description": "PR from a different repository identity is rejected even with correct head OID",
+      "assertions": [
+        "PR protocol returns mismatch with repository reason",
+        "run remains ready_for_delivery not delivered"
+      ]
+    }
+  ],
+  "pr_success": {
+    "case": "success",
+    "description": "PR created after verified push; independently queried head OID equals delivery OID and repository identity matches",
+    "assertions": [
+      "PR protocol returns verified",
+      "observed head OID equals delivery OID",
+      "repository identity equals expected repository ID",
+      "PR observation persisted with correct provider_repository_id, head_branch, base_branch, observed_head_oid",
+      "provider create is called exactly once"
+    ]
   }
 }
+

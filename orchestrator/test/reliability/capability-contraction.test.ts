@@ -66,7 +66,7 @@ describe("M1 capability contraction", () => {
       "enabled",
       "enabled",
       "enabled",
-      "unavailable",
+      "enabled",
       "unavailable",
     ]);
     for (const entry of entries) {
@@ -118,10 +118,13 @@ describe("M1 capability contraction", () => {
     expect(parallel.status).toBe(2);
     expect(parallel.stderr).toContain("--max-concurrent must be exactly 1");
 
+    // automatic_delivery is activated (t34); --feature and --no-autonomous-pr
+    // pass the capability gate and proceed to the PRD/ticket-contract gate
+    // (missing PRD, exit 2). Use --raw-shell (still unavailable) to exercise
+    // the capability-gate failure path.
     for (const args of [["--feature", "topic"], ["--no-autonomous-pr"]]) {
       const delivery = cli(["build", opts.prdPath, ...args]);
-      expect(delivery.status).toBe(3);
-      expect(delivery.stderr).toContain("RICKGENT_DELIVERY_UNAVAILABLE");
+      expect(delivery.status).toBe(2);
     }
 
     const raw = cli(["build", opts.prdPath, "--raw-shell"]);
@@ -161,7 +164,10 @@ describe("M1 capability contraction", () => {
     // a different vendor model (openai vs anthropic implementer).
     const routeResult = routeDispatch(roster, "code_review", { implementerVendor: "anthropic" });
     expect(routeResult.ok).toBe(true);
-    expect(() => ensureBranch(root, "topic")).toThrow("RICKGENT_DELIVERY_UNAVAILABLE");
+    // automatic_delivery is activated (t34); ensureBranch passes the
+    // capability gate and validates the branch name.
+    expect(() => ensureBranch(root, "")).toThrow("branch name must be a non-empty string");
+    expect(() => ensureBranch(root, "topic")).not.toThrow();
     expect(() => runConformanceGate([], root, cleanEnv())).toThrow("RICKGENT_RAW_SHELL_UNAVAILABLE");
     await expect(runMicroverseCommand(["--metric", "echo 1", "--task", "improve"]))
       .rejects.toThrow("RICKGENT_RAW_SHELL_UNAVAILABLE");

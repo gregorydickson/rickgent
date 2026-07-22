@@ -1,23 +1,26 @@
-// Delivery is intentionally absent from the reliability-preview runtime.
+// Delivery is activated (t34): verified push and idempotent PR creation.
 //
-// The previous prototype evaluated legacy-shaped Python policy events, never
-// executed its advertised push, and could create a PR without proving the
-// remote head. Keeping that code behind a capability flag made the source look
-// more complete than it was. Tickets t36/t37 will add a structured,
-// receipt-backed push/PR protocol; until then this module is only the stable
-// capability boundary imported by contraction tests and historical callers.
+// The `ensureBranch` function is the stable capability boundary imported by
+// contraction tests and historical callers. With automatic_delivery activated,
+// the capability gate passes. The actual push/PR protocol is implemented in
+// `orchestrator/src/delivery/push.ts` and `orchestrator/src/delivery/pull-request.ts`,
+// which enforce verified push (independent ls-remote OID match) and verified
+// idempotent PR creation (queried head OID and repository identity equality)
+// before marking delivered.
 
 import { RUNTIME_CAPABILITY_GATE } from "../capabilities/runtime-gate.js";
 
 /**
- * Reject branch mutation before touching the filesystem or spawning Git.
- * Structured delivery is not implemented in the reliability-preview channel.
+ * Verify the delivery capability is active and the branch name is valid.
+ * The actual push/PR protocol is handled by the delivery module.
  */
 export function ensureBranch(
   _repoDir: string,
-  _branch: string,
+  branch: string,
   _env: NodeJS.ProcessEnv = process.env,
-): never {
+): void {
   RUNTIME_CAPABILITY_GATE.require("automatic_delivery");
-  throw new Error("automatic delivery capability gate returned unexpectedly");
+  if (typeof branch !== "string" || branch.length === 0) {
+    throw new Error("branch name must be a non-empty string");
+  }
 }

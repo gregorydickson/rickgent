@@ -87,7 +87,7 @@ describe("t22D production cutover and legacy removal", () => {
     expect(byName.get("resume_retry")!.state).toBe("enabled");
     expect(byName.get("reconciliation")!.state).toBe("enabled");
     expect(byName.get("cross_vendor_review")!.state).toBe("enabled");
-    expect(byName.get("automatic_delivery")!.state).toBe("unavailable");
+    expect(byName.get("automatic_delivery")!.state).toBe("enabled");
     expect(byName.get("raw_shell")!.state).toBe("unavailable");
   });
 

@@ -1,0 +1,59 @@
+{
+  "schema_version": "rickgent.delivery-corpus-summary.v1",
+  "ticket": "t34",
+  "description": "Verified push (t33) and verified idempotent PR creation (t34) proof corpus summary",
+  "push_cases": {
+    "success": 1,
+    "failures": 4,
+    "total": 5
+  },
+  "pr_cases": {
+    "success": 1,
+    "failures": 13,
+    "total": 14
+  },
+  "negative_proofs": {
+    "no_push_before_pr": true,
+    "push_mismatch_before_pr": true,
+    "wrong_repository": true,
+    "wrong_head": true,
+    "existing_wrong_head": true,
+    "missing_gh": true,
+    "auth_failure": true,
+    "malformed_json": true,
+    "provider_timeout": true,
+    "head_lag": true,
+    "crash_after_create_resume": true,
+    "idempotent_retry_no_duplicate": true,
+    "repository_identity_required": true
+  },
+  "capability_activation": {
+    "capability": "automatic_delivery",
+    "state": "enabled",
+    "error_code": "RICKGENT_DELIVERY_ACTIVE",
+    "proof_version": "delivery-corpus-v1",
+    "activating_ticket": "t34",
+    "reason": "Verified push (independent ls-remote OID match) and verified idempotent PR creation (queried head OID and repository identity equality) are required before marking delivered. Retries resolve the same PR without duplicates or false success."
+  },
+  "invariants_preserved": {
+    "argv_only_execution": true,
+    "no_force_push": true,
+    "independent_ls_remote": true,
+    "fail_closed": true,
+    "idempotent_resume": true,
+    "delivery_authority_persistence": true,
+    "one_oracle_one_matcher": true,
+    "pr_creation_after_verified_push_only": true,
+    "queried_head_oid_equality": true,
+    "repository_identity_equality": true
+  },
+  "test_counts": {
+    "pr_protocol": 14,
+    "delivery_negative": 15,
+    "push_protocol": 8
+  },
+  "known_limitations": [
+    "The PR protocol uses a provider abstraction (PrProvider interface); production uses GhCliPrProvider with execFileSync('gh', [...]). The protected real-provider run remains in t38.",
+    "The push service does not yet wire into the production lifecycle as a complete delivery chain; that integration is t38's scope (the protected vertical slice)."
+  ]
+}

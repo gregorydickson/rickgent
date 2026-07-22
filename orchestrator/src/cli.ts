@@ -79,13 +79,13 @@ Usage:
 Options:
   --repo <dir>              Target git repo
   --agent <dir>             Rickgent agent root containing agents/worker
-  --feature <branch>        Delivery config: capability exit 3
+  --feature <branch>        Delivery config: verified push + idempotent PR (t34 activated)
   --max-concurrent <N>      Only 1 accepted; other values are input exit 2
   --roster <file>           JSON model roster
   --cost-budget <usd>       Hard cost budget per dispatch
   --soft-threshold <usd>    Soft cost threshold
   --resume                  Resume from persisted receipts (t29 activated)
-  --no-autonomous-pr        Delivery config unavailable: exit 3
+  --no-autonomous-pr        Delivery config: disable autonomous PR flow (t34 activated)
   --raw-shell               Raw shell unavailable: exit 3
   --max-iterations <N>      Parsed legacy flag rejected: input exit 2
   --help, -h                Show this help
