@@ -100,6 +100,7 @@ import {
   AttemptExecutionContextAuthority,
 } from "../context/attempt-execution-context.js";
 import { buildAttemptRunnerProviders } from "./attempt-runner-providers.js";
+import { ProcessSupervisor } from "../process/supervisor.js";
 
 export interface BuildOptions {
   prdPath: string;
@@ -797,7 +798,8 @@ async function executeBuildViaRunner(
   const targetStartGate = new TargetStartGateAuthority(stateStore, leases, containmentBackend);
   const terminalization = new AttemptTerminalizationService(stateStore, leases);
   const executionContext = new AttemptExecutionContextAuthority(stateStore);
-  const realProviders = buildAttemptRunnerProviders(stateStore, leases);
+  const processSupervisor = new ProcessSupervisor(stateStore, leases);
+  const realProviders = buildAttemptRunnerProviders(stateStore, leases, processSupervisor);
   const runner = new AttemptRunner(
     stateStore,
     leases,

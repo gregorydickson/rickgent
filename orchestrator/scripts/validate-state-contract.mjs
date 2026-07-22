@@ -319,6 +319,14 @@ function validateMigrations(contract) {
     released_checksum: "sha256:e9c6896dd23d8d07127fa8ddb05483ad00ff9a59b2042dc32ce75428371ac6f1",
     sqlite_schema_checksum: "sha256:c91fd35e83d879890dd13ef8f8bb18fa6f8b116e8b85545e4c3e8c65785681c6",
     status: "implemented",
+  }, {
+    version: 6,
+    number: "006",
+    name: "006_attempt_legal_edge_failure_edges",
+    sql_owner_ticket: "t24",
+    released_checksum: "sha256:b513d8e031d557dec10109c443bb1676ddd31ff421a0c60e36bde0e092e9421e",
+    sqlite_schema_checksum: "sha256:ce0b23b40baec3cf11b66ef9d0e9f998adfb048cbbba8f3eb82abfb3d924b7d8",
+    status: "implemented",
   }], "STATE_CONTRACT_MIGRATION_INVALID", "initial migrations");
   for (let index = 0; index < migrations.initial.length; index += 1) {
     if (migrations.initial[index].version !== index + 1) fail("STATE_CONTRACT_MIGRATION_INVALID", "migration versions are not contiguous");
@@ -688,7 +696,7 @@ function validateStateMachines(contract) {
   for (const name of ["lease", "resource", "promotion", "delivery"]) {
     exactKeys(graphs[name], ["initial", "states", "terminal", "edges", "owner"], "STATE_CONTRACT_GRAPH_INVALID", name);
   }
-  assertGraph(graphs.attempt, ATTEMPT_STATES, ["failed_clean", "quarantined", "verified"], 14, "STATE_CONTRACT_GRAPH_INVALID", "attempt");
+  assertGraph(graphs.attempt, ATTEMPT_STATES, ["failed_clean", "quarantined", "verified"], 22, "STATE_CONTRACT_GRAPH_INVALID", "attempt");
   equal(graphs.attempt.timeout_is_terminal, false, "STATE_CONTRACT_GRAPH_INVALID", "timeout terminality");
   assertGraph(graphs.ticket, TICKET_STATES, ["failed", "quarantined", "ready_for_delivery"], 6, "STATE_CONTRACT_GRAPH_INVALID", "ticket");
   assertGraph(graphs.run, RUN_STATES, ["failed", "delivery_failed", "delivered"], 8, "STATE_CONTRACT_GRAPH_INVALID", "run");

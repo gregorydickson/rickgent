@@ -28,7 +28,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 import type { StateStore } from "../state/store.js";
-import type { TransitionAuthority, TransitionEvidenceReference } from "../state/transitions.js";
+import type { TransitionAuthority, TransitionEvidenceReference, TransitionGuard } from "../state/transitions.js";
 import {
   isLegalPhaseEdge,
   isTerminalPhase,
@@ -92,6 +92,14 @@ export interface LifecycleTransitionInput {
    */
   readonly idempotencyKey: string;
   /**
+   * The execution context digest binding this transition to the attempt's
+   * lineage.  Required when routing through the TransitionAuthority (the
+   * authority path validates the owner context against the attempt's
+   * execution context).  When omitted, the engine falls back to the store
+   * CAS path (which does not validate the owner context).
+   */
+  readonly contextDigest?: string;
+  /**
    * The immutable evidence references the transition cites.  The production
    * path (store CAS) does not persist evidence refs in
    * `transition_evidence_refs` (that is the typed {@link TransitionAuthority}
@@ -104,6 +112,29 @@ export interface LifecycleTransitionInput {
    * ref persistence.
    */
   readonly evidence?: readonly TransitionEvidenceReference[];
+}
+
+/**
+ * Map a normative table edge's guard string to a TransitionGuard that the
+ * TransitionAuthority can validate.  Returns null when the guard requires
+ * additional typed fields (e.g. live_lease ownershipId, process_receipt
+ * processReceiptId) that the engine's generic transitionAttempt does not
+ * carry — in that case the production AttemptRunner calls the authority's
+ * typed methods directly, and the engine falls back to the store CAS.
+ */
+function guardForEdge(edge: PhaseEdge): TransitionGuard | null {
+  switch (edge.guard) {
+    case "cleanup_pending":
+      return { kind: "cleanup_pending" };
+    case "budget_exhausted":
+      return { kind: "cleanup_pending" };
+    case "cleanup_record_failed":
+      return null;
+    case "cleanup_record_quarantined":
+      return null;
+    default:
+      return null;
+  }
 }
 
 /** The result of {@link LifecycleEngine.resumeAttempt}. */
@@ -171,6 +202,76 @@ export class LifecycleEngine {
         "RICKGENT_LIFECYCLE_TRANSITION_ILLEGAL",
         `illegal phase transition: ${input.from} -> ${input.to} is not declared by ${PHASE_TABLE_VERSION}`,
       );
+    }
+    if (this.#authority !== null) {
+      const guard = guardForEdge(edge);
+      if (guard !== null) {
+        if (input.evidence === undefined || input.evidence.length === 0) {
+          throw new LifecycleEngineError(
+            "RICKGENT_LIFECYCLE_TRANSITION_ILLEGAL",
+            "production callers MUST provide non-empty authority-owned evidence for guard-validated edges when TransitionAuthority is bound",
+          );
+        }
+        if (input.contextDigest === undefined || input.contextDigest.length === 0) {
+          throw new LifecycleEngineError(
+            "RICKGENT_LIFECYCLE_TRANSITION_ILLEGAL",
+            "production callers MUST provide a contextDigest for guard-validated edges when TransitionAuthority is bound",
+          );
+        }
+        const databasePath = this.#store.location.databasePath;
+        const currentState = this.#readAttemptState(databasePath, input.attemptId);
+        if (currentState.state === input.to || phaseStateIsAtOrPast(currentState.state as PhaseState, input.to)) {
+          const rows = this.#readTransitions(databasePath, input.attemptId);
+          const enteringRow = [...rows].reverse().find((row) => String(row.to_state) === input.to);
+          if (enteringRow !== undefined) {
+            return Object.freeze({
+              tableVersion: PHASE_TABLE_VERSION,
+              transitionId: String(enteringRow.transition_id),
+              entityKind: "attempt",
+              attemptId: input.attemptId,
+              entitySequence: Number(enteringRow.entity_sequence),
+              fromState: String(enteringRow.from_state) as PhaseState,
+              toState: String(enteringRow.to_state) as PhaseState,
+              stateVersion: currentState.stateVersion,
+              edge,
+            });
+          }
+          return Object.freeze({
+            tableVersion: PHASE_TABLE_VERSION,
+            transitionId: `replay-${input.attemptId}-${input.to}`,
+            entityKind: "attempt",
+            attemptId: input.attemptId,
+            entitySequence: rows.length,
+            fromState: input.from,
+            toState: input.to,
+            stateVersion: currentState.stateVersion,
+            edge,
+          });
+        }
+        const result = this.#authority.commitAttemptEdge({
+          attemptId: input.attemptId,
+          from: input.from,
+          to: input.to,
+          ownerService: edge.evidenceProducer,
+          guard,
+          expectedVersion: currentState.stateVersion,
+          ownerContextDigest: input.contextDigest,
+          idempotencyKey: input.idempotencyKey,
+          evidence: input.evidence,
+        });
+        const current = this.#readAttemptState(databasePath, input.attemptId);
+        return Object.freeze({
+          tableVersion: PHASE_TABLE_VERSION,
+          transitionId: result.transitionId,
+          entityKind: "attempt",
+          attemptId: input.attemptId,
+          entitySequence: result.entitySequence,
+          fromState: String(result.fromState) as PhaseState,
+          toState: String(result.toState) as PhaseState,
+          stateVersion: current.stateVersion,
+          edge,
+        });
+      }
     }
     // Delegate to the store's transactional CAS writer.  The store enforces:
     //   - the attempt exists (RICKGENT_STATE_RESUME_INCOMPATIBLE if not)

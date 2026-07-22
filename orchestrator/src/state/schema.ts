@@ -81,12 +81,24 @@ export const ATTEMPT_CLEANUP_PROOF_MIGRATION = deepFreeze({
   status: "implemented",
 } as const);
 
+/** Migration 006: align attempts_legal_edge trigger with normative failure edges. */
+export const ATTEMPT_LEGAL_EDGE_FAILURE_MIGRATION = deepFreeze({
+  version: 6,
+  number: "006",
+  name: "006_attempt_legal_edge_failure_edges",
+  sql_owner_ticket: "t24",
+  released_checksum: "sha256:b513d8e031d557dec10109c443bb1676ddd31ff421a0c60e36bde0e092e9421e",
+  sqlite_schema_checksum: "sha256:ce0b23b40baec3cf11b66ef9d0e9f998adfb048cbbba8f3eb82abfb3d924b7d8",
+  status: "implemented",
+} as const);
+
 export const STATE_MIGRATIONS = deepFreeze([
   INITIAL_STATE_MIGRATION,
   ATTEMPT_OWNERSHIP_MIGRATION,
   PROCESS_SUPERVISION_MIGRATION,
   COMMIT_ATTRIBUTION_MIGRATION,
   ATTEMPT_CLEANUP_PROOF_MIGRATION,
+  ATTEMPT_LEGAL_EDGE_FAILURE_MIGRATION,
 ] as const);
 
 export const STATE_TABLES = deepFreeze([
@@ -285,6 +297,15 @@ export const ATTEMPT_TRANSITIONS = deepFreeze([
   { from: "verification_queued", to: "verifying", owner: "VerificationService", guard: "verification context and owner-checked resources" },
   { from: "verifying", to: "converging", owner: "VerificationService", guard: "all required gate results recorded" },
   { from: "converging", to: "cleanup_pending", owner: "AttemptLifecycleService", guard: "candidate attribution or failure evidence recorded" },
+  // Failure edges: every pre-cleanup state may enter cleanup_pending directly
+  { from: "planned", to: "cleanup_pending", owner: "AttemptLifecycleService", guard: "failure evidence recorded before any implementation" },
+  { from: "implementing", to: "cleanup_pending", owner: "AttemptLifecycleService", guard: "dispatch failure evidence recorded" },
+  { from: "implementation_captured", to: "cleanup_pending", owner: "AttemptLifecycleService", guard: "post-capture failure evidence recorded" },
+  { from: "reviewing", to: "cleanup_pending", owner: "ReviewService", guard: "review budget exhausted or review-phase failure" },
+  { from: "remediating", to: "cleanup_pending", owner: "RemediationService", guard: "remediation failure evidence recorded" },
+  { from: "remediation_captured", to: "cleanup_pending", owner: "RemediationService", guard: "post-remediation failure evidence recorded" },
+  { from: "verification_queued", to: "cleanup_pending", owner: "VerificationService", guard: "verification-phase failure evidence recorded" },
+  { from: "verifying", to: "cleanup_pending", owner: "VerificationService", guard: "gate failure or verification-phase infrastructure error" },
   { from: "cleanup_pending", to: "oracle_evaluation", owner: "TicketFinalizationService", guard: "accepted exact oracle decision and promotable candidate" },
   { from: "oracle_evaluation", to: "verified", owner: "TicketFinalizationService", guard: "promotion finalized, cleanup proven, resources absent or quarantined, lease released" },
   { from: "cleanup_pending", to: "failed_clean", owner: "CleanupService", guard: "failure or oracle rejection and complete cleanup proof" },

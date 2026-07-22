@@ -2032,7 +2032,7 @@ function releasedObjectNames(sql: string, kind: "TABLE" | "INDEX" | "TRIGGER"): 
   const names = [...sql.matchAll(new RegExp(`CREATE (?:UNIQUE )?${kind} ([a-z0-9_]+)`, "g"))]
     .map((match) => match[1])
     .filter((name): name is string => name !== undefined);
-  return Object.freeze(names);
+  return Object.freeze([...new Set(names)]);
 }
 
 export const INITIAL_STATE_SCHEMA_OBJECTS = Object.freeze({
@@ -2044,7 +2044,34 @@ export const INITIAL_STATE_SCHEMA_OBJECTS = Object.freeze({
 const ATTEMPT_OWNERSHIP_STATE_SQL = `${INITIAL_SQL}${ATTEMPT_OWNERSHIP_SQL}`;
 const PROCESS_SUPERVISION_STATE_SQL = `${ATTEMPT_OWNERSHIP_STATE_SQL}${PROCESS_SUPERVISION_SQL}`;
 const COMMIT_ATTRIBUTION_STATE_SQL = `${PROCESS_SUPERVISION_STATE_SQL}${COMMIT_ATTRIBUTION_SQL}`;
-const LATEST_SQL = `${COMMIT_ATTRIBUTION_STATE_SQL}${ATTEMPT_CLEANUP_PROOF_SQL}`;
+const ATTEMPT_CLEANUP_PROOF_STATE_SQL = `${COMMIT_ATTRIBUTION_STATE_SQL}${ATTEMPT_CLEANUP_PROOF_SQL}`;
+
+// Migration 006 — align the persisted attempts_legal_edge SQLite trigger with
+// the normative PHASE_TRANSITION_TABLE failure edges.  The original trigger
+// (from migration 005) only allowed cleanup_pending from "converging" (the
+// success path).  This migration drops and recreates the trigger to also
+// allow cleanup_pending from every pre-cleanup state (planned, implementing,
+// implementation_captured, reviewing, remediating, remediation_captured,
+// verification_queued, verifying), so every declared legal failure edge is
+// executable through the persisted SQLite trigger.
+const ATTEMPT_LEGAL_EDGE_FAILURE_MIGRATION_SQL = `
+DROP TRIGGER attempts_legal_edge;
+CREATE TRIGGER attempts_legal_edge BEFORE UPDATE OF state ON attempts
+WHEN NOT ((OLD.state = 'planned' AND NEW.state IN ('implementing','cleanup_pending')) OR
+          (OLD.state = 'implementing' AND NEW.state IN ('implementation_captured','cleanup_pending')) OR
+          (OLD.state = 'implementation_captured' AND NEW.state IN ('reviewing','cleanup_pending')) OR
+          (OLD.state = 'reviewing' AND NEW.state IN ('verification_queued','remediating','cleanup_pending')) OR
+          (OLD.state = 'remediating' AND NEW.state IN ('remediation_captured','cleanup_pending')) OR
+          (OLD.state = 'remediation_captured' AND NEW.state IN ('reviewing','cleanup_pending')) OR
+          (OLD.state = 'verification_queued' AND NEW.state IN ('verifying','cleanup_pending')) OR
+          (OLD.state = 'verifying' AND NEW.state IN ('converging','cleanup_pending')) OR
+          (OLD.state = 'converging' AND NEW.state = 'cleanup_pending') OR
+          (OLD.state = 'cleanup_pending' AND NEW.state IN ('oracle_evaluation','failed_clean','quarantined')) OR
+          (OLD.state = 'oracle_evaluation' AND NEW.state = 'verified'))
+BEGIN SELECT RAISE(ABORT, 'illegal attempt state transition'); END;
+`.trim();
+
+const LATEST_SQL = `${ATTEMPT_CLEANUP_PROOF_STATE_SQL}${ATTEMPT_LEGAL_EDGE_FAILURE_MIGRATION_SQL}\n`;
 
 export const ATTEMPT_OWNERSHIP_STATE_SCHEMA_OBJECTS = Object.freeze({
   tables: releasedObjectNames(ATTEMPT_OWNERSHIP_STATE_SQL, "TABLE"),
@@ -2101,6 +2128,12 @@ export const COMMIT_ATTRIBUTION_MIGRATION_CHECKSUM =
 export const ATTEMPT_CLEANUP_PROOF_MIGRATION_CHECKSUM =
   "sha256:e9c6896dd23d8d07127fa8ddb05483ad00ff9a59b2042dc32ce75428371ac6f1" as const;
 
+export const ATTEMPT_LEGAL_EDGE_FAILURE_MIGRATION_CHECKSUM =
+  "sha256:b513d8e031d557dec10109c443bb1676ddd31ff421a0c60e36bde0e092e9421e" as const;
+
+export const ATTEMPT_CLEANUP_PROOF_STATE_SQLITE_SCHEMA_CHECKSUM =
+  "sha256:c91fd35e83d879890dd13ef8f8bb18fa6f8b116e8b85545e4c3e8c65785681c6" as const;
+
 export const PROCESS_SUPERVISION_STATE_SQLITE_SCHEMA_CHECKSUM =
   "sha256:c208339c0350aae8bd1ee3784da4e4ffc559b41e9c6079530a89da53c08753e3" as const;
 
@@ -2108,7 +2141,7 @@ export const COMMIT_ATTRIBUTION_STATE_SQLITE_SCHEMA_CHECKSUM =
   "sha256:af782456d3402bd47cff0ca9fd4e358c52028c14fee3470efcc295cac926542d" as const;
 
 export const LATEST_STATE_SQLITE_SCHEMA_CHECKSUM =
-  "sha256:c91fd35e83d879890dd13ef8f8bb18fa6f8b116e8b85545e4c3e8c65785681c6" as const;
+  "sha256:ce0b23b40baec3cf11b66ef9d0e9f998adfb048cbbba8f3eb82abfb3d924b7d8" as const;
 
 export const STATE_MIGRATIONS: readonly StateMigration[] = Object.freeze([
   Object.freeze({
@@ -2145,6 +2178,13 @@ export const STATE_MIGRATIONS: readonly StateMigration[] = Object.freeze([
     name: "005_attempt_cleanup_proof_model",
     sql: ATTEMPT_CLEANUP_PROOF_SQL,
     checksum: ATTEMPT_CLEANUP_PROOF_MIGRATION_CHECKSUM,
+  }),
+  Object.freeze({
+    version: 6,
+    number: "006",
+    name: "006_attempt_legal_edge_failure_edges",
+    sql: ATTEMPT_LEGAL_EDGE_FAILURE_MIGRATION_SQL,
+    checksum: ATTEMPT_LEGAL_EDGE_FAILURE_MIGRATION_CHECKSUM,
   }),
 ]);
 

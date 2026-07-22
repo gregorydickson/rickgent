@@ -47,8 +47,26 @@ import type { LeaseAuthority } from "../state/leases.js";
 import type { StateStore } from "../state/store.js";
 import { canonicalGitDeltaFromRaw } from "../state/store.js";
 import { runGateVerification } from "../verification/gate-runner.js";
-import { buildSandboxEnv } from "../verification/sandbox.js";
+import type { VerificationSupervisorHook } from "../verification/gate-runner.js";
+import {
+  buildSandboxSpec,
+  buildSandboxEnv,
+  resolveVerificationCwd,
+  isShellExecutable,
+} from "../verification/sandbox.js";
+import type { ProcessSupervisor } from "../process/supervisor.js";
 import { LifecycleRecordAuthority } from "../state/transitions.js";
+import {
+  renderImplementationPrompt,
+  renderReviewPrompt,
+  renderRemediationPrompt,
+  renderVerificationPrompt,
+  renderConvergencePrompt,
+  verifyPromptReceipt,
+  type PromptReceipt,
+  type PhasePromptContext,
+  type StructuredFinding,
+} from "./prompts.js";
 import type {
   AttemptRunnerPhaseProviders,
   AttributionInput,
@@ -155,6 +173,60 @@ function observeCandidateOid(
 }
 
 /**
+ * Render a phase prompt, verify the receipt (mutation rejection), and persist
+ * it as authority evidence.  Returns the receipt on success, or `null` on any
+ * error (fail-closed — a prompt rendering failure must not abort the attempt
+ * critical section).
+ *
+ * The persisted evidence row carries the receipt's phase, role, contract
+ * digest, context digest, prompt digest, and rendered fields so the
+ * authority-owned prompt receipt is durable and replay-safe.
+ */
+function renderPersistVerifyPrompt(
+  store: StateStore,
+  mintCapability: ReturnType<LeaseAuthority["issueDispositionMintCapability"]>,
+  contract: TicketContract,
+  ctx: PhasePromptContext,
+  attemptId: string,
+  phaseExecutionId: string,
+  contextId: string,
+  observedAt: string,
+  extras: { evidence?: readonly StructuredFinding[]; reviewEvidence?: { baselineOid: string; candidateOid: string; diffDigest: string } } = {},
+): PromptReceipt | null {
+  try {
+    let receipt: PromptReceipt;
+    if (ctx.phase === "implement") {
+      receipt = renderImplementationPrompt(contract, ctx);
+    } else if (ctx.phase === "review") {
+      if (extras.reviewEvidence === undefined) throw new Error("RICKGENT_PROMPT_REVIEW_EVIDENCE_REQUIRED");
+      receipt = renderReviewPrompt(contract, ctx, extras.reviewEvidence);
+    } else if (ctx.phase === "remediate") {
+      if (extras.evidence === undefined || extras.evidence.length === 0) throw new Error("RICKGENT_PROMPT_REMEDIATION_FINDINGS_REQUIRED");
+      receipt = renderRemediationPrompt(contract, ctx, extras.evidence);
+    } else if (ctx.phase === "verify") {
+      receipt = renderVerificationPrompt(contract, ctx);
+    } else if (ctx.phase === "converge") {
+      receipt = renderConvergencePrompt(contract, ctx);
+    } else {
+      throw new Error(`RICKGENT_PROMPT_PHASE_UNKNOWN: ${ctx.phase}`);
+    }
+    verifyPromptReceipt(receipt, contract, ctx.contextDigest);
+    const receiptEvidenceId = `evidence-prompt-${ctx.phase}-${attemptId}`;
+    store.persistAuthorityEvidence({
+      evidenceId: receiptEvidenceId, attemptId, phaseExecutionId, contextId,
+      producerService: "AttemptLifecycleService",
+      scope: `prompt-receipt:${ctx.phase}:${attemptId}`,
+      schemaVersion: "rickgent.prompt-receipt.v1",
+      payload: { phase: receipt.phase, role: receipt.role, contract_digest: receipt.contract_digest, context_digest: receipt.context_digest, prompt_digest: receipt.prompt_digest, rendered_fields: receipt.rendered_fields },
+      idempotencyKey: `prompt-receipt:${ctx.phase}:${attemptId}`, observedAt,
+    }, mintCapability);
+    return receipt;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Build the real production phase-result providers for AttemptRunner from
  * the build path's real dependencies.  Each provider uses real authority
  * APIs and derives all receipts from actual production observations.  No
@@ -169,9 +241,13 @@ function observeCandidateOid(
 export function buildAttemptRunnerProviders(
   store: StateStore,
   leases: LeaseAuthority,
+  processSupervisor?: ProcessSupervisor,
 ): AttemptRunnerPhaseProviders {
   const mintCapability = leases.issueDispositionMintCapability();
   const lifecycleRecords = new LifecycleRecordAuthority(store);
+  const supervisorHook: VerificationSupervisorHook | undefined = processSupervisor !== undefined
+    ? (req) => processSupervisor.superviseVerificationSync(req)
+    : undefined;
 
   return {
     // --- commitAttribution: observe real git candidate, persist via Store ---
@@ -183,6 +259,15 @@ export function buildAttemptRunnerProviders(
       const baselineOid = ownership.plan.lineage.deliveryBaselineOid;
       const deliveryRef = ownership.plan.lineage.deliveryRef;
       const attemptRef = ownership.plan.attemptRef;
+
+      // Render, verify, and persist the implement-phase prompt receipt as
+      // authority evidence.  A failure here is non-fatal — the attempt
+      // critical section continues (fail-closed returns null).
+      renderPersistVerifyPrompt(
+        store, mintCapability, input.contract,
+        { phase: "implement", role: "worker", contextDigest: phase.contextDigest, contractDigest: input.contract.digest },
+        attemptId, phase.phaseExecutionId, phase.contextId, createdAt,
+      );
 
       // Observe the real candidate oid from Git.  Pass the worktree path so
       // the function can observe the worktree's HEAD (where the agent commits)
@@ -255,6 +340,26 @@ export function buildAttemptRunnerProviders(
       if (treeOid.length === 0) {
         return { reviewRecordId, verdict: "reject" as const, reviewEvidenceId: verdictEvidenceId };
       }
+
+      // Render, verify, and persist the review-phase prompt receipt as
+      // authority evidence.  The review evidence (baseline/candidate/diff
+      // digest) is required by the review renderer.  A failure here is
+      // non-fatal — the attempt critical section continues (fail-closed
+      // returns null).
+      let reviewDiffDigest: string;
+      try {
+        const rawDiff = execFileSync("git", ["-C", input.ownership.repositoryPath, "diff", "--raw", "-z", "--no-abbrev", "-M", baselineOid, candidateOid], { encoding: "utf8", timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
+        const delta = canonicalGitDeltaFromRaw(rawDiff);
+        reviewDiffDigest = delta.candidateDiffDigest;
+      } catch {
+        reviewDiffDigest = sha256(`review-diff-fallback:${attemptId}`);
+      }
+      renderPersistVerifyPrompt(
+        store, mintCapability, input.contract,
+        { phase: "review", role: "reviewer", contextDigest: phase.contextDigest, contractDigest: input.contract.digest },
+        attemptId, phase.phaseExecutionId, phase.contextId, createdAt,
+        { reviewEvidence: { baselineOid, candidateOid, diffDigest: reviewDiffDigest } },
+      );
 
       // The verdict is "accept" only when the candidate tree is a valid,
       // resolved Git tree object that differs from or equals the baseline
@@ -345,6 +450,15 @@ export function buildAttemptRunnerProviders(
       const createdAt = input.ownership.ownership.heartbeatAt;
       const contract = input.contract;
 
+      // Render, verify, and persist the verify-phase prompt receipt as
+      // authority evidence.  A failure here is non-fatal — the attempt
+      // critical section continues (fail-closed returns null).
+      renderPersistVerifyPrompt(
+        store, mintCapability, contract,
+        { phase: "verify", role: "verifier", contextDigest: phase.contextDigest, contractDigest: contract.digest },
+        attemptId, phase.phaseExecutionId, phase.contextId, createdAt,
+      );
+
       // t22D-fix-multi-verification: Iterate ALL sealed contract verification
       // IDs — not just verifications[0].  The StateStore's oracle requires
       // passed gate records for the complete sorted set of sealed verification
@@ -419,6 +533,7 @@ export function buildAttemptRunnerProviders(
           contractDigest: contract.digest,
           contextDigest: phase.contextDigest,
           phaseDigest: phase.contextDigest,
+          ...(supervisorHook !== undefined ? { supervisor: supervisorHook } : {}),
         });
 
         // The gate status is the typed GateRunnerStatus from the gate
@@ -498,6 +613,16 @@ export function buildAttemptRunnerProviders(
     // --- oracle: call real evaluateAndPersistAttemptOracle ----------------
     oracle(input: OracleInput): OracleResult {
       const attemptId = input.ownership.attemptId;
+
+      // Render, verify, and persist the converge-phase prompt receipt as
+      // authority evidence.  A failure here is non-fatal — the attempt
+      // critical section continues (fail-closed returns null).
+      renderPersistVerifyPrompt(
+        store, mintCapability, input.contract,
+        { phase: "converge", role: "converger", contextDigest: input.phase.contextDigest, contractDigest: input.contract.digest },
+        attemptId, input.phase.phaseExecutionId, input.phase.contextId, input.ownership.ownership.heartbeatAt,
+      );
+
       // Call the real oracle evaluation.  This reads the actual store state
       // (review, gates, attribution, target proof set, cleanup eligibility)
       // and derives the result from the real inputs.  No manufactured result.

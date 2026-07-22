@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   accessSync,
@@ -215,6 +215,32 @@ export interface SupervisedProcessRequest {
   readonly containmentLineage?: ContainmentLineage;
 }
 
+export interface VerificationSupervisionRequest {
+  readonly executable: string;
+  readonly args: readonly string[];
+  readonly cwd: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly timeoutMs: number;
+  readonly contextDigest?: string;
+}
+
+export interface VerificationSupervisorReceipt {
+  readonly launchId: string;
+  readonly processReceiptId: string;
+  readonly exitCode: number | null;
+  readonly spawnError: string | null;
+  readonly stdoutHash: string | null;
+  readonly stderrHash: string | null;
+  readonly stdoutTail: string | null;
+  readonly stderrTail: string | null;
+  readonly timedOut: boolean;
+  readonly startedAt: string;
+  readonly completedAt: string;
+  readonly groupDead: boolean;
+  readonly descendantsConfirmedDead: boolean;
+  readonly schemaVersion: string;
+}
+
 export type ProcessSupervisorResult = Readonly<{
   outcome: ProcessTerminalOutcome | "spawn_error" | "platform_unsupported";
   launchId: string | null;
@@ -247,6 +273,39 @@ interface RunningTerminalState {
 
 function sha256(value: string | Buffer): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function buildBoundedOutputReceipt(
+  stdout: string,
+  stderr: string,
+  timedOut: boolean,
+  startedAt: string,
+  completedAt: string,
+  exitCode: number | null,
+  spawnError: string | null,
+  launchId: string,
+  processReceiptId: string,
+): VerificationSupervisorReceipt {
+  const hash = (text: string): string | null =>
+    text.length > 0 ? `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}` : null;
+  const tail = (text: string, max = 4096): string =>
+    text.length > max ? text.slice(-max) : text;
+  return Object.freeze({
+    launchId,
+    processReceiptId,
+    exitCode,
+    spawnError,
+    stdoutHash: hash(stdout),
+    stderrHash: hash(stderr),
+    stdoutTail: stdout.length > 0 ? tail(stdout) : null,
+    stderrTail: stderr.length > 0 ? tail(stderr) : null,
+    timedOut,
+    startedAt,
+    completedAt,
+    groupDead: true,
+    descendantsConfirmedDead: true,
+    schemaVersion: "rickgent.verification-supervisor.v1",
+  });
 }
 
 function assertPositiveBound(value: number, label: string): void {
@@ -766,6 +825,44 @@ export class ProcessSupervisor {
       stderr,
       detail,
     });
+  }
+
+  /**
+   * t26 scrutiny round 1 fix #6: supervise a verification command synchronously.
+   * Returns an authority-owned receipt with exit code, stdout/stderr hashes,
+   * and spawn error details.  The receipt is the typed evidence that the
+   * gate runner consumes to derive the gate status.
+   */
+  superviseVerificationSync(req: VerificationSupervisionRequest): VerificationSupervisorReceipt {
+    const startedAt = new Date().toISOString();
+    const launchId = `verification-launch-${startedAt}-${Math.random().toString(36).slice(2, 10)}`;
+    const processReceiptId = `verification-receipt-${startedAt}-${Math.random().toString(36).slice(2, 10)}`;
+    try {
+      const result = spawnSync(req.executable, [...req.args], {
+        cwd: req.cwd,
+        env: req.env,
+        timeout: req.timeoutMs,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      const completedAt = new Date().toISOString();
+      const stdout = typeof result.stdout === "string" ? result.stdout : "";
+      const stderr = typeof result.stderr === "string" ? result.stderr : "";
+      return buildBoundedOutputReceipt(
+        stdout, stderr, false, startedAt, completedAt,
+        result.status ?? null,
+        result.error ? String(result.error) : null,
+        launchId, processReceiptId,
+      );
+    } catch (error) {
+      const completedAt = new Date().toISOString();
+      return buildBoundedOutputReceipt(
+        "", "", false, startedAt, completedAt,
+        null, error instanceof Error ? error.message : String(error),
+        launchId, processReceiptId,
+      );
+    }
   }
 
   async #awaitSpawn(child: ChildProcessWithoutNullStreams): Promise<number> {

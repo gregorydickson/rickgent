@@ -91,6 +91,7 @@ import {
 } from "../state/leases.js";
 import { PromotionAuthority, TransitionAuthority } from "../state/transitions.js";
 import { LifecycleEngine } from "./engine.js";
+import { isLegalPhaseEdge, type PhaseState } from "./phase.js";
 import { provisionAttemptWorkspace } from "../git/attempt-workspace.js";
 import type {
   AllocatedAttempt,
@@ -380,6 +381,7 @@ export interface OracleInput {
   readonly review: ReviewResult;
   readonly verification: VerificationResult;
   readonly cleanupEligibilityRecordId: string;
+  readonly contract: TicketContract;
 }
 
 /**
@@ -1344,6 +1346,7 @@ export class AttemptRunner {
       attribution,
       review,
       verification,
+      contract: request.contract,
       cleanupEligibilityRecordId: eligibilityReceipt.record.cleanup_eligibility_record_id as string,
     });
     if (oracle.result === "rejected") {
@@ -1727,18 +1730,37 @@ export class AttemptRunner {
     _commitAttributionId?: string,
     _attributionEvidenceId?: string,
   ): AttemptOwnershipGrant {
-    // Transition the attempt to cleanup_pending.  The SQLite legal-edge trigger
-    // only allows converging→cleanup_pending, so if the attempt is in any pre-
-    // converging state (failure paths from dispatch/review/verification), first
-    // walk the legal edge chain to "converging" before transitioning to
-    // "cleanup_pending".  Each step is idempotent — if the attempt is already
-    // at or past a given state, the advanceAttemptState call returns silently.
+    // Transition the attempt to cleanup_pending.  t24 failure edges: every
+    // pre-cleanup state has a legal `-> cleanup_pending` edge in the normative
+    // PHASE_TRANSITION_TABLE, so failure paths (dispatch/review/verification/
+    // oracle rejection) can transition directly without walking the forward
+    // success chain to "converging" first.  Query the current attempt state
+    // once and decide:
+    //   - If the attempt is already "cleanup_pending", do nothing (idempotent).
+    //   - If there is a legal edge (from current state -> cleanup_pending),
+    //     call advanceAttemptToCleanupPending directly.
+    //   - If no legal edge is declared, fall back to advanceAttemptToCleanupPending
+    //     anyway and let the SQLite trigger reject it if the edge is illegal.
     const attemptId = request.attempt.attemptId;
-    this.#advanceToConverging(attemptId);
-    this.#store.advanceAttemptToCleanupPending(
-      attemptId,
-      attemptRunnerIdempotencyKey(attemptId, "begin-attempt-cleanup"),
-    );
+    const currentState = this.#store.queryAttemptState(attemptId) as PhaseState;
+    if (currentState !== "cleanup_pending") {
+      // If there is a legal edge from the current state to cleanup_pending,
+      // call advanceAttemptToCleanupPending directly.  If no legal edge is
+      // declared, fall back to advanceAttemptToCleanupPending anyway and let
+      // the SQLite trigger reject it if the edge is illegal.  Keep it simple
+      // — use the store method directly.
+      if (isLegalPhaseEdge(currentState, "cleanup_pending")) {
+        this.#store.advanceAttemptToCleanupPending(
+          attemptId,
+          attemptRunnerIdempotencyKey(attemptId, "begin-attempt-cleanup"),
+        );
+      } else {
+        this.#store.advanceAttemptToCleanupPending(
+          attemptId,
+          attemptRunnerIdempotencyKey(attemptId, "begin-attempt-cleanup"),
+        );
+      }
+    }
     return this.#leases.beginCleanup({ ownership, idempotencyKey });
   }
 

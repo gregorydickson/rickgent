@@ -35,6 +35,7 @@ import { GATE_STATUSES } from "../state/schema.js";
 import type { TicketVerification } from "../contracts/ticket-contract.js";
 import { canonicalJson } from "../contracts/ticket-contract.js";
 import { buildSandboxSpec, type SandboxExecutionSpec } from "./sandbox.js";
+import type { VerificationSupervisorReceipt } from "../process/supervisor.js";
 
 /**
  * The schema version for gate-runner results.
@@ -46,6 +47,21 @@ export const GATE_RUNNER_SCHEMA_VERSION = "rickgent.gate-runner.v1" as const;
  * Only `passed` is green; every other status blocks advancement.
  */
 export type GateRunnerStatus = (typeof GATE_STATUSES)[number];
+
+/**
+ * A supervisor hook that runs a verification command synchronously and
+ * returns an authority-owned receipt.  When supplied on a `GateRunnerRequest`,
+ * the gate runner routes execution through the hook instead of spawning the
+ * verification process directly, and derives the gate status from the
+ * receipt's `exitCode` and `spawnError`.
+ */
+export type VerificationSupervisorHook = (req: {
+  readonly executable: string;
+  readonly args: readonly string[];
+  readonly cwd: string;
+  readonly env: NodeJS.ProcessEnv;
+  readonly timeoutMs: number;
+}) => VerificationSupervisorReceipt;
 
 /**
  * A typed, authority-owned gate result.  Every field is derived from the
@@ -85,6 +101,12 @@ export interface GateRunnerResult {
   readonly argvDigest: string;
   /** The schema version. */
   readonly schemaVersion: string;
+  /**
+   * The authority-owned supervisor receipt, or `null` when the verification
+   * was not routed through a supervisor hook (direct spawn or pre-execution
+   * fail-closed path).
+   */
+  readonly supervisorReceipt: VerificationSupervisorReceipt | null;
 }
 
 /**
@@ -134,6 +156,12 @@ export interface GateRunnerRequest {
    * The gate is `skipped`.
    */
   readonly skipped?: boolean;
+  /**
+   * An optional supervisor hook.  When supplied, the gate runner routes the
+   * verification execution through the hook instead of spawning the process
+   * directly, and derives the gate status from the returned receipt.
+   */
+  readonly supervisor?: VerificationSupervisorHook;
 }
 
 const TAIL_LIMIT = 4096;
@@ -200,6 +228,7 @@ export function runGateVerification(request: GateRunnerRequest): GateRunnerResul
       phaseDigest: request.phaseDigest,
       argvDigest: sha256("null"),
       schemaVersion: GATE_RUNNER_SCHEMA_VERSION,
+      supervisorReceipt: null,
     });
   }
 
@@ -226,6 +255,7 @@ export function runGateVerification(request: GateRunnerRequest): GateRunnerResul
       phaseDigest: request.phaseDigest,
       argvDigest: digest,
       schemaVersion: GATE_RUNNER_SCHEMA_VERSION,
+      supervisorReceipt: null,
     });
   }
 
@@ -248,6 +278,7 @@ export function runGateVerification(request: GateRunnerRequest): GateRunnerResul
       phaseDigest: request.phaseDigest,
       argvDigest: digest,
       schemaVersion: GATE_RUNNER_SCHEMA_VERSION,
+      supervisorReceipt: null,
     });
   }
 
@@ -274,6 +305,7 @@ export function runGateVerification(request: GateRunnerRequest): GateRunnerResul
       phaseDigest: request.phaseDigest,
       argvDigest: digest,
       schemaVersion: GATE_RUNNER_SCHEMA_VERSION,
+      supervisorReceipt: null,
     });
   }
 
@@ -300,6 +332,7 @@ export function runGateVerification(request: GateRunnerRequest): GateRunnerResul
       phaseDigest: request.phaseDigest,
       argvDigest: digest,
       schemaVersion: GATE_RUNNER_SCHEMA_VERSION,
+      supervisorReceipt: null,
     });
   }
 
@@ -311,6 +344,7 @@ export function runGateVerification(request: GateRunnerRequest): GateRunnerResul
   let timedOut = false;
   let detail = "";
   let status: GateRunnerStatus;
+  let supervisorReceipt: VerificationSupervisorReceipt | null = null;
 
   // The sandbox env contains only the allowlisted vars.  PATH is always
   // included (if available in the source env) so the executable can be
@@ -322,55 +356,121 @@ export function runGateVerification(request: GateRunnerRequest): GateRunnerResul
     execEnv.PATH = process.env.PATH;
   }
 
-  try {
-    const result = spawnSync(verification.executable, [...verification.args], {
-      cwd: request.cwd,
-      encoding: "utf8",
-      timeout: verification.timeout_ms,
-      env: execEnv as NodeJS.ProcessEnv,
-      stdio: ["ignore", "pipe", "pipe"],
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    stdout = typeof result.stdout === "string" ? result.stdout : "";
-    stderr = typeof result.stderr === "string" ? result.stderr : "";
+  if (request.supervisor !== undefined) {
+    // Route execution through the supervisor hook.  The receipt is the
+    // authority-owned evidence; the gate runner derives the status from
+    // the receipt's exitCode and spawnError.
+    try {
+      supervisorReceipt = request.supervisor({
+        executable: verification.executable,
+        args: [...verification.args],
+        cwd: request.cwd,
+        env: execEnv as NodeJS.ProcessEnv,
+        timeoutMs: verification.timeout_ms,
+      });
+    } catch (error) {
+      // The supervisor hook threw — fail closed to infrastructure_error.
+      const e = error as { message?: string };
+      status = "infrastructure_error";
+      detail = `supervisor hook threw: ${e.message ?? String(error)}`;
+      const completedAt0 = nowIso();
+      return deepFreeze({
+        gateId,
+        status,
+        exitCode: null,
+        stdoutHash: null,
+        stderrHash: null,
+        stdoutTail: null,
+        stderrTail: null,
+        timedOut: false,
+        startedAt,
+        completedAt: completedAt0,
+        detail,
+        contractDigest: request.contractDigest,
+        contextDigest: request.contextDigest,
+        phaseDigest: request.phaseDigest,
+        argvDigest: digest,
+        schemaVersion: GATE_RUNNER_SCHEMA_VERSION,
+        supervisorReceipt: null,
+      });
+    }
 
-    if (result.error !== undefined) {
-      // Spawn error (before the process could start).
-      if ((result.error as NodeJS.ErrnoException).code === "ENOENT") {
+    exitCode = supervisorReceipt.exitCode;
+    stdout = supervisorReceipt.stdoutTail ?? "";
+    stderr = supervisorReceipt.stderrTail ?? "";
+    timedOut = supervisorReceipt.timedOut;
+
+    if (supervisorReceipt.spawnError !== null) {
+      // ENOENT means the executable was not found — classify as "missing"
+      // (not "infrastructure_error").  Other spawn errors are infrastructure.
+      if (supervisorReceipt.spawnError.includes("ENOENT")) {
         status = "missing";
-        detail = `executable not found: ${verification.executable}`;
-      } else if (result.signal === "SIGTERM" || result.error.message?.includes("timed out")) {
-        timedOut = true;
-        status = "infrastructure_error";
-        detail = `verification timed out after ${verification.timeout_ms}ms`;
+        detail = `executable not found: ${supervisorReceipt.spawnError}`;
       } else {
         status = "infrastructure_error";
-        detail = `infrastructure error: ${result.error.message}`;
+        detail = `infrastructure error: ${supervisorReceipt.spawnError}`;
       }
-    } else if (result.signal !== null) {
-      // Killed by a signal (e.g. timeout SIGTERM).
-      timedOut = result.signal === "SIGTERM";
-      status = "infrastructure_error";
-      detail = `killed by signal ${result.signal}`;
-    } else if (typeof result.status === "number") {
-      // The process exited with a code.  Classify against the sealed
-      // allowlist: a permitted code passes; anything else fails closed.
-      exitCode = result.status;
-      status = verification.expected_exit_codes.includes(result.status) ? "passed" : "failed";
+    } else if (supervisorReceipt.exitCode !== null) {
+      status = verification.expected_exit_codes.includes(supervisorReceipt.exitCode) ? "passed" : "failed";
       detail = status === "passed"
-        ? `exit ${result.status} is in expected_exit_codes`
-        : `exit ${result.status} not in expected_exit_codes`;
+        ? `exit ${supervisorReceipt.exitCode} is in expected_exit_codes`
+        : `exit ${supervisorReceipt.exitCode} not in expected_exit_codes`;
     } else {
-      // No status, no signal, no error — unknown infrastructure failure.
-      status = "infrastructure_error";
-      detail = "verification produced no status, signal, or error";
+      // No exit code and no spawn error — missing/unknown.
+      status = "missing";
+      detail = "supervisor produced no exit code and no spawn error";
     }
-  } catch (error) {
-    // spawnSync is synchronous and does not normally throw, but guard
-    // against any unexpected throw (fail-closed to infrastructure_error).
-    const e = error as { message?: string };
-    status = "infrastructure_error";
-    detail = `infrastructure error: ${e.message ?? String(error)}`;
+  } else {
+    try {
+      const result = spawnSync(verification.executable, [...verification.args], {
+        cwd: request.cwd,
+        encoding: "utf8",
+        timeout: verification.timeout_ms,
+        env: execEnv as NodeJS.ProcessEnv,
+        stdio: ["ignore", "pipe", "pipe"],
+        maxBuffer: 16 * 1024 * 1024,
+      });
+      stdout = typeof result.stdout === "string" ? result.stdout : "";
+      stderr = typeof result.stderr === "string" ? result.stderr : "";
+
+      if (result.error !== undefined) {
+        // Spawn error (before the process could start).
+        if ((result.error as NodeJS.ErrnoException).code === "ENOENT") {
+          status = "missing";
+          detail = `executable not found: ${verification.executable}`;
+        } else if (result.signal === "SIGTERM" || result.error.message?.includes("timed out")) {
+          timedOut = true;
+          status = "infrastructure_error";
+          detail = `verification timed out after ${verification.timeout_ms}ms`;
+        } else {
+          status = "infrastructure_error";
+          detail = `infrastructure error: ${result.error.message}`;
+        }
+      } else if (result.signal !== null) {
+        // Killed by a signal (e.g. timeout SIGTERM).
+        timedOut = result.signal === "SIGTERM";
+        status = "infrastructure_error";
+        detail = `killed by signal ${result.signal}`;
+      } else if (typeof result.status === "number") {
+        // The process exited with a code.  Classify against the sealed
+        // allowlist: a permitted code passes; anything else fails closed.
+        exitCode = result.status;
+        status = verification.expected_exit_codes.includes(result.status) ? "passed" : "failed";
+        detail = status === "passed"
+          ? `exit ${result.status} is in expected_exit_codes`
+          : `exit ${result.status} not in expected_exit_codes`;
+      } else {
+        // No status, no signal, no error — unknown infrastructure failure.
+        status = "infrastructure_error";
+        detail = "verification produced no status, signal, or error";
+      }
+    } catch (error) {
+      // spawnSync is synchronous and does not normally throw, but guard
+      // against any unexpected throw (fail-closed to infrastructure_error).
+      const e = error as { message?: string };
+      status = "infrastructure_error";
+      detail = `infrastructure error: ${e.message ?? String(error)}`;
+    }
   }
 
   const completedAt = nowIso();
@@ -379,10 +479,18 @@ export function runGateVerification(request: GateRunnerRequest): GateRunnerResul
     gateId,
     status,
     exitCode,
-    stdoutHash: hashOrNull(stdout),
-    stderrHash: hashOrNull(stderr),
-    stdoutTail: stdout.length > 0 ? tail(stdout) : null,
-    stderrTail: stderr.length > 0 ? tail(stderr) : null,
+    stdoutHash: supervisorReceipt !== null
+      ? supervisorReceipt.stdoutHash
+      : hashOrNull(stdout),
+    stderrHash: supervisorReceipt !== null
+      ? supervisorReceipt.stderrHash
+      : hashOrNull(stderr),
+    stdoutTail: supervisorReceipt !== null
+      ? supervisorReceipt.stdoutTail
+      : (stdout.length > 0 ? tail(stdout) : null),
+    stderrTail: supervisorReceipt !== null
+      ? supervisorReceipt.stderrTail
+      : (stderr.length > 0 ? tail(stderr) : null),
     timedOut,
     startedAt,
     completedAt,
@@ -392,6 +500,7 @@ export function runGateVerification(request: GateRunnerRequest): GateRunnerResul
     phaseDigest: request.phaseDigest,
     argvDigest: digest,
     schemaVersion: GATE_RUNNER_SCHEMA_VERSION,
+    supervisorReceipt,
   });
 }
 

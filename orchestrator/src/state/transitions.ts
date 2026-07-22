@@ -286,6 +286,25 @@ export class TransitionAuthority {
     return this.#commit("attempt", request.attemptId, "cleanup_pending", "failed_clean", "CleanupService", request, { kind: "cleanup_record", cleanupRecordId: request.cleanupRecordId, outcome: "failed_clean" });
   }
 
+  /**
+   * t24 scrutiny round 1 fix #2: a generic attempt-edge commit that the
+   * LifecycleEngine routes through when the normative table declares a
+   * failure edge (or a forward edge not covered by a typed method above).
+   * The guard kind is derived from the normative PHASE_TRANSITION_TABLE edge
+   * metadata.  The evidence array MUST be non-empty (production callers MUST
+   * provide authority-owned evidence).  The from/to states are validated
+   * against the ATTEMPT_TRANSITIONS catalog by the store's
+   * commitAuthorizedTransition.
+   */
+  commitAttemptEdge(request: AttemptTransitionRequest & {
+    readonly from: string;
+    readonly to: string;
+    readonly ownerService: string;
+    readonly guard: TransitionGuard;
+  }): TransitionResult {
+    return this.#commit("attempt", request.attemptId, request.from, request.to, request.ownerService, request, request.guard);
+  }
+
   quarantineAttempt(request: CleanupGuardedAttemptRequest): TransitionResult {
     return this.#commit("attempt", request.attemptId, "cleanup_pending", "quarantined", "CleanupService", request, { kind: "cleanup_record", cleanupRecordId: request.cleanupRecordId, outcome: "quarantined" });
   }
