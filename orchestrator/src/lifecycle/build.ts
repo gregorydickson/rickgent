@@ -879,6 +879,8 @@ async function executeBuildViaRunner(
   const idByTicket = new Map<string, DispatchId>();
   const ticketByDispatchId = new Map<string, TicketContract>();
   const attemptByTicket = new Map<string, AllocatedAttempt>();
+  // Scrutiny round 5: map attempt ID to resumeFromStep for step-aware re-entry.
+  const resumeFromStepByAttempt = new Map<string, import("./attempt-runner.js").AttemptRunnerStep | "complete">();
   // t29-fix: When resuming, only dispatch tickets that need resuming.
   // Tickets with nextAction "complete" are already done and should be
   // skipped.  The resume result from resumeRun determines the next action
@@ -886,7 +888,6 @@ async function executeBuildViaRunner(
   // t29-fix-round-3: Handle ALL recovery actions, not just "complete":
   //   - resume_attempt: call runner.recoverAttempt and re-enter the runner
   //   - allocate_retry: use the recovery plan's newAttempt (already allocated)
-  //   - cleanup_orphan: use the recovery plan's newAttempt (orphan cleaned)
   //   - await_reconciliation: skip with appropriate accounting
   //   - complete: skip and count as done without crashing the accounting loop
   const resumeTicketPlan = new Map<string, ResumeTicketPlan>();
@@ -910,7 +911,7 @@ async function executeBuildViaRunner(
         report.push(`build: ticket ${ticket.id} awaiting reconciliation — skipping dispatch`);
         continue;
       }
-      // For resume_attempt, allocate_retry, and cleanup_orphan: use the
+      // For resume_attempt and allocate_retry: use the
       // dispatch attempt from the recovery plan instead of allocating a
       // fresh initial attempt.
       const dispatchAttempt = plan?.dispatchAttempt ?? null;
@@ -949,20 +950,25 @@ async function executeBuildViaRunner(
             continue;
           }
           report.push(`build: ticket ${ticket.id} resuming attempt ${dispatchAttempt.attemptId} at step ${recoveryState.nextStep}`);
-        }
-        if (action === "cleanup_orphan") {
-          // t29-fix-round-4 (scrutiny round 4): The recovery plan already
-          // cleaned up the orphaned planned attempt and allocated a new
-          // retry attempt.  The dispatchAttempt is the new retry attempt.
-          // Log the cleanup and proceed with dispatching the new attempt.
-          const orphanedId = plan?.orphanedPlannedAttempt?.attemptId ?? "unknown";
-          report.push(`build: ticket ${ticket.id} cleanup_orphan — cleaned up orphaned attempt ${orphanedId}, dispatching retry attempt ${dispatchAttempt.attemptId} (number ${dispatchAttempt.attemptNumber})`);
+          // Scrutiny round 5: store the recovered nextStep so the dispatch
+          // function can pass it as resumeFromStep to runAttempt.  This
+          // ensures the runner re-enters at the correct step and does NOT
+          // re-acquire, re-provision, or re-dispatch already-completed steps.
+          resumeFromStepByAttempt.set(dispatchAttempt.attemptId, recoveryState.nextStep);
         }
         if (action === "allocate_retry") {
           // t29-fix-round-4 (scrutiny round 4): The recovery plan allocated
           // a new retry attempt.  The dispatchAttempt is the new retry
-          // attempt with the correct attempt number.
-          report.push(`build: ticket ${ticket.id} allocate_retry — dispatching retry attempt ${dispatchAttempt.attemptId} (number ${dispatchAttempt.attemptNumber})`);
+          // attempt with the correct attempt number.  Orphaned planned
+          // attempts are also handled under allocate_retry (the recovery
+          // plan cleans up the orphan and allocates a retry in one step);
+          // there is no separate cleanup_orphan action.
+          const orphanedId = plan?.orphanedPlannedAttempt?.attemptId;
+          if (orphanedId !== undefined && orphanedId !== null) {
+            report.push(`build: ticket ${ticket.id} allocate_retry — cleaned up orphaned attempt ${orphanedId}, dispatching retry attempt ${dispatchAttempt.attemptId} (number ${dispatchAttempt.attemptNumber})`);
+          } else {
+            report.push(`build: ticket ${ticket.id} allocate_retry — dispatching retry attempt ${dispatchAttempt.attemptId} (number ${dispatchAttempt.attemptNumber})`);
+          }
         }
         report.push(`build: ticket ${ticket.id} ${action} — using ${dispatchAttempt.attemptNumber > 1 ? "retry" : "initial"} attempt ${dispatchAttempt.attemptId}`);
       } else {
@@ -1039,6 +1045,11 @@ async function executeBuildViaRunner(
       cancellationRequested: false,
       outputLimitBytes: opts.outputLimitBytes,
       tailLimitBytes: opts.tailLimitBytes,
+      // Scrutiny round 5: pass the recovered resumeFromStep so the runner
+      // re-enters at the correct step instead of starting from acquisition.
+      ...(resumeFromStepByAttempt.has(attempt.attemptId)
+        ? { resumeFromStep: resumeFromStepByAttempt.get(attempt.attemptId) }
+        : {}),
     };
     let result: AttemptRunnerResult;
     try {

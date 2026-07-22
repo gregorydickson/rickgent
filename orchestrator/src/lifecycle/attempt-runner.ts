@@ -499,6 +499,17 @@ export interface AttemptRunnerRequest {
    * BoundedOutputReceipt.  Defaults to 16 KiB when absent.
    */
   readonly tailLimitBytes?: number | undefined;
+  /**
+   * Scrutiny round 5: when set, the runner resumes from the given step
+   * instead of starting from acquisition.  Steps before `resumeFromStep`
+   * are skipped (their durable receipts are verified to already exist).
+   * When set to `"complete"`, the runner returns a `"recovered"` outcome
+   * immediately without re-running any step.  This is the production
+   * resume path: the build calls `recoverAttempt` to determine the
+   * correct step, then passes it here so the runner does NOT re-acquire,
+   * re-provision, or re-dispatch already-completed steps.
+   */
+  readonly resumeFromStep?: AttemptRunnerStep | "complete" | undefined;
 }
 
 export interface AttemptRunnerResult {
@@ -752,6 +763,48 @@ export class AttemptRunner {
       return key;
     };
 
+    // Scrutiny round 5: resume step-aware re-entry.  When `resumeFromStep`
+    // is set, the runner skips already-completed steps (verified via durable
+    // receipts) and re-enters at the recovered step.  This prevents
+    // re-acquiring an already-acquired lease, re-provisioning an
+    // already-provisioned worktree, or re-dispatching an already-completed
+    // dispatch.
+    const resumeFromStep = request.resumeFromStep;
+    // "recover" means the recovery state machine could not determine the
+    // step — start from acquisition (do not skip any steps).
+    const effectiveResumeFromStep = resumeFromStep === "recover" ? undefined : resumeFromStep;
+    const isResume = effectiveResumeFromStep !== undefined;
+    const isStepPast = (step: AttemptRunnerStep): boolean => {
+      if (effectiveResumeFromStep === undefined) return false;
+      if (effectiveResumeFromStep === "complete") return true;
+      return ATTEMPT_RUNNER_STEPS.indexOf(step) < ATTEMPT_RUNNER_STEPS.indexOf(effectiveResumeFromStep);
+    };
+    // Helper: check if a lifecycle transition to `toState` is already done.
+    const shouldTransition = (toState: string): boolean => {
+      if (!isResume) return true;
+      const currentState = this.#store.queryAttemptState(attemptId) as string;
+      const order = ["planned", "implementing", "implementation_captured", "reviewing",
+        "verification_queued", "verifying", "converging", "cleanup_pending",
+        "oracle_evaluation", "verified", "failed_clean", "quarantined"];
+      const currentIndex = order.indexOf(currentState);
+      const targetIndex = order.indexOf(toState);
+      return currentIndex < targetIndex;
+    };
+
+    // If resume and complete, return a recovered result immediately.
+    if (effectiveResumeFromStep === "complete") {
+      // Query the existing ownership for the result.
+      const existingOwnership = this.#queryExistingOwnershipForRecovery(attemptId, request);
+      noteKey("recover");
+      return this.#result("recovered", "finalized", existingOwnership, {
+        boundary: null, membership: null, deathReceipt: null,
+        targetNeverReleased: null,
+        cleanupEligibility: null, oracleDecisionId: null, terminal: null,
+        stdoutReceipt: null, stderrReceipt: null,
+        failureCode: null, keys,
+      });
+    }
+
     // 1. Acquire: the runner is the single critical-section owner.  When a
     //    pre-acquired ownership grant is supplied (the t22C composition proof
     //    path), the runner revalidates it.  When no grant is supplied (the
@@ -775,24 +828,25 @@ export class AttemptRunner {
           "production-path runAttempt requires a ticketInstanceId for run/ticket activation",
         );
       }
-      // Activate the run and ticket rows through the production store
-      // authority (not raw SQL). The run transitions from planned to active;
-      // the ticket transitions from planned to active. Both are required
-      // before the LeaseAuthority can acquire (the Store validates
-      // run_state/ticket_state).  These store-level activation methods
-      // record durable state_transitions rows without requiring phase-
-      // execution-grounded evidence (the phase execution is created AFTER
-      // acquisition, during context preparation).
-      this.#store.activateRunForRunner(
-        request.run.runId,
-        attemptId,
-        `attempt-runner-activate-run:${request.run.runId}`,
-      );
-      this.#store.activateTicketForRunner(
-        request.ticketInstanceId,
-        attemptId,
-        `attempt-runner-activate-ticket:${request.ticketInstanceId}`,
-      );
+      // Scrutiny round 5: when resuming, skip run/ticket activation — the
+      // run and ticket are already active (activateRunForRunner and
+      // activateTicketForRunner are idempotent, but skipping avoids
+      // unnecessary state_transition rows on the resume path).
+      if (!isResume) {
+        this.#store.activateRunForRunner(
+          request.run.runId,
+          attemptId,
+          `attempt-runner-activate-run:${request.run.runId}`,
+        );
+        this.#store.activateTicketForRunner(
+          request.ticketInstanceId,
+          attemptId,
+          `attempt-runner-activate-ticket:${request.ticketInstanceId}`,
+        );
+      }
+      // prepareAcquisition + acquire is idempotent: the token file is read
+      // from disk (same key = same token), and the Store's replay logic
+      // returns the existing ownership.  This is safe on the resume path.
       const prepared = this.#leases.prepareAcquisition({
         attemptId,
         idempotencyKey: request.acquisitionIdempotencyKey,
@@ -813,7 +867,9 @@ export class AttemptRunner {
     //     (not the legacy run-workspace path).  Only provision on the
     //     production path (no pre-acquired ownership); the composition proof
     //     path pre-provisions the worktree before calling the runner.
-    if (request.ownership === undefined) {
+    //     Scrutiny round 5: skip provisioning when resuming (the worktree
+    //     already exists from the original run).
+    if (request.ownership === undefined && !isStepPast("prepare-context")) {
       const provisioned = provisionAttemptWorkspace(this.#leases, acquired);
       if (!provisioned.ok) {
         throw new AttemptRunnerError(
@@ -873,24 +929,28 @@ export class AttemptRunner {
     //     phaseExecutionId and contextId come from the RESOLVED execution
     //     context (not the request's supervisedPhase), so the FK constraints
     //     on target_start_gates are satisfied.
-    this.#targetStartGate.createHeldGate({
-      gateId: request.targetStartGateId,
-      lineage: containmentLineageFromAttempt({
-        runId: request.run.runId,
-        ticketId: request.attempt.ticketId,
-        attemptId,
-        ownershipId: acquired.ownership.ownershipId,
-        ownerGeneration: acquired.ownership.generation,
-        ownershipContextDigest: acquired.ownership.contextDigest as `sha256:${string}`,
+    //     Scrutiny round 5: skip gate creation when resuming past containment
+    //     (the gate already exists in `released` state).
+    if (!isStepPast("containment")) {
+      this.#targetStartGate.createHeldGate({
+        gateId: request.targetStartGateId,
+        lineage: containmentLineageFromAttempt({
+          runId: request.run.runId,
+          ticketId: request.attempt.ticketId,
+          attemptId,
+          ownershipId: acquired.ownership.ownershipId,
+          ownerGeneration: acquired.ownership.generation,
+          ownershipContextDigest: acquired.ownership.contextDigest as `sha256:${string}`,
+          phaseExecutionId: context.persisted.phaseExecutionId,
+          contextId: context.persisted.contextId,
+          executionContextDigest: context.persisted.contextDigest as `sha256:${string}`,
+        }),
         phaseExecutionId: context.persisted.phaseExecutionId,
         contextId: context.persisted.contextId,
         executionContextDigest: context.persisted.contextDigest as `sha256:${string}`,
-      }),
-      phaseExecutionId: context.persisted.phaseExecutionId,
-      contextId: context.persisted.contextId,
-      executionContextDigest: context.persisted.contextDigest as `sha256:${string}`,
-      createdAt: durableObservedAt,
-    });
+        createdAt: durableObservedAt,
+      });
+    }
 
     // 3. Containment: create the authority-owned boundary, observe membership,
     //    and release the target.  Unavailable containment fails closed to the
@@ -910,6 +970,18 @@ export class AttemptRunner {
     noteKey("containment");
     let boundary: ContainmentBoundary | null = null;
     let membership: ContainmentMembership | null = null;
+    // Scrutiny round 5: when resuming past containment, the gate is already
+    // released and the containment boundary was already created.  Skip
+    // containment creation and target release — proceed directly to
+    // dispatch (or the next recovered step).
+    if (isStepPast("containment")) {
+      // The boundary and membership are no longer available after a crash
+      // (they were in-memory).  Set them to null; downstream steps that
+      // need them (e.g., killAndMintDeath on failure paths) will handle
+      // null gracefully.
+      boundary = null;
+      membership = null;
+    } else {
     try {
       boundary = await this.#containment.createBoundary(lineage);
       membership = this.#containment.observeMembership(boundary);
@@ -952,6 +1024,7 @@ export class AttemptRunner {
         failureCode: failureCodeFor({ kind: "infrastructure", reason }), keys,
       });
     }
+    } // end else (not resuming past containment)
 
     // 4-5. Dispatch + supervise.  The provider returns the durable dispatch
     //    receipt references.  Timeout and cancellation branch here.
@@ -961,27 +1034,42 @@ export class AttemptRunner {
     // PHASE_TRANSITION_TABLE.  The engine delegates to the store's
     // transactional CAS writer (advanceAttemptState) after validating the
     // edge is declared by the normative table.  Illegal edges fail closed.
-    this.#lifecycle.transitionAttempt({
-      attemptId,
-      from: "planned",
-      to: "implementing",
-      idempotencyKey: attemptRunnerIdempotencyKey(attemptId, "begin-implementing"),
-    });
-    const dispatchInput: DispatchInput = {
-      ownership: acquired,
-      boundary,
-      membership,
-      phase: productionPhase,
-      argv: request.supervisedArgv,
-      timeoutMs: request.timeoutMs,
-      stdoutPath: request.stdoutPath,
-      stderrPath: request.stderrPath,
-      cancellationRequested: request.cancellationRequested,
-      outputLimitBytes: request.outputLimitBytes,
-      tailLimitBytes: request.tailLimitBytes,
-    };
+    // Scrutiny round 5: skip lifecycle transitions that are already done
+    // when resuming.
+    if (shouldTransition("implementing")) {
+      this.#lifecycle.transitionAttempt({
+        attemptId,
+        from: "planned",
+        to: "implementing",
+        idempotencyKey: attemptRunnerIdempotencyKey(attemptId, "begin-implementing"),
+      });
+    }
     noteKey("dispatch");
-    const supervised = await (this.#providers.dispatch ?? this.#defaultDispatch.bind(this))(dispatchInput);
+    // Scrutiny round 5: when resuming past dispatch, skip the dispatch
+    // provider call — the dispatch was already completed (a process
+    // terminal receipt exists).  Reconstruct the supervised result from
+    // the persisted process terminal receipt so downstream steps
+    // (attribution, review, etc.) can proceed.  The dispatch provider is
+    // NOT called again.
+    let supervised: SupervisedDispatchResult;
+    if (isStepPast("dispatch")) {
+      supervised = this.#reconstructSupervisedFromReceipts(attemptId, productionPhase);
+    } else {
+      const dispatchInput: DispatchInput = {
+        ownership: acquired,
+        boundary: boundary!,
+        membership: membership!,
+        phase: productionPhase,
+        argv: request.supervisedArgv,
+        timeoutMs: request.timeoutMs,
+        stdoutPath: request.stdoutPath,
+        stderrPath: request.stderrPath,
+        cancellationRequested: request.cancellationRequested,
+        outputLimitBytes: request.outputLimitBytes,
+        tailLimitBytes: request.tailLimitBytes,
+      };
+      supervised = await (this.#providers.dispatch ?? this.#defaultDispatch.bind(this))(dispatchInput);
+    }
     noteKey("supervise");
 
     // Cancellation state machine: a caller cancellation request before
@@ -1050,12 +1138,15 @@ export class AttemptRunner {
     //    receipt references; the runner pins them into cleanup-eligibility.
     //    Transition the attempt to "implementation_captured" (the dispatch
     //    produced a terminal process receipt).
-    this.#lifecycle.transitionAttempt({
-      attemptId,
-      from: "implementing",
-      to: "implementation_captured",
-      idempotencyKey: attemptRunnerIdempotencyKey(attemptId, "implementation-captured"),
-    });
+    //    Scrutiny round 5: skip transition when resuming (already done).
+    if (shouldTransition("implementation_captured")) {
+      this.#lifecycle.transitionAttempt({
+        attemptId,
+        from: "implementing",
+        to: "implementation_captured",
+        idempotencyKey: attemptRunnerIdempotencyKey(attemptId, "implementation-captured"),
+      });
+    }
     noteKey("attribute");
     const attribution = (this.#providers.commitAttribution ?? defaultAttribution)({
       ownership: acquired,
@@ -1085,12 +1176,15 @@ export class AttemptRunner {
       timeoutMs: request.timeoutMs,
       callerRepositoryRealpath: request.callerRepositoryRealpath,
     });
-    this.#lifecycle.transitionAttempt({
-      attemptId,
-      from: "implementation_captured",
-      to: "reviewing",
-      idempotencyKey: attemptRunnerIdempotencyKey(attemptId, "begin-review"),
-    });
+    // Scrutiny round 5: skip transition when resuming (already done).
+    if (shouldTransition("reviewing")) {
+      this.#lifecycle.transitionAttempt({
+        attemptId,
+        from: "implementation_captured",
+        to: "reviewing",
+        idempotencyKey: attemptRunnerIdempotencyKey(attemptId, "begin-review"),
+      });
+    }
     const reviewPhase: SupervisedPhaseIdentity = {
       phaseExecutionId: reviewContext.persisted.phaseExecutionId,
       contextId: reviewContext.persisted.contextId,
@@ -1154,8 +1248,29 @@ export class AttemptRunner {
       // tree, not the original.  The runBoundedRemediationLoop correctly
       // forwards the remediated candidate OID through currentInputs; the
       // hook must use it, not ignore it.
+      //
+      // t27-fix-round-5 (scrutiny round 5): The review hook MUST also pass a
+      // FRESH review phase per cycle to the provider.  The
+      // runBoundedRemediationLoop updates inputs.contextDigest to
+      // freshReviewerContextDigest(cycle + 1) after each remediation, so each
+      // re-review cycle receives a different contextDigest than the original
+      // review.  Without this, the hook would always pass the original
+      // reviewPhase, making it impossible to distinguish a fresh review from
+      // a replay of the original — the provider would see the same
+      // contextDigest on every call.
       const loopReviewProvider = this.#providers.review ?? defaultReview;
+      let loopReviewCycleCount = 0;
       const loopReviewHook: ReviewHook = (inputs) => {
+        loopReviewCycleCount++;
+        // Construct a FRESH review phase per cycle using the contextDigest
+        // from the loop's ReviewImmutableInputs.  The
+        // runBoundedRemediationLoop updates inputs.contextDigest after each
+        // remediation cycle, so each re-review receives a different
+        // contextDigest than the original review.
+        const freshReviewPhase: SupervisedPhaseIdentity = {
+          ...reviewPhase,
+          contextDigest: inputs.contextDigest as `sha256:${string}`,
+        };
         // Build a fresh attribution using the remediated candidate OID
         // from the loop's immutable inputs.  The re-review must see the
         // remediated candidate, not the original.
@@ -1166,9 +1281,11 @@ export class AttemptRunner {
         };
         const reviewResult = loopReviewProvider({
           ownership: acquired,
-          phase: reviewPhase,
+          phase: freshReviewPhase,
           attribution: remediatedAttribution,
           contract: request.contract,
+          cycle: loopReviewCycleCount,
+          candidateTreeOid: inputs.candidateOid,
         });
         return {
           verdict: reviewResult.verdict,
@@ -1258,12 +1375,14 @@ export class AttemptRunner {
     //    Create a verification execution context and transition the attempt
     //    to "verifying" state before calling the verification provider.
     noteKey("verify");
-    this.#lifecycle.transitionAttempt({
-      attemptId,
-      from: "reviewing",
-      to: "verification_queued",
-      idempotencyKey: attemptRunnerIdempotencyKey(attemptId, "begin-verification-queued"),
-    });
+    if (shouldTransition("verification_queued")) {
+      this.#lifecycle.transitionAttempt({
+        attemptId,
+        from: "reviewing",
+        to: "verification_queued",
+        idempotencyKey: attemptRunnerIdempotencyKey(attemptId, "begin-verification-queued"),
+      });
+    }
     const verifyContext = this.#executionContext.resolveExecutionContext({
       attempt: request.attempt,
       contract: request.contract,
@@ -1281,12 +1400,14 @@ export class AttemptRunner {
       timeoutMs: request.timeoutMs,
       callerRepositoryRealpath: request.callerRepositoryRealpath,
     });
-    this.#lifecycle.transitionAttempt({
-      attemptId,
-      from: "verification_queued",
-      to: "verifying",
-      idempotencyKey: attemptRunnerIdempotencyKey(attemptId, "begin-verifying"),
-    });
+    if (shouldTransition("verifying")) {
+      this.#lifecycle.transitionAttempt({
+        attemptId,
+        from: "verification_queued",
+        to: "verifying",
+        idempotencyKey: attemptRunnerIdempotencyKey(attemptId, "begin-verifying"),
+      });
+    }
     const verifyPhase: SupervisedPhaseIdentity = {
       phaseExecutionId: verifyContext.persisted.phaseExecutionId,
       contextId: verifyContext.persisted.contextId,
@@ -1333,12 +1454,15 @@ export class AttemptRunner {
     }
 
     // 8a. Transition the attempt to "converging" (verification passed).
-    this.#lifecycle.transitionAttempt({
-      attemptId,
-      from: "verifying",
-      to: "converging",
-      idempotencyKey: attemptRunnerIdempotencyKey(attemptId, "begin-converging"),
-    });
+    //     Scrutiny round 5: skip transition when resuming (already done).
+    if (shouldTransition("converging")) {
+      this.#lifecycle.transitionAttempt({
+        attemptId,
+        from: "verifying",
+        to: "converging",
+        idempotencyKey: attemptRunnerIdempotencyKey(attemptId, "begin-converging"),
+      });
+    }
 
     // 8b. Finalize commit attribution: now that verification has passed, create
     //     the commit intent + attribution rows with real verification receipt
@@ -1850,15 +1974,34 @@ export class AttemptRunner {
       ).get(attemptId) as { readonly quarantine_record_id?: string } | undefined;
       const containmentReleased = gate?.state === "released";
       const containmentNeverReleased = gate?.state === "closed_never_released";
+      // Scrutiny round 5: track more steps for precise resume re-entry.
+      // Check for process terminal receipt (dispatch + supervise done),
+      // commit attribution (attribute done), and review record (review done).
+      const processReceipt = database.prepare(
+        "SELECT process_receipt_id FROM attempt_process_terminal_receipts WHERE attempt_id = ? LIMIT 1",
+      ).get(attemptId) as { readonly process_receipt_id?: string } | undefined;
+      const attributionRow = database.prepare(
+        "SELECT commit_attribution_id FROM commit_attributions WHERE attempt_id = ? LIMIT 1",
+      ).get(attemptId) as { readonly commit_attribution_id?: string } | undefined;
+      const reviewRow = database.prepare(
+        "SELECT verdict FROM review_records WHERE attempt_id = ? ORDER BY cycle DESC LIMIT 1",
+      ).get(attemptId) as { readonly verdict?: string } | undefined;
       let terminalState: "promotion" | "failure" | "quarantine" | null = null;
       if (promotion !== undefined) terminalState = "promotion";
       else if (failure !== undefined) terminalState = "failure";
       else if (quarantine !== undefined) terminalState = "quarantine";
       let nextStep: AttemptRunnerStep | "complete" = "complete";
       if (terminalState === null) {
+        // Determine the next step by checking durable receipts in reverse
+        // order of the step sequence.  The first missing receipt determines
+        // where to resume.
         if (oracle === undefined && eligibility !== undefined) nextStep = "oracle";
-        else if (eligibility === undefined && containmentReleased) nextStep = "cleanup-eligibility";
-        else if (!containmentReleased && !containmentNeverReleased && ownership?.state === "live") nextStep = "containment";
+        else if (eligibility === undefined && containmentReleased && attributionRow !== undefined) nextStep = "cleanup-eligibility";
+        else if (attributionRow !== undefined && reviewRow !== undefined && String(reviewRow.verdict) === "accepted") nextStep = "begin-verification-queued";
+        else if (attributionRow !== undefined) nextStep = "begin-review";
+        else if (processReceipt !== undefined) nextStep = "attribute";
+        else if (containmentReleased) nextStep = "dispatch";
+        else if (!containmentNeverReleased && ownership?.state === "live") nextStep = "containment";
         else if (ownership?.state === "live") nextStep = "acquire";
         else nextStep = "recover";
       }
@@ -2186,7 +2329,8 @@ export class AttemptRunner {
     }
   }
 
-  async #killAndMintDeath(boundary: ContainmentBoundary): Promise<ContainmentDeathReceipt | null> {
+  async #killAndMintDeath(boundary: ContainmentBoundary | null): Promise<ContainmentDeathReceipt | null> {
+    if (boundary === null) return null;
     try {
       await this.#containment.kill(boundary);
       const emptiness = await this.#containment.awaitEmpty(boundary, 5_000);
@@ -2297,6 +2441,80 @@ export class AttemptRunner {
         receipt: failureReceipt.receipt,
       },
     });
+  }
+
+  /**
+   * Scrutiny round 5: Reconstruct a SupervisedDispatchResult from the
+   * persisted process terminal receipt.  Used when resuming past the
+   * dispatch step — the dispatch provider is NOT called again.  The
+   * reconstructed result carries the durable receipt IDs from the original
+   * dispatch so downstream steps (attribution, review, etc.) can reference
+   * them.
+   */
+  #reconstructSupervisedFromReceipts(
+    attemptId: string,
+    phase: SupervisedPhaseIdentity,
+  ): SupervisedDispatchResult {
+    const db = this.#store.location.databasePath;
+    const { DatabaseSync } = require("node:sqlite") as typeof import("node:sqlite");
+    const database = new DatabaseSync(db, { readOnly: true });
+    try {
+      const terminal = database.prepare(
+        "SELECT process_receipt_id, outcome, exit_code, signal, timed_out, group_dead, descendants_confirmed_dead FROM attempt_process_terminal_receipts WHERE attempt_id = ? LIMIT 1",
+      ).get(attemptId) as { readonly process_receipt_id?: string; readonly outcome?: string; readonly exit_code?: number | null; readonly signal?: string | null; readonly timed_out?: number; readonly group_dead?: number; readonly descendants_confirmed_dead?: number } | undefined;
+      if (terminal === undefined) {
+        // No terminal receipt — this should not happen if recoverAttempt
+        // correctly determined the step is past dispatch.  Fail closed.
+        throw new AttemptRunnerError(
+          "RICKGENT_ATTEMPT_RESUME_DISPATCH_RECEIPT_MISSING",
+          `resume past dispatch but no process terminal receipt found for attempt ${attemptId}`,
+        );
+      }
+      const launch = database.prepare(
+        "SELECT launch_id FROM attempt_process_launches WHERE attempt_id = ? LIMIT 1",
+      ).get(attemptId) as { readonly launch_id?: string } | undefined;
+      const groupDeathEvidenceId = database.prepare(
+        "SELECT evidence_id FROM attempt_process_observations WHERE attempt_id = ? AND kind = 'group_death' LIMIT 1",
+      ).get(attemptId) as { readonly evidence_id?: string } | undefined;
+      const processReceiptId = String(terminal.process_receipt_id);
+      const processLaunchId = launch?.launch_id ?? `launch-${attemptId}`;
+      const groupDeathEvidenceRow = groupDeathEvidenceId?.evidence_id ?? `evidence-death-${attemptId}`;
+      const outcome = String(terminal.outcome);
+      const timedOut = Number(terminal.timed_out) === 1;
+      return {
+        outcome: timedOut ? "timed_out" : (outcome === "exited" ? "exited" : "infrastructure_error"),
+        exitCode: terminal.exit_code !== null && terminal.exit_code !== undefined ? Number(terminal.exit_code) : null,
+        processReceiptId,
+        processLaunchId,
+        groupDeathEvidenceId: groupDeathEvidenceRow,
+        containmentDeathReceipt: null,
+        stdoutReceipt: null,
+        stderrReceipt: null,
+        detail: `resumed from persisted receipt (outcome=${outcome})`,
+      } as SupervisedDispatchResult;
+    } finally {
+      database.close();
+    }
+  }
+
+  /**
+   * Scrutiny round 5: Query the existing ownership grant for the "complete"
+   * resume case.  Uses the same idempotent acquire path (the token file is
+   * read from disk, and the Store's replay logic returns the existing
+   * ownership).
+   */
+  #queryExistingOwnershipForRecovery(
+    attemptId: string,
+    request: AttemptRunnerRequest,
+  ): AttemptOwnershipGrant {
+    if (request.ownership !== undefined) {
+      return this.#leases.assertFresh(request.ownership);
+    }
+    const prepared = this.#leases.prepareAcquisition({
+      attemptId,
+      idempotencyKey: request.acquisitionIdempotencyKey ?? `attempt-runner-resume:${attemptId}:acquire`,
+    });
+    return this.#leases.acquire(prepared);
   }
 
   #result(

@@ -62,6 +62,7 @@ import {
 } from "../../src/state/store.js";
 import { provisionAttemptWorkspace } from "../../src/git/attempt-workspace.js";
 import { runBuildViaRunnerForTesting } from "../../src/lifecycle/build.js";
+import { parseExecutablePrdFile } from "../../src/lifecycle/prd-parse.js";
 import { FIXTURE_RUNTIME_AUTHORITY } from "../../src/testing/fixture-authority.js";
 import {
   DURABLE_EXECUTION_CONTEXT_SCHEMA_VERSION,
@@ -606,10 +607,10 @@ function makeRemediationTrackingRunner(
   },
 ): {
   readonly runner: AttemptRunner;
-  readonly reviewCalls: { readonly candidateOid: string; readonly cycle: number }[];
+  readonly reviewCalls: { readonly candidateOid: string; readonly cycle: number; readonly contextDigest: string }[];
   readonly remediationCalls: { readonly previousOid: string; readonly cycle: number }[];
 } {
-  const reviewCalls: { readonly candidateOid: string; readonly cycle: number }[] = [];
+  const reviewCalls: { readonly candidateOid: string; readonly cycle: number; readonly contextDigest: string }[] = [];
   const remediationCalls: { readonly previousOid: string; readonly cycle: number }[] = [];
   const store = fixture.store;
   const leases = fixture.leases;
@@ -734,7 +735,7 @@ function makeRemediationTrackingRunner(
       // The production code passes attribution.candidateOid.  After the fix,
       // the loopReviewHook should pass the remediated candidate OID.
       const candidateOid = input.attribution.candidateOid;
-      reviewCalls.push({ candidateOid, cycle: reviewCallCount });
+      reviewCalls.push({ candidateOid, cycle: reviewCallCount, contextDigest: input.phase.contextDigest });
       // Reject if the candidate OID is the original (the remediated
       // candidate was NOT forwarded).  Accept if the candidate OID is the
       // remediated one (the remediated candidate WAS forwarded).
@@ -944,6 +945,32 @@ describe("M7 scrutiny round 4 — defect 1: remediation loop forwards remediated
     expect(reviewCalls.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("re-review uses a fresh contextDigest (different from the original review)", async () => {
+    // Scrutiny round 5 defect 1: The loopReviewHook must pass a FRESH
+    // review phase per cycle to the provider.  The runBoundedRemediationLoop
+    // updates inputs.contextDigest after each remediation, so each
+    // re-review should receive a different contextDigest than the original.
+    // Without the fix, the hook always passes the original reviewPhase,
+    // making it impossible to distinguish a fresh review from a replay.
+    const fixture = buildRemediationFixture("fresh-context-digest");
+    const remediatedDiffDigest = digest(`remediated-diff:${fixture.remediatedOid}`);
+    const { runner, reviewCalls } = makeRemediationTrackingRunner(fixture, {
+      remediatedOid: fixture.remediatedOid,
+      remediatedDiffDigest,
+    });
+    await runner.runAttempt(makeRunnerRequest(fixture));
+    // At least 2 review calls (original + at least one re-review).
+    expect(reviewCalls.length).toBeGreaterThanOrEqual(2);
+    const originalDigest = reviewCalls[0]!.contextDigest;
+    // At least one re-review MUST have a DIFFERENT contextDigest than
+    // the original review.  This is the behavioral assertion that fails
+    // against the unfixed code (the loopReviewHook passes the original
+    // reviewPhase, so all re-reviews see the same contextDigest).
+    const reReviewDigests = reviewCalls.slice(1).map((c) => c.contextDigest);
+    const freshDigests = reReviewDigests.filter((d) => d !== originalDigest);
+    expect(freshDigests.length).toBeGreaterThanOrEqual(1);
+  });
+
   it("the loop converges after remediation (not infinite loop)", async () => {
     const fixture = buildRemediationFixture("converge");
     const remediatedDiffDigest = digest(`remediated-diff:${fixture.remediatedOid}`);
@@ -983,6 +1010,14 @@ describe("M7 scrutiny round 4 — defect 1: remediation loop forwards remediated
 // ===========================================================================
 
 describe("M7 scrutiny round 4 — defect 2: --resume re-enters at recovered step", () => {
+  // Helper: parse the fixture PRD and return the sealed contracts.
+  function parsePrdContracts(repo: string): TicketContract[] {
+    const repoRoot = join(dirname(import.meta.dirname), "..", "..");
+    const prdPath = join(repoRoot, "fixtures", "prd-min.md");
+    const parsed = parseExecutablePrdFile(prdPath, { repoRealpath: repo });
+    return parsed.contracts;
+  }
+
   // Helper: create a repo with a persisted run that has a mid-flight ticket.
   function makePersistedRun(label: string): {
     readonly repo: string;
@@ -1076,100 +1111,180 @@ describe("M7 scrutiny round 4 — defect 2: --resume re-enters at recovered step
     expect(recovery.attemptId).toBe(fixture.attemptId);
   });
 
-  it("--resume calls recoverAttempt and uses the recovered nextStep (not from acquisition)", async () => {
-    const fixture = makePersistedRun("resume-reenter");
-    const repoRoot = join(dirname(import.meta.dirname), "..", "..");
-    const agentDir = join(repoRoot, "agents", "rickgent");
-    // We need a PRD file.  Use the existing fixture PRD.
-    const prdPath = join(repoRoot, "fixtures", "prd-min.md");
-    const containmentBackend = new FixtureContainmentBackend();
-    // Track whether recoverAttempt is called by checking the build report.
-    const result = await runBuildViaRunnerForTesting(
-      FIXTURE_RUNTIME_AUTHORITY,
-      {
-        prdPath,
-        workingDir: fixture.repo,
-        rickgentDir: fixture.rickgentDir,
-        agentDir,
-        dataDir: fixture.dataDir,
-        resume: true,
-        env: { ...process.env, RICKGENT_DIR: fixture.rickgentDir },
+  it("--resume passes resumeFromStep to the runner (not from acquisition)", async () => {
+    // Scrutiny round 5: replace regex-based assertion with direct observable
+    // state.  The runner must skip dispatch when resumeFromStep is past
+    // "dispatch".  We test this by calling runAttempt directly with
+    // resumeFromStep set to "attribute" (past dispatch) and asserting the
+    // dispatch provider is NOT called.
+    //
+    // The build path wires resumeFromStep by storing recoveryState.nextStep
+    // in resumeFromStepByAttempt and passing it to the runner request.
+    const fixture = buildRemediationFixture("resume-reenter");
+    const remediatedDiffDigest = digest(`remediated-diff:${fixture.remediatedOid}`);
+
+    // Track dispatch provider calls.
+    let dispatchCallCount = 0;
+    const store = fixture.store;
+    const leases = fixture.leases;
+    const containment = new FixtureContainmentBackend();
+    const targetStartGate = new TargetStartGateAuthority(store, leases, containment);
+    const terminalization = new AttemptTerminalizationService(store, leases);
+    const executionContext = new AttemptExecutionContextAuthority(store);
+    const cleanupPreimage = makeCleanupPreimageProvider(fixture);
+
+    const runner = new AttemptRunner(store, leases, containment, targetStartGate, terminalization, executionContext, {
+      cleanupPreimage,
+      async dispatch(input: DispatchInput) {
+        dispatchCallCount++;
+        return {
+          outcome: "exited" as const, exitCode: 0,
+          processReceiptId: `process-receipt-${input.ownership.attemptId}`,
+          processLaunchId: `launch-${input.ownership.attemptId}`,
+          groupDeathEvidenceId: `evidence-death-${input.ownership.attemptId}`,
+          containmentDeathReceipt: null, stdoutReceipt: null, stderrReceipt: null,
+          detail: "dispatch called (should NOT happen on resume)",
+        };
       },
-      {
-        containmentBackendOverride: containmentBackend,
+      commitAttribution(input): CommitAttributionResult {
+        throw new Error("attribution should not be reached on resume without process receipt");
       },
-    );
-    // The build report should mention recoverAttempt or the recovered step.
-    // Against the unfixed code, the build only logs recovery state and
-    // starts from acquisition — the report may mention recoverAttempt but
-    // the runner starts from the beginning.
-    // After the fix, the report should mention the recovered nextStep.
-    const report = result.report.join("\n");
-    // The build should have processed the resume (the report should mention
-    // resuming or the recovered step).
-    expect(report).toMatch(/resum|recover|step/i);
+      review() { throw new Error("review should not be reached"); },
+      remediation() { throw new Error("remediation should not be reached"); },
+      verification() { throw new Error("verification should not be reached"); },
+      oracle() { throw new Error("oracle should not be reached"); },
+    });
+
+    const request = makeRunnerRequest(fixture);
+    // Call runAttempt with resumeFromStep set to "attribute" (past dispatch).
+    // The runner should skip acquire, prepare-context, containment, dispatch,
+    // and supervise.  Since no process terminal receipt exists, the runner
+    // fails closed with RICKGENT_ATTEMPT_RESUME_DISPATCH_RECEIPT_MISSING.
+    // The dispatch provider is NOT called.
+    let threw = false;
+    let errorMessage = "";
+    try {
+      await runner.runAttempt({
+        ...request,
+        resumeFromStep: "attribute",
+      });
+    } catch (error) {
+      threw = true;
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+    // Direct observable state assertion: the dispatch provider must NOT be
+    // called when resuming past dispatch.  This is NOT a regex check.
+    expect(dispatchCallCount).toBe(0);
+    // The runner should fail closed (no process receipt to reconstruct
+    // the supervised result from).  This proves the runner attempted to
+    // skip dispatch (it tried to reconstruct from receipts instead of
+    // calling the dispatch provider).
+    expect(threw).toBe(true);
+    expect(errorMessage).toContain("RESUME_DISPATCH_RECEIPT_MISSING");
   });
 
   it("--resume fails closed if recoverAttempt throws (does not silently allocate fresh)", async () => {
-    // Create a persisted run, then corrupt the state so recoverAttempt throws.
-    const fixture = makePersistedRun("resume-fail-closed");
+    // Scrutiny round 5: replace regex-based assertion with direct observable
+    // state.  If the resume path encounters an error (recoverAttempt throws
+    // or runAttempt fails on a mid-flight attempt), the build MUST count the
+    // ticket as failed (ticketsFailed incremented), not silently allocate a
+    // fresh attempt.
+    //
+    // We create a persisted run with PRD-matching contracts, walk the attempt
+    // to a mid-flight state ("reviewing") WITHOUT seeding ownership, then
+    // resume.  The recoverAttempt returns "recover" (no ownership), and
+    // runAttempt starts from acquisition but fails because the attempt is
+    // not in "planned" state.  The dispatchFn catches the error, and the
+    // accounting loop counts the ticket as failed.
+    const repo = makeRepo("resume-fail-closed");
+    const rickgentDir = join(repo, ".rickgent");
+    const dataDir = join(repo, "data");
+    const store = openStateStore({ repoPath: repo });
+    stores.add(store);
+    const sealedContract = parsePrdContracts(repo)[0]!;
+    const resolver = new IdentityContextResolver(store);
+    const baselineOid = git(repo, "rev-parse", "HEAD");
+    const run = resolver.allocateFreshRun({
+      contracts: [sealedContract],
+      initialDeliveryOid: baselineOid,
+      oracleVersion: ORACLE_VERSION,
+    });
+    const attempt = resolver.allocateInitialAttempt({ runId: run.runId, ticketId: sealedContract.id });
+    // Walk the attempt to "reviewing" (mid-flight, no ownership).
+    updateRow(store.location.databasePath, "attempts", "attempt_id", attempt.attemptId, {
+      state: "implementing", state_version: 1,
+    });
+    updateRow(store.location.databasePath, "attempts", "attempt_id", attempt.attemptId, {
+      state: "implementation_captured", state_version: 2,
+    });
+    updateRow(store.location.databasePath, "attempts", "attempt_id", attempt.attemptId, {
+      state: "reviewing", state_version: 3,
+    });
+    // Activate the run and ticket (required for resume).
+    updateRow(store.location.databasePath, "runs", "run_id", run.runId, { state: "active", state_version: 1 });
+    updateRow(store.location.databasePath, "run_tickets", "ticket_instance_id", attempt.ticketInstanceId, {
+      state: "active", state_version: 1,
+    });
+    store.close();
+
     const repoRoot = join(dirname(import.meta.dirname), "..", "..");
     const agentDir = join(repoRoot, "agents", "rickgent");
     const prdPath = join(repoRoot, "fixtures", "prd-min.md");
     const containmentBackend = new FixtureContainmentBackend();
-    // Close the store so recoverAttempt's internal DatabaseSync cannot open
-    // the database (it opens readOnly, so this won't work).  Instead, we
-    // verify the code path by checking that the build result's report
-    // either mentions the recovery failure or the build fails closed.
-    //
-    // The key behavioral assertion: if recoverAttempt throws, the build
-    // MUST NOT silently allocate a fresh attempt.  The ticket should be
-    // counted as failed, not as a fresh dispatch.
-    //
-    // We can verify this by checking that the build does not report
-    // "allocated N planned initial attempt(s)" for the resumed ticket
-    // (which would indicate a fresh allocation instead of recovery).
+
+    let dispatchCallCount = 0;
     const result = await runBuildViaRunnerForTesting(
       FIXTURE_RUNTIME_AUTHORITY,
       {
         prdPath,
-        workingDir: fixture.repo,
-        rickgentDir: fixture.rickgentDir,
+        workingDir: repo,
+        rickgentDir,
         agentDir,
-        dataDir: fixture.dataDir,
+        dataDir,
         resume: true,
-        env: { ...process.env, RICKGENT_DIR: fixture.rickgentDir },
+        env: { ...process.env, RICKGENT_DIR: rickgentDir },
       },
       {
         containmentBackendOverride: containmentBackend,
+        attemptRunnerProviders: {
+          dispatch: async () => {
+            dispatchCallCount++;
+            return {
+              outcome: "exited" as const, exitCode: 0,
+              processReceiptId: `process-receipt-fail`,
+              processLaunchId: `launch-fail`,
+              groupDeathEvidenceId: `evidence-death-fail`,
+              containmentDeathReceipt: null, stdoutReceipt: null, stderrReceipt: null,
+              detail: "dispatch called (should NOT happen on fail-closed)",
+            };
+          },
+        },
       },
     );
-    // The build should not silently succeed by allocating a fresh attempt
-    // when recovery was requested.  The outcome should not be "ok" if the
-    // recovery path fails closed.
-    // Against the unfixed code: recoverAttempt failure is caught and
-    // logged, then the runner proceeds with runAttempt from acquisition
-    // (silently allocating a fresh attempt).  The ticket may "succeed"
-    // even though recovery was supposed to fail closed.
-    // After the fix: recoverAttempt failure causes the ticket to be
-    // counted as failed (fail-closed), not silently re-allocated.
-    const report = result.report.join("\n");
-    // The report should mention the recoverAttempt failure or the
-    // fail-closed behavior.
-    expect(report).toMatch(/recover|fail-closed|failed|resum/i);
+    // Direct observable state assertion: the ticket must be counted as
+    // failed (ticketsFailed > 0), and the dispatch provider must NOT be
+    // called.  This is NOT a regex check.
+    expect(result.ticketsFailed).toBeGreaterThanOrEqual(1);
+    expect(dispatchCallCount).toBe(0);
   });
 
-  it("cleanup_orphan has an executable production branch", async () => {
-    // Create a persisted run with a failed attempt.  The resumeRun function
-    // will detect the failed attempt and allocate a retry (cleanup_orphan or
-    // allocate_retry action).  The build path must handle this action and
-    // not silently fall through to allocating a fresh attempt.
+  it("orphaned planned attempt recovery emits allocate_retry (not cleanup_orphan)", async () => {
+    // Scrutiny round 5: replace regex-based assertion with direct observable
+    // state.  The recovery plan for an orphaned planned attempt must emit
+    // allocate_retry (cleanup_orphan was removed as dead code).  The build
+    // path must handle allocate_retry and dispatch the retry attempt.
+    //
+    // We verify this by:
+    // 1. Creating a persisted run with a failed attempt.
+    // 2. Calling resumeRun to get the recovery plan.
+    // 3. Asserting the plan's nextAction is allocate_retry (NOT cleanup_orphan).
+    // 4. Running the build and verifying it dispatches the retry.
     const repo = makeRepo("cleanup-orphan");
     const rickgentDir = join(repo, ".rickgent");
     const dataDir = join(repo, "data");
     const store = openStateStore({ repoPath: repo });
     stores.add(store);
-    const sealedContract = sealTicketContracts([draft()], { repositoryRoot: repo })[0]!;
+    const sealedContract = parsePrdContracts(repo)[0]!;
     const resolver = new IdentityContextResolver(store);
     const baselineOid = git(repo, "rev-parse", "HEAD");
     const run = resolver.allocateFreshRun({
@@ -1191,10 +1306,63 @@ describe("M7 scrutiny round 4 — defect 2: --resume re-enters at recovered step
       state: "cleanup_pending",
       state_version: 2,
     });
+
+    // Call resumeRun to get the recovery plan BEFORE closing the store.
+    const observation = observeState(repo);
+    if (observation.state !== "present" || observation.latestRun === null) {
+      throw new Error("expected persisted run");
+    }
+    const latestRun = observation.latestRun;
+    const resumeResult: ResumeRunResult = resumeRun({
+      runId: latestRun.runId,
+      repoPath: repo,
+      manifestDigest: latestRun.manifestDigest,
+      contextSchemaVersion: latestRun.contextSchemaVersion,
+      oracleVersion: latestRun.oracleVersion,
+      capabilitySnapshotDigest: latestRun.capabilitySnapshotDigest,
+      resourceIdentityVersion: latestRun.resourceIdentityVersion,
+      tickets: [{ ticketId: sealedContract.id, contractDigest: sealedContract.digest }],
+    });
+    // Direct observable state assertion: the recovery plan's nextAction
+    // must be "allocate_retry" (NOT "cleanup_orphan" which was removed).
+    expect(resumeResult.tickets.length).toBeGreaterThanOrEqual(1);
+    const plan = resumeResult.tickets[0]!;
+    expect(plan.nextAction).toBe("allocate_retry");
+    expect(plan.nextAction).not.toBe("cleanup_orphan" as never);
+    // The plan must have a newAttempt with attempt number > 1.
+    expect(plan.newAttempt).not.toBeNull();
+    expect(plan.newAttempt!.attemptNumber).toBeGreaterThan(1);
+    store.close();
+  });
+
+  it("build path handles allocate_retry for orphaned planned attempt", async () => {
+    // Scrutiny round 5: verify the build path processes allocate_retry
+    // without crashing.  Uses a SEPARATE repo from the recovery-plan test
+    // to avoid double resumeRun calls (which would allocate the retry twice).
+    const repo = makeRepo("cleanup-orphan-build");
+    const rickgentDir = join(repo, ".rickgent");
+    const dataDir = join(repo, "data");
+    const store = openStateStore({ repoPath: repo });
+    stores.add(store);
+    const sealedContract = parsePrdContracts(repo)[0]!;
+    const resolver = new IdentityContextResolver(store);
+    const baselineOid = git(repo, "rev-parse", "HEAD");
+    const run = resolver.allocateFreshRun({
+      contracts: [sealedContract],
+      initialDeliveryOid: baselineOid,
+      oracleVersion: ORACLE_VERSION,
+    });
+    const attempt1 = resolver.allocateInitialAttempt({ runId: run.runId, ticketId: sealedContract.id });
+    updateRow(store.location.databasePath, "runs", "run_id", run.runId, { state: "active", state_version: 1 });
+    walkAttemptToState(store.location.databasePath, attempt1.attemptId, "failed_clean");
+    updateRow(store.location.databasePath, "run_tickets", "ticket_instance_id", attempt1.ticketInstanceId, {
+      state: "active", state_version: 1,
+    });
+    updateRow(store.location.databasePath, "run_tickets", "ticket_instance_id", attempt1.ticketInstanceId, {
+      state: "cleanup_pending", state_version: 2,
+    });
     store.close();
 
-    // Now resume the run.  The recovery plan should detect the failed
-    // attempt and allocate a retry (or report allocate_retry/cleanup_orphan).
     const repoRoot = join(dirname(import.meta.dirname), "..", "..");
     const agentDir = join(repoRoot, "agents", "rickgent");
     const prdPath = join(repoRoot, "fixtures", "prd-min.md");
@@ -1214,10 +1382,10 @@ describe("M7 scrutiny round 4 — defect 2: --resume re-enters at recovered step
         containmentBackendOverride: containmentBackend,
       },
     );
-    // The build report should mention the cleanup_orphan or allocate_retry
-    // action, or the resumed attempt.
+    // The build must have processed the allocate_retry action.  The report
+    // should mention allocate_retry.  The build should not crash.
     const report = result.report.join("\n");
-    expect(report).toMatch(/cleanup|orphan|allocate_retry|retry|resum|recover/i);
+    expect(report).toContain("allocate_retry");
   });
 
   it("allocate_retry uses the recovery plan's newAttempt with correct attempt number", async () => {

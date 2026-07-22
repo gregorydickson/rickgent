@@ -68,10 +68,18 @@ export interface OrphanedPlannedAttempt {
   readonly attemptNumber: number;
 }
 
-/** The next action to take for a ticket during resume. */
+/**
+ * The next action to take for a ticket during resume.
+ *
+ * Note: `cleanup_orphan` was removed (scrutiny round 5).  The recovery plan
+ * for an orphaned planned attempt emits `allocate_retry` (the orphaned
+ * attempt is cleaned up via `recoverOrphanedPlannedAttempt` and a new
+ * higher-numbered retry is allocated under the same action).  There is no
+ * separate `cleanup_orphan` action — orphan cleanup is handled under
+ * `allocate_retry`.
+ */
 export type ResumeNextAction =
   | "resume_attempt"
-  | "cleanup_orphan"
   | "allocate_retry"
   | "complete"
   | "await_reconciliation";
