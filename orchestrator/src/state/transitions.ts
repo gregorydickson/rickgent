@@ -317,16 +317,25 @@ export class TransitionAuthority {
    * ("execution_context") is used, not the caller's guard kind.  The
    * caller provides the guard's data fields (contextId, gateResultIds,
    * commitAttributionId) via dedicated request fields, not via the guard.
+   *
+   * Scrutiny round 16: ALL request.guard fallbacks are removed.  The
+   * guard's data fields (contextId, gateResultIds, commitAttributionId)
+   * are NO LONGER extracted from request.guard as a fallback.  The
+   * dedicated request fields are the SOLE source for guard operands.
+   * request.guard is completely ignored for ALL operand derivation.  A
+   * caller cannot select the execution context, gate result IDs, or
+   * commit attribution by providing them inside request.guard.
    */
   commitAttemptEdge(request: AttemptTransitionRequest & {
     readonly from: string;
     readonly to: string;
     readonly ownerService: string;
     /**
-     * Caller-provided guard.  IGNORED entirely — the guard (kind + role) is
-     * always derived from the normative PHASE_TRANSITION_TABLE edge
-     * definition.  Kept as optional for backward compatibility; the caller
-     * cannot influence the guard kind or role.
+     * Caller-provided guard.  IGNORED entirely — the guard (kind, role,
+     * AND all data fields) is always derived from the normative
+     * PHASE_TRANSITION_TABLE edge definition and the dedicated request
+     * fields.  Kept as optional for backward compatibility; the caller
+     * cannot influence ANY part of the guard.
      */
     readonly guard?: TransitionGuard;
     /**
@@ -353,9 +362,13 @@ export class TransitionAuthority {
    * Scrutiny round 15: derive the ENTIRE guard (both kind AND expectedRole)
    * from the normative PHASE_TRANSITION_TABLE edge definition.  The
    * caller-provided guard is IGNORED entirely — both kind and role come
-   * from the normative edge.  The caller provides the guard's data fields
-   * (contextId, gateResultIds, commitAttributionId) via dedicated request
-   * fields, not via the guard.
+   * from the normative edge.
+   *
+   * Scrutiny round 16: ALL request.guard fallbacks are removed.  The
+   * guard's data fields (contextId, gateResultIds, commitAttributionId)
+   * are NO LONGER extracted from request.guard as a fallback.  The
+   * dedicated request fields are the SOLE source for guard operands.
+   * request.guard is completely ignored.
    *
    * If the edge is not declared in the table, the transition is rejected
    * fail-closed (the store's from/to validation will also reject it, but we
@@ -368,7 +381,6 @@ export class TransitionAuthority {
    * edges use the typed TransitionAuthority methods directly.
    */
   #deriveEdgeGuard(from: string, to: string, request: {
-    readonly guard?: TransitionGuard;
     readonly contextId?: string;
     readonly gateResultIds?: readonly string[];
     readonly commitAttributionId?: string;
@@ -376,30 +388,22 @@ export class TransitionAuthority {
     const edge = legalPhaseEdge(from as PhaseState, to as PhaseState);
     if (edge === undefined) {
       // Edge not declared — fail closed.  The store would also reject it,
-      // but we fail early with a clear error.  If the caller provided a
-      // guard, it is IGNORED.
+      // but we fail early with a clear error.
       throw new TypeError(
         `commitAttemptEdge: edge ${from} -> ${to} is not declared by PHASE_TRANSITION_TABLE; ` +
         `the guard is always derived from the edge definition, not the caller`,
       );
     }
     // Derive the guard from the edge's declared guard kind and role.
-    // The caller-provided guard's kind and expectedRole are IGNORED entirely.
-    // However, the guard's data fields (contextId, gateResultIds,
-    // commitAttributionId) are extracted as a fallback when the dedicated
-    // request fields are not provided — this maintains backward
-    // compatibility with callers that pass the data inside the guard.
-    // The dedicated request fields take precedence over the guard's fields.
+    // The caller-provided guard is IGNORED entirely (kind, role, AND all
+    // data fields).  The dedicated request fields (contextId,
+    // gateResultIds, commitAttributionId) are the SOLE source for guard
+    // operands.  There are NO fallbacks to request.guard.
     switch (edge.guard) {
       case "execution_context": {
-        // Prefer the dedicated contextId field; fall back to extracting it
-        // from the caller-provided guard (if it is an execution_context
-        // guard).  The guard's kind and expectedRole are IGNORED — only
-        // the contextId data field is extracted.
-        const contextId = request.contextId
-          ?? (request.guard !== undefined && request.guard.kind === "execution_context"
-            ? request.guard.contextId
-            : undefined);
+        // The dedicated contextId field is the SOLE source — no fallback
+        // to request.guard.
+        const contextId = request.contextId;
         if (contextId === undefined || contextId.length === 0) {
           throw new TypeError(
             `commitAttemptEdge: edge ${from} -> ${to} requires guard kind "execution_context" ` +
@@ -413,10 +417,9 @@ export class TransitionAuthority {
         };
       }
       case "gate_results": {
-        const gateResultIds = request.gateResultIds
-          ?? (request.guard !== undefined && request.guard.kind === "gate_results"
-            ? request.guard.gateResultIds
-            : undefined);
+        // The dedicated gateResultIds field is the SOLE source — no
+        // fallback to request.guard.
+        const gateResultIds = request.gateResultIds;
         if (gateResultIds === undefined || gateResultIds.length === 0) {
           throw new TypeError(
             `commitAttemptEdge: edge ${from} -> ${to} requires guard kind "gate_results" ` +
@@ -430,10 +433,9 @@ export class TransitionAuthority {
       }
       case "cleanup_pending":
       case "budget_exhausted": {
-        const commitAttributionId = request.commitAttributionId
-          ?? (request.guard !== undefined && request.guard.kind === "cleanup_pending"
-            ? request.guard.commitAttributionId
-            : undefined);
+        // The dedicated commitAttributionId field is the SOLE source — no
+        // fallback to request.guard.
+        const commitAttributionId = request.commitAttributionId;
         return commitAttributionId !== undefined
           ? { kind: "cleanup_pending", commitAttributionId }
           : { kind: "cleanup_pending" };

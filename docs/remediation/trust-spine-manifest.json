@@ -1247,7 +1247,9 @@
         "scrutiny_round_11_fix": "docs/remediation/phase-7-m7-scrutiny-round-11-remediation-transition-authority-execution-report-2026-07-22.md",
         "scrutiny_round_12_fix": "docs/remediation/phase-7-m7-scrutiny-round-12-reviewer-context-guard-execution-report-2026-07-22.md",
         "scrutiny_round_13_fix": "docs/remediation/phase-7-m7-scrutiny-round-13-transition-authority-expected-role-execution-report-2026-07-22.md",
-        "scrutiny_round_14_fix": "docs/remediation/phase-7-m7-scrutiny-round-14-derive-expected-role-from-edge-execution-report-2026-07-22.md"
+        "scrutiny_round_14_fix": "docs/remediation/phase-7-m7-scrutiny-round-14-derive-expected-role-from-edge-execution-report-2026-07-22.md",
+        "scrutiny_round_15_fix": "docs/remediation/phase-7-m7-scrutiny-round-15-derive-guard-kind-from-edge-execution-report-2026-07-22.md",
+        "scrutiny_round_16_fix": "docs/remediation/phase-7-m7-scrutiny-round-16-remove-guard-fallbacks-execution-report-2026-07-22.md"
       }
     },
     {

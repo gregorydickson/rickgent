@@ -240,9 +240,12 @@ describe("M7 scrutiny round 14 — commitAttemptEdge derives expectedRole from P
           contextId: remediationContext.persisted.contextId,
           expectedRole: "remediator", // caller-provided — must be IGNORED
         },
+        // Scrutiny round 16: contextId must be provided via the dedicated
+        // field (the sole source); the guard's contextId is IGNORED.
+        contextId: remediationContext.persisted.contextId,
         expectedVersion,
         ownerContextDigest: remediationContextDigest,
-        idempotencyKey: `r14-cross-role-negative:${attemptId}`,
+        idempotencyKey: `***********************:${attemptId}`,
         evidence: [Object.freeze({
           purpose: "review_after_remediation",
           inlineEvidence: Object.freeze({
@@ -313,9 +316,12 @@ describe("M7 scrutiny round 14 — commitAttemptEdge derives expectedRole from P
         contextId: reviewerContext.persisted.contextId,
         expectedRole: "reviewer",
       },
+      // Scrutiny round 16: contextId must be provided via the dedicated
+      // field (the sole source); the guard's contextId is IGNORED.
+      contextId: reviewerContext.persisted.contextId,
       expectedVersion,
       ownerContextDigest: reviewerContextDigest,
-      idempotencyKey: `r14-correct-role-positive:${attemptId}`,
+      idempotencyKey: `*************************:${attemptId}`,
       evidence: [Object.freeze({
         purpose: "review_after_remediation",
         inlineEvidence: Object.freeze({
@@ -385,9 +391,12 @@ describe("M7 scrutiny round 14 — commitAttemptEdge derives expectedRole from P
         contextId: reviewerContext.persisted.contextId,
         expectedRole: "remediator", // wrong caller value — must be IGNORED
       },
+      // Scrutiny round 16: contextId must be provided via the dedicated
+      // field (the sole source); the guard's contextId is IGNORED.
+      contextId: reviewerContext.persisted.contextId,
       expectedVersion,
       ownerContextDigest: reviewerContextDigest,
-      idempotencyKey: `r14-override-ignore:${attemptId}`,
+      idempotencyKey: `*******************:${attemptId}`,
       evidence: [Object.freeze({
         purpose: "review_after_remediation",
         inlineEvidence: Object.freeze({

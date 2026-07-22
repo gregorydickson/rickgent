@@ -321,9 +321,11 @@ export class LifecycleEngine {
           from: input.from,
           to: input.to,
           ownerService: edge.evidenceProducer,
-          // Scrutiny round 15: the guard (kind + role) is derived from the
-          // edge definition by commitAttemptEdge, NOT from the caller.  The
-          // guard is passed for backward compatibility but is IGNORED.
+          // Scrutiny round 15+16: the guard (kind, role, AND all data
+          // fields) is derived from the edge definition and the dedicated
+          // request fields by commitAttemptEdge, NOT from the caller.  The
+          // guard is passed for backward compatibility but is IGNORED
+          // entirely (no fallback to guard data fields).
           guard,
           // Pass the raw data fields so commitAttemptEdge can construct the
           // edge-derived guard with the correct contextId, gateResultIds,
