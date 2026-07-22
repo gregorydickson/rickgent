@@ -1137,7 +1137,17 @@ export class AttemptRunner {
       contract: request.contract,
     });
     if (verification.status !== "pass") {
-      const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("failure-cleanup"), productionPhase);
+      // Route the verifying -> cleanup_pending failure edge through the
+      // TransitionAuthority with the verify phase context and gate result
+      // IDs.  The edge has a gate_results guard in the normative table, so
+      // the engine builds a gate_results guard and the authority validates
+      // that at least one required gate did not pass.  The verifyPhase
+      // context (not productionPhase) is used so the gate results' context
+      // digest matches the owner context digest.  (M6 scrutiny round 4.)
+      const cleanupOwnership = this.#beginCleanupPhase(
+        request, acquired, noteKey("failure-cleanup"), verifyPhase,
+        undefined, undefined, verification.gateResultIds,
+      );
       const deathReceipt = await this.#killAndMintDeath(boundary);
       const cause: AttemptFailureCause = verification.status === "infrastructure_error"
         ? { kind: "infrastructure", reason: "verification_infrastructure_error" }
@@ -1730,6 +1740,7 @@ export class AttemptRunner {
     phase: SupervisedPhaseIdentity,
     commitAttributionId?: string,
     attributionEvidenceId?: string,
+    gateResultIds?: readonly string[],
   ): AttemptOwnershipGrant {
     // Transition the attempt to cleanup_pending through the TransitionAuthority
     // (via LifecycleEngine.transitionAttempt), NOT via a direct
@@ -1796,6 +1807,21 @@ export class AttemptRunner {
           idempotencyKey: cleanupKey,
         }),
       }));
+      // For the verifying -> cleanup_pending edge (gate_results guard), add
+      // existing evidence references for each gate result's evidence ID.  The
+      // store's gate_results guard requires the transition evidence to
+      // include all gate result evidence IDs.  The gate result evidence rows
+      // already exist in the evidence table (persisted by the verification
+      // provider), so we add them as existing evidence references.
+      if (gateResultIds !== undefined && gateResultIds.length > 0) {
+        const gateEvidenceIds = this.#store.queryGateResultEvidenceIds(attemptId);
+        for (const evidenceId of gateEvidenceIds) {
+          evidenceRefs.push(Object.freeze({
+            purpose: "gate_result",
+            evidenceId,
+          }) as ExistingTransitionEvidenceReference);
+        }
+      }
       this.#lifecycle.transitionAttempt({
         attemptId,
         from: currentState,
@@ -1804,6 +1830,7 @@ export class AttemptRunner {
         contextDigest: phase.contextDigest,
         evidence: evidenceRefs,
         ...(commitAttributionId !== undefined ? { commitAttributionId } : {}),
+        ...(gateResultIds !== undefined && gateResultIds.length > 0 ? { gateResultIds } : {}),
       });
       // Also transition the owning run_ticket to cleanup_pending so that
       // promotion-intent scope validation (which checks ticket_state) passes.

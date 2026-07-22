@@ -122,6 +122,15 @@ export interface LifecycleTransitionInput {
    * ref persistence.
    */
   readonly evidence?: readonly TransitionEvidenceReference[];
+  /**
+   * The gate result IDs that authorize a gate_results-guarded edge (the
+   * `verifying -> converging` success edge and the `verifying ->
+   * cleanup_pending` failure edge).  When provided and non-empty, the engine
+   * builds a `gate_results` guard and routes the transition through the
+   * TransitionAuthority.  When omitted, the engine falls back to the store
+   * CAS path (used by forward edges that do not carry gate_results guards).
+   */
+  readonly gateResultIds?: readonly string[];
 }
 
 /**
@@ -132,14 +141,28 @@ export interface LifecycleTransitionInput {
  * carry — in that case the production AttemptRunner calls the authority's
  * typed methods directly, and the engine falls back to the store CAS.
  */
-function guardForEdge(edge: PhaseEdge, commitAttributionId?: string): TransitionGuard | null {
+function guardForEdge(
+  edge: PhaseEdge,
+  opts: { commitAttributionId?: string; gateResultIds?: readonly string[] },
+): TransitionGuard | null {
   switch (edge.guard) {
     case "cleanup_pending":
-      return commitAttributionId !== undefined
-        ? { kind: "cleanup_pending", commitAttributionId }
+      return opts.commitAttributionId !== undefined
+        ? { kind: "cleanup_pending", commitAttributionId: opts.commitAttributionId }
         : { kind: "cleanup_pending" };
     case "budget_exhausted":
       return { kind: "cleanup_pending" };
+    case "gate_results":
+      // The gate_results guard covers both the success edge (verifying ->
+      // converging) and the failure edge (verifying -> cleanup_pending).
+      // When gateResultIds are provided, build the guard so the engine
+      // routes through the TransitionAuthority with full evidence and
+      // context validation.  When omitted, fall back to the store CAS
+      // (used by forward edges that do not supply gate result IDs).
+      if (opts.gateResultIds !== undefined && opts.gateResultIds.length > 0) {
+        return { kind: "gate_results", gateResultIds: Object.freeze([...opts.gateResultIds]) };
+      }
+      return null;
     case "cleanup_record_failed":
       return null;
     case "cleanup_record_quarantined":
@@ -216,7 +239,10 @@ export class LifecycleEngine {
       );
     }
     if (this.#authority !== null) {
-      const guard = guardForEdge(edge, input.commitAttributionId);
+      const guard = guardForEdge(edge, {
+        ...(input.commitAttributionId !== undefined ? { commitAttributionId: input.commitAttributionId } : {}),
+        ...(input.gateResultIds !== undefined ? { gateResultIds: input.gateResultIds } : {}),
+      });
       if (guard !== null) {
         if (input.evidence === undefined || input.evidence.length === 0) {
           throw new LifecycleEngineError(

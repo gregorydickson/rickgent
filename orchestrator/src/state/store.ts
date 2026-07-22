@@ -3147,6 +3147,20 @@ export class StateStore {
     return String(row.result_digest);
   }
 
+  /**
+   * Query the evidence IDs for all gate results of an attempt, ordered by
+   * gate_result_id.  Used by the AttemptRunner to build the existing evidence
+   * references for a gate_results-guarded cleanup transition (the store's
+   * gate_results guard requires the transition evidence to include all gate
+   * result evidence IDs).
+   */
+  queryGateResultEvidenceIds(attemptId: string): readonly string[] {
+    const rows = this.#requireDatabase().prepare(
+      "SELECT evidence_id FROM gate_results WHERE attempt_id = ? ORDER BY gate_result_id",
+    ).all(attemptId) as MutableStateRecord[];
+    return Object.freeze(rows.map((row) => String(row.evidence_id)));
+  }
+
   /** Check whether an evidence row exists by evidence_id + attempt_id. */
   evidenceExists(evidenceId: string, attemptId: string): boolean {
     const row = this.#requireDatabase().prepare(
@@ -6548,7 +6562,7 @@ export class StateStore {
       }
       case "gate_results": {
         if (guard.gateResultIds.length === 0 || new Set(guard.gateResultIds).size !== guard.gateResultIds.length) {
-          throw new TypeError("verification convergence requires a nonempty unique gate result set");
+          throw new TypeError("verification requires a nonempty unique gate result set");
         }
         const rows = this.#requireDatabase().prepare(`
           SELECT g.gate_result_id, g.required, g.status, g.evidence_id, c.context_digest
@@ -6558,9 +6572,21 @@ export class StateStore {
         const selected = [...guard.gateResultIds].sort();
         if (
           rows.length !== selected.length || rows.some((row, index) => row.gate_result_id !== selected[index]) ||
-          rows.some((row) => row.context_digest !== command.ownerContextDigest) ||
-          rows.some((row) => row.required === 1 && row.status !== "passed")
-        ) throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "gate selection must equal all attempt gates and every required gate must pass", this.location.databasePath);
+          rows.some((row) => row.context_digest !== command.ownerContextDigest)
+        ) throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "gate selection must equal all attempt gates with matching owner context", this.location.databasePath);
+        // The gate_results guard covers two edges:
+        //   - verifying -> converging (success): every required gate must pass.
+        //   - verifying -> cleanup_pending (failure): at least one required
+        //     gate must NOT pass (the verification failed).
+        if (command.toState === "cleanup_pending") {
+          if (!rows.some((row) => row.required === 1 && row.status !== "passed")) {
+            throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "verification failure cleanup requires at least one required gate to not pass", this.location.databasePath);
+          }
+        } else {
+          if (rows.some((row) => row.required === 1 && row.status !== "passed")) {
+            throw typedError("RICKGENT_STATE_TRANSITION_ILLEGAL", "gate selection must equal all attempt gates and every required gate must pass", this.location.databasePath);
+          }
+        }
         this.#requireCommandEvidence(evidence, rows.map((row) => row.evidence_id), "gate result evidence");
         return;
       }
