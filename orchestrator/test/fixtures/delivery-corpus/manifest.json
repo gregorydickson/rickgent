@@ -1,0 +1,54 @@
+{
+  "schema_version": "rickgent.delivery-corpus.v1",
+  "complete": true,
+  "description": "Verified push protocol corpus: success, rejection, timeout, response-loss, ref-race against disposable local bare repositories",
+  "push_failures": [
+    {
+      "case": "rejection",
+      "description": "Non-fast-forward push rejected by remote; run remains non-delivered and PR-unreachable",
+      "assertions": [
+        "push command exits nonzero",
+        "no remote_observation with observed_remote_oid is recorded",
+        "delivery intent has no successful ls-remote observation"
+      ]
+    },
+    {
+      "case": "timeout",
+      "description": "Push command exceeds timeout deadline; run remains non-delivered",
+      "assertions": [
+        "push outcome is timeout",
+        "no ls-remote observation is recorded",
+        "run remains ready_for_delivery not delivered"
+      ]
+    },
+    {
+      "case": "response-loss",
+      "description": "Push succeeds but process crashes before ls-remote observation; resume completes idempotently",
+      "assertions": [
+        "push observation is persisted before crash",
+        "resume re-observes via ls-remote without re-pushing",
+        "ls-remote OID equals delivery OID after resume"
+      ]
+    },
+    {
+      "case": "ref-race",
+      "description": "Remote ref moved after push; ls-remote shows a different OID than delivery OID",
+      "assertions": [
+        "push succeeded",
+        "ls-remote observed OID differs from delivery OID",
+        "result is mismatch not verified",
+        "run remains non-delivered"
+      ]
+    }
+  ],
+  "push_success": {
+    "case": "success",
+    "description": "Push to local bare repo succeeds and ls-remote independently confirms the exact delivery OID",
+    "assertions": [
+      "push command exits zero",
+      "ls-remote observed OID equals delivery OID",
+      "delivery intent is persisted with exact OID/remote/branch",
+      "remote observation sequence is push=1, ls-remote=2"
+    ]
+  }
+}

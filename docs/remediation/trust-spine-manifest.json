@@ -1508,10 +1508,14 @@
         "orchestrator/test/fixtures/delivery-corpus/manifest.json"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t32"
-      ]
+      ],
+      "completed_at": {
+        "commit": "5b0458199aa0646a13ddbcf5f8bb8e0b537e80c8",
+        "phase_report": "docs/remediation/phase-8-t33-verified-push-execution-report-2026-07-22.md"
+      }
     },
     {
       "id": "t34",

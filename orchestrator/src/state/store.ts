@@ -6477,6 +6477,20 @@ export class StateStore {
     return row === undefined ? undefined : frozenRow(row);
   }
 
+  /** Read the delivery intent for a run, or undefined if none exists. */
+  readDeliveryIntent(runId: string): StateRecord | undefined {
+    const row = this.#requireDatabase().prepare("SELECT * FROM delivery_intents WHERE run_id = ?").get(runId) as MutableStateRecord | undefined;
+    return row === undefined ? undefined : frozenRow(row);
+  }
+
+  /** List all remote observations for a delivery intent in sequence order. */
+  listRemoteObservations(deliveryIntentId: string): readonly StateRecord[] {
+    const rows = this.#requireDatabase().prepare(
+      "SELECT * FROM remote_observations WHERE delivery_intent_id = ? ORDER BY sequence ASC",
+    ).all(deliveryIntentId) as MutableStateRecord[];
+    return Object.freeze(rows.map(frozenRow));
+  }
+
   #resolveTransitionEvidence(
     reference: TransitionEvidenceReference,
     ownerService: string,
