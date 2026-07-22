@@ -1737,7 +1737,7 @@ export class AttemptRunner {
     // success chain to "converging" first.  Query the current attempt state
     // once and decide:
     //   - If the attempt is already "cleanup_pending", do nothing (idempotent).
-    //   - If there is a legal edge (from current state -> cleanup_pending),
+    //   - If there is a legal edge (from current state to cleanup_pending),
     //     call advanceAttemptToCleanupPending directly.
     //   - If no legal edge is declared, fall back to advanceAttemptToCleanupPending
     //     anyway and let the SQLite trigger reject it if the edge is illegal.

@@ -403,6 +403,37 @@ integrate the shared completion oracle.
 Replace the boolean lifecycle scaffold with one normative phase/remediation
 model and prove every legal/illegal edge.
 
+The normative attempt lifecycle graph is:
+
+```text
+planned -> implementing -> implementation_captured -> reviewing
+reviewing -> verification_queued -> verifying -> converging -> cleanup_pending
+reviewing -> remediating -> remediation_captured -> reviewing
+cleanup_pending -> oracle_evaluation -> verified
+cleanup_pending -> failed_clean
+cleanup_pending -> quarantined
+```
+
+Failure edges (t24 production-wiring fix): every pre-cleanup state has a
+legal direct edge to `cleanup_pending`, replacing fabricated success-phase
+transitions:
+
+```text
+planned -> cleanup_pending
+implementing -> cleanup_pending
+implementation_captured -> cleanup_pending
+reviewing -> cleanup_pending
+remediating -> cleanup_pending
+remediation_captured -> cleanup_pending
+verification_queued -> cleanup_pending
+verifying -> cleanup_pending
+```
+
+Each failure edge is owned by the service that produces the failure evidence
+(`AttemptLifecycleService`, `ReviewService`, `RemediationService`, or
+`VerificationService`) and requires that evidence to be recorded as a
+precondition.  Every failure edge has `failureTarget: "failed_clean"`.
+
 ### t25 — Full ticket-contract propagation
 Carry acceptance criteria, interfaces, scope, dependencies, contract digest,
 and budgets through every prompt and receipt without lossy reconstruction.

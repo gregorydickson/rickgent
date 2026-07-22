@@ -378,8 +378,44 @@ planned -> implementing -> implementation_captured -> reviewing
 reviewing -> verification_queued -> verifying -> converging -> cleanup_pending
 reviewing -> remediating -> remediation_captured -> reviewing
 cleanup_pending -> oracle_evaluation -> verified
-cleanup_pending -> failed_clean | quarantined
+cleanup_pending -> failed_clean
+cleanup_pending -> quarantined
 ```
+
+Failure edges (t24 production-wiring fix): every pre-cleanup state has a legal
+direct edge to `cleanup_pending`, replacing the fabricated success-phase
+transitions that were used before the fix.  These edges allow failure paths
+(dispatch failure, review rejection with exhausted budget, verification
+failure, oracle rejection) to enter cleanup directly without walking the
+forward success chain to `converging` first:
+
+```text
+planned -> cleanup_pending
+implementing -> cleanup_pending
+implementation_captured -> cleanup_pending
+reviewing -> cleanup_pending
+remediating -> cleanup_pending
+remediation_captured -> cleanup_pending
+verification_queued -> cleanup_pending
+verifying -> cleanup_pending
+```
+
+Each failure edge is owned by the service that produces the failure evidence
+and has a precondition requiring that evidence to be recorded.  The
+`AttemptLifecycleService` owns the failure edges from `planned`,
+`implementing`, and `implementation_captured` (preconditions: failure
+evidence recorded before any implementation, dispatch failure evidence
+recorded, post-capture failure evidence recorded).  The `ReviewService` owns
+the `reviewing -> cleanup_pending` edge (precondition: review budget
+exhausted or review-phase failure).  The `RemediationService` owns the
+`remediating -> cleanup_pending` and `remediation_captured -> cleanup_pending`
+edges (preconditions: remediation failure evidence recorded, post-remediation
+failure evidence recorded).  The `VerificationService` owns the
+`verification_queued -> cleanup_pending` and `verifying -> cleanup_pending`
+edges (preconditions: verification-phase failure evidence recorded, gate
+failure or verification-phase infrastructure error).  Every failure edge has
+`failureTarget: "failed_clean"`: the cleanup path eventually reaches
+`failed_clean` or `quarantined` depending on the cleanup record outcome.
 
 Attempt terminal states are `failed_clean`, `quarantined`, and `verified`.
 Timeout is an observation, not a terminal state; failure first enters or
