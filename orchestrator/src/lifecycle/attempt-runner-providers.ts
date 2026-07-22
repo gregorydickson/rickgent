@@ -221,14 +221,20 @@ function renderPersistVerifyPrompt(
       throw new Error(`RICKGENT_PROMPT_PHASE_UNKNOWN: ${ctx.phase}`);
     }
     verifyPromptReceipt(receipt, contract, ctx.contextDigest);
-    const receiptEvidenceId = `evidence-prompt-${ctx.phase}-${attemptId}`;
+    // Scrutiny round 8: Derive the prompt-receipt evidence ID and idempotency
+    // key from the per-cycle phaseExecutionId (not the static attemptId) so
+    // each re-review cycle persists a distinct immutable prompt receipt.
+    // When the loopReviewHook calls the review provider with a fresh
+    // phaseExecutionId, the prompt receipt for the new cycle does not
+    // conflict with the original cycle's prompt receipt.
+    const receiptEvidenceId = `evidence-prompt-${ctx.phase}-${phaseExecutionId}`;
     store.persistAuthorityEvidence({
       evidenceId: receiptEvidenceId, attemptId, phaseExecutionId, contextId,
       producerService: "AttemptLifecycleService",
-      scope: `prompt-receipt:${ctx.phase}:${attemptId}`,
+      scope: `prompt-receipt:${ctx.phase}:${phaseExecutionId}`,
       schemaVersion: "rickgent.prompt-receipt.v1",
       payload: { phase: receipt.phase, role: receipt.role, contract_digest: receipt.contract_digest, context_digest: receipt.context_digest, prompt_digest: receipt.prompt_digest, rendered_fields: receipt.rendered_fields },
-      idempotencyKey: `prompt-receipt:${ctx.phase}:${attemptId}`, observedAt,
+      idempotencyKey: `prompt-receipt:${ctx.phase}:${phaseExecutionId}`, observedAt,
     }, mintCapability);
     return receipt;
   } catch {
@@ -330,9 +336,19 @@ export function buildAttemptRunnerProviders(
       const attemptId = input.ownership.attemptId;
       const phase = input.phase;
       const createdAt = input.ownership.ownership.heartbeatAt;
-      const reviewRecordId = `review-${attemptId}`;
-      const verdictEvidenceId = `evidence-review-verdict-${attemptId}`;
-      const findingsEvidenceId = `evidence-review-findings-${attemptId}`;
+      // Scrutiny round 8: Derive review-record and evidence IDs from the
+      // per-cycle phaseExecutionId (from resolveExecutionContext), NOT the
+      // static attemptId.  When loopReviewHook calls the review provider for
+      // re-review with a fresh execution context, the provider must persist a
+      // DISTINCT immutable review record for the new cycle.  Using attemptId
+      // would produce the same IDs for every cycle, conflicting with the
+      // immutable original review record (unique index on attempt_id+cycle
+      // and evidence idempotency keys).  The cycle number comes from the
+      // input (input.cycle), not hard-coded to 1.
+      const cycle = input.cycle ?? 1;
+      const reviewRecordId = `review-${phase.phaseExecutionId}`;
+      const verdictEvidenceId = `evidence-review-verdict-${phase.phaseExecutionId}`;
+      const findingsEvidenceId = `evidence-review-findings-${phase.phaseExecutionId}`;
 
       // t27: Use the independent ReviewAuthority to perform the review.
       // The ReviewAuthority enforces: fresh read-only review against
@@ -542,7 +558,7 @@ export function buildAttemptRunnerProviders(
 
       // Perform the independent review through the ReviewAuthority.
       const outcome = performReview({
-        cycle: 1,
+        cycle,
         reviewer,
         worker,
         inputs: immutableInputs,
@@ -567,18 +583,22 @@ export function buildAttemptRunnerProviders(
       // Resolve the tree OID for evidence persistence.  On accept, the
       // tree was resolved by the hook; on reject/fail-closed, use the
       // candidate OID (the store validates independently).
+      // Resolve the tree OID from the candidate commit OID regardless of
+      // the verdict.  The store's recordReview validates that input_tree_oid
+      // is an existing tree in the repository (not a commit OID).  Using the
+      // commit OID on reject causes a StateStoreError.  Scrutiny round 8.
       let inputTreeOid = candidateOid;
+      try {
+        inputTreeOid = execFileSync("git", [
+          "-C", input.ownership.repositoryPath, "rev-parse", `${candidateOid}^{tree}`,
+        ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      } catch {
+        // If the tree cannot be resolved, the review already rejected or
+        // fail-closed.  Use the candidate oid as fallback.
+        inputTreeOid = candidateOid;
+      }
       let inputDiffDigest = reviewDiffDigest;
       if (verdict === "accept") {
-        try {
-          inputTreeOid = execFileSync("git", [
-            "-C", input.ownership.repositoryPath, "rev-parse", `${candidateOid}^{tree}`,
-          ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-        } catch {
-          // If the tree cannot be resolved at this point, the review
-          // already rejected (or fail-closed).  Use the candidate oid.
-          inputTreeOid = candidateOid;
-        }
         try {
           const rawDiff = execFileSync("git", [
             "-C", input.ownership.repositoryPath,
@@ -599,7 +619,7 @@ export function buildAttemptRunnerProviders(
       const verdictValue = verdict === "accept" ? "accepted" : "rejected";
       const verdictPayload = {
         attempt_id: attemptId,
-        cycle: 1,
+        cycle,
         verdict: verdictValue,
         input_tree_oid: inputTreeOid,
         input_diff_digest: inputDiffDigest,
@@ -613,14 +633,14 @@ export function buildAttemptRunnerProviders(
         scope: reviewRecordId,
         schemaVersion: "rickgent.review-verdict.v1",
         payload: verdictPayload,
-        idempotencyKey: `review-verdict:${attemptId}`,
+        idempotencyKey: `review-verdict:${phase.phaseExecutionId}`,
         observedAt: createdAt,
       }, mintCapability);
 
       // Persist the findings evidence.
       const findingsPayload = {
         attempt_id: attemptId,
-        cycle: 1,
+        cycle,
         findings: verdict === "accept" ? "candidate is a valid Git tree" : (outcome.findings.length > 0 ? outcome.findings.map((f) => f.message).join("; ") : "review fail-closed"),
       };
       store.persistAuthorityEvidence({
@@ -632,7 +652,7 @@ export function buildAttemptRunnerProviders(
         scope: `review-findings:${reviewRecordId}`,
         schemaVersion: "rickgent.review-findings.v1",
         payload: findingsPayload,
-        idempotencyKey: `review-findings:${attemptId}`,
+        idempotencyKey: `review-findings:${phase.phaseExecutionId}`,
         observedAt: createdAt,
       }, mintCapability);
 
@@ -640,7 +660,7 @@ export function buildAttemptRunnerProviders(
       lifecycleRecords.recordReview({
         reviewRecordId,
         attemptId,
-        cycle: 1,
+        cycle,
         reviewerContextId: phase.contextId,
         ownerContextDigest: phase.contextDigest,
         verdict: verdict === "accept" ? "accepted" : "rejected",

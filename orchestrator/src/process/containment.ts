@@ -1987,7 +1987,7 @@ export class FixtureContainmentBackend implements ContainmentBackend {
   async releaseTarget(
     boundary: ContainmentBoundary,
     argv: readonly string[],
-    opts: { readonly stdoutPath?: string; readonly stderrPath?: string; readonly timeoutMs?: number } = {},
+    opts: { readonly stdoutPath?: string; readonly stderrPath?: string; readonly timeoutMs?: number; readonly workdir?: string; readonly outputLimitBytes?: number; readonly tailLimitBytes?: number } = {},
   ): Promise<ContainmentLaunch> {
     if (!isAuthorizedContainmentBoundary(boundary)) {
       throw new ContainmentUnavailableError(this.backendId, "releaseTarget received a forged boundary");
@@ -2010,6 +2010,7 @@ export class FixtureContainmentBackend implements ContainmentBackend {
     const stderrFd = openOut(stderrPath);
     const child = spawn(argv[0]!, argv.slice(1), {
       detached: true,
+      cwd: opts.workdir,
       stdio: ["ignore", stdoutFd ?? "ignore", stderrFd ?? "ignore"],
     });
     if (stdoutFd !== null) closeSync(stdoutFd);

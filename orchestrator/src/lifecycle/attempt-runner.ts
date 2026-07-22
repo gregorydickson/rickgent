@@ -1273,7 +1273,12 @@ export class AttemptRunner {
       // via string concatenation — use the real authority API so review
       // records have proper lineage to durable StateStore rows.
       const loopReviewProvider = this.#providers.review ?? defaultReview;
-      let loopReviewCycleCount = 0;
+      // Scrutiny round 8: Start at 1 (not 0) because the initial review in
+      // runAttempt is cycle 1.  The first loop re-review increments to 2,
+      // avoiding a unique-index conflict on review_records(attempt_id, cycle).
+      // Without this, the loop's first re-review would pass cycle=1 to the
+      // provider, conflicting with the initial review's cycle=1 row.
+      let loopReviewCycleCount = 1;
       const loopReviewHook: ReviewHook = (inputs) => {
         loopReviewCycleCount++;
         // Resolve a FRESH durable execution context per re-review cycle
