@@ -1270,10 +1270,14 @@
         "orchestrator/test/fixtures/gate-corpus/faults.json"
       ],
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t27"
-      ]
+      ],
+      "completed_at": {
+        "commit": "276dc64",
+        "phase_report": "docs/remediation/phase-7-t28-completion-oracle-integration-execution-report-2026-07-22.md"
+      }
     },
     {
       "id": "t29",

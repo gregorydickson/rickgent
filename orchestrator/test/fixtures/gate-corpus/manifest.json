@@ -1,0 +1,42 @@
+{
+  "schema_version": "rickgent.gate-corpus-manifest.v1",
+  "complete": true,
+  "description": "Fault injection corpus for every required gate status that must block completion. Each fault injects one non-passed gate status into a complete attempt fixture and asserts the Oracle v2 rejects (fail-closed) with no bypass.",
+  "required_gates": [
+    "VER-ORACLE-STORE"
+  ],
+  "statuses": [
+    "passed",
+    "failed",
+    "missing",
+    "null",
+    "skipped",
+    "unavailable",
+    "infrastructure_error",
+    "stale",
+    "conflicting"
+  ],
+  "blocking_statuses": [
+    "failed",
+    "missing",
+    "null",
+    "skipped",
+    "unavailable",
+    "infrastructure_error",
+    "stale",
+    "conflicting"
+  ],
+  "green_statuses": [
+    "passed"
+  ],
+  "assertions": [
+    "each_blocking_status_rejects_oracle",
+    "no_forbidden_later_phase",
+    "no_ready_for_delivery",
+    "no_delivery_ref_promotion",
+    "no_push",
+    "no_pr",
+    "passed_status_accepts_oracle",
+    "fail_closed_no_bypass"
+  ]
+}

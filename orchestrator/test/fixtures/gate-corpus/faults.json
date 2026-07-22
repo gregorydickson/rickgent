@@ -1,0 +1,85 @@
+{
+  "schema_version": "rickgent.gate-corpus-faults.v1",
+  "faults": [
+    {
+      "id": "FAULT-GATE-001",
+      "description": "Required gate status 'failed' blocks oracle acceptance",
+      "inject": { "gate_id": "VER-ORACLE-STORE", "status": "failed" },
+      "expected_oracle_result": "rejected",
+      "expected_reason_contains": "required_gate_blocking",
+      "forbidden_downstream": ["ready_for_delivery", "delivered", "push", "pr"]
+    },
+    {
+      "id": "FAULT-GATE-002",
+      "description": "Required gate status 'missing' blocks oracle acceptance",
+      "inject": { "gate_id": "VER-ORACLE-STORE", "status": "missing" },
+      "expected_oracle_result": "rejected",
+      "expected_reason_contains": "required_gate_blocking",
+      "forbidden_downstream": ["ready_for_delivery", "delivered", "push", "pr"]
+    },
+    {
+      "id": "FAULT-GATE-003",
+      "description": "Required gate status 'null' blocks oracle acceptance",
+      "inject": { "gate_id": "VER-ORACLE-STORE", "status": "null" },
+      "expected_oracle_result": "rejected",
+      "expected_reason_contains": "required_gate_blocking",
+      "forbidden_downstream": ["ready_for_delivery", "delivered", "push", "pr"]
+    },
+    {
+      "id": "FAULT-GATE-004",
+      "description": "Required gate status 'skipped' blocks oracle acceptance",
+      "inject": { "gate_id": "VER-ORACLE-STORE", "status": "skipped" },
+      "expected_oracle_result": "rejected",
+      "expected_reason_contains": "required_gate_blocking",
+      "forbidden_downstream": ["ready_for_delivery", "delivered", "push", "pr"]
+    },
+    {
+      "id": "FAULT-GATE-005",
+      "description": "Required gate status 'unavailable' blocks oracle acceptance",
+      "inject": { "gate_id": "VER-ORACLE-STORE", "status": "unavailable" },
+      "expected_oracle_result": "rejected",
+      "expected_reason_contains": "required_gate_blocking",
+      "forbidden_downstream": ["ready_for_delivery", "delivered", "push", "pr"]
+    },
+    {
+      "id": "FAULT-GATE-006",
+      "description": "Required gate status 'infrastructure_error' blocks oracle acceptance",
+      "inject": { "gate_id": "VER-ORACLE-STORE", "status": "infrastructure_error" },
+      "expected_oracle_result": "rejected",
+      "expected_reason_contains": "required_gate_blocking",
+      "forbidden_downstream": ["ready_for_delivery", "delivered", "push", "pr"]
+    },
+    {
+      "id": "FAULT-GATE-007",
+      "description": "Required gate status 'stale' blocks oracle acceptance",
+      "inject": { "gate_id": "VER-ORACLE-STORE", "status": "stale" },
+      "expected_oracle_result": "rejected",
+      "expected_reason_contains": "required_gate_blocking",
+      "forbidden_downstream": ["ready_for_delivery", "delivered", "push", "pr"]
+    },
+    {
+      "id": "FAULT-GATE-008",
+      "description": "Required gate status 'conflicting' blocks oracle acceptance",
+      "inject": { "gate_id": "VER-ORACLE-STORE", "status": "conflicting" },
+      "expected_oracle_result": "rejected",
+      "expected_reason_contains": "required_gate_blocking",
+      "forbidden_downstream": ["ready_for_delivery", "delivered", "push", "pr"]
+    },
+    {
+      "id": "FAULT-GATE-009",
+      "description": "Missing required gate (no gate_result row) blocks oracle acceptance",
+      "inject": { "gate_id": "VER-ORACLE-STORE", "status": "absent" },
+      "expected_oracle_result": "rejected",
+      "expected_reason_contains": "required_gate_missing_or_duplicate",
+      "forbidden_downstream": ["ready_for_delivery", "delivered", "push", "pr"]
+    },
+    {
+      "id": "FAULT-GATE-010",
+      "description": "Passed required gate accepts oracle (positive control)",
+      "inject": { "gate_id": "VER-ORACLE-STORE", "status": "passed" },
+      "expected_oracle_result": "accepted",
+      "expected_reason_contains": null,
+      "forbidden_downstream": []
+    }
+  ]
+}
