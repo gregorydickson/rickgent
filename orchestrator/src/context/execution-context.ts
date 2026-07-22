@@ -48,6 +48,33 @@ const HARNESS_ALIASES: Readonly<Record<string, string>> = Object.freeze({
   "acp:probe": "acp",
 });
 
+/**
+ * The set of canonical harness names that are supported.  Any harness that
+ * canonicalizes to a name NOT in this set is unsupported and must fail closed.
+ * This prevents arbitrary/unknown harness aliases from being accepted.
+ */
+const SUPPORTED_CANONICAL_HARNESSES: ReadonlySet<string> = Object.freeze(new Set([
+  "antigravity",
+  "antigravity-native",
+  "acp",
+  "claude-sdk",
+  "codex",
+  "copilot",
+  "droid",
+  "gemini",
+  "goose-native",
+  "hermes-native",
+  "kimi",
+  "kimi-native",
+  "kiro-native",
+  "openai-agents",
+  "opencode-native",
+  "pi-native",
+  "qwen",
+  "qwen-native",
+  "fixture",
+]));
+
 export interface ExecutionDispatchId {
   readonly runId: string;
   readonly ticketId: string;
@@ -268,7 +295,15 @@ export function canonicalDispatchId(id: ExecutionDispatchId): string {
 /** Apply only the explicit alias corpus frozen by t00. */
 export function canonicalHarnessIdentity(rawHarness: string): string {
   requireNonEmpty(rawHarness, "requested harness");
-  return HARNESS_ALIASES[rawHarness] ?? rawHarness;
+  const canonical = HARNESS_ALIASES[rawHarness] ?? rawHarness;
+  // Fail closed on unsupported harness aliases.  Only harnesses that
+  // canonicalize to a known supported name are accepted.
+  if (!SUPPORTED_CANONICAL_HARNESSES.has(canonical)) {
+    throw new Error(
+      `unsupported harness alias: "${rawHarness}" canonicalizes to "${canonical}" which is not in the supported set`,
+    );
+  }
+  return canonical;
 }
 
 function copyScope(scope: readonly TicketScopeEntry[]): ExecutionScopeEntry[] {

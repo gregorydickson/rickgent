@@ -1056,6 +1056,8 @@ async function executeBuildViaRunner(
       ...(resumeFromStepByAttempt.has(attempt.attemptId)
         ? { resumeFromStep: resumeFromStepByAttempt.get(attempt.attemptId) }
         : {}),
+      // t31: pass the omnigent data dir root for per-dispatch identity capture.
+      omnigentDataDir: opts.dataDir,
     };
     let result: AttemptRunnerResult;
     try {

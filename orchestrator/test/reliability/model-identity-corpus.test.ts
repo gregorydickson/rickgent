@@ -35,7 +35,7 @@ import {
   captureInvokedIdentity,
   captureObservedIdentity,
   verifyIdentityReceipts,
-  persistIdentityReceipts,
+  persistIdentityReceiptsJsonl,
   identityReceiptSetDigest,
   IdentityVerificationError,
   type IdentityReceipt,
@@ -763,7 +763,7 @@ describe("t31: observed harness/model identity corpus", () => {
       );
       const observed = captureObservedIdentity(identityDir, new Set<string>(), context.dispatch_id, context.role);
 
-      const output = persistIdentityReceipts("/tmp/receipt.jsonl", { requested, invoked, observed });
+      const output = persistIdentityReceiptsJsonl("/tmp/receipt.jsonl", { requested, invoked, observed });
       const lines = output.trim().split("\n");
       expect(lines).toHaveLength(3);
 

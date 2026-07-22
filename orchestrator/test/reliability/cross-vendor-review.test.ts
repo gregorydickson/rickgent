@@ -129,6 +129,7 @@ function makeValidObservedReceipt(
   harness: string,
   model: string,
   conversationId: string,
+  vendor: string | null = null,
 ): IdentityReceipt {
   return Object.freeze({
     schema_version: IDENTITY_RECEIPT_SCHEMA_VERSION,
@@ -137,7 +138,7 @@ function makeValidObservedReceipt(
     role: role,
     canonical_harness: canonicalHarnessIdentity(harness),
     canonical_model: model,
-    canonical_vendor: null,
+    canonical_vendor: vendor,
     bundle_digest: null,
     config_digest: null,
     context_digest: null,
@@ -208,6 +209,7 @@ function buildReceiptSet(
   observedModel: string | null,
   conversationId: string | null,
   observedProvenance: string = "isolated-omnigent-chat-db-root-conversation",
+  observedVendor: string | null = null,
 ): IdentityReceiptSet {
   const context = makeExecutionContext(selection, role);
   const requested = makeRequestedReceipt(context);
@@ -227,6 +229,7 @@ function buildReceiptSet(
           observedHarness,
           observedModel,
           conversationId ?? "conv-" + role,
+          observedVendor ?? selection.vendor,
         ),
         provenance: observedProvenance as IdentityReceipt["provenance"],
       });

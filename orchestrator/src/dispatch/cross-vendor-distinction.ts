@@ -43,8 +43,11 @@ export type CrossVendorDenialReason =
   | "missing_reviewer_harness"
   | "missing_implementer_model"
   | "missing_reviewer_model"
+  | "missing_implementer_vendor"
+  | "missing_reviewer_vendor"
   | "same_observed_harness"
   | "same_observed_model"
+  | "same_observed_vendor"
   | "same_observed_identity"
   | "same_conversation_id"
   | "same_role"
@@ -52,6 +55,8 @@ export type CrossVendorDenialReason =
   | "spoofed_reviewer_provenance"
   | "missing_implementer_conversation_id"
   | "missing_reviewer_conversation_id"
+  | "missing_implementer_live_profile"
+  | "missing_reviewer_live_profile"
   | "label_only_no_observed_identity";
 
 export interface CrossVendorDistinctionResult {
@@ -60,10 +65,14 @@ export interface CrossVendorDistinctionResult {
   readonly denial_reason: CrossVendorDenialReason | null;
   readonly implementer_observed_harness: string | null;
   readonly implementer_observed_model: string | null;
+  readonly implementer_observed_vendor: string | null;
   readonly reviewer_observed_harness: string | null;
   readonly reviewer_observed_model: string | null;
+  readonly reviewer_observed_vendor: string | null;
   readonly implementer_conversation_id: string | null;
   readonly reviewer_conversation_id: string | null;
+  readonly implementer_live_profile: string | null;
+  readonly reviewer_live_profile: string | null;
   readonly implementer_role: string;
   readonly reviewer_role: string;
   readonly genuine_distinction: boolean;
@@ -100,10 +109,14 @@ export function evaluateCrossVendorDistinction(
     schema_version: CROSS_VENDOR_DISTINCTION_SCHEMA_VERSION,
     implementer_observed_harness: impl.canonical_harness,
     implementer_observed_model: impl.canonical_model,
+    implementer_observed_vendor: impl.canonical_vendor,
     reviewer_observed_harness: rev.canonical_harness,
     reviewer_observed_model: rev.canonical_model,
+    reviewer_observed_vendor: rev.canonical_vendor,
     implementer_conversation_id: impl.conversation_id,
     reviewer_conversation_id: rev.conversation_id,
+    implementer_live_profile: extractLiveProfile(implementer),
+    reviewer_live_profile: extractLiveProfile(reviewer),
     implementer_role: implRole,
     reviewer_role: revRole,
   };
@@ -219,6 +232,8 @@ export function evaluateCrossVendorDistinction(
   }
 
   // 8. Observed harnesses must differ (genuine identity distinction).
+  //    Check harness and model first (primary identity signals), then
+  //    vendor (additional cross-vendor requirement).
   if (impl.canonical_harness === rev.canonical_harness) {
     // Same harness — not genuinely distinct. Check if model also matches.
     if (impl.canonical_model === rev.canonical_model) {
@@ -252,7 +267,65 @@ export function evaluateCrossVendorDistinction(
     });
   }
 
-  // 10. Both harness AND model differ — genuine identity distinction.
+  // 10. Both observed vendors must be present (non-null) for cross-vendor.
+  //     The t00 contract requires distinct canonical observed vendors for a
+  //     genuine cross-vendor distinction.  Under the effective-session-v1
+  //     profile, vendor may be null; in that case the cross-vendor claim is
+  //     denied because we cannot establish a genuine vendor distinction.
+  if (impl.canonical_vendor === null) {
+    return freeze({
+      ...base,
+      outcome: "denied",
+      denial_reason: "missing_implementer_vendor",
+      genuine_distinction: false,
+    });
+  }
+  if (rev.canonical_vendor === null) {
+    return freeze({
+      ...base,
+      outcome: "denied",
+      denial_reason: "missing_reviewer_vendor",
+      genuine_distinction: false,
+    });
+  }
+
+  // 11. Both observations must have live-profile-strength (the profile must
+  //     be a live-profile, not the offline effective-session-v1 profile).
+  //     Live-profile-strength means the observed identity was captured from
+  //     a real runtime observation, not just a requested label.
+  const implLiveProfile = extractLiveProfile(implementer);
+  const revLiveProfile = extractLiveProfile(reviewer);
+  if (implLiveProfile === null) {
+    return freeze({
+      ...base,
+      outcome: "denied",
+      denial_reason: "missing_implementer_live_profile",
+      genuine_distinction: false,
+    });
+  }
+  if (revLiveProfile === null) {
+    return freeze({
+      ...base,
+      outcome: "denied",
+      denial_reason: "missing_reviewer_live_profile",
+      genuine_distinction: false,
+    });
+  }
+
+  // 12. Observed vendors must differ (genuine cross-vendor distinction).
+  if (impl.canonical_vendor === rev.canonical_vendor) {
+    return freeze({
+      ...base,
+      outcome: "denied",
+      denial_reason: "same_observed_vendor",
+      genuine_distinction: false,
+    });
+  }
+
+  // 13. All checks pass: distinct canonical observed vendors with
+  //     live-profile-strength observations, different harness AND model,
+  //     different conversation IDs, different roles — genuine cross-vendor
+  //     distinction.
   return freeze({
     ...base,
     outcome: "permitted",
@@ -296,6 +369,39 @@ export class CrossVendorDistinctionError extends Error {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+/**
+ * Extract the live-profile-strength signal from an identity receipt set.
+ *
+ * A live-profile-strength observation means the observed identity receipt
+ * was captured from a real runtime observation (the chat.db seam with a
+ * non-null conversation_id and non-null harness/model).  The
+ * effective-session-v1 profile is an offline profile that authenticates only
+ * the requested reviewer — it does not prove a distinct protected implementer
+ * identity.  Only the runtime-reported-identity-v1 profile (or equivalent
+ * live profile) has live-profile-strength.
+ *
+ * For the purposes of cross-vendor distinction, a receipt set has
+ * live-profile-strength when:
+ *   - The observed receipt has a non-null conversation_id (proven runtime
+ *     observation from the chat.db seam)
+ *   - The observed receipt has non-null canonical_harness and canonical_model
+ *
+ * @returns The profile string ("runtime-reported-identity-v1" when
+ *          live-profile-strength is established, null otherwise).
+ */
+function extractLiveProfile(receiptSet: IdentityReceiptSet): string | null {
+  const observed = receiptSet.observed;
+  if (
+    observed.conversation_id !== null &&
+    observed.canonical_harness !== null &&
+    observed.canonical_model !== null &&
+    observed.provenance === "isolated-omnigent-chat-db-root-conversation"
+  ) {
+    return "runtime-reported-identity-v1";
+  }
+  return null;
+}
 
 function freeze<T>(obj: T): T {
   if (obj !== null && typeof obj === "object") {

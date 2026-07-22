@@ -1428,7 +1428,7 @@
       ],
       "completed_at": {
         "commit": "c087c575a046a914dfe4a94234e18355f50d8bb0",
-        "phase_report": "docs/remediation/phase-8-t31-observed-identity-execution-report-2026-07-22.md"
+        "phase_report": "docs/remediation/phase-8-m8-scrutiny-round-1-production-wiring-execution-report-2026-07-22.md"
       }
     },
     {
@@ -1479,7 +1479,7 @@
       ],
       "completed_at": {
         "commit": "f5def7e3718ac026e622301c798f5be7d4966116",
-        "phase_report": "docs/remediation/phase-8-t32-routing-cross-vendor-execution-report-2026-07-22.md"
+        "phase_report": "docs/remediation/phase-8-m8-scrutiny-round-1-production-wiring-execution-report-2026-07-22.md"
       }
     },
     {
@@ -1514,7 +1514,7 @@
       ],
       "completed_at": {
         "commit": "5b0458199aa0646a13ddbcf5f8bb8e0b537e80c8",
-        "phase_report": "docs/remediation/phase-8-t33-verified-push-execution-report-2026-07-22.md"
+        "phase_report": "docs/remediation/phase-8-m8-scrutiny-round-1-production-wiring-execution-report-2026-07-22.md"
       }
     },
     {
@@ -1550,7 +1550,7 @@
       ],
       "completed_at": {
         "commit": "35d502a69da229b4fba1307ec06d1316266d131a",
-        "phase_report": "docs/remediation/phase-8-t34-idempotent-pr-execution-report-2026-07-22.md"
+        "phase_report": "docs/remediation/phase-8-m8-scrutiny-round-1-production-wiring-execution-report-2026-07-22.md"
       }
     },
     {

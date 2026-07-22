@@ -242,13 +242,22 @@ export function captureObservedIdentity(
 ): IdentityReceipt {
   const allRows = readConversationsWithIdentity(dataDir);
   const createdRows = allRows.filter((r) => !baselineConvIds.has(r.id));
-  // Root observation rule: exactly one new row whose parent_conversation_id
-  // is null and whose root_conversation_id equals id.
+  // Root observation rule: EXACTLY ONE new row whose parent_conversation_id
+  // is null and whose root_conversation_id equals id.  Multiple new root
+  // rows violate the exactly-one-root contract and fail closed.
   const rootRows = createdRows.filter(
     (r) => r.parent_conversation_id === null && r.root_conversation_id === r.id,
   );
-  // Attribute to the newest root conversation created during the run.
-  rootRows.sort((a, b) => b.created_at - a.created_at);
+  if (rootRows.length > 1) {
+    // Multiple new root conversations — exactly-one-root violation.
+    // Fail closed by throwing; the caller must handle this as a dispatch
+    // identity error.
+    throw new IdentityVerificationError(
+      "IDENTITY_MULTIPLE_ROOTS",
+      `exactly-one-root violation: ${rootRows.length} new root conversations were created during this dispatch (expected exactly 1)`,
+      "root_conversation_id",
+    );
+  }
   const root = rootRows[0] ?? null;
 
   if (root === null) {
@@ -409,25 +418,206 @@ export function verifyIdentityReceipts(
       );
     }
   }
+
+  // 8. Bind ALL fields: dispatch_id, role, schema_version, context_digest,
+  //    bundle_digest, config_digest, and conversation_id must be consistent
+  //    across receipts to prevent cross-dispatch or replayed matching
+  //    harness/model receipts from a different dispatch boundary.
+
+  // 8a. dispatch_id must match across all three receipts.
+  if (requested.dispatch_id !== invoked.dispatch_id) {
+    throw new IdentityVerificationError(
+      "IDENTITY_MISMATCH",
+      `dispatch_id mismatch: requested=${requested.dispatch_id} invoked=${invoked.dispatch_id}`,
+      "dispatch_id",
+    );
+  }
+  if (requested.dispatch_id !== observed.dispatch_id) {
+    throw new IdentityVerificationError(
+      "IDENTITY_MISMATCH",
+      `dispatch_id mismatch: requested=${requested.dispatch_id} observed=${observed.dispatch_id}`,
+      "dispatch_id",
+    );
+  }
+
+  // 8b. role must match across all three receipts.
+  if (requested.role !== invoked.role) {
+    throw new IdentityVerificationError(
+      "IDENTITY_MISMATCH",
+      `role mismatch: requested=${requested.role} invoked=${invoked.role}`,
+      "role",
+    );
+  }
+  if (requested.role !== observed.role) {
+    throw new IdentityVerificationError(
+      "IDENTITY_MISMATCH",
+      `role mismatch: requested=${requested.role} observed=${observed.role}`,
+      "role",
+    );
+  }
+
+  // 8c. schema_version must match across all three receipts.
+  if (requested.schema_version !== invoked.schema_version) {
+    throw new IdentityVerificationError(
+      "IDENTITY_MISMATCH",
+      `schema_version mismatch: requested=${requested.schema_version} invoked=${invoked.schema_version}`,
+      "schema_version",
+    );
+  }
+  if (requested.schema_version !== observed.schema_version) {
+    throw new IdentityVerificationError(
+      "IDENTITY_MISMATCH",
+      `schema_version mismatch: requested=${requested.schema_version} observed=${observed.schema_version}`,
+      "schema_version",
+    );
+  }
+
+  // 8d. context_digest must match across requested and invoked (observed
+  //     derives from the chat.db seam and does not carry the attempt
+  //     context digest, so we bind requested === invoked).
+  if (requested.context_digest !== invoked.context_digest) {
+    throw new IdentityVerificationError(
+      "IDENTITY_MISMATCH",
+      `context_digest mismatch: requested=${requested.context_digest} invoked=${invoked.context_digest}`,
+      "context_digest",
+    );
+  }
+
+  // 8e. Observed conversation_id and root_conversation_id must be present
+  //     and equal (the root conversation is its own root).
+  if (observed.conversation_id !== observed.root_conversation_id) {
+    throw new IdentityVerificationError(
+      "IDENTITY_MISMATCH",
+      `observed conversation_id (${observed.conversation_id}) does not equal root_conversation_id (${observed.root_conversation_id})`,
+      "conversation_id",
+    );
+  }
 }
 
 /**
  * Persist the three identity receipts as canonical JSON lines in a receipt file.
  * Each receipt is written by its own producer — no single producer writes
  * another's receipt.
+ *
+ * @deprecated Use {@link persistIdentityReceipts} (StateStore-based) for
+ *   production persistence.  This JSONL function is retained for
+ *   backward-compatible tests and diagnostics only.
  */
-export function persistIdentityReceipts(
+export function persistIdentityReceiptsJsonl(
   receiptPath: string,
   receipts: IdentityReceiptSet,
 ): string {
-  // Use appendFileSync via the existing receipt infrastructure.
-  // Each receipt is a separate JSONL line.
+  void receiptPath;
   const lines = [
     canonicalJson(receipts.requested),
     canonicalJson(receipts.invoked),
     canonicalJson(receipts.observed),
   ].map((l) => l + "\n");
   return lines.join("");
+}
+
+/**
+ * Persist the three identity receipts as durable StateStore rows (not JSONL
+ * text). Each receipt is written by its own producer through the Store's
+ * authority-branded evidence persistence command. The old JSONL-text return
+ * is replaced by durable SQLite rows that survive crash/restart and can be
+ * independently verified.
+ *
+ * @param store  The canonical StateStore.
+ * @param receipts  The three identity receipts (requested, invoked, observed).
+ * @param attemptId  The attempt ID these receipts belong to.
+ * @param phaseExecutionId  The phase execution ID for evidence binding.
+ * @param contextId  The context ID for evidence binding.
+ * @param mintCapability  The disposition mint capability for authority.
+ * @returns The evidence IDs of the three persisted receipts.
+ */
+export function persistIdentityReceipts(
+  store: import("../state/store.js").StateStore,
+  receipts: IdentityReceiptSet,
+  attemptId: string,
+  phaseExecutionId: string,
+  contextId: string,
+  mintCapability: import("../lifecycle/disposition.js").LeaseAuthorityMintCapability,
+): { readonly requestedEvidenceId: string; readonly invokedEvidenceId: string; readonly observedEvidenceId: string } {
+  const observedAt = new Date().toISOString();
+  const requestedEvidenceId = `evidence-identity-requested-${attemptId}`;
+  const invokedEvidenceId = `evidence-identity-invoked-${attemptId}`;
+  const observedEvidenceId = `evidence-identity-observed-${attemptId}`;
+
+  store.persistAuthorityEvidence({
+    evidenceId: requestedEvidenceId,
+    attemptId,
+    phaseExecutionId,
+    contextId,
+    producerService: "IdentityCapture",
+    scope: "identity-receipt:requested",
+    schemaVersion: IDENTITY_RECEIPT_SCHEMA_VERSION,
+    payload: {
+      producer: "requested",
+      dispatch_id: receipts.requested.dispatch_id,
+      role: receipts.requested.role,
+      canonical_harness: receipts.requested.canonical_harness,
+      canonical_model: receipts.requested.canonical_model,
+      canonical_vendor: receipts.requested.canonical_vendor,
+      bundle_digest: receipts.requested.bundle_digest,
+      config_digest: receipts.requested.config_digest,
+      context_digest: receipts.requested.context_digest,
+      provenance: receipts.requested.provenance,
+    },
+    idempotencyKey: `identity-receipt:requested:${attemptId}`,
+    observedAt,
+  }, mintCapability);
+
+  store.persistAuthorityEvidence({
+    evidenceId: invokedEvidenceId,
+    attemptId,
+    phaseExecutionId,
+    contextId,
+    producerService: "IdentityCapture",
+    scope: "identity-receipt:invoked",
+    schemaVersion: IDENTITY_RECEIPT_SCHEMA_VERSION,
+    payload: {
+      producer: "invoked",
+      dispatch_id: receipts.invoked.dispatch_id,
+      role: receipts.invoked.role,
+      canonical_harness: receipts.invoked.canonical_harness,
+      canonical_model: receipts.invoked.canonical_model,
+      canonical_vendor: receipts.invoked.canonical_vendor,
+      bundle_digest: receipts.invoked.bundle_digest,
+      config_digest: receipts.invoked.config_digest,
+      context_digest: receipts.invoked.context_digest,
+      invoked_argv: receipts.invoked.invoked_argv,
+      provenance: receipts.invoked.provenance,
+    },
+    idempotencyKey: `identity-receipt:invoked:${attemptId}`,
+    observedAt,
+  }, mintCapability);
+
+  store.persistAuthorityEvidence({
+    evidenceId: observedEvidenceId,
+    attemptId,
+    phaseExecutionId,
+    contextId,
+    producerService: "IdentityCapture",
+    scope: "identity-receipt:observed",
+    schemaVersion: IDENTITY_RECEIPT_SCHEMA_VERSION,
+    payload: {
+      producer: "observed",
+      dispatch_id: receipts.observed.dispatch_id,
+      role: receipts.observed.role,
+      canonical_harness: receipts.observed.canonical_harness,
+      canonical_model: receipts.observed.canonical_model,
+      canonical_vendor: receipts.observed.canonical_vendor,
+      conversation_id: receipts.observed.conversation_id,
+      root_conversation_id: receipts.observed.root_conversation_id,
+      session_usage_by_model: receipts.observed.session_usage_by_model,
+      provenance: receipts.observed.provenance,
+    },
+    idempotencyKey: `identity-receipt:observed:${attemptId}`,
+    observedAt,
+  }, mintCapability);
+
+  return Object.freeze({ requestedEvidenceId, invokedEvidenceId, observedEvidenceId });
 }
 
 /**

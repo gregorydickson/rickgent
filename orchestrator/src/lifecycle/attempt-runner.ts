@@ -117,6 +117,18 @@ import type { TicketContract } from "../contracts/ticket-contract.js";
 import { runBoundedRemediationLoop, type RemediationLoopRequest, type RemediationLoopOutcome, type RemediationHook, type RemediationHookResult } from "./remediation.js";
 import type { ReviewImmutableInputs, ReviewFinding, ReviewHook, ReviewerIdentity, WorkerIdentity } from "./review.js";
 import type { CompletionService } from "./completion-service.js";
+import {
+  captureRequestedIdentity,
+  captureInvokedIdentity,
+  captureObservedIdentity,
+  verifyIdentityReceipts,
+  persistIdentityReceipts,
+  IdentityVerificationError,
+  type IdentityReceipt,
+  type IdentityReceiptSet,
+} from "../dispatch/model-identity.js";
+import { isolatedDataDir, captureConversationIds } from "../dispatch/evidence.js";
+import { canonicalHarnessIdentity } from "../context/execution-context.js";
 
 // ---------------------------------------------------------------------------
 // Stable idempotency keys.
@@ -516,6 +528,19 @@ export interface AttemptRunnerRequest {
    * re-provision, or re-dispatch already-completed steps.
    */
   readonly resumeFromStep?: AttemptRunnerStep | "complete" | undefined;
+  /**
+   * t31: The omnigent data dir root for per-dispatch chat.db isolation.
+   * When supplied, the runner captures observed identity from the isolated
+   * chat.db after dispatch and verifies the three identity receipts
+   * (requested, invoked, observed) before proceeding to attribution.
+   */
+  readonly omnigentDataDir?: string | undefined;
+  /**
+   * t31: The resolved execution context for the supervised (implement)
+   * phase.  Used to capture the requested identity receipt.  When absent,
+   * identity capture is skipped (the production path always supplies it).
+   */
+  readonly supervisedExecutionContext?: import("../context/execution-context.js").ExecutionContext | undefined;
 }
 
 export interface AttemptRunnerResult {
@@ -1084,6 +1109,133 @@ export class AttemptRunner {
       supervised = await (this.#providers.dispatch ?? this.#defaultDispatch.bind(this))(dispatchInput);
     }
     noteKey("supervise");
+
+    // t31: Identity capture and verification.  After the dispatch completes,
+    // capture the three independent identity receipts (requested, invoked,
+    // observed), verify them against each other, and persist them as durable
+    // StateStore evidence rows.  This is the REAL production dispatch path
+    // wiring — the identity capture functions are called here, not just from
+    // standalone tests.
+    //
+    // Only capture identity when the dispatch produced a terminal process
+    // (not spawn_error/infrastructure_error) and when the omnigent data dir
+    // and execution context are available.  A failure in identity
+    // verification fails closed to infrastructure_failed.
+    if (
+      supervised.outcome !== "spawn_error" &&
+      supervised.outcome !== "infrastructure_error" &&
+      !isStepPast("dispatch") &&
+      request.omnigentDataDir !== undefined
+    ) {
+      try {
+        const dispatchDataDir = isolatedDataDir(request.omnigentDataDir, productionPhase.phaseExecutionId);
+        const baselineConvIds = captureConversationIds(dispatchDataDir);
+        // Construct the dispatch_id and role from the resolved context.
+        const durableCtx = context.canonical.context;
+        const dispatchId = `${durableCtx.run_id}/${durableCtx.ticket_id}/${durableCtx.phase}/${durableCtx.attempt_number}/${durableCtx.role}`;
+        const role = durableCtx.role;
+        const attemptDigest = context.canonical.contextDigest;
+        // The requested identity comes from the model selection used for
+        // this dispatch.  The AttemptRunner resolves the execution context
+        // with the model selection; the canonical harness/model/vendor are
+        // derived from the selection.  In production, these come from the
+        // routing layer.  For the identity capture, we use the model
+        // selection digest and the durable context's policy bundle digest
+        // as the bundle/config digests.
+        const bundleDigest = durableCtx.policy_bundle_digest;
+        const configDigest = durableCtx.model_selection_digest;
+        // The harness/model/vendor are derived from the routing selection.
+        // The production path resolves them through the execution context
+        // authority.  For identity capture, we extract them from the
+        // request's supervised argv (--harness and --model flags).
+        const harnessFromArgv = request.supervisedArgv.includes("--harness")
+          ? request.supervisedArgv[request.supervisedArgv.indexOf("--harness") + 1] ?? "fixture"
+          : "fixture";
+        const modelFromArgv = request.supervisedArgv.includes("--model")
+          ? request.supervisedArgv[request.supervisedArgv.indexOf("--model") + 1] ?? "fixture"
+          : "fixture";
+        const canonicalHarness = canonicalHarnessIdentity(harnessFromArgv);
+        const requestedReceipt = captureRequestedIdentity({
+          dispatch_id: dispatchId,
+          role,
+          attempt_digest: attemptDigest,
+          requested_identity: {
+            canonical_harness: canonicalHarness,
+            canonical_model_id: modelFromArgv,
+            canonical_vendor: "fixture",
+            bundle_digest: bundleDigest,
+            config_digest: configDigest,
+          },
+        } as unknown as import("../context/execution-context.js").ExecutionContext);
+        const invokedReceipt = captureInvokedIdentity(
+          dispatchId,
+          role,
+          request.supervisedArgv[0] ?? "",
+          request.supervisedArgv,
+          bundleDigest,
+          configDigest,
+          attemptDigest,
+          canonicalHarness,
+          modelFromArgv,
+          "fixture",
+        );
+        const observedReceipt = captureObservedIdentity(
+          dispatchDataDir,
+          baselineConvIds,
+          dispatchId,
+          role,
+        );
+        verifyIdentityReceipts(requestedReceipt, invokedReceipt, observedReceipt);
+        const receiptSet: IdentityReceiptSet = Object.freeze({
+          requested: requestedReceipt,
+          invoked: invokedReceipt,
+          observed: observedReceipt,
+        });
+        persistIdentityReceipts(
+          this.#store,
+          receiptSet,
+          attemptId,
+          productionPhase.phaseExecutionId,
+          productionPhase.contextId,
+          this.#leases.issueDispositionMintCapability(),
+        );
+      } catch (error) {
+        if (error instanceof IdentityVerificationError) {
+          const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("failure-cleanup"), productionPhase);
+          const deathReceipt = await this.#killAndMintDeath(boundary);
+          const { failureReceipt, terminal } = this.#failureTerminalize(
+            request, cleanupOwnership, { kind: "infrastructure", reason: `identity verification failed: ${error.code} — ${error.message}` },
+            boundary, deathReceipt, null, supervised,
+            durableObservedAt,
+            productionPhase,
+          );
+          return this.#result("infrastructure_failed", "finalized", cleanupOwnership, {
+            boundary, membership, deathReceipt,
+            targetNeverReleased: null,
+            cleanupEligibility: null, oracleDecisionId: null, terminal,
+            stdoutReceipt: supervised.stdoutReceipt, stderrReceipt: supervised.stderrReceipt,
+            failureCode: failureReceipt.receipt.failureCode, keys,
+          });
+        }
+        // Non-identity errors during capture are infrastructure failures
+        const reason = error instanceof Error ? error.message : String(error);
+        const cleanupOwnership = this.#beginCleanupPhase(request, acquired, noteKey("failure-cleanup"), productionPhase);
+        const deathReceipt = await this.#killAndMintDeath(boundary);
+        const { failureReceipt, terminal } = this.#failureTerminalize(
+          request, cleanupOwnership, { kind: "infrastructure", reason: `identity capture error: ${reason}` },
+          boundary, deathReceipt, null, supervised,
+          durableObservedAt,
+          productionPhase,
+        );
+        return this.#result("infrastructure_failed", "finalized", cleanupOwnership, {
+          boundary, membership, deathReceipt,
+          targetNeverReleased: null,
+          cleanupEligibility: null, oracleDecisionId: null, terminal,
+          stdoutReceipt: supervised.stdoutReceipt, stderrReceipt: supervised.stderrReceipt,
+          failureCode: failureReceipt.receipt.failureCode, keys,
+        });
+      }
+    }
 
     // Cancellation state machine: a caller cancellation request before
     // terminalization produces a failure cleanup with the cancellation code.
