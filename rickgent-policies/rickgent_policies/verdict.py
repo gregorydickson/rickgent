@@ -9,7 +9,6 @@ import re
 import stat
 import subprocess
 
-
 _BUILD_COMMIT_OVERRIDE = os.environ.get("RICKGENT_BUILD_COMMIT")
 BUILD_COMMIT = _BUILD_COMMIT_OVERRIDE or ""
 _RICKGENT_NODE = os.environ.get("RICKGENT_NODE_REALPATH", "")

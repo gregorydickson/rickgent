@@ -13,18 +13,18 @@ a valid CanonicalPolicyEvent so the distinction check is exercised directly.
 
 from __future__ import annotations
 
-from unittest.mock import patch
 from typing import Any
+from unittest.mock import patch
 
 import pytest
-from rickgent_policies.review import cross_vendor_review, CROSS_VENDOR_DENIAL_CODE
+
 from rickgent_policies.policy_event import (
     CanonicalPolicyEvent,
     RequestedModelIdentity,
     RuntimeProvenance,
     TicketScopeEntry,
 )
-
+from rickgent_policies.review import CROSS_VENDOR_DENIAL_CODE, cross_vendor_review
 
 # ── Fixtures ─────────────────────────────────────────────────────────────
 
@@ -103,7 +103,6 @@ def _make_canonical_event(event: dict[str, Any]) -> CanonicalPolicyEvent:
     )
 
 
-from collections.abc import Mapping  # noqa: E402
 from types import MappingProxyType  # noqa: E402
 
 

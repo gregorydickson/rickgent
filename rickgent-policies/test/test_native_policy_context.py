@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import hashlib
 import inspect
 import json
@@ -16,14 +15,13 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
-import pytest
 import omnigent
-import rickgent_policies
-
+import pytest
 from omnigent.policies.function import FunctionPolicy
 from omnigent.policies.types import EvaluationContext
 from omnigent.spec.types import FunctionPolicySpec, Phase, PolicyAction
 
+import rickgent_policies
 from rickgent_policies.context import (
     ATTEMPT_LEASE_SCHEMA_VERSION,
     NONCE_CLAIM_SCHEMA_VERSION,

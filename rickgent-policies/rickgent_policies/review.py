@@ -5,7 +5,6 @@ from __future__ import annotations
 from .native import adapt_authenticated, denial_result, fail_closed
 from .policy_event import PolicyAbstention, PolicyDenial
 
-
 CROSS_VENDOR_DENIAL_CODE = "RICKGENT_CROSS_VENDOR_DENIED"
 
 

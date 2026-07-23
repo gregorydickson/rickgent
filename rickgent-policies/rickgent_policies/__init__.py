@@ -30,15 +30,14 @@ from .scope import (
 )
 from .simplification import SIMPLIFICATION_DENIAL_CODE, subtract_before_add
 from .verdict import (
-    BUILD_COMMIT,
     _RICKGENT_BIN,
     _RICKGENT_NODE,
+    BUILD_COMMIT,
     _assert_build_commit,
     _detect_build_commit,
     _rickgent_verdict,
     _verified_verdict,
 )
-
 
 _SHELL_TOOL_NAMES = RAW_SHELL_TOOLS
 _STRUCTURED_WRITE_TOOLS = CANONICAL_FILESYSTEM_TOOLS - {"sys_os_read"}

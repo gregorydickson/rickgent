@@ -2,8 +2,8 @@
 
 These test the concepts that will be fully exercised in Phase 7.
 """
-import json
 import subprocess
+
 import pytest
 
 
@@ -24,7 +24,7 @@ class TestBuildCommitSameCommit:
 class TestPolicyAllowlist:
     """allowlist-tamper drill: only rickgent_policies in policy_modules."""
     def test_only_rickgent_policies_allowed(self):
-        from omnigent.policies.registry import load_registry, is_registered_handler
+        from omnigent.policies.registry import is_registered_handler, load_registry
         load_registry(extra_modules=["rickgent_policies"])
         # All rickgent handlers should be registered
         assert is_registered_handler("rickgent_policies.scope_fence")

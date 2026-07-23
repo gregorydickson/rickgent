@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import pytest
-import rickgent_policies.scope as scope_module
 from omnigent.policies import function as function_module
 from omnigent.policies.function import resolve_function_policy
 from omnigent.policies.types import EvaluationContext
 from omnigent.spec.types import FunctionPolicySpec, FunctionRef, Phase, PolicyAction
 
+import rickgent_policies.scope as scope_module
 from rickgent_policies import scope_fence
 from rickgent_policies.policy_event import TicketScopeEntry
 from rickgent_policies.scope import (
@@ -27,7 +27,6 @@ from rickgent_policies.scope import (
 )
 
 from .test_native_policy_context import AttemptFixture, _canonical, _sha
-
 
 FIXTURES = Path(__file__).parent / "fixtures" / "native-policy-corpus"
 MANIFEST = json.loads((FIXTURES / "manifest.json").read_text())

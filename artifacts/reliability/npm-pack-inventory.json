@@ -3,10 +3,10 @@
     "id": "rickgent@0.1.0-alpha",
     "name": "rickgent",
     "version": "0.1.0-alpha",
-    "size": 1464924,
-    "unpackedSize": 7151067,
-    "shasum": "7354a2a8750a88f7753093651040780306df21c5",
-    "integrity": "sha512-lEcp7d2tbsR1QZKKFHcbv/tSWJIisBY6qIkpwuVlT8ucw8eMYmja3HTGUrY97FoD/iwBVa3RO1PeSLDDG8nPjw==",
+    "size": 1471071,
+    "unpackedSize": 7167314,
+    "shasum": "eb510925d42f98f379381ac18cafd65ce825f41f",
+    "integrity": "sha512-oKd3Xgzm2kNWPXIjApasrrzY70DW8mW79S1KfM5US8cAWorH9PCJtuV5qjHM0iX50heePdFNuUgPwdhYv6dKdg==",
     "filename": "rickgent-0.1.0-alpha.tgz",
     "files": [
       {
@@ -1651,7 +1651,7 @@
       },
       {
         "path": "dist/pnpm-lock.yaml",
-        "size": 31514,
+        "size": 47700,
         "mode": 420
       },
       {
@@ -1916,7 +1916,7 @@
       },
       {
         "path": "package.json",
-        "size": 1671,
+        "size": 1732,
         "mode": 384
       }
     ],

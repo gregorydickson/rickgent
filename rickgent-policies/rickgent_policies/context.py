@@ -19,7 +19,6 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any, NoReturn
 
 from .policy_event import (
@@ -37,7 +36,6 @@ from .policy_event import (
     make_policy_denial,
     normalize_harness_identity,
 )
-
 
 MAX_EXECUTION_CONTEXT_BYTES = 1_048_576
 ATTEMPT_LEASE_SCHEMA_VERSION = "rickgent-attempt-lease/v1"
@@ -659,6 +657,7 @@ class FilesystemContextAuthenticator:
 
     def __init__(self, bindings: TrustedSpawnBindings | Mapping[str, str]) -> None:
         self._initialization_denial: PolicyDenial | None = None
+        self._bindings: TrustedSpawnBindings | None = None
         try:
             self._bindings = (
                 bindings
@@ -807,9 +806,13 @@ class FilesystemContextAuthenticator:
             "requested_bundle_sha256": bindings.requested_bundle_sha256,
             "requested_config_sha256": bindings.requested_config_sha256,
         }
-        for key, expected in expected_context_values.items():
+        for key, expected in expected_context_values.items():  # type: ignore[assignment]
             if context[key] != expected:
-                kind = DenialKind.OWNER_TOKEN_MISMATCH if key == "owner_token_sha256" else DenialKind.AUTHENTICATION_FAILED
+                kind = (
+                    DenialKind.OWNER_TOKEN_MISMATCH
+                    if key == "owner_token_sha256"
+                    else DenialKind.AUTHENTICATION_FAILED
+                )
                 _deny(kind, f"attempt context {key} conflicts with trusted spawn binding")
 
         for key in (
@@ -1071,10 +1074,18 @@ def _validate_active_lease(
     }
     for key, expected in tuple_values.items():
         if type(claim[key]) is not type(expected) or claim[key] != expected:
-            kind = DenialKind.NONCE_REPLAY if key in {"dispatch_id", "run_id", "ticket_id", "attempt"} else DenialKind.AUTHENTICATION_FAILED
+            kind = (
+                DenialKind.NONCE_REPLAY
+                if key in {"dispatch_id", "run_id", "ticket_id", "attempt"}
+                else DenialKind.AUTHENTICATION_FAILED
+            )
             _deny(kind, f"nonce claim {key} conflicts with active attempt")
         if type(lease[key]) is not type(expected) or lease[key] != expected:
-            kind = DenialKind.DISPATCH_REPLAY if key in {"dispatch_id", "run_id", "ticket_id", "attempt"} else DenialKind.AUTHENTICATION_FAILED
+            kind = (
+                DenialKind.DISPATCH_REPLAY
+                if key in {"dispatch_id", "run_id", "ticket_id", "attempt"}
+                else DenialKind.AUTHENTICATION_FAILED
+            )
             _deny(kind, f"lease {key} conflicts with active attempt")
     if lease["nonce_claim_path"] != bindings.nonce_claim_path:
         _deny(DenialKind.NONCE_REPLAY, "lease points at another nonce claim")

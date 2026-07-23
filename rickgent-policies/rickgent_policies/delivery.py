@@ -10,8 +10,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from .native import adapt_authenticated, denial_result, fail_closed
-from .policy_event import CanonicalPolicyEvent, PolicyAbstention, PolicyDenial
-
+from .policy_event import PolicyAbstention, PolicyDenial
 
 AUTONOMOUS_PR_DENIAL_CODE = "RICKGENT_AUTONOMOUS_PR_DENIED"
 _PROTECTED_EXACT = frozenset({"main", "master", "trunk", "develop", "dev"})

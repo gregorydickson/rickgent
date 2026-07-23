@@ -14,7 +14,6 @@ from types import MappingProxyType
 from typing import Any
 
 import pytest
-
 from omnigent.policies import function as function_module
 from omnigent.policies.function import FunctionPolicy
 from omnigent.policies.types import EvaluationContext
@@ -38,7 +37,6 @@ from rickgent_policies.policy_event import (
     adapt_native_policy_event,
     make_policy_denial,
 )
-
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "native-policy-corpus"
 POLICY_ID = "canonical-native-adapter"

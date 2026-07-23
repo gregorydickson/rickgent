@@ -10,6 +10,7 @@ pins the exact matcher independently.
 """
 
 import pytest
+
 from rickgent_policies import _is_protected
 
 

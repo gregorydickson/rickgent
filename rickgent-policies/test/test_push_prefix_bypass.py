@@ -16,6 +16,7 @@ tests pin command classification without constructing a legacy event shape.
 """
 
 import pytest
+
 from rickgent_policies import classify_delivery_command
 from rickgent_policies.delivery import _exact_owned_push
 

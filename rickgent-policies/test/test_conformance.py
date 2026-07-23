@@ -5,9 +5,9 @@ All three surfaces (core API, CLI, Python subprocess) must return the same verdi
 """
 
 import json
-import subprocess
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest

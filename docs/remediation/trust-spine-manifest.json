@@ -1618,10 +1618,14 @@
         "orchestrator/test/lifecycle_coverage_manifest.json"
       ],
       "priority": "P1",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t35"
-      ]
+      ],
+      "completed_at": {
+        "commit": "6ec6d9d",
+        "phase_report": "docs/remediation/phase-9-t36-real-ci-gates-execution-report-2026-07-23.md"
+      }
     },
     {
       "id": "t37",

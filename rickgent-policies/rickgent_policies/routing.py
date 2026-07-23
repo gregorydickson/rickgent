@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 _ROLE_TIER_PREFERENCE = {
     "research": "cheap",
     "research_review": "cheap",

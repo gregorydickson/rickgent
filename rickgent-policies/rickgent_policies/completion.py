@@ -9,7 +9,6 @@ import subprocess
 from .native import adapt_authenticated, denial_result, fail_closed
 from .policy_event import PolicyAbstention, PolicyDenial
 
-
 COMPLETION_DENIAL_CODE = "RICKGENT_COMPLETION_DENIED"
 _COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$")
 

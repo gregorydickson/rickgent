@@ -19,8 +19,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Literal, Protocol, TypeAlias, runtime_checkable
-
+from typing import Literal, Protocol, TypeAlias, runtime_checkable
 
 POLICY_ABI_VERSION = "omnigent-function-policy/current-v1"
 CONTEXT_SCHEMA_VERSION = "rickgent-attempt-context/v1"
@@ -422,7 +421,11 @@ def _closed_gate(value: object) -> bool:
                 row, {"name", "passed", "output"}
             ):
                 return False
-            if not isinstance(row["name"], str) or not isinstance(row["passed"], bool) or not isinstance(row["output"], str):
+            if not (
+                isinstance(row["name"], str)
+                and isinstance(row["passed"], bool)
+                and isinstance(row["output"], str)
+            ):
                 return False
     findings = value["findings"]
     if not isinstance(findings, (list, tuple)):
@@ -432,7 +435,12 @@ def _closed_gate(value: object) -> bool:
             row, {"file", "line", "message", "check"}
         ):
             return False
-        if not isinstance(row["file"], str) or type(row["line"]) is not int or not isinstance(row["message"], str) or not isinstance(row["check"], str):
+        if not (
+            isinstance(row["file"], str)
+            and type(row["line"]) is int
+            and isinstance(row["message"], str)
+            and isinstance(row["check"], str)
+        ):
             return False
     return True
 
@@ -453,7 +461,12 @@ def _closed_prd(value: object) -> bool:
             row, {"description", "type", "verifyCommand", "scope"}
         ):
             return False
-        if not isinstance(row["description"], str) or not isinstance(row["type"], str) or not isinstance(row["verifyCommand"], str) or not _strings(row["scope"]):
+        if not (
+            isinstance(row["description"], str)
+            and isinstance(row["type"], str)
+            and isinstance(row["verifyCommand"], str)
+            and _strings(row["scope"])
+        ):
             return False
     review = value["simplificationReview"]
     return review is None or (
@@ -472,13 +485,25 @@ def _arguments_match_tool(tool: str, arguments: Mapping[object, object]) -> bool
             type(arguments[key]) is int for key in ("offset", "limit") if key in arguments
         )
     if tool == "sys_os_write":
-        return _exact_keys(arguments, {"path", "content"}) and isinstance(arguments["path"], str) and bool(arguments["path"]) and isinstance(arguments["content"], str)
+        return (
+            _exact_keys(arguments, {"path", "content"})
+            and isinstance(arguments["path"], str)
+            and bool(arguments["path"])
+            and isinstance(arguments["content"], str)
+        )
     if tool == "sys_os_edit":
         if not isinstance(arguments.get("path"), str) or not arguments.get("path"):
             return False
         if _exact_keys(arguments, {"path", "oldText", "newText"}):
-            return isinstance(arguments["oldText"], str) and isinstance(arguments["newText"], str)
-        if not _exact_keys(arguments, {"path", "edits"}) or not isinstance(arguments["edits"], (list, tuple)) or not arguments["edits"]:
+            return (
+                isinstance(arguments["oldText"], str)
+                and isinstance(arguments["newText"], str)
+            )
+        if (
+            not _exact_keys(arguments, {"path", "edits"})
+            or not isinstance(arguments["edits"], (list, tuple))
+            or not arguments["edits"]
+        ):
             return False
         return all(
             isinstance(row, Mapping)
@@ -488,11 +513,25 @@ def _arguments_match_tool(tool: str, arguments: Mapping[object, object]) -> bool
             for row in arguments["edits"]
         )
     if tool == "sys_os_shell":
-        return set(arguments) in ({"command"}, {"command", "timeout"}) and isinstance(arguments.get("command"), str) and bool(arguments["command"].strip()) and ("timeout" not in arguments or type(arguments["timeout"]) is int)
+        cmd = arguments.get("command")
+        return (
+            set(arguments) in ({"command"}, {"command", "timeout"})
+            and isinstance(cmd, str)
+            and bool(cmd.strip())
+            and ("timeout" not in arguments or type(arguments["timeout"]) is int)
+        )
     if tool == "rickgent_mark_done":
-        return _exact_keys(arguments, {"claimed_sha", "evidence"}) and isinstance(arguments["claimed_sha"], str) and _strings(arguments["evidence"])
+        return (
+            _exact_keys(arguments, {"claimed_sha", "evidence"})
+            and isinstance(arguments["claimed_sha"], str)
+            and _strings(arguments["evidence"])
+        )
     if tool == "rickgent_phase_advance":
-        return _exact_keys(arguments, {"next_phase"}) and isinstance(arguments["next_phase"], str) and bool(arguments["next_phase"])
+        return (
+            _exact_keys(arguments, {"next_phase"})
+            and isinstance(arguments["next_phase"], str)
+            and bool(arguments["next_phase"])
+        )
     if tool == "rickgent_build_gate":
         return _exact_keys(arguments, {"gate"}) and _closed_gate(arguments["gate"])
     if tool == "rickgent_prd_validate":
@@ -878,7 +917,7 @@ def _adapt_authenticated_event(
                 DenialKind.PHASE_DATA_MALFORMED,
                 f"native {phase} data must be a string",
             )
-        return PolicyAbstention(phase, trusted.dispatch_id, trusted.context_sha256)
+        return PolicyAbstention(phase, trusted.dispatch_id, trusted.context_sha256)  # type: ignore[arg-type]
 
     if phase in {"llm_request", "llm_response"}:
         if not isinstance(event["data"], Mapping):
@@ -886,7 +925,7 @@ def _adapt_authenticated_event(
                 DenialKind.PHASE_DATA_MALFORMED,
                 f"native {phase} data must be a mapping",
             )
-        return PolicyAbstention(phase, trusted.dispatch_id, trusted.context_sha256)
+        return PolicyAbstention(phase, trusted.dispatch_id, trusted.context_sha256)  # type: ignore[arg-type]
 
     target = event["target"]
     if not isinstance(target, str) or not target:
@@ -1002,7 +1041,7 @@ def _adapt_authenticated_event(
     identity = trusted.requested_identity
     assert identity is not None  # validated before native event parsing
     return CanonicalPolicyEvent(
-        native_phase=phase,
+        native_phase=phase,  # type: ignore[arg-type]
         kind=kind,
         tool=target,
         action=action,

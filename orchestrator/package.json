@@ -33,6 +33,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@vitest/coverage-v8": "^3.2.7",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
   },
@@ -55,7 +56,10 @@
       "lockfileVersion": "9.0"
     },
     "platforms": {
-      "supported": ["darwin", "linux"],
+      "supported": [
+        "darwin",
+        "linux"
+      ],
       "windows": "fail_fast",
       "windowsErrorCode": "RICKGENT_PLATFORM_UNSUPPORTED"
     }

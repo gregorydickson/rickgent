@@ -21,7 +21,6 @@ from rickgent_policies import (
     validate_attached_policy_bundle,
 )
 
-
 REPO_ROOT = Path(__file__).parent.parent.parent
 MANAGER_DIR = REPO_ROOT / "agents" / "rickgent"
 LIFECYCLE_TOOLS = {

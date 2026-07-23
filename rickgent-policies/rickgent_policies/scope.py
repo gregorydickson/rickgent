@@ -22,7 +22,6 @@ from .policy_event import (
     adapt_native_policy_event,
 )
 
-
 SCOPE_DENIAL_CODE = "RICKGENT_SCOPE_DENIED"
 CANONICAL_FILESYSTEM_TOOLS = frozenset(
     {"sys_os_read", "sys_os_write", "sys_os_edit"}

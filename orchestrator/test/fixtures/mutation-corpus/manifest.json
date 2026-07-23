@@ -1,0 +1,193 @@
+{
+  "version": "1.0.0",
+  "description": "Mutation corpus manifest for t36 / VAL-REL-002. Records the incident classes subjected to mutation testing, the disposable-worktree requirement, and the kill-classification rules that prevent infrastructure failures from being reported as killed mutants.",
+  "disposable_worktrees": true,
+  "disposable_worktree_mechanism": "Each mutation run creates a temporary directory via mkdtempSync, copies the orchestrator and policies trees into it via cpSync, symlinks node_modules, applies the mutation only to the disposable copy, runs the targeted test in the disposable tree, and removes the disposable tree via rmSync. The original source is never mutated; sourceUnchanged is verified after each run.",
+  "kill_classification": {
+    "killed": "The targeted test failed with an assertion failure (exit 1 for pytest, numFailedTests >= 1 with a matching failed assertion for vitest). This is a genuine kill.",
+    "infrastructure_error": "Spawn failure, timeout, signal kill, missing exit status, or collection/usage error. NOT a kill. Recorded separately and never counted as a successful quality result.",
+    "survived": "The targeted test passed with the mutation applied. The guard is not genuinely tested.",
+    "baseline_failed": "The baseline (unmutated) test did not pass, invalidating the mutation check for this class."
+  },
+  "mutation_targets": [
+    {
+      "id": "completion-committed",
+      "source": "src/core/completion.ts",
+      "test": "test/core/completion.test.ts",
+      "test_case": "returns COMMITTED when all checks pass"
+    },
+    {
+      "id": "completion-unverified",
+      "source": "src/core/completion.ts",
+      "test": "test/core/completion.test.ts",
+      "test_case": "returns UNVERIFIED when no claimed SHA"
+    },
+    {
+      "id": "completion-baseline-sha",
+      "source": "src/core/completion.ts",
+      "test": "test/core/completion.test.ts",
+      "test_case": "returns BASELINE_SHA when claimed SHA equals baseline"
+    },
+    {
+      "id": "completion-no-tree-change",
+      "source": "src/core/completion.ts",
+      "test": "test/core/completion.test.ts",
+      "test_case": "returns NO_TREE_CHANGE when tree matches baseline"
+    },
+    {
+      "id": "salvage-committed-done",
+      "source": "src/core/salvage.ts",
+      "test": "test/core/salvage.test.ts",
+      "test_case": "returns committed-done when gate green and tree changed"
+    },
+    {
+      "id": "salvage-archived-todo",
+      "source": "src/core/salvage.ts",
+      "test": "test/core/salvage.test.ts",
+      "test_case": "returns archived-todo when gate failing but tree changed"
+    },
+    {
+      "id": "salvage-ff-reattached",
+      "source": "src/core/salvage.ts",
+      "test": "test/core/salvage.test.ts",
+      "test_case": "returns ff-reattached when orphan reset detected and reattach possible"
+    },
+    {
+      "id": "salvage-no-op",
+      "source": "src/core/salvage.ts",
+      "test": "test/core/salvage.test.ts",
+      "test_case": "returns no-op when no tree changes"
+    },
+    {
+      "id": "salvage-error",
+      "source": "src/core/salvage.ts",
+      "test": "test/core/salvage.test.ts",
+      "test_case": "coerces a non-array ownedPaths to an empty array (VAL-BUG-008)"
+    },
+    {
+      "id": "breaker-trips",
+      "source": "src/core/breaker.ts",
+      "test": "test/core/breaker.test.ts",
+      "test_case": "trips after threshold identical errors"
+    },
+    {
+      "id": "breaker-resets",
+      "source": "src/core/breaker.ts",
+      "test": "test/core/breaker.test.ts",
+      "test_case": "resets on git tree progress"
+    },
+    {
+      "id": "breaker-rejects-claimed-progress",
+      "source": "src/core/breaker.ts",
+      "test": "test/core/breaker.test.ts",
+      "test_case": "rejects claimed progress without tree change"
+    },
+    {
+      "id": "gate-stale-baseline",
+      "source": "src/core/convergence.ts",
+      "test": "test/core/convergence.test.ts",
+      "test_case": "detects stale baseline (zero baseline checks)"
+    },
+    {
+      "id": "gate-silence-not-success",
+      "source": "src/core/convergence.ts",
+      "test": "test/core/convergence.test.ts",
+      "test_case": "fails on zero current checks (silence is not success)"
+    },
+    {
+      "id": "gate-scope-filtering",
+      "source": "src/core/convergence.ts",
+      "test": "test/core/convergence.test.ts",
+      "test_case": "VAL-BUG-001: excludes a sibling directory that shares a name prefix"
+    },
+    {
+      "id": "scope-traversal",
+      "source": "src/core/scope.ts",
+      "test": "test/core/scope-resolved.test.ts",
+      "test_case": "denies traversal even when it normalizes into declared scope"
+    },
+    {
+      "id": "scope-outside-paths",
+      "source": "src/core/scope.ts",
+      "test": "test/core/scope.test.ts",
+      "test_case": "denies writes outside declared paths"
+    },
+    {
+      "id": "prd-no-ac",
+      "source": "src/core/prd.ts",
+      "test": "test/core/prd.test.ts",
+      "test_case": "rejects PRD without ACs"
+    },
+    {
+      "id": "prd-no-simplification",
+      "source": "src/core/prd.ts",
+      "test": "test/core/prd.test.ts",
+      "test_case": "rejects PRD without simplification review"
+    },
+    {
+      "id": "microverse-convergence",
+      "source": "src/lifecycle/microverse.ts",
+      "test": "test/lifecycle/microverse.test.ts",
+      "test_case": "plateau: last N improvement deltas below epsilon converges"
+    },
+    {
+      "id": "microverse-rollback",
+      "source": "src/lifecycle/microverse.ts",
+      "test": "test/lifecycle/microverse.test.ts",
+      "test_case": "rollback on regression preserves baseline"
+    },
+    {
+      "id": "microverse-stall",
+      "source": "src/lifecycle/microverse.ts",
+      "test": "test/lifecycle/microverse.test.ts",
+      "test_case": "detects stall after stallLimit iterations (attrition, not convergence)"
+    },
+    {
+      "id": "dispatch-contract-incompatibility",
+      "source": "src/dispatch/dispatch.ts",
+      "test": "test/dispatch/dispatch.test.ts",
+      "test_case": "rejects a changed ticket contract instead of treating its allocation as a cache hit"
+    },
+    {
+      "id": "dispatch-backpressure",
+      "source": "src/dispatch/dispatch.ts",
+      "test": "test/dispatch/dispatch.test.ts",
+      "test_case": "records planned state without spawning when the legal sequential slot is occupied"
+    },
+    {
+      "id": "malformed-null-input",
+      "source": "src/core/completion.ts",
+      "test": "test/core/malformed-input.test.ts",
+      "test_case": "handles null input by failing closed"
+    },
+    {
+      "id": "malformed-wrong-types",
+      "source": "src/core/completion.ts",
+      "test": "test/core/malformed-input.test.ts",
+      "test_case": "handles wrong types by failing closed"
+    },
+    {
+      "id": "drill-false-completion",
+      "source": "rickgent_policies/completion.py",
+      "test": "test/test_native_function_policy_corpus.py",
+      "test_case": "test_every_policy_event_and_bundle_verdict",
+      "test_selector": "test_every_policy_event_and_bundle_verdict and false_completion"
+    },
+    {
+      "id": "drill-same-vendor",
+      "source": "rickgent_policies/review.py",
+      "test": "test/test_native_function_policy_corpus.py",
+      "test_case": "test_every_policy_event_and_bundle_verdict",
+      "test_selector": "test_every_policy_event_and_bundle_verdict and review_equality"
+    },
+    {
+      "id": "drill-shim-exception",
+      "source": "rickgent_policies/scope.py",
+      "test": "test/test_native_scope_corpus.py",
+      "test_case": "test_scope_fence_fails_closed_on_unexpected_exception"
+    }
+  ],
+  "infrastructure_failure_policy": "Infrastructure failures (spawn error, timeout, signal, missing dependency, collection error) are recorded as infrastructure_error and NEVER reported as a killed mutant or a successful quality result. The quality-gates-summary.json separates infrastructure_errors from threshold failures; a summary with any infrastructure_errors has thresholds_passed=false.",
+  "coverage_manifest_source": "orchestrator/scripts/coverage-manifest.cjs",
+  "coverage_manifest_test": "orchestrator/test/lifecycle/manifest.test.ts"
+}

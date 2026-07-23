@@ -17,7 +17,7 @@ def test_omnigent_version_pinned():
 
 def test_policies_register_via_policy_modules():
     """rickgent_policies loads into the omnigent policy registry."""
-    from omnigent.policies.registry import load_registry, is_registered_handler
+    from omnigent.policies.registry import is_registered_handler, load_registry
     load_registry(extra_modules=["rickgent_policies"])
     expected = {
         "rickgent_policies.scope_fence",
@@ -34,6 +34,7 @@ def test_policies_register_via_policy_modules():
 def test_agent_bundle_validates():
     """The rickgent agent bundle parses as a valid AGENTSPEC."""
     from pathlib import Path
+
     from omnigent.spec.parser import parse
 
     agent_dir = Path(__file__).parent.parent.parent / "agents" / "rickgent"
@@ -45,16 +46,17 @@ def test_agent_bundle_validates():
 
 def test_required_primitives_exist():
     """sys_session_send, sys_read_inbox, sys_os_shell are available."""
-    from omnigent.tools.builtins.spawn import SysSessionSendTool
     from omnigent.tools.builtins.async_inbox import SysReadInboxTool
+    from omnigent.tools.builtins.spawn import SysSessionSendTool
     assert SysSessionSendTool.name() == "sys_session_send"
     assert SysReadInboxTool.name() == "sys_read_inbox"
 
 
 def test_sys_cancel_task_is_inert():
     """sys_cancel_task returns task_not_found for all inputs (TRAP)."""
-    from omnigent.tools.builtins.async_inbox import SysCancelTaskTool
     import json
+
+    from omnigent.tools.builtins.async_inbox import SysCancelTaskTool
     tool = SysCancelTaskTool()
     result = tool.invoke(json.dumps({"task_id": "any-id"}), ctx=None)
     parsed = json.loads(result)
@@ -78,8 +80,9 @@ def test_headless_subagent_purpose_guard_exists():
 
 def test_build_commit_matches():
     """Python wheel and TS package expose the same build_commit."""
-    import rickgent_policies
     import subprocess
+
+    import rickgent_policies
     try:
         ts_commit = subprocess.run(
             ["rickgent", "--build-commit"],

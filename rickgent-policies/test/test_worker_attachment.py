@@ -12,13 +12,12 @@ from omnigent.spec.parser import parse
 from omnigent.tools.manager import ToolManager
 
 from rickgent_policies import (
-    ATTACHED_POLICY_ROWS,
-    REQUIRED_POLICY_NAMES,
     _SHELL_TOOL_NAMES,
     _STRUCTURED_WRITE_TOOLS,
+    ATTACHED_POLICY_ROWS,
+    REQUIRED_POLICY_NAMES,
     validate_attached_policy_bundle,
 )
-
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 WORKER_DIR = REPO_ROOT / "agents" / "rickgent" / "agents" / "worker"

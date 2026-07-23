@@ -9,8 +9,8 @@ unavailable capability at the scope boundary.
 
 from __future__ import annotations
 
-import asyncio
 import ast
+import asyncio
 import copy
 import inspect
 import json
@@ -29,8 +29,8 @@ from omnigent.policies.types import EvaluationContext
 from omnigent.runtime.policies.engine import PolicyEngine
 from omnigent.spec.parser import parse
 from omnigent.spec.types import Phase, PolicyAction
-from omnigent.tools.manager import ToolManager
 from omnigent.tools.base import ToolContext
+from omnigent.tools.manager import ToolManager
 
 from rickgent_policies import (
     ATTACHED_POLICY_ROWS,
@@ -47,7 +47,6 @@ from rickgent_policies.policy_event import (
 )
 
 from .test_native_policy_context import AttemptFixture, _canonical, _sha
-
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 FIXTURES = Path(__file__).parent / "fixtures" / "native-policy-corpus"

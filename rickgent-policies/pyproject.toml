@@ -19,3 +19,30 @@ dependencies = [
 
 [tool.setuptools]
 packages = ["rickgent_policies"]
+
+# ── Ruff lint configuration (t36 / VAL-REL-002) ──────────────────────────────
+# Lint threshold applies where linting is configured. The orchestrator's eslint
+# is intentionally unconfigured per CLAUDE.md; Python policies use ruff.
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+# __init__.py re-exports private names as part of the package API; F401
+# (unused import) is expected for re-exports.
+"__init__.py" = ["F401"]
+
+# ── Mypy typecheck configuration (t36 / VAL-REL-002) ──────────────────────────
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = false
+warn_unused_configs = true
+ignore_missing_imports = true
+# omnigent is an editable read-only dependency without type stubs
+[[tool.mypy.overrides]]
+module = "omnigent.*"
+ignore_missing_imports = true

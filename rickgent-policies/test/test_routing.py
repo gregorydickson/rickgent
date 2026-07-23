@@ -8,9 +8,10 @@ BEFORE dispatch.
 """
 
 import inspect
-import pytest
-from rickgent_policies import select_model
 
+import pytest
+
+from rickgent_policies import select_model
 
 # ── Fixture rosters ──────────────────────────────────────────────────────────
 

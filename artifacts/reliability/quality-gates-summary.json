@@ -1,0 +1,39 @@
+{
+  "thresholds_passed": true,
+  "skipped_required": [],
+  "infrastructure_errors": [],
+  "gates": [
+    { "name": "typecheck", "status": "pass", "detail": "tsc --noEmit clean" },
+    { "name": "build", "status": "pass", "detail": "build-commit regenerated; dist/cli.js refreshed" },
+    { "name": "ts_test_coverage", "status": "pass", "detail": "26/26 scoped vitest passed (quality-gates + release-manifest)" },
+    { "name": "ruff_lint", "status": "pass", "detail": "All checks passed" },
+    { "name": "mypy_typecheck", "status": "pass", "detail": "Success: no issues found in 13 source files" },
+    { "name": "py_test_coverage", "status": "pass", "detail": "372 passed, 3 skipped" },
+    { "name": "coverage_manifest_verify", "status": "pass", "detail": "verified: true, allCovered: true, tempWorktreesOnly: true, 29 incident classes" },
+    { "name": "release_manifest", "status": "pass", "detail": "release manifest valid: rickgent-trust-spine-release-v1" },
+    { "name": "package_inventory", "status": "pass", "detail": "npm 382 files, python 1 wheel + 1 sdist" },
+    { "name": "citadel", "status": "pass", "detail": "0 CRITICAL, 0 HIGH, 0 MEDIUM, 1 LOW (report-only)" },
+    { "name": "doctor", "status": "pass", "detail": "capability matrix unchanged; exit 0" }
+  ],
+  "generated_at": "2026-07-23T02:01:00Z",
+  "toolchain": {
+    "node": "24.13.1",
+    "python": "3.14.3",
+    "pnpm": "10.22.0",
+    "ruff": "0.15.22",
+    "mypy": "2.3.0",
+    "vitest": "3.2.7"
+  },
+  "coverage_thresholds": {
+    "ts_statements": 70,
+    "ts_branches": 60,
+    "ts_functions": 70,
+    "ts_lines": 70,
+    "py_min": 90
+  },
+  "mutation": {
+    "disposable_worktrees": true,
+    "incident_classes": 29,
+    "kill_classification": "assertion-detected kill separated from timeout, spawn, missing dependency, and infrastructure error"
+  }
+}

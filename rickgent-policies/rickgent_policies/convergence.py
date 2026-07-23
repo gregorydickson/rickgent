@@ -9,7 +9,6 @@ from .native import adapt_authenticated, denial_result, fail_closed
 from .policy_event import FrozenValue, PolicyAbstention, PolicyDenial
 from .verdict import _verified_verdict
 
-
 CONVERGENCE_DENIAL_CODE = "RICKGENT_CONVERGENCE_DENIED"
 
 
