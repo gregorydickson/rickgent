@@ -213,6 +213,7 @@ const REQUIRED_POINT_IDS = [
   "authority_ownership_snapshot",
   "authority_process_chain",
   "orphaned_planned_cleanup",
+  "authority_salvage_record",
 ] as const;
 
 const REQUIRED_ASSERTIONS = [
@@ -347,6 +348,7 @@ const REQUIRED_POINT_PROJECTIONS: Readonly<Record<(typeof REQUIRED_POINT_IDS)[nu
   authority_evidence: ["authority_evidence_rows", "append_evidence", "persist_authority_evidence", "semantic_suite", "orchestrator/test/reliability/disposition-store-bridge.test.ts", "replays identical inputs to the identical immutable postimage", null],
   authority_ownership_snapshot: ["authority_ownership_rows", "persist_authority_ownership_snapshot", "persist_authority_ownership_snapshot", "semantic_suite", "orchestrator/test/reliability/disposition-store-bridge.test.ts", "replays identical inputs to the identical immutable postimage", null],
   authority_process_chain: ["authority_process_chain_rows", "process_supervisor_terminal", "persist_authority_process_chain", "semantic_suite", "orchestrator/test/reliability/process-supervisor-corpus.test.ts", "persists a nonzero terminal outcome and contains every owned resource for cleanup", null],
+  authority_salvage_record: ["authority_salvage_rows", null, "persist_authority_salvage_record", "semantic_suite", "orchestrator/test/reliability/disposition-store-bridge.test.ts", "replays identical inputs to the identical immutable postimage", "t21"],
   orphaned_planned_cleanup: ["orphaned_cleanup_rows", "recover_orphaned_planned_attempt", "recover_orphaned_planned_attempt", "semantic_suite", "orchestrator/test/reliability/recovery-parity.test.ts", "recovers the orphaned planned attempt as a typed no-side-effect cleanup image", null],
 };
 

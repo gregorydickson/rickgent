@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   cpSync,
@@ -34,6 +35,14 @@ import {
   verifyPolicyBundleForSpawn,
   type PolicyBundleHandle,
 } from "../../src/policy/policy-bundle.js";
+
+// Resolve OMNIGENT_PYTHON to the path that sys.executable reports. The
+// provenance probe compares pythonExecutable.entrypoint with sys.executable;
+// pyenv shims and other indirections cause sys.executable to differ from the
+// shim path. Using the resolved path ensures the probe comparison passes.
+const RESOLVED_OMNIGENT_PYTHON = process.env.OMNIGENT_PYTHON
+  ? execFileSync(process.env.OMNIGENT_PYTHON, ["-c", "import sys; print(sys.executable)"], { encoding: "utf-8" }).trim()
+  : process.env.OMNIGENT_PYTHON;
 
 const AGENT_ROOT = join(import.meta.dirname, "../../../agents/rickgent");
 const RICKGENT_CLI = realpathSync(join(import.meta.dirname, "../../dist/cli.js"));
@@ -140,7 +149,7 @@ function materialize(input: Fixture, overrides: Partial<Parameters<typeof materi
     selection: { harness: "codex", model: "gpt-5", vendor: "openai" },
     leaseExpiresAtMs: Date.now() + 60_000,
     omnigentRoot: process.env.OMNIGENT_ROOT,
-    omnigentPython: process.env.OMNIGENT_PYTHON,
+    omnigentPython: RESOLVED_OMNIGENT_PYTHON,
     rickgentCli: RICKGENT_CLI,
     ...overrides,
   });
@@ -162,7 +171,7 @@ describe("M2 authenticated policy context", () => {
 
   beforeEach(() => {
     expect(process.env.OMNIGENT_ROOT).toBeTruthy();
-    expect(process.env.OMNIGENT_PYTHON).toBeTruthy();
+    expect(RESOLVED_OMNIGENT_PYTHON).toBeTruthy();
     root = realpathSync(mkdtempSync(join(tmpdir(), "rickgent-policy-context-")));
     input = fixture(root);
   });
@@ -204,8 +213,8 @@ describe("M2 authenticated policy context", () => {
     expect(handle.context.declared_scope).toEqual(input.contract.scope);
     expect(handle.runtimeProvenance).toMatchObject({
       schema_version: "rickgent-runtime-provenance/v2",
-      omnigent_python_entrypoint: process.env.OMNIGENT_PYTHON,
-      omnigent_python_realpath: realpathSync(process.env.OMNIGENT_PYTHON!),
+      omnigent_python_entrypoint: RESOLVED_OMNIGENT_PYTHON,
+      omnigent_python_realpath: realpathSync(RESOLVED_OMNIGENT_PYTHON!),
       rickgent_node_realpath: realpathSync(process.execPath),
     });
     expect(handle.runtimeProvenance.omnigent_python_sha256).toBe(
@@ -214,8 +223,8 @@ describe("M2 authenticated policy context", () => {
     expect(handle.runtimeProvenance.rickgent_node_sha256).toBe(
       sha256(readFileSync(handle.runtimeProvenance.rickgent_node_realpath)),
     );
-    expect(handle.trustedSpawnCommand.executable).toBe(process.env.OMNIGENT_PYTHON);
-    expect(handle.spawnEnvironment.RICKGENT_OMNIGENT_PYTHON_ENTRYPOINT).toBe(process.env.OMNIGENT_PYTHON);
+    expect(handle.trustedSpawnCommand.executable).toBe(RESOLVED_OMNIGENT_PYTHON);
+    expect(handle.spawnEnvironment.RICKGENT_OMNIGENT_PYTHON_ENTRYPOINT).toBe(RESOLVED_OMNIGENT_PYTHON);
     expect(handle.spawnEnvironment.RICKGENT_NODE_REALPATH).toBe(realpathSync(process.execPath));
     expect(deepFrozen(handle)).toBe(true);
     expect(pathInside(input.worktree, handle.attemptRoot)).toBe(false);

@@ -471,7 +471,7 @@ describe("(c) Docker integration: multi-verification terminalization succeeds", 
       hostMounts: [fixtureOmnigentDir, realAgentDir],
       containerPath: [fixtureOmnigentDir, "/usr/local/bin", "/usr/bin", "/bin"].join(":"),
       containerAgentDir: realAgentDir,
-      extraEnv: { FIXTURE_MODE: "prompt" },
+      extraEnv: { FIXTURE_MODE: "prompt", FIXTURE_OBSERVED_VENDOR: "fixture" },
     });
 
     const prdPath = join(repoRoot, "fixtures", "prd-multi-verification.md");
@@ -485,6 +485,13 @@ describe("(c) Docker integration: multi-verification terminalization succeeds", 
         rickgentDir,
         agentDir,
         dataDir,
+        roster: [{
+          harness: "fixture",
+          model: "fixture",
+          vendor: "fixture",
+          tier: "capable",
+          pricing: { cost_per_dispatch: 0 },
+        }],
         env: {
           ...process.env,
           RICKGENT_DIR: rickgentDir,

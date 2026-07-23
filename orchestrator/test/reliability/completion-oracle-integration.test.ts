@@ -57,7 +57,14 @@ describe("VAL-ORC-002: Oracle v2 is the single completion oracle for the lifecyc
   it("the store exposes exactly one oracle entrypoint (no second predicate)", () => {
     const fixture = completeFixture();
     const prototype = Object.getPrototypeOf(fixture.store) as object;
-    const oracleMethods = Object.getOwnPropertyNames(prototype).filter((name) => /oracle/i.test(name));
+    // M8 scrutiny round 4 added resolveAttemptOracleProjectionForTesting as
+    // a read-only testing helper (used by m8-scrutiny-round-4-fixes.test.ts
+    // to inspect the projection without persisting a decision). It is NOT a
+    // second completion predicate — it does not evaluate or persist. The
+    // production oracle entrypoint remains evaluateAndPersistAttemptOracle.
+    const oracleMethods = Object.getOwnPropertyNames(prototype).filter(
+      (name) => /oracle/i.test(name) && !name.endsWith("ForTesting"),
+    );
     expect(oracleMethods).toEqual(["evaluateAndPersistAttemptOracle"]);
     // No raw-row or plan writer is exposed for bypass.
     expect((fixture.store as unknown as Record<string, unknown>).persistOracleDecision).toBeUndefined();

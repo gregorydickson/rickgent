@@ -1,4 +1,5 @@
 import { chmodSync, cpSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "os";
 import { join } from "path";
 import { parse, stringify } from "yaml";
@@ -12,6 +13,14 @@ import {
   materializePolicyBundle,
   validatePolicyAttachmentObject,
 } from "../../src/policy/policy-bundle.js";
+
+// Resolve OMNIGENT_PYTHON to the path that sys.executable reports. The
+// provenance probe compares pythonExecutable.entrypoint with sys.executable;
+// pyenv shims and other indirections cause sys.executable to differ from the
+// shim path. Using the resolved path ensures the probe comparison passes.
+const RESOLVED_OMNIGENT_PYTHON = process.env.OMNIGENT_PYTHON
+  ? execFileSync(process.env.OMNIGENT_PYTHON, ["-c", "import sys; print(sys.executable)"], { encoding: "utf-8" }).trim()
+  : process.env.OMNIGENT_PYTHON;
 
 const REAL_AGENT_ROOT = join(import.meta.dirname, "../../../agents/rickgent");
 const RICKGENT_CLI = realpathSync(join(import.meta.dirname, "../../dist/cli.js"));
@@ -99,7 +108,7 @@ function materialize(root: string, agentRoot = REAL_AGENT_ROOT) {
     selection: { harness: "codex", model: "gpt-5", vendor: "openai" },
     leaseExpiresAtMs: Date.now() + 60_000,
     omnigentRoot: process.env.OMNIGENT_ROOT,
-    omnigentPython: process.env.OMNIGENT_PYTHON,
+    omnigentPython: RESOLVED_OMNIGENT_PYTHON,
     rickgentCli: RICKGENT_CLI,
   });
 }

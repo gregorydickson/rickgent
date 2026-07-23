@@ -950,7 +950,7 @@ export function materializeOraclePersistenceRows(
 ): OraclePersistenceRows {
   const plan = oraclePersistenceProjection(value);
   if (plan.referenceIntegrity !== "exact") {
-    throw new TypeError("oracle projection with invalid reference integrity cannot be persisted");
+    throw new TypeError(`oracle projection with invalid reference integrity cannot be persisted: ${JSON.stringify(plan.reasons)}`);
   }
   const oracleDecisionId = requiredText(identity.oracleDecisionId, "oracleDecisionId");
   const idempotencyKey = requiredText(identity.idempotencyKey, "idempotencyKey");

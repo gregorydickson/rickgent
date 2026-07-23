@@ -3,10 +3,10 @@
     "id": "rickgent@0.1.0-alpha",
     "name": "rickgent",
     "version": "0.1.0-alpha",
-    "size": 1471071,
-    "unpackedSize": 7167314,
-    "shasum": "eb510925d42f98f379381ac18cafd65ce825f41f",
-    "integrity": "sha512-oKd3Xgzm2kNWPXIjApasrrzY70DW8mW79S1KfM5US8cAWorH9PCJtuV5qjHM0iX50heePdFNuUgPwdhYv6dKdg==",
+    "size": 1472383,
+    "unpackedSize": 7175804,
+    "shasum": "a07191ca2eac227376a52179984f535235b2bece",
+    "integrity": "sha512-9vDALK3+JrXnqtI6fFYsFZaeDRrkEQYA8pp7ByQx75G10WP6R9fYYQ/udROE40t8g2ui67fT90LMixhxFBBymg==",
     "filename": "rickgent-0.1.0-alpha.tgz",
     "files": [
       {
@@ -461,12 +461,12 @@
       },
       {
         "path": "dist/dispatch/model-identity.js",
-        "size": 23330,
+        "size": 23803,
         "mode": 420
       },
       {
         "path": "dist/dispatch/model-identity.js.map",
-        "size": 40331,
+        "size": 41119,
         "mode": 420
       },
       {
@@ -661,32 +661,32 @@
       },
       {
         "path": "dist/lifecycle/attempt-runner-providers.js",
-        "size": 84391,
+        "size": 84882,
         "mode": 420
       },
       {
         "path": "dist/lifecycle/attempt-runner-providers.js.map",
-        "size": 123136,
+        "size": 123915,
         "mode": 420
       },
       {
         "path": "dist/lifecycle/attempt-runner.d.ts",
-        "size": 25369,
+        "size": 25499,
         "mode": 420
       },
       {
         "path": "dist/lifecycle/attempt-runner.d.ts.map",
-        "size": 10436,
+        "size": 10500,
         "mode": 420
       },
       {
         "path": "dist/lifecycle/attempt-runner.js",
-        "size": 136842,
+        "size": 137462,
         "mode": 420
       },
       {
         "path": "dist/lifecycle/attempt-runner.js.map",
-        "size": 227867,
+        "size": 229065,
         "mode": 420
       },
       {
@@ -721,12 +721,12 @@
       },
       {
         "path": "dist/lifecycle/build.js",
-        "size": 99001,
+        "size": 99133,
         "mode": 420
       },
       {
         "path": "dist/lifecycle/build.js.map",
-        "size": 174395,
+        "size": 174629,
         "mode": 420
       },
       {
@@ -1676,22 +1676,22 @@
       },
       {
         "path": "dist/process/containment.d.ts",
-        "size": 25295,
+        "size": 25712,
         "mode": 420
       },
       {
         "path": "dist/process/containment.d.ts.map",
-        "size": 11141,
+        "size": 11494,
         "mode": 420
       },
       {
         "path": "dist/process/containment.js",
-        "size": 97129,
+        "size": 97948,
         "mode": 420
       },
       {
         "path": "dist/process/containment.js.map",
-        "size": 168552,
+        "size": 170435,
         "mode": 420
       },
       {
@@ -1806,12 +1806,12 @@
       },
       {
         "path": "dist/state/oracle.js",
-        "size": 43376,
+        "size": 43409,
         "mode": 420
       },
       {
         "path": "dist/state/oracle.js.map",
-        "size": 86502,
+        "size": 86578,
         "mode": 420
       },
       {

@@ -570,16 +570,37 @@ export function buildAttemptRunnerProviders(
       if (crossVendorResult.outcome === "denied") {
         const verdictEvidenceIdBlocked = `evidence-review-verdict-${phase.phaseExecutionId}`;
         const findingsEvidenceIdBlocked = `evidence-review-findings-${phase.phaseExecutionId}`;
+        // Compute the real diff digest from the actual git diff, same as
+        // the non-blocked path. The store independently derives this digest
+        // and checks that they match — a fake digest would be rejected.
+        const blockedBaselineOid = input.ownership.plan.lineage.deliveryBaselineOid;
+        let blockedDiffDigest: string;
+        try {
+          const rawDiff = execFileSync("git", [
+            "-C", input.ownership.repositoryPath,
+            "diff", "--raw", "-z", "--no-abbrev", "-M",
+            blockedBaselineOid, input.attribution.candidateOid,
+          ], { encoding: "utf8", timeout: 10_000, maxBuffer: 8 * 1024 * 1024 });
+          blockedDiffDigest = canonicalGitDeltaFromRaw(rawDiff).candidateDiffDigest;
+        } catch {
+          blockedDiffDigest = sha256(`review-diff-unresolvable:${attemptId}`);
+        }
+        // Resolve the tree OID before creating the payload so the evidence
+        // and the recordReview call agree on the exact value.
+        let inputTreeOidBlocked = input.attribution.candidateOid;
+        try {
+          inputTreeOidBlocked = execFileSync("git", [
+            "-C", input.ownership.repositoryPath, "rev-parse", `${input.attribution.candidateOid}^{tree}`,
+          ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+        } catch {
+          // Keep candidate as fallback
+        }
         const blockedPayload = {
           attempt_id: attemptId,
           cycle,
           verdict: "rejected",
-          input_tree_oid: input.attribution.candidateOid,
-          input_diff_digest: `sha256:distinction-denied-${phase.phaseExecutionId}`,
-          cross_vendor_review: false,
-          cross_vendor_distinction_outcome: crossVendorResult.outcome,
-          cross_vendor_denial_reason: crossVendorResult.denial_reason,
-          blocked_reason: "distinction_denied",
+          input_tree_oid: inputTreeOidBlocked,
+          input_diff_digest: blockedDiffDigest,
         };
         store.persistAuthorityEvidence({
           evidenceId: verdictEvidenceIdBlocked,
@@ -610,14 +631,6 @@ export function buildAttemptRunnerProviders(
           observedAt: createdAt,
         }, mintCapability);
         // Persist the review record through the authority API.
-        let inputTreeOidBlocked = input.attribution.candidateOid;
-        try {
-          inputTreeOidBlocked = execFileSync("git", [
-            "-C", input.ownership.repositoryPath, "rev-parse", `${input.attribution.candidateOid}^{tree}`,
-          ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-        } catch {
-          // Keep candidate as fallback
-        }
         lifecycleRecords.recordReview({
           reviewRecordId,
           attemptId,
@@ -628,7 +641,7 @@ export function buildAttemptRunnerProviders(
           verdictEvidenceId: verdictEvidenceIdBlocked,
           findingsEvidenceId: findingsEvidenceIdBlocked,
           inputTreeOid: inputTreeOidBlocked,
-          inputDiffDigest: `sha256:distinction-denied-${phase.phaseExecutionId}`,
+          inputDiffDigest: blockedDiffDigest,
           createdAt,
         });
         return {
@@ -916,11 +929,6 @@ export function buildAttemptRunnerProviders(
         verdict: verdictValue,
         input_tree_oid: inputTreeOid,
         input_diff_digest: inputDiffDigest,
-        // t32 scrutiny round 2: The cross-vendor distinction result gates
-        // the review policy path.  The verdict evidence records whether
-        // this review was cross-vendor or same-vendor.
-        cross_vendor_review: isCrossVendorReview,
-        cross_vendor_distinction_outcome: crossVendorResult.outcome,
       };
       store.persistAuthorityEvidence({
         evidenceId: verdictEvidenceId,
@@ -1318,6 +1326,7 @@ export function buildAttemptRunnerProviders(
             requested_evidence_id: input.identityEvidenceIds.requestedEvidenceId,
             invoked_evidence_id: input.identityEvidenceIds.invokedEvidenceId,
             observed_evidence_id: input.identityEvidenceIds.observedEvidenceId,
+            attempt_id: attemptId,
           },
           idempotencyKey: `oracle-identity-binding:${attemptId}`,
           observedAt: input.ownership.ownership.heartbeatAt,

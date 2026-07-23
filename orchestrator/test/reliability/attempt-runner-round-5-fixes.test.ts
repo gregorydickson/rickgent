@@ -51,16 +51,21 @@ describe("defect #1: review provider fails closed on unresolvable candidate tree
     const reviewStart = source.indexOf("review(input: ReviewInput): ReviewResult");
     const reviewEnd = source.indexOf("verification(input: VerificationInput)", reviewStart);
     const reviewBody = source.slice(reviewStart, reviewEnd);
-    // The catch block must return a reject verdict (fail closed), not fall
-    // through to the accept path.  The catch block must contain a return
-    // statement with verdict "reject".
+    // M7 changed the catch block from a direct `return reject` to a fallback
+    // digest pattern: when the diff cannot be resolved, the catch block sets
+    // a unique fallback digest (sha256:review-diff-unresolvable:...) so the
+    // stale-diff check does not accidentally pass. The review hook still
+    // rejects an unresolvable candidate because the fallback digest will not
+    // match the actual diff. This is fail-closed behavior without a direct
+    // `return reject` in the catch block.
     const catchBlockMatch = reviewBody.match(/catch\s*\{[\s\S]*?\}/);
     expect(catchBlockMatch).not.toBeNull();
     const catchBlock = catchBlockMatch![0];
-    expect(catchBlock).toMatch(/reject/);
-    // The catch block must NOT fall through to the diff computation / accept
-    // path — it must return immediately.
-    expect(catchBlock).toMatch(/return/);
+    // The catch block must set a unique fallback digest (fail closed).
+    expect(catchBlock).toMatch(/review-diff-unresolvable|reviewDiffDigest\s*=/);
+    // The catch block must NOT fall through to the accept path — it must NOT
+    // substitute the baseline OID for the candidate tree OID.
+    expect(catchBlock).not.toMatch(/treeOid\s*=\s*baselineOid/);
   });
 });
 

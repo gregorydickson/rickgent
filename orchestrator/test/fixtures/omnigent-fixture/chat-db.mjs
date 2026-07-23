@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   agent_id TEXT,
   model_override TEXT,
   harness_override TEXT,
+  provider_vendor TEXT,
   session_usage TEXT,
   PRIMARY KEY (workspace_id, id)
 );
@@ -55,9 +56,10 @@ export function insertConversation(dataDir, convId, itemCount, createdAt, opts =
     const harnessOverride = opts.harnessOverride ?? null;
     const modelOverride = opts.modelOverride ?? null;
     const sessionUsage = opts.sessionUsage ?? null;
+    const providerVendor = opts.providerVendor ?? null;
     db.prepare(
-      "INSERT OR IGNORE INTO conversations (workspace_id, id, created_at, root_conversation_id, parent_conversation_id, agent_id, model_override, harness_override, session_usage) VALUES (0, ?, ?, ?, NULL, NULL, ?, ?, ?)",
-    ).run(convId, createdAt, convId, modelOverride, harnessOverride, sessionUsage);
+      "INSERT OR IGNORE INTO conversations (workspace_id, id, created_at, root_conversation_id, parent_conversation_id, agent_id, model_override, harness_override, provider_vendor, session_usage) VALUES (0, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)",
+    ).run(convId, createdAt, convId, modelOverride, harnessOverride, providerVendor, sessionUsage);
     for (let i = 0; i < itemCount; i++) {
       db.prepare(
         "INSERT OR IGNORE INTO conversation_items (workspace_id, conversation_id, id, position) VALUES (0, ?, ?, ?)",

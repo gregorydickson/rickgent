@@ -992,6 +992,68 @@ export function completeFixture(
     });
   }
 
+  // t31/t32: Identity binding evidence (REQUIRED Oracle input since M8
+  // oracle identity binding, commit 72db47f). The Oracle CONSUMES identity:
+  // it rejects with missing_input_class:identity_binding if this evidence is
+  // absent. The store validates that the referenced identity receipt evidence
+  // IDs resolve to actual identity receipt rows (schema_version =
+  // rickgent-identity-receipt/v1, producer_service = IdentityCapture) with
+  // correct roles (requested/invoked/observed) and a coherent set (same
+  // dispatch_id, matching harness/model).
+  const dispatchId = `dispatch-${attempt.attemptId}`;
+  const identityHarness = "codex";
+  const identityModel = "codex-cli";
+  const identityVendor = "codex";
+  const requestedEvidenceId = `evidence-identity-requested-${attempt.attemptId}`;
+  const invokedEvidenceId = `evidence-identity-invoked-${attempt.attemptId}`;
+  const observedEvidenceId = `evidence-identity-observed-${attempt.attemptId}`;
+  for (const [producer, evidenceId, provenance] of [
+    ["requested", requestedEvidenceId, "immutable-attempt-context"],
+    ["invoked", invokedEvidenceId, "actual-array-argv-plus-materialized-bundle-digest"],
+    ["observed", observedEvidenceId, "isolated-omnigent-chat-db-root-conversation"],
+  ] as const) {
+    const receiptPayload: Record<string, unknown> = {
+      schema_version: "rickgent-identity-receipt/v1",
+      producer,
+      dispatch_id: dispatchId,
+      role: "worker",
+      canonical_harness: identityHarness,
+      canonical_model: identityModel,
+      canonical_vendor: identityVendor,
+      provenance,
+    };
+    if (producer === "observed") {
+      receiptPayload.conversation_id = `conv-${attempt.attemptId}`;
+      receiptPayload.root_conversation_id = `conv-${attempt.attemptId}`;
+    }
+    insertRow(store.location.databasePath, "evidence", evidenceInput(
+      fixtureBase,
+      implement,
+      evidenceId,
+      "IdentityCapture",
+      "rickgent-identity-receipt/v1",
+      receiptPayload,
+      `identity-receipt:${producer}`,
+    ));
+  }
+  const identityBindingEvidenceId = `evidence-identity-oracle-binding-${attempt.attemptId}`;
+  const identityBindingPayload = {
+    oracle_input_class: "identity_bound_completion",
+    requested_evidence_id: requestedEvidenceId,
+    invoked_evidence_id: invokedEvidenceId,
+    observed_evidence_id: observedEvidenceId,
+    attempt_id: attempt.attemptId,
+  } as const;
+  insertRow(store.location.databasePath, "evidence", evidenceInput(
+    fixtureBase,
+    implement,
+    identityBindingEvidenceId,
+    "IdentityCapture",
+    "rickgent.oracle-identity-binding.v1",
+    identityBindingPayload,
+    `oracle-identity-binding:${attempt.attemptId}`,
+  ));
+
   const fixture: OracleFixture = {
     ...fixtureBase,
     candidateOid,

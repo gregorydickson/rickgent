@@ -14,6 +14,7 @@
 //   FIXTURE_STDOUT          transcript/stdout line to print (may be a success token)
 //   FIXTURE_EXIT_CODE       process exit code (default 0)
 //   FIXTURE_WRITE_DB        "1" → create a NEW conversation row (a DB session)
+//   FIXTURE_OBSERVED_VENDOR independently reported live-profile vendor
 //   FIXTURE_CONV_ID         explicit conversation id (default: unique)
 //   FIXTURE_TRANSCRIPT_ITEMS number of conversation_items to write (default 1)
 //   FIXTURE_GIT_FILE        repo-relative file to write (empty → no git mutation)
@@ -238,6 +239,7 @@ function promptMode() {
     insertConversation(dataDir, convId, 2, Date.now(), {
       harnessOverride,
       modelOverride,
+      providerVendor: env("FIXTURE_OBSERVED_VENDOR") || null,
       sessionUsage,
     });
   }
@@ -277,6 +279,7 @@ function main() {
       insertConversation(dataDir, convId, Number.isNaN(items) ? 1 : items, Date.now(), {
         harnessOverride,
         modelOverride,
+        providerVendor: env("FIXTURE_OBSERVED_VENDOR") || null,
         sessionUsage,
       });
     }

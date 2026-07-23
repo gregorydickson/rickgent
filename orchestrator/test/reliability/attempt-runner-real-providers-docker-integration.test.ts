@@ -342,7 +342,7 @@ describe("defect #3: production-path integration test with real Docker", () => {
       // RICKGENT_AGENT_DIR inside the container points to the agent bundle.
       containerAgentDir: realAgentDir,
       // FIXTURE_MODE=prompt so the fixture writes the file from the prompt.
-      extraEnv: { FIXTURE_MODE: "prompt" },
+      extraEnv: { FIXTURE_MODE: "prompt", FIXTURE_OBSERVED_VENDOR: "fixture" },
     });
 
     const result = await runBuildViaRunnerForTesting(
@@ -353,6 +353,13 @@ describe("defect #3: production-path integration test with real Docker", () => {
         rickgentDir,
         agentDir,
         dataDir,
+        roster: [{
+          harness: "fixture",
+          model: "fixture",
+          vendor: "fixture",
+          tier: "capable",
+          pricing: { cost_per_dispatch: 0 },
+        }],
         env: {
           ...process.env,
           RICKGENT_DIR: rickgentDir,

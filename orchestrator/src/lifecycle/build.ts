@@ -1228,6 +1228,9 @@ async function executeBuildViaRunner(
   // succeeded.  Delivery failures are recorded as issues but do not prevent
   // the build from returning its result.
   if (
+    (opts.deliveryConfigured === true ||
+      opts.featureBranch !== undefined ||
+      opts.autonomousPrFlow === true) &&
     (opts.autonomousPrFlow !== false) &&
     base.ticketsDone > 0 &&
     base.ticketsFailed === 0

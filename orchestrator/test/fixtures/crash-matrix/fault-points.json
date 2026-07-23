@@ -600,6 +600,17 @@
       "semantic_proof": "orchestrator/test/reliability/recovery-parity.test.ts",
       "semantic_proof_id": "recovers the orphaned planned attempt as a typed no-side-effect cleanup image",
       "crash_parity_ticket": "t29"
+    },
+    {
+      "id": "authority_salvage_record",
+      "boundary": "authority_salvage_rows",
+      "contract_transaction": null,
+      "implementation_operation": "persist_authority_salvage_record",
+      "proof_level": "semantic_suite",
+      "semantic_proof": "orchestrator/test/reliability/disposition-store-bridge.test.ts",
+      "semantic_proof_id": "replays identical inputs to the identical immutable postimage",
+      "deferred_ticket": "t21",
+      "crash_parity_ticket": "t29"
     }
   ]
 }

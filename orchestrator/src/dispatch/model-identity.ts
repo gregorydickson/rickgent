@@ -78,6 +78,7 @@ interface ConversationIdentityRow {
   root_conversation_id: string | null;
   model_override: string | null;
   harness_override: string | null;
+  provider_vendor: string | null;
   session_usage: string | null;
 }
 
@@ -96,8 +97,11 @@ function readConversationsWithIdentity(dataDir: string): ConversationIdentityRow
     if (!required.every((c) => columnNames.has(c))) {
       return [];
     }
+    const vendorProjection = columnNames.has("provider_vendor")
+      ? "provider_vendor"
+      : "NULL AS provider_vendor";
     const rows = db.prepare(
-      "SELECT id, created_at, parent_conversation_id, root_conversation_id, model_override, harness_override, session_usage FROM conversations",
+      `SELECT id, created_at, parent_conversation_id, root_conversation_id, model_override, harness_override, ${vendorProjection}, session_usage FROM conversations`,
     ).all() as Array<{
       id: unknown;
       created_at: unknown;
@@ -105,6 +109,7 @@ function readConversationsWithIdentity(dataDir: string): ConversationIdentityRow
       root_conversation_id: unknown;
       model_override: unknown;
       harness_override: unknown;
+      provider_vendor: unknown;
       session_usage: unknown;
     }>;
     return rows.map((r) => ({
@@ -114,6 +119,7 @@ function readConversationsWithIdentity(dataDir: string): ConversationIdentityRow
       root_conversation_id: r.root_conversation_id === null ? null : String(r.root_conversation_id),
       model_override: r.model_override === null ? null : String(r.model_override),
       harness_override: r.harness_override === null ? null : String(r.harness_override),
+      provider_vendor: r.provider_vendor === null ? null : String(r.provider_vendor),
       session_usage: r.session_usage === null ? null : String(r.session_usage),
     }));
   } catch {
@@ -296,7 +302,11 @@ export function captureObservedIdentity(
     role: role,
     canonical_harness: observedHarness,
     canonical_model: observedModel,
-    canonical_vendor: null, // provider is unavailable generically per t00 contract
+    // Current Omnigent schemas without an independently reported vendor
+    // project NULL here. A live-profile implementation may expose the
+    // optional provider_vendor observation; requested/router labels are never
+    // substituted.
+    canonical_vendor: root.provider_vendor,
     bundle_digest: null,
     config_digest: null,
     context_digest: null,

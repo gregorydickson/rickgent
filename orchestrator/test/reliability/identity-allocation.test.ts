@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { getCapability, publicSurfaceRegistry } from "../../src/capabilities/registry.js";
 import {
   canonicalJson,
@@ -465,11 +465,12 @@ describe("immutable run and contract allocation", () => {
     const repoB = makeRepo("repo-b");
     const contract = normalizeContract(repoA);
     const locationA = resolveStateLocation(repoA);
-    const previousCwd = process.cwd();
     const previousLegacyRoot = process.env.RICKGENT_DIR;
     let store: StateStore | undefined;
+    // process.chdir() is not supported in vitest worker threads. Mock
+    // process.cwd() to return repoB instead of actually changing the cwd.
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(repoB);
     try {
-      process.chdir(repoB);
       process.env.RICKGENT_DIR = join(repoB, "hostile-legacy-state");
       store = openStateStore({ repoPath: repoA });
       const allocated = store.allocateFreshRun(freshRunInput(locationA, contract));
@@ -479,7 +480,7 @@ describe("immutable run and contract allocation", () => {
       expect(existsSync(process.env.RICKGENT_DIR)).toBe(false);
     } finally {
       store?.close();
-      process.chdir(previousCwd);
+      cwdSpy.mockRestore();
       if (previousLegacyRoot === undefined) delete process.env.RICKGENT_DIR;
       else process.env.RICKGENT_DIR = previousLegacyRoot;
     }

@@ -81,6 +81,8 @@ export interface ContainmentLineage {
   readonly executionContextDigest: Sha256Digest;
   /** t22D-fix-round-3: Worktree path to bind-mount into the container. */
   readonly worktreePath?: string;
+  /** Authority-selected Omnigent data root mounted for observed identity. */
+  readonly omnigentDataRoot?: string;
 }
 
 export interface ContainmentBoundaryId {
@@ -326,7 +328,7 @@ export interface ContainmentBackend {
   createBoundary(lineage: ContainmentLineage): Promise<ContainmentBoundary>;
   observeMembership(boundary: ContainmentBoundary): ContainmentMembership;
   /** Launch a target command into the boundary; resolves on exec, not on exit. */
-  releaseTarget(boundary: ContainmentBoundary, argv: readonly string[], opts?: { stdoutPath?: string | undefined; stderrPath?: string | undefined; timeoutMs?: number | undefined; workdir?: string | undefined; outputLimitBytes?: number | undefined; tailLimitBytes?: number | undefined }): Promise<ContainmentLaunch>;
+  releaseTarget(boundary: ContainmentBoundary, argv: readonly string[], opts?: { stdoutPath?: string | undefined; stderrPath?: string | undefined; timeoutMs?: number | undefined; workdir?: string | undefined; outputLimitBytes?: number | undefined; tailLimitBytes?: number | undefined; omnigentDataDir?: string | undefined }): Promise<ContainmentLaunch>;
   kill(boundary: ContainmentBoundary): Promise<void>;
   awaitEmpty(boundary: ContainmentBoundary, deadlineMs: number): Promise<ContainmentEmptinessObservation>;
   mintDeathReceipt(boundary: ContainmentBoundary, emptiness: ContainmentEmptinessObservation): ContainmentDeathReceipt;
@@ -1227,6 +1229,13 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
     if (lineage.worktreePath && lineage.worktreePath.startsWith("/")) {
       createArgv.push("-v", `${lineage.worktreePath}:${lineage.worktreePath}`);
     }
+    if (
+      lineage.omnigentDataRoot &&
+      lineage.omnigentDataRoot.startsWith("/") &&
+      !this.hostMounts.includes(lineage.omnigentDataRoot)
+    ) {
+      createArgv.push("-v", `${lineage.omnigentDataRoot}:${lineage.omnigentDataRoot}`);
+    }
     createArgv.push(this.image, "sleep", "3600");
     const createResult = dockerExecSilent(createArgv, { timeoutMs: this.probeTimeoutMs });
     if (createResult.status !== 0) {
@@ -1318,7 +1327,7 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
   async releaseTarget(
     boundary: ContainmentBoundary,
     argv: readonly string[],
-    opts: { stdoutPath?: string | undefined; stderrPath?: string | undefined; timeoutMs?: number | undefined; workdir?: string | undefined; outputLimitBytes?: number | undefined; tailLimitBytes?: number | undefined } = {},
+    opts: { stdoutPath?: string | undefined; stderrPath?: string | undefined; timeoutMs?: number | undefined; workdir?: string | undefined; outputLimitBytes?: number | undefined; tailLimitBytes?: number | undefined; omnigentDataDir?: string | undefined } = {},
   ): Promise<ContainmentLaunch> {
     if (!isAuthorizedContainmentBoundary(boundary)) {
       throw new ContainmentUnavailableError(this.backendId, "releaseTarget received a forged boundary");
@@ -1365,6 +1374,9 @@ export class DockerCgroupV2ContainmentBackend implements ContainmentBackend {
     }
     if (this.containerAgentDir !== null) {
       execArgv.push("-e", `RICKGENT_AGENT_DIR=${this.containerAgentDir}`);
+    }
+    if (opts.omnigentDataDir !== undefined) {
+      execArgv.push("-e", `OMNIGENT_DATA_DIR=${opts.omnigentDataDir}`);
     }
     // t22D-fix-round-5 (defect #3): Set extra env vars inside the container
     // (e.g. FIXTURE_MODE=prompt for the integration test's fixture omnigent).
@@ -1679,7 +1691,11 @@ export class LinuxCgroupV2ContainmentBackend implements ContainmentBackend {
     });
   }
 
-  async releaseTarget(boundary: ContainmentBoundary, argv: readonly string[]): Promise<ContainmentLaunch> {
+  async releaseTarget(
+    boundary: ContainmentBoundary,
+    argv: readonly string[],
+    opts: { readonly timeoutMs?: number; readonly workdir?: string; readonly omnigentDataDir?: string } = {},
+  ): Promise<ContainmentLaunch> {
     if (!isAuthorizedContainmentBoundary(boundary)) {
       throw new ContainmentUnavailableError(this.backendId, "releaseTarget received a forged boundary");
     }
@@ -1695,7 +1711,12 @@ export class LinuxCgroupV2ContainmentBackend implements ContainmentBackend {
     let stderrContent = "";
     try {
       const out = execFileSync("sh", ["-c", `echo $$ > ${boundary.runtimeHandle}/cgroup.procs 2>/dev/null; exec ${argv.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(" ")}`], {
-        encoding: "utf8", timeout: 30_000,
+        encoding: "utf8",
+        timeout: opts.timeoutMs ?? 30_000,
+        cwd: opts.workdir,
+        env: opts.omnigentDataDir === undefined
+          ? process.env
+          : { ...process.env, OMNIGENT_DATA_DIR: opts.omnigentDataDir },
       });
       stdoutContent = out;
       stdoutSink.update(out);
@@ -1987,7 +2008,7 @@ export class FixtureContainmentBackend implements ContainmentBackend {
   async releaseTarget(
     boundary: ContainmentBoundary,
     argv: readonly string[],
-    opts: { readonly stdoutPath?: string; readonly stderrPath?: string; readonly timeoutMs?: number; readonly workdir?: string; readonly outputLimitBytes?: number; readonly tailLimitBytes?: number } = {},
+    opts: { readonly stdoutPath?: string; readonly stderrPath?: string; readonly timeoutMs?: number; readonly workdir?: string; readonly outputLimitBytes?: number; readonly tailLimitBytes?: number; readonly omnigentDataDir?: string } = {},
   ): Promise<ContainmentLaunch> {
     if (!isAuthorizedContainmentBoundary(boundary)) {
       throw new ContainmentUnavailableError(this.backendId, "releaseTarget received a forged boundary");
@@ -2011,6 +2032,9 @@ export class FixtureContainmentBackend implements ContainmentBackend {
     const child = spawn(argv[0]!, argv.slice(1), {
       detached: true,
       cwd: opts.workdir,
+      env: opts.omnigentDataDir === undefined
+        ? process.env
+        : { ...process.env, OMNIGENT_DATA_DIR: opts.omnigentDataDir },
       stdio: ["ignore", stdoutFd ?? "ignore", stderrFd ?? "ignore"],
     });
     if (stdoutFd !== null) closeSync(stdoutFd);
@@ -2251,6 +2275,7 @@ export function containmentLineageFromAttempt(input: {
   contextId: string;
   executionContextDigest: Sha256Digest;
   worktreePath?: string;
+  omnigentDataRoot?: string;
 }): ContainmentLineage {
   return Object.freeze({ ...input });
 }

@@ -293,8 +293,17 @@ describe("fail-closed run aggregation", () => {
     expect(existsSync(pushMarker)).toBe(false);
     expect(existsSync(ghMarker)).toBe(false);
 
+    // M8 (t34) legitimately wired executeDeliveryFlow into the production
+    // runner path (build.ts imports pr-flow and calls executeDeliveryFlow
+    // after a verified completion). The source-level check is updated to
+    // verify the legacy/fixture path (executeBuildLegacy) does NOT invoke
+    // delivery — only the runner path may, and only after a verified oracle
+    // acceptance. The behavioral checks above (pushMarker/ghMarker not
+    // created) prove delivery is unreachable without a verified completion.
     const source = readFileSync(BUILD_SOURCE, "utf-8");
-    expect(source).not.toMatch(/pr-flow|createPullRequest|recordPr|git push|gh pr/);
+    const legacyStart = source.indexOf("async function executeBuildLegacy(");
+    const legacyBody = legacyStart >= 0 ? source.slice(legacyStart) : source;
+    expect(legacyBody).not.toMatch(/executeDeliveryFlow|createPullRequest|recordPr|git push|gh pr/);
   });
 
   it("activated capability proceeds past the gate and fails closed at evidence without legacy side effects", () => {

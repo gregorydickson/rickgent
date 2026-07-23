@@ -977,6 +977,65 @@ function completeFixture(
     });
   }
 
+  // t31/t32: Identity binding evidence (REQUIRED Oracle input since M8
+  // oracle identity binding, commit 72db47f). The Oracle CONSUMES identity:
+  // it rejects with missing_input_class:identity_binding if this evidence is
+  // absent. The store validates that the referenced identity receipt evidence
+  // IDs resolve to actual identity receipt rows with correct roles and a
+  // coherent set (same dispatch_id, matching harness/model).
+  const identityDispatchId = `dispatch-${attempt.attemptId}`;
+  const identityHarness = "codex";
+  const identityModel = "codex-cli";
+  const identityVendor = "codex";
+  const requestedEvidenceId = `evidence-identity-requested-${attempt.attemptId}`;
+  const invokedEvidenceId = `evidence-identity-invoked-${attempt.attemptId}`;
+  const observedEvidenceId = `evidence-identity-observed-${attempt.attemptId}`;
+  for (const [producer, evidenceId, provenance] of [
+    ["requested", requestedEvidenceId, "immutable-attempt-context"],
+    ["invoked", invokedEvidenceId, "actual-array-argv-plus-materialized-bundle-digest"],
+    ["observed", observedEvidenceId, "isolated-omnigent-chat-db-root-conversation"],
+  ] as const) {
+    const receiptPayload: Record<string, unknown> = {
+      schema_version: "rickgent-identity-receipt/v1",
+      producer,
+      dispatch_id: identityDispatchId,
+      role: "worker",
+      canonical_harness: identityHarness,
+      canonical_model: identityModel,
+      canonical_vendor: identityVendor,
+      provenance,
+    };
+    if (producer === "observed") {
+      receiptPayload.conversation_id = `conv-${attempt.attemptId}`;
+      receiptPayload.root_conversation_id = `conv-${attempt.attemptId}`;
+    }
+    insertRow(store.location.databasePath, "evidence", evidenceInput(
+      fixtureBase,
+      implement,
+      evidenceId,
+      "IdentityCapture",
+      "rickgent-identity-receipt/v1",
+      receiptPayload,
+      `identity-receipt:${producer}`,
+    ));
+  }
+  const identityBindingEvidenceId = `evidence-identity-oracle-binding-${attempt.attemptId}`;
+  insertRow(store.location.databasePath, "evidence", evidenceInput(
+    fixtureBase,
+    implement,
+    identityBindingEvidenceId,
+    "IdentityCapture",
+    "rickgent.oracle-identity-binding.v1",
+    {
+      oracle_input_class: "identity_bound_completion",
+      requested_evidence_id: requestedEvidenceId,
+      invoked_evidence_id: invokedEvidenceId,
+      observed_evidence_id: observedEvidenceId,
+      attempt_id: attempt.attemptId,
+    },
+    `oracle-identity-binding:${attempt.attemptId}`,
+  ));
+
   const fixture: OracleFixture = {
     ...fixtureBase,
     candidateOid,
@@ -1082,20 +1141,12 @@ describe("Store-owned attempt oracle integration", () => {
     );
     expect(references.map((row) => row.ordinal)).toEqual(references.map((_, ordinal) => ordinal));
 
-    const kindRank = new Map([
-      "run_manifest",
-      "ticket_contract",
-      "execution_context",
-      "gate_result",
-      "review_record",
-      "commit_attribution",
-      "evidence",
-      "attempt_resource_snapshot",
-      "lease_snapshot",
-      "dependency_edge",
-    ].map((kind, index) => [kind, index]));
-    const ranks = references.map((row) => kindRank.get(String(row.reference_kind)) ?? -1);
-    expect(ranks).toEqual([...ranks].sort((left, right) => left - right));
+    // M8 oracle identity binding (commit 72db47f) adds identity_binding
+    // evidence as a required Oracle input. The store resolves it AFTER
+    // lease_snapshot (it is the last evidence reference in the projection).
+    // The kindRank sorting check is removed because "evidence" now appears
+    // in non-contiguous positions (target-proof-set and cleanup-eligibility
+    // before attempt_resource_snapshot, identity_binding after lease_snapshot).
     expect(references.map((row) => row.reference_kind)).toEqual([
       "run_manifest",
       "ticket_contract",
@@ -1109,6 +1160,7 @@ describe("Store-owned attempt oracle integration", () => {
       "evidence",
       ...T18_RESOURCE_KINDS.map(() => "attempt_resource_snapshot"),
       "lease_snapshot",
+      "evidence",
     ]);
     expect(references.map((row) => row.context_id).filter((value) => value !== null)).toEqual([
       fixture.implement.persisted.contextId,
@@ -1125,6 +1177,7 @@ describe("Store-owned attempt oracle integration", () => {
       .toEqual([
         `evidence-target-proof-set-${fixture.attempt.attemptId}`,
         `evidence-cleanup-eligibility-${fixture.attempt.attemptId}`,
+        `evidence-identity-oracle-binding-${fixture.attempt.attemptId}`,
       ]);
     const resourceSnapshotReferences = references.filter((row) => row.reference_kind === "attempt_resource_snapshot");
     expect(resourceSnapshotReferences).toHaveLength(T18_RESOURCE_KINDS.length);
@@ -1248,7 +1301,11 @@ describe("Store-owned attempt oracle integration", () => {
   it("exposes one Store-owned oracle entrypoint and no raw-row or caller-plan writer", () => {
     const fixture = completeFixture();
     const prototype = Object.getPrototypeOf(fixture.store) as object;
-    const oracleMethods = Object.getOwnPropertyNames(prototype).filter((name) => /oracle/i.test(name));
+    // M8 scrutiny round 4 added resolveAttemptOracleProjectionForTesting as
+    // a read-only testing helper. It is NOT a second completion predicate.
+    const oracleMethods = Object.getOwnPropertyNames(prototype).filter(
+      (name) => /oracle/i.test(name) && !name.endsWith("ForTesting"),
+    );
     expect(oracleMethods).toEqual(["evaluateAndPersistAttemptOracle"]);
     expect((fixture.store as unknown as Record<string, unknown>).persistOracleDecision).toBeUndefined();
     expect(oracleMethods.some((name) => /authorized|plan|row/i.test(name))).toBe(false);

@@ -17,7 +17,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   LATEST_STATE_SCHEMA_OBJECTS,
   LATEST_STATE_SQLITE_SCHEMA_CHECKSUM,
@@ -692,12 +692,13 @@ describe("durable state-store bootstrap and preservation", () => {
   it("selects repository A even when cwd and legacy environment point at repository B", () => {
     const repoA = makeRepo("repo-a");
     const repoB = makeRepo("repo-b");
-    const previousCwd = process.cwd();
     const previousLegacyRoot = process.env.RICKGENT_DIR;
     const hostileRoot = join(repoB, "hostile-state-root");
     let store: StateStore | undefined;
+    // process.chdir() is not supported in vitest worker threads. Mock
+    // process.cwd() to return repoB instead of actually changing the cwd.
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(repoB);
     try {
-      process.chdir(repoB);
       process.env.RICKGENT_DIR = hostileRoot;
       store = openStateStore({ repoPath: repoA });
       expect(store.location.repoRealpath).toBe(repoA);
@@ -706,7 +707,7 @@ describe("durable state-store bootstrap and preservation", () => {
       expect(existsSync(hostileRoot)).toBe(false);
     } finally {
       store?.close();
-      process.chdir(previousCwd);
+      cwdSpy.mockRestore();
       if (previousLegacyRoot === undefined) delete process.env.RICKGENT_DIR;
       else process.env.RICKGENT_DIR = previousLegacyRoot;
     }

@@ -60,6 +60,7 @@ import {
 } from "../../src/state/store.js";
 import { provisionAttemptWorkspace } from "../../src/git/attempt-workspace.js";
 import { buildAttemptRunnerProviders } from "../../src/lifecycle/attempt-runner-providers.js";
+import { writeObservedIdentityFixture } from "../helpers/observed-identity-fixture.js";
 
 // ---------------------------------------------------------------------------
 // Shared test infrastructure
@@ -236,6 +237,14 @@ function makeRealAuthorityRunner(
 
     // Override ONLY the dispatch provider (fixture that completes quickly).
     async dispatch(input: DispatchInput): Promise<SupervisedDispatchResult> {
+      if (input.omnigentDataDir !== undefined) {
+        writeObservedIdentityFixture(input.omnigentDataDir, {
+          harness: "codex",
+          model: "codex-cli",
+          vendor: "fixture",
+          conversationId: `impl-${input.ownership.attemptId}`,
+        });
+      }
       const launch = await containment.releaseTarget(
         input.boundary,
         input.argv,
@@ -368,11 +377,12 @@ function makeRunnerRequest(fixture: RealAuthorityFixture): AttemptRunnerRequest 
       phaseOrdinal: 1,
       role: "worker",
     },
-    supervisedArgv: ["/usr/bin/true"],
+    supervisedArgv: ["/usr/bin/true", "--harness", "codex", "--model", "codex-cli"],
     stdoutPath: join(fixture.store.location.resourceDirectory, "stdout"),
     stderrPath: join(fixture.store.location.resourceDirectory, "stderr"),
     timeoutMs: 30_000,
     cancellationRequested: false,
+    omnigentDataDir: join(fixture.store.location.resourceDirectory, "omnigent-data"),
   };
 }
 

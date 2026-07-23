@@ -828,6 +828,21 @@ function makeRunner(
       }
       return { oracleDecisionId, result: oracleResult };
     },
+    // Provide a fixture remediation provider so the review-reject state
+    // machine can exercise the remediation loop without hitting
+    // RICKGENT_ATTEMPT_REMEDIATION_UNCONFIGURED. The review provider always
+    // returns the configured verdict, so even after remediation the re-review
+    // rejects again, exhausting the remediation budget and failing closed
+    // with "ordinary:review_rejected".
+    remediation(input) {
+      const attemptId = input.ownership.attemptId;
+      return {
+        remediationRecordId: `remediation-${attemptId}-${input.cycle}`,
+        resultTreeOid: input.attribution.candidateOid,
+        resultDiffDigest: digest(`remediation-diff:${attemptId}:${input.cycle}`),
+        remediationEvidenceId: `evidence-remediation-${attemptId}-${input.cycle}`,
+      };
+    },
   });
 }
 

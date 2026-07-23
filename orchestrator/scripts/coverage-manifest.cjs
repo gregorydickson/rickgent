@@ -357,8 +357,12 @@ const PY_INCIDENT_CLASSES = [
     sourceFile: "rickgent_policies/review.py",
     guardMarker: 'protected implementer/reviewer identity pair requires',
     mutate: (s) => s.replace(
-      '"protected implementer/reviewer identity pair requires "',
-      '"mutation: same-vendor review allowed" # mutation: same-vendor review allowed'
+      `return _deny(
+            "protected implementer/reviewer identity pair requires "
+            "observed-identity distinction proof from the t32 authority; "
+            "label-only claims are denied"
+        )`,
+      "return None  # mutation: same-vendor review allowed"
     ),
   },
   {

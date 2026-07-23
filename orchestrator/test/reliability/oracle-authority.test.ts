@@ -190,6 +190,19 @@ function projection(options: {
     }),
     reference("attempt_resource_snapshot"),
     reference("lease_snapshot"),
+    // t31/t32: Identity binding evidence is a REQUIRED Oracle input since M8
+    // oracle identity binding (commit 72db47f). The Oracle CONSUMES identity:
+    // it rejects with missing_input_class:identity_binding if absent.
+    reference("evidence", {
+      referenceId: "identity-binding-1",
+      sealedContent: {
+        oracle_input_class: "identity_bound_completion",
+        requested_evidence_id: "evidence-identity-requested",
+        invoked_evidence_id: "evidence-identity-invoked",
+        observed_evidence_id: "evidence-identity-observed",
+        attempt_id: scope.attemptId,
+      },
+    }),
   ];
   if (options.includeGate !== false) {
     const gate = {

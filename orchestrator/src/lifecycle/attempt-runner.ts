@@ -359,6 +359,8 @@ export interface DispatchInput {
   readonly stdoutPath: string;
   readonly stderrPath: string;
   readonly cancellationRequested: boolean;
+  /** Per-dispatch external observation directory selected by the runner. */
+  readonly omnigentDataDir?: string | undefined;
   /**
    * Scrutiny round 8: per-dispatch output storage limit (bytes).  The
    * containment backend's streaming BoundedOutputSink counts ALL bytes
@@ -1000,6 +1002,9 @@ export class AttemptRunner {
     // 3. Containment: create the authority-owned boundary, observe membership,
     //    and release the target.  Unavailable containment fails closed to the
     //    infrastructure-failure state machine (target-never-released).
+    if (request.omnigentDataDir !== undefined) {
+      mkdirSync(request.omnigentDataDir, { recursive: true, mode: 0o700 });
+    }
     const lineage: ContainmentLineage = containmentLineageFromAttempt({
       runId: request.run.runId,
       ticketId: request.attempt.ticketId,
@@ -1011,6 +1016,9 @@ export class AttemptRunner {
       contextId: context.persisted.contextId,
       executionContextDigest: context.persisted.contextDigest as `sha256:${string}`,
       worktreePath: acquired.plan.worktreePath,
+      ...(request.omnigentDataDir === undefined
+        ? {}
+        : { omnigentDataRoot: request.omnigentDataDir }),
     });
     noteKey("containment");
     let boundary: ContainmentBoundary | null = null;
@@ -1104,6 +1112,7 @@ export class AttemptRunner {
       request.omnigentDataDir !== undefined
     ) {
       const preDispatchDataDir = isolatedDataDir(request.omnigentDataDir, productionPhase.phaseExecutionId);
+      mkdirSync(preDispatchDataDir, { recursive: true, mode: 0o700 });
       preDispatchBaselineIds = captureConversationIds(preDispatchDataDir);
     }
     // Scrutiny round 5: when resuming past dispatch, skip the dispatch
@@ -1128,6 +1137,9 @@ export class AttemptRunner {
         cancellationRequested: request.cancellationRequested,
         outputLimitBytes: request.outputLimitBytes,
         tailLimitBytes: request.tailLimitBytes,
+        omnigentDataDir: request.omnigentDataDir === undefined
+          ? undefined
+          : isolatedDataDir(request.omnigentDataDir, productionPhase.phaseExecutionId),
       };
       supervised = await (this.#providers.dispatch ?? this.#defaultDispatch.bind(this))(dispatchInput);
     }
@@ -2751,6 +2763,7 @@ export class AttemptRunner {
           workdir: input.ownership.plan.worktreePath,
           outputLimitBytes: input.outputLimitBytes,
           tailLimitBytes: input.tailLimitBytes,
+          omnigentDataDir: input.omnigentDataDir,
         },
       );
       // Observe the containment death receipt after the launch completes.

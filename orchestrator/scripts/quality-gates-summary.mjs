@@ -20,14 +20,16 @@ import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const ORCH_DIR = __dirname;
+const ORCH_DIR = resolve(__dirname, "..");
 const REPO_ROOT = resolve(ORCH_DIR, "..");
 const POLICIES_DIR = join(REPO_ROOT, "rickgent-policies");
 const ARTIFACTS_DIR = join(REPO_ROOT, "artifacts", "reliability");
 
+// CI-bound scripts must not hardcode machine-specific PATH prefixes (AGENTS.md
+// convention 20). Use process.env.PATH as-is so the script works in both local
+// and CI environments.
 const PATH_ENV = () => ({
   ...process.env,
-  PATH: `/Users/gregorydickson/.nvm/versions/node/v24.13.1/bin:/Users/gregorydickson/.local/share/pnpm:${process.env.PATH ?? ""}`,
 });
 
 /**
@@ -116,12 +118,19 @@ export function runAllGates(outputPath) {
   gates.push(build);
   if (build.status === "infrastructure_error") { infrastructureErrors.push({ gate: "build", error: build.detail }); }
 
-  // 3. TypeScript test with coverage (scoped to reliability suites for CI speed)
+  // 3. Full TypeScript regression with coverage. The global thresholds cover
+  // the production tree, so a tiny meta-test subset cannot honestly satisfy
+  // them.
   const tsTest = runGate(
     "ts_test_coverage",
     "npx",
-    ["vitest", "run", "--pool=threads", "--poolOptions.threads.maxThreads=4", "--no-file-parallelism", "--coverage"],
-    { cwd: ORCH_DIR, timeout: 600_000 },
+    [
+      "vitest",
+      "run",
+      "--maxWorkers=4",
+      "--coverage",
+    ],
+    { cwd: ORCH_DIR, timeout: 900_000 },
   );
   gates.push(tsTest);
   if (tsTest.status === "infrastructure_error") { infrastructureErrors.push({ gate: "ts_test_coverage", error: tsTest.detail }); }
@@ -141,7 +150,15 @@ export function runAllGates(outputPath) {
     "py_test_coverage",
     "python3",
     ["-m", "pytest", "test/", "-p", "no:cacheprovider", "-q", "--cov=rickgent_policies", "--cov-fail-under=90"],
-    { cwd: POLICIES_DIR, timeout: 120_000 },
+    {
+      cwd: POLICIES_DIR,
+      timeout: 120_000,
+      env: {
+        ...PATH_ENV(),
+        RICKGENT_CLI_REALPATH: join(ORCH_DIR, "dist", "cli.js"),
+        RICKGENT_NODE_REALPATH: process.execPath,
+      },
+    },
   );
   gates.push(pyTest);
   if (pyTest.status === "infrastructure_error") { infrastructureErrors.push({ gate: "py_test_coverage", error: pyTest.detail }); }

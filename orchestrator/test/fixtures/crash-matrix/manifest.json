@@ -86,7 +86,8 @@
     "authority_evidence",
     "authority_ownership_snapshot",
     "authority_process_chain",
-    "orphaned_planned_cleanup"
+    "orphaned_planned_cleanup",
+    "authority_salvage_record"
   ],
   "direct_crash_points": [
     "immutable_evidence_insert",

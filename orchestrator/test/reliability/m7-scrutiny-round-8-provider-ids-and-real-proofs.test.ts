@@ -69,6 +69,7 @@ import { runBuildViaRunnerForTesting } from "../../src/lifecycle/build.js";
 import { parseExecutablePrdFile } from "../../src/lifecycle/prd-parse.js";
 import { FIXTURE_RUNTIME_AUTHORITY } from "../../src/testing/fixture-authority.js";
 import { buildAttemptRunnerProviders } from "../../src/lifecycle/attempt-runner-providers.js";
+import { writeObservedIdentityFixture } from "../helpers/observed-identity-fixture.js";
 
 // ---------------------------------------------------------------------------
 // Shared test infrastructure
@@ -273,6 +274,14 @@ function makeRealAuthorityRunner(
 
     // Override ONLY the dispatch provider (fixture that completes quickly).
     async dispatch(input: DispatchInput): Promise<SupervisedDispatchResult> {
+      if (input.omnigentDataDir !== undefined) {
+        writeObservedIdentityFixture(input.omnigentDataDir, {
+          harness: "codex",
+          model: "codex-cli",
+          vendor: "fixture",
+          conversationId: `impl-${input.ownership.attemptId}`,
+        });
+      }
       const launch = await containment.releaseTarget(
         input.boundary,
         input.argv,
@@ -405,11 +414,12 @@ function makeRunnerRequest(fixture: RealAuthorityFixture): AttemptRunnerRequest 
       phaseOrdinal: 1,
       role: "worker",
     },
-    supervisedArgv: ["/usr/bin/true"],
+    supervisedArgv: ["/usr/bin/true", "--harness", "codex", "--model", "codex-cli"],
     stdoutPath: join(fixture.store.location.resourceDirectory, "stdout"),
     stderrPath: join(fixture.store.location.resourceDirectory, "stderr"),
     timeoutMs: 30_000,
     cancellationRequested: false,
+    omnigentDataDir: join(fixture.store.location.resourceDirectory, "omnigent-data"),
   };
 }
 
@@ -566,6 +576,7 @@ describe("M7 scrutiny round 8 — defect 3: resume runs real initial dispatch th
         dispatchArgvOverride: [
           "/bin/sh", "-c",
           "mkdir -p src && echo 'export const feature = () => true;' > src/feature.ts",
+          "--harness", "codex", "--model", "codex-cli",
         ],
         attemptRunnerProviders: {
           cleanupPreimage: firstRealProviders.cleanupPreimage,
@@ -582,6 +593,14 @@ describe("M7 scrutiny round 8 — defect 3: resume runs real initial dispatch th
           // the process chain, and returns the correct exit code.
           dispatch: async (input: DispatchInput): Promise<SupervisedDispatchResult> => {
             const attemptId = input.ownership.attemptId;
+            if (input.omnigentDataDir !== undefined) {
+              writeObservedIdentityFixture(input.omnigentDataDir, {
+                harness: "codex",
+                model: "codex-cli",
+                vendor: "fixture",
+                conversationId: `impl-${attemptId}`,
+              });
+            }
             const { spawnSync } = await import("node:child_process");
             const workdir = input.ownership.plan.worktreePath;
             const result = spawnSync(input.argv[0]!, input.argv.slice(1), {
