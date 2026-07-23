@@ -4,11 +4,20 @@ const { execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
-let commit = "dev";
-try {
-  commit = execSync("git rev-parse HEAD", { encoding: "utf-8" }).trim();
-} catch {
-  // Not a git repo or git unavailable — use "dev"
+const pinnedCommit = process.env.RICKGENT_BUILD_COMMIT?.trim();
+let commit;
+if (pinnedCommit) {
+  if (!/^[0-9a-f]{40}$/.test(pinnedCommit)) {
+    throw new Error("RICKGENT_BUILD_COMMIT must be a lowercase 40-character Git OID");
+  }
+  commit = pinnedCommit;
+} else {
+  commit = "dev";
+  try {
+    commit = execSync("git rev-parse HEAD", { encoding: "utf-8" }).trim();
+  } catch {
+    // Not a git repo or git unavailable — use "dev"
+  }
 }
 
 const outPath = path.join(__dirname, "..", "src", "build-commit.ts");
