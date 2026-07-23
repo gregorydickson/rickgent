@@ -65,6 +65,17 @@ doctor. Build the supported npm and Python archives, install them into
 isolated prefix/virtualenv roots, remove the source checkout from all lookup
 paths, and prove the installed CLI/resources/policies/Omnigent contract.
 
+### Artifact ownership
+
+t37 owns generation and committed validation of these release inputs. Any
+refined ticket that verifies either path must declare one of them as its
+`output_artifacts` owner before downstream tickets may consume it:
+
+- `artifacts/reliability/python-dist/**`
+- `artifacts/reliability/omnigent-compatibility-contract.json`
+- `artifacts/reliability/npm-pack-inventory.json`
+- `artifacts/reliability/packed-install-summary.json`
+
 ### Acceptance criteria
 
 - `orchestrator/test/reliability/packed-install.test.ts` exists and passes with
