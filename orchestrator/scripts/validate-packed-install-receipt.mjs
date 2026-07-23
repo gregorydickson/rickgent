@@ -8,11 +8,10 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
-  realpathSync,
   relative,
   rmSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -64,10 +63,6 @@ function equal(actual, expected, label) {
 function record(value, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) fail(`${label} must be an object`);
   return value;
-}
-function contained(root, child) {
-  const rel = relative(realpathSync(root), realpathSync(child));
-  return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel));
 }
 function archiveInventory(path, kind) {
   const root = mkdtempSync(join(process.env.TMPDIR ?? "/tmp", "rickgent-receipt-"));
