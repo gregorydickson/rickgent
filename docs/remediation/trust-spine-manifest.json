@@ -1580,10 +1580,14 @@
         "LICENSE"
       ],
       "priority": "P1",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t34"
-      ]
+      ],
+      "completed_at": {
+        "commit": "1b09c23ae6767515c8c142a2fbcc1a73e057441d",
+        "phase_report": "docs/remediation/phase-9-t35-unified-release-contract-execution-report-2026-07-23.md"
+      }
     },
     {
       "id": "t36",

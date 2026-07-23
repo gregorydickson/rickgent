@@ -1,0 +1,127 @@
+{
+  "schema_version": "1.0.0",
+  "release_id": "rickgent-trust-spine-release-v1",
+  "contract_mode": "cross-language-authoritative",
+  "description": "Single authoritative version/compatibility manifest for the rickgent trust-spine release. All npm, Python, CLI, build-identity, Omnigent-compatibility, toolchain, package-content, installer, runtime-path, and licensing values are generated or checked against this file. Packed installation is possible only when validate-release-manifest.mjs and assert-package-inventory.mjs both pass against this manifest.",
+  "version": {
+    "npm": "0.1.0-alpha",
+    "python": "0.1.0a0",
+    "cli_display": "0.1.0-alpha",
+    "docs": "0.1.0-alpha"
+  },
+  "license": {
+    "spdx": "Apache-2.0",
+    "file": "LICENSE",
+    "npm_field": "orchestrator/package.json#license",
+    "python_field": "rickgent-policies/pyproject.toml#project.license"
+  },
+  "toolchain": {
+    "node": {
+      "range": ">=24.0.0 <25.0.0",
+      "source": "orchestrator/package.json#engines.node"
+    },
+    "python": {
+      "range": ">=3.12.0,<3.15.0",
+      "source": "rickgent-policies/pyproject.toml#project.requires-python"
+    },
+    "package_manager": {
+      "name": "pnpm",
+      "version": "10.22.0",
+      "lockfile": "orchestrator/pnpm-lock.yaml",
+      "lockfile_version": "9.0",
+      "source": "orchestrator/package.json#packageManager"
+    },
+    "platforms": {
+      "supported": ["darwin", "linux"],
+      "windows": "fail_fast",
+      "windows_error_code": "RICKGENT_PLATFORM_UNSUPPORTED"
+    }
+  },
+  "build_identity": {
+    "commit_source": "orchestrator/src/build-commit.ts#BUILD_COMMIT",
+    "regenerator": "orchestrator/scripts/generate-build-commit.cjs",
+    "cli_version_flag": "--version",
+    "cli_build_commit_flag": "--build-commit",
+    "build_commit_format": "40-char lowercase hex git SHA; the literal \"dev\" is a build failure",
+    "lag_by_one_note": "The committed build-commit.ts intentionally references the parent of the amended HEAD; runtime parity is established by init.sh rebuilding dist to the current HEAD."
+  },
+  "omnigent_compatibility": {
+    "contract": "artifacts/reliability/omnigent-compatibility-contract.json",
+    "contract_id": "rickgent-omnigent-current-compatible-v1",
+    "contract_mode": "current-compatible",
+    "verifier": "orchestrator/scripts/verify-omnigent-contract.mjs",
+    "root_env": "OMNIGENT_ROOT",
+    "python_env": "OMNIGENT_PYTHON",
+    "pin": "omnigent is pinned at 0.6.0.dev0 (editable, read-only); exact commit pin is forbidden for the evolving contract; compatibility is proven by an offline behavioral probe, not a silent pin"
+  },
+  "package_contents": {
+    "npm": {
+      "manifest": "orchestrator/package.json",
+      "pack_command": "cd orchestrator && npm pack --dry-run --json",
+      "inventory_artifact": "artifacts/reliability/npm-pack-inventory.json",
+      "must_include": ["dist/cli.js", "dist/pnpm-lock.yaml"],
+      "must_exclude": [
+        "test/",
+        "src/",
+        "node_modules/",
+        "dist/testing/",
+        "dist/internal/",
+        "dist-fixture/",
+        "fixtures/",
+        ".tsbuildinfo"
+      ],
+      "role": "cli-only: the npm tarball ships the compiled CLI and its lockfile"
+    },
+    "python": {
+      "manifest": "rickgent-policies/pyproject.toml",
+      "build_command": "python3 -m build rickgent-policies --outdir artifacts/reliability/python-dist",
+      "dist_artifact": "artifacts/reliability/python-dist",
+      "package": "rickgent-policies",
+      "import_module": "rickgent_policies",
+      "must_include_modules": ["rickgent_policies"],
+      "must_exclude": ["test/", "__pycache__", ".egg-info", ".venv"],
+      "role": "pure-Python policy shims over the TypeScript verdict core"
+    }
+  },
+  "installer": {
+    "script": "install.sh",
+    "model": "installer-assembles-runtime",
+    "description": "install.sh assembles the full runtime: it installs (or locates) the compatible Omnigent, runs pnpm install + pnpm build for the orchestrator, pip-installs rickgent-policies, links the rickgent launcher onto PATH, and runs rickgent doctor as a behavioral gate. Agent bundles are resolved from the repository checkout during install; the installer records runtime lookup metadata.",
+    "installs": [
+      "omnigent (compatible, editable or pinned per the omnigent compatibility contract)",
+      "rickgent orchestrator (pnpm install --frozen-lockfile && pnpm build)",
+      "rickgent-policies (pip install -e rickgent-policies)"
+    ],
+    "links_executable": true,
+    "executable": "rickgent",
+    "launcher_source": "rickgent",
+    "doctor_gate": "node orchestrator/dist/cli.js doctor",
+    "doctor_failure_is_fatal": true,
+    "preserves_unrelated_user_data": true,
+    "idempotent": true
+  },
+  "runtime_paths": {
+    "cli_entrypoint": "orchestrator/dist/cli.js",
+    "launcher": "rickgent",
+    "agent_bundles": "agents/rickgent",
+    "manager_bundle": "agents/rickgent/config.yaml",
+    "worker_bundle": "agents/rickgent/agents/worker/config.yaml",
+    "policies_module": "rickgent_policies",
+    "policies_source": "rickgent-policies/rickgent_policies",
+    "state_dir": ".rickgent/",
+    "state_dir_env": "RICKGENT_DIR"
+  },
+  "assembly_plan": {
+    "model": "installer-assembles-runtime",
+    "npm_package_role": "cli-only",
+    "agent_bundles_source": "agents/rickgent",
+    "policies_source": "rickgent-policies",
+    "omnigent_source": "external compatible dependency installed by the installer",
+    "clean_packed_install_requirement": "a clean packed installation contains or installs the CLI, agent bundles, Python policies, LICENSE, and runtime lookup metadata without repository-relative fallback; source-tree fallback makes the install invalid"
+  },
+  "validators": {
+    "manifest": "orchestrator/scripts/validate-release-manifest.mjs",
+    "package_inventory": "orchestrator/scripts/assert-package-inventory.mjs",
+    "omnigent_contract": "orchestrator/scripts/verify-omnigent-contract.mjs"
+  }
+}

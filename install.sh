@@ -73,14 +73,45 @@ info "Installing rickgent policies"
 ( cd "$repo_root/rickgent-policies" && pip3 install -e . ) || fail "pip install rickgent-policies failed"
 ok "policies installed"
 
-# --- Verify with doctor ------------------------------------------------------
+# --- Verify with doctor (behavioral gate, fail closed) ----------------------
 
 info "Running rickgent doctor"
 if ( cd "$repo_root" && node orchestrator/dist/cli.js doctor ); then
   ok "doctor passed"
 else
-  warn "doctor reported issues — check output above"
+  fail "rickgent doctor failed — installation is incomplete; aborting (fail closed)"
 fi
+
+# --- Link the rickgent executable onto PATH ----------------------------------
+
+info "Linking rickgent executable"
+
+# Choose the first writable directory already on PATH; fall back to ~/.local/bin.
+link_dir=""
+IFS=":" read -r -a path_dirs <<< "$PATH"
+for candidate in "${path_dirs[@]}"; do
+  [[ -z "$candidate" ]] && continue
+  if [[ -d "$candidate" ]] && [[ -w "$candidate" ]]; then
+    link_dir="$candidate"
+    break
+  fi
+done
+if [[ -z "$link_dir" ]]; then
+  link_dir="$HOME/.local/bin"
+  mkdir -p "$link_dir"
+fi
+
+launcher="$repo_root/rickgent"
+link_path="$link_dir/rickgent"
+# Preserve unrelated user data: only touch the rickgent entry itself.
+if [[ -L "$link_path" || -f "$link_path" ]] && [[ ! -L "$link_path" ]]; then
+  warn "an existing non-symlink rickgent exists at $link_path — leaving it in place (preserves user data)"
+else
+  ln -sfn "$launcher" "$link_path"
+  ok "linked rickgent -> $link_path"
+fi
+# Ensure the launcher is executable.
+chmod +x "$launcher"
 
 # --- Claude Code skills ------------------------------------------------------
 
