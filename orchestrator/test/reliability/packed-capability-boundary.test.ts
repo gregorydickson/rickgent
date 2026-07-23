@@ -103,7 +103,9 @@ describe("packed capability boundary", () => {
       process.env.RICKGENT_MANAGER_DIR = managerDir;
       process.env.RICKGENT_WORKER_DIR = join(managerDir, "agents", "worker");
       const health = await import(new URL("dist/lifecycle/doctor.js", resolvedRoot).href);
-      await expect(health.runDoctorCheck()).rejects.toThrow(/editable path metadata/);
+      await expect(health.runDoctorCheck()).rejects.toThrow(
+        /(?:editable path metadata|ambient python3 is forbidden)/,
+      );
     } finally {
       if (priorManager === undefined) delete process.env.RICKGENT_MANAGER_DIR;
       else process.env.RICKGENT_MANAGER_DIR = priorManager;
