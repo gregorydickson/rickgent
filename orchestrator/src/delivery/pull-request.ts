@@ -305,25 +305,76 @@ function classifyProviderError(message: string): VerifiedPrResult {
 }
 
 /**
+ * t34 scrutiny round 3: Resolve the canonical GitHub repository identity
+ * (owner/repo format) from the git remote URL.  Parses both SSH
+ * (git@github.com:owner/repo.git) and HTTPS
+ * (https://github.com/owner/repo.git) URL formats.
+ *
+ * @param repoPath  The local repository path to resolve the remote from.
+ * @param remoteName  The git remote name (default "origin").
+ * @returns The canonical GitHub repository identity in "owner/repo" format.
+ * @throws if the remote URL cannot be resolved or is not a GitHub URL.
+ */
+export function resolveGitHubRepositoryIdentity(
+  repoPath: string,
+  remoteName: string = "origin",
+): string {
+  let remoteUrl: string;
+  try {
+    remoteUrl = execFileSync("git", ["-C", repoPath, "remote", "get-url", remoteName], {
+      encoding: "utf8",
+      timeout: 10_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`cannot resolve git remote '${remoteName}': ${message}`);
+  }
+  if (remoteUrl.length === 0) {
+    throw new Error(`git remote '${remoteName}' has an empty URL`);
+  }
+  // Parse SSH format: git@github.com:owner/repo.git
+  const sshMatch = remoteUrl.match(/^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/);
+  if (sshMatch !== null) {
+    return `${sshMatch[1]}/${sshMatch[2]}`;
+  }
+  // Parse HTTPS format: https://github.com/owner/repo.git
+  const httpsMatch = remoteUrl.match(/^https:\/\/github\.com\/([^/]+)\/(.+?)(?:\.git)?$/);
+  if (httpsMatch !== null) {
+    return `${httpsMatch[1]}/${httpsMatch[2]}`;
+  }
+  // Parse SSH with ssh:// prefix: ssh://git@github.com/owner/repo.git
+  const sshPrefixMatch = remoteUrl.match(/^ssh:\/\/git@github\.com\/([^/]+)\/(.+?)(?:\.git)?$/);
+  if (sshPrefixMatch !== null) {
+    return `${sshPrefixMatch[1]}/${sshPrefixMatch[2]}`;
+  }
+  throw new Error(`git remote '${remoteName}' URL '${remoteUrl}' is not a recognized GitHub URL`);
+}
+
+/**
  * t34 scrutiny round 2: Production PR provider that wraps the `gh` CLI with
  * array argv (execFileSync).  Implements the {@link PrProvider} interface
  * for real production delivery.
  *
  * All gh commands use array argv — never shell strings.  JSON output is
  * parsed via `gh --json` structured output.  Fail closed on any gh error.
+ *
+ * t34 scrutiny round 3: The provider now accepts a canonical GitHub
+ * repository identity (owner/repo format) resolved from the git remote,
+ * not a local filesystem path.
  */
 export class GhCliPrProvider implements PrProvider {
-  readonly #repoPath: string;
+  readonly #repoIdentity: string;
 
-  constructor(repoPath: string) {
-    this.#repoPath = repoPath;
+  constructor(repoIdentity: string) {
+    this.#repoIdentity = repoIdentity;
   }
 
   findExistingPr(headBranch: string, baseBranch: string): PrProviderResult | null {
     try {
       const output = execFileSync("gh", [
         "pr", "list",
-        "--repo", this.#repoPath,
+        "--repo", this.#repoIdentity,
         "--head", headBranch,
         "--base", baseBranch,
         "--state", "open",
@@ -361,7 +412,7 @@ export class GhCliPrProvider implements PrProvider {
   createPr(headBranch: string, baseBranch: string, title: string, body: string): PrProviderResult {
     const output = execFileSync("gh", [
       "pr", "create",
-      "--repo", this.#repoPath,
+      "--repo", this.#repoIdentity,
       "--head", headBranch,
       "--base", baseBranch,
       "--title", title,
@@ -393,7 +444,7 @@ export class GhCliPrProvider implements PrProvider {
   queryPrHead(prNumber: number): PrProviderResult {
     const output = execFileSync("gh", [
       "pr", "view", String(prNumber),
-      "--repo", this.#repoPath,
+      "--repo", this.#repoIdentity,
       "--json", "number,url,headRefOid,baseRefName,headRefName,repository",
     ], {
       encoding: "utf8",

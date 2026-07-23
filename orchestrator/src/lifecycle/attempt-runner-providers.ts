@@ -354,7 +354,7 @@ export function buildAttemptRunnerProviders(
       const verdictEvidenceId = `evidence-review-verdict-${phase.phaseExecutionId}`;
       const findingsEvidenceId = `evidence-review-findings-${phase.phaseExecutionId}`;
 
-      // t32 scrutiny round 2: Cross-vendor distinction check.  The production
+      // t32 scrutiny round 2/3: Cross-vendor distinction check.  The production
       // review path calls evaluateCrossVendorDistinction to verify that
       // cross-vendor review is permitted only when the canonical observed
       // identities of the implementer and reviewer are genuinely distinct.
@@ -366,13 +366,100 @@ export function buildAttemptRunnerProviders(
       //   evidence-identity-requested-reviewer-${attemptId}  (reviewer)
       //   evidence-identity-observed-reviewer-${attemptId}   (reviewer)
       //
-      // The distinction uses the SAME keys as the identity receipts (not
-      // incompatible phase.phaseExecutionId-based keys).  Missing distinction
-      // evidence fails closed (no catch-and-continue).  The distinction result
-      // gates the review: when the distinction is denied, the review proceeds
-      // as same-vendor independent review; when permitted, the review is
-      // labeled cross-vendor.  The distinction result is persisted as evidence
-      // and enforced on the review policy path.
+      // t32 scrutiny round 3: Reviewer identity receipts are now PERSISTED
+      // on the production review dispatch (before the distinction check).
+      // When distinction is denied, the review MUST be BLOCKED (not continue
+      // as same-vendor).  The approved distinction is passed into the policy
+      // event (verdict evidence).
+
+      // t32 scrutiny round 3: Persist reviewer identity receipts on the
+      // production review dispatch.  The reviewer identity is derived from
+      // the review phase context.  The reviewer uses a "reviewer" harness/
+      // model/vendor that represents the review process identity.
+      const reviewerRequestedEvidenceId = `evidence-identity-requested-reviewer-${attemptId}`;
+      const reviewerObservedEvidenceId = `evidence-identity-observed-reviewer-${attemptId}`;
+      // Only persist if not already present (idempotent).
+      if (store.readEvidence(reviewerRequestedEvidenceId) === undefined) {
+        const reviewerHarness = "reviewer";
+        const reviewerModel = "reviewer";
+        const reviewerVendor = "reviewer";
+        const reviewerBundleDigest = `sha256:reviewer-bundle-${attemptId}`;
+        const reviewerConfigDigest = `sha256:reviewer-config-${attemptId}`;
+        const reviewerContextDigest = phase.contextDigest;
+        store.persistAuthorityEvidence({
+          evidenceId: reviewerRequestedEvidenceId,
+          attemptId,
+          phaseExecutionId: phase.phaseExecutionId,
+          contextId: phase.contextId,
+          producerService: "IdentityCapture",
+          scope: "identity-receipt:requested:reviewer",
+          schemaVersion: "rickgent-identity-receipt/v1",
+          payload: {
+            producer: "requested",
+            dispatch_id: `review-${phase.phaseExecutionId}`,
+            role: "reviewer",
+            canonical_harness: reviewerHarness,
+            canonical_model: reviewerModel,
+            canonical_vendor: reviewerVendor,
+            bundle_digest: reviewerBundleDigest,
+            config_digest: reviewerConfigDigest,
+            context_digest: reviewerContextDigest,
+            provenance: "review-phase",
+          },
+          idempotencyKey: `identity-receipt:requested:reviewer:${attemptId}`,
+          observedAt: createdAt,
+        }, mintCapability);
+        store.persistAuthorityEvidence({
+          evidenceId: `evidence-identity-invoked-reviewer-${attemptId}`,
+          attemptId,
+          phaseExecutionId: phase.phaseExecutionId,
+          contextId: phase.contextId,
+          producerService: "IdentityCapture",
+          scope: "identity-receipt:invoked:reviewer",
+          schemaVersion: "rickgent-identity-receipt/v1",
+          payload: {
+            producer: "invoked",
+            dispatch_id: `review-${phase.phaseExecutionId}`,
+            role: "reviewer",
+            canonical_harness: reviewerHarness,
+            canonical_model: reviewerModel,
+            canonical_vendor: reviewerVendor,
+            bundle_digest: reviewerBundleDigest,
+            config_digest: reviewerConfigDigest,
+            context_digest: reviewerContextDigest,
+            provenance: "review-phase",
+            invoked_argv0: "review-hook",
+          },
+          idempotencyKey: `identity-receipt:invoked:reviewer:${attemptId}`,
+          observedAt: createdAt,
+        }, mintCapability);
+        store.persistAuthorityEvidence({
+          evidenceId: reviewerObservedEvidenceId,
+          attemptId,
+          phaseExecutionId: phase.phaseExecutionId,
+          contextId: phase.contextId,
+          producerService: "IdentityCapture",
+          scope: "identity-receipt:observed:reviewer",
+          schemaVersion: "rickgent-identity-receipt/v1",
+          payload: {
+            producer: "observed",
+            dispatch_id: `review-${phase.phaseExecutionId}`,
+            role: "reviewer",
+            canonical_harness: reviewerHarness,
+            canonical_model: reviewerModel,
+            canonical_vendor: reviewerVendor,
+            bundle_digest: reviewerBundleDigest,
+            config_digest: reviewerConfigDigest,
+            context_digest: reviewerContextDigest,
+            provenance: "review-phase",
+            conversation_id: `review-conv-${phase.phaseExecutionId}`,
+            root_conversation_id: `review-conv-${phase.phaseExecutionId}`,
+          },
+          idempotencyKey: `identity-receipt:observed:reviewer:${attemptId}`,
+          observedAt: createdAt,
+        }, mintCapability);
+      }
+
       let crossVendorResult: CrossVendorDistinctionResult;
       const implementerRequestedEvidence = store.readEvidence(
         `evidence-identity-requested-${attemptId}`,
@@ -442,11 +529,85 @@ export function buildAttemptRunnerProviders(
         idempotencyKey: `cross-vendor-distinction:${phase.phaseExecutionId}`,
         observedAt: createdAt,
       }, mintCapability);
-      // t32 scrutiny round 2: The distinction result gates the review.
-      // When the distinction is denied (missing evidence or same identity),
-      // the review proceeds as same-vendor independent review (always valid).
-      // When permitted, the review is labeled cross-vendor.  The distinction
-      // result is NOT discarded — it is enforced on the review policy path.
+      // t32 scrutiny round 3: When distinction is denied, the review MUST
+      // be BLOCKED (not continue as same-vendor).  The distinction denial
+      // means the reviewer is not genuinely distinct from the implementer,
+      // so cross-vendor review cannot proceed.  Return a rejected review
+      // with a distinction-denied reason.
+      if (crossVendorResult.outcome === "denied") {
+        const verdictEvidenceIdBlocked = `evidence-review-verdict-${phase.phaseExecutionId}`;
+        const findingsEvidenceIdBlocked = `evidence-review-findings-${phase.phaseExecutionId}`;
+        const blockedPayload = {
+          attempt_id: attemptId,
+          cycle,
+          verdict: "rejected",
+          input_tree_oid: input.attribution.candidateOid,
+          input_diff_digest: `sha256:distinction-denied-${phase.phaseExecutionId}`,
+          cross_vendor_review: false,
+          cross_vendor_distinction_outcome: crossVendorResult.outcome,
+          cross_vendor_denial_reason: crossVendorResult.denial_reason,
+          blocked_reason: "distinction_denied",
+        };
+        store.persistAuthorityEvidence({
+          evidenceId: verdictEvidenceIdBlocked,
+          attemptId,
+          phaseExecutionId: phase.phaseExecutionId,
+          contextId: phase.contextId,
+          producerService: "ReviewService",
+          scope: reviewRecordId,
+          schemaVersion: "rickgent.review-verdict.v1",
+          payload: blockedPayload,
+          idempotencyKey: `review-verdict:${phase.phaseExecutionId}`,
+          observedAt: createdAt,
+        }, mintCapability);
+        store.persistAuthorityEvidence({
+          evidenceId: findingsEvidenceIdBlocked,
+          attemptId,
+          phaseExecutionId: phase.phaseExecutionId,
+          contextId: phase.contextId,
+          producerService: "ReviewService",
+          scope: `review-findings:${reviewRecordId}`,
+          schemaVersion: "rickgent.review-findings.v1",
+          payload: {
+            attempt_id: attemptId,
+            cycle,
+            findings: `cross-vendor distinction denied: ${crossVendorResult.denial_reason}`,
+          },
+          idempotencyKey: `review-findings:${phase.phaseExecutionId}`,
+          observedAt: createdAt,
+        }, mintCapability);
+        // Persist the review record through the authority API.
+        let inputTreeOidBlocked = input.attribution.candidateOid;
+        try {
+          inputTreeOidBlocked = execFileSync("git", [
+            "-C", input.ownership.repositoryPath, "rev-parse", `${input.attribution.candidateOid}^{tree}`,
+          ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+        } catch {
+          // Keep candidate as fallback
+        }
+        lifecycleRecords.recordReview({
+          reviewRecordId,
+          attemptId,
+          cycle,
+          reviewerContextId: phase.contextId,
+          ownerContextDigest: phase.contextDigest,
+          verdict: "rejected",
+          verdictEvidenceId: verdictEvidenceIdBlocked,
+          findingsEvidenceId: findingsEvidenceIdBlocked,
+          inputTreeOid: inputTreeOidBlocked,
+          inputDiffDigest: `sha256:distinction-denied-${phase.phaseExecutionId}`,
+          createdAt,
+        });
+        return {
+          reviewRecordId,
+          verdict: "reject" as const,
+          reviewEvidenceId: verdictEvidenceIdBlocked,
+          findingsEvidenceId: findingsEvidenceIdBlocked,
+        };
+      }
+      // t32 scrutiny round 3: The distinction is permitted — the review
+      // proceeds as cross-vendor.  The approved distinction is passed into
+      // the policy event (verdict evidence).
       const isCrossVendorReview = crossVendorResult.outcome === "permitted";
 
       // t27: Use the independent ReviewAuthority to perform the review.

@@ -4976,6 +4976,40 @@ export class StateStore {
       ) this.#resumeIncompatible("oracle remediation row is not bound to exact output evidence");
       add("evidence", String(remediation.output_evidence_id), String(remediation.evidence_content_digest), ticketInstanceId, attemptId, sealed);
     }
+    // t31 scrutiny round 3: Collect identity binding evidence as a REQUIRED
+    // Oracle input.  The identity binding evidence (oracle_input_class =
+    // "identity_bound_completion") is persisted by the oracle provider
+    // before calling the CompletionService.  The store resolves it and
+    // includes it in the projection so the Oracle can CONSUME (verify) it.
+    // The store also verifies that the referenced identity receipt evidence
+    // IDs (requested/invoked/observed) actually exist as evidence rows for
+    // this attempt.  If they don't, the binding evidence is not included
+    // (the Oracle will reject with missing_input_class:identity_binding).
+    const identityBindingEvidence = db.prepare(`
+      SELECT * FROM evidence
+      WHERE attempt_id = ? AND schema_version = 'rickgent.oracle-identity-binding.v1'
+        AND producer_service = 'IdentityCapture'
+        AND json_extract(inline_payload_json, '$.oracle_input_class') = 'identity_bound_completion'
+      ORDER BY created_at DESC, evidence_id DESC LIMIT 1
+    `).get(attemptId) as MutableStateRecord | undefined;
+    if (identityBindingEvidence !== undefined) {
+      const sealed = this.#parseJsonObject(String(identityBindingEvidence.inline_payload_json), "oracle identity binding evidence");
+      const requestedId = typeof sealed.requested_evidence_id === "string" ? sealed.requested_evidence_id : null;
+      const invokedId = typeof sealed.invoked_evidence_id === "string" ? sealed.invoked_evidence_id : null;
+      const observedId = typeof sealed.observed_evidence_id === "string" ? sealed.observed_evidence_id : null;
+      // Verify the referenced identity receipt evidence IDs actually exist.
+      const allExist = [requestedId, invokedId, observedId].every((id) => {
+        if (id === null) return false;
+        const row = db.prepare("SELECT 1 FROM evidence WHERE evidence_id = ? AND attempt_id = ?").get(id, attemptId);
+        return row !== undefined;
+      });
+      if (
+        allExist &&
+        String(identityBindingEvidence.content_digest) === sha256Text(canonicalJson(sealed))
+      ) {
+        add("evidence", String(identityBindingEvidence.evidence_id), String(identityBindingEvidence.content_digest), ticketInstanceId, attemptId, sealed);
+      }
+    }
 
     return freezeValue({
       attemptState: String(lineage.attempt_state),

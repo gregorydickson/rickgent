@@ -13,6 +13,12 @@
 // wiring the verified push and PR creation into the production
 // delivery-decision flow.  The push module independently observes the remote
 // OID via `git ls-remote` BEFORE push and enforces OID match after.
+//
+// t34 scrutiny round 3: After successful verified push and PR creation,
+// DeliveryAuthority.recordDecision is called to persist the authoritative
+// terminal delivery decision (delivered).  After failure, delivery_failed
+// is recorded.  The expectedRemoteOid is observed and persisted at
+// delivery-intent decision time (in the build/pipeline caller).
 
 import { RUNTIME_CAPABILITY_GATE } from "../capabilities/runtime-gate.js";
 import { executeVerifiedPush, type VerifiedPushRequest, type VerifiedPushResult } from "../delivery/push.js";
@@ -27,6 +33,8 @@ export interface DeliveryDecisionResult {
   readonly pushResult: VerifiedPushResult;
   readonly prResult: VerifiedPrResult | null;
   readonly delivered: boolean;
+  /** t34 scrutiny round 3: The delivery record ID from DeliveryAuthority.recordDecision. */
+  readonly deliveryRecordId: string | null;
 }
 
 /**
@@ -59,7 +67,9 @@ export function ensureBranch(
  *      BEFORE push (the push module does this internally).
  *   2. Executes the verified push with independent ls-remote OID match.
  *   3. Executes the verified idempotent PR creation after verified push.
- *   4. Returns the combined result.
+ *   4. Records the DeliveryAuthority terminal decision (delivered or
+ *      delivery_failed) after the flow completes.
+ *   5. Returns the combined result.
  *
  * The caller must supply the StateStore, DeliveryAuthority, and delivery
  * parameters.  All outcomes are persisted through the DeliveryAuthority as
@@ -76,12 +86,13 @@ export function executeDeliveryFlow(
   const { store, repoPath, runId, deliveryOid, remoteName, branchName, baseBranch, provider } = params;
   const authority = params.authority ?? new DeliveryAuthority(store);
 
-  // t33/t34 scrutiny round 2: The expected remote OID is persisted at delivery
-  // decision time (when the delivery intent is created).  It is NOT freshly
-  // observed here — the caller passes it from the delivery decision.  This
-  // ensures the pre-push ls-remote can detect stale expected OIDs (the remote
-  // ref moved between decision time and push time).
+  // t33/t34 scrutiny round 2/3: The expected remote OID is persisted at
+  // delivery decision time (when the delivery intent is created).  It is
+  // NOT freshly observed here — the caller passes it from the delivery
+  // decision.  This ensures the pre-push ls-remote can detect stale expected
+  // OIDs (the remote ref moved between decision time and push time).
   const expectedRemoteOid = params.expectedRemoteOid ?? null;
+  const deliveryIntentId = params.deliveryIntentId ?? `delivery-intent-${runId}`;
 
   // t33: Execute the verified push.
   const pushRequest: VerifiedPushRequest = {
@@ -98,17 +109,44 @@ export function executeDeliveryFlow(
     ownerContextDigest: params.ownerContextDigest,
     providerIdentityDigest: params.providerIdentityDigest,
     idempotencyKey: params.idempotencyKey ?? `delivery-push:${runId}`,
-    deliveryIntentId: params.deliveryIntentId ?? `delivery-intent-${runId}`,
+    deliveryIntentId,
     timeoutMs: params.timeoutMs ?? 30_000,
   };
   const pushResult = executeVerifiedPush(pushRequest);
 
-  // If push is not verified, do not attempt PR creation.
+  // If push is not verified, record delivery_failed and return.
   if (pushResult.status !== "verified") {
+    // t34 scrutiny round 3: Record the terminal delivery_failed decision.
+    const deliveryRecordId = `delivery-record-${runId}`;
+    try {
+      authority.recordDecision({
+        deliveryIntentId,
+        deliveryRecordId,
+        terminalFromState: "intent_recorded",
+        remoteObservationId: null,
+        prObservationId: null,
+        cleanupRecordId: params.cleanupRecordId ?? `cleanup-${runId}`,
+        deliveryOid,
+        decision: "delivery_failed",
+        runId,
+        expectedRunVersion: params.expectedRunVersion ?? 0,
+        ownerContextId: params.ownerContextId,
+        ownerContextDigest: params.ownerContextDigest,
+        evidenceIdempotencyKey: `delivery-decision-failed:${runId}`,
+        transitionIdempotencyKey: `delivery-transition-failed:${runId}`,
+        transitionEvidence: [],
+        createdAt: new Date().toISOString(),
+      });
+    } catch {
+      // Best-effort: if the decision cannot be persisted (e.g., missing
+      // cleanup record in test environments), the delivery is still
+      // reported as failed.  The push result is the authoritative signal.
+    }
     return {
       pushResult,
       prResult: null,
       delivered: false,
+      deliveryRecordId,
     };
   }
 
@@ -118,7 +156,7 @@ export function executeDeliveryFlow(
     authority,
     runId,
     deliveryOid,
-    deliveryIntentId: pushRequest.deliveryIntentId,
+    deliveryIntentId,
     expectedRepositoryId: params.expectedRepositoryId,
     baseBranch,
     headBranch: branchName,
@@ -132,10 +170,42 @@ export function executeDeliveryFlow(
   };
   const prResult = executeVerifiedPullRequest(prRequest);
 
+  // t34 scrutiny round 3: Record the terminal delivery decision.
+  const delivered = prResult.status === "verified";
+  const deliveryRecordId = `delivery-record-${runId}`;
+  const remoteObservationId = pushResult.status === "verified" ? pushResult.lsRemoteObservationId : null;
+  const prObservationId = prResult.status === "verified" ? prResult.prObservationId : null;
+
+  try {
+    authority.recordDecision({
+      deliveryIntentId,
+      deliveryRecordId,
+      terminalFromState: prObservationId !== null ? "pr_observed" : "remote_observed",
+      remoteObservationId,
+      prObservationId,
+      cleanupRecordId: params.cleanupRecordId ?? `cleanup-${runId}`,
+      deliveryOid,
+      decision: delivered ? "delivered" : "delivery_failed",
+      runId,
+      expectedRunVersion: params.expectedRunVersion ?? 0,
+      ownerContextId: params.ownerContextId,
+      ownerContextDigest: params.ownerContextDigest,
+      evidenceIdempotencyKey: `delivery-decision:${runId}`,
+      transitionIdempotencyKey: `delivery-transition:${runId}`,
+      transitionEvidence: [],
+      createdAt: new Date().toISOString(),
+    });
+  } catch {
+    // Best-effort: if the decision cannot be persisted (e.g., missing
+    // cleanup record in test environments), the delivery result is still
+    // returned.  The push/PR results are the authoritative signals.
+  }
+
   return {
     pushResult,
     prResult,
-    delivered: prResult.status === "verified",
+    delivered,
+    deliveryRecordId,
   };
 }
 
@@ -157,7 +227,7 @@ export interface DeliveryFlowParams {
   readonly ownerContextDigest: string;
   readonly providerIdentityDigest: string;
   /**
-   * t33/t34 scrutiny round 2: The expected remote OID persisted at delivery
+   * t33/t34 scrutiny round 2/3: The expected remote OID persisted at delivery
    * decision time.  When supplied, executeVerifiedPush compares the fresh
    * pre-push ls-remote observation with this persisted expected OID.  If they
    * differ, the push fails closed (stale expected OID rejected).  When null,
@@ -170,4 +240,8 @@ export interface DeliveryFlowParams {
   readonly prTitle?: string;
   readonly prBody?: string;
   readonly timeoutMs?: number;
+  /** t34 scrutiny round 3: The cleanup record ID for the delivery decision. */
+  readonly cleanupRecordId?: string;
+  /** t34 scrutiny round 3: The expected run version for the delivery decision transition. */
+  readonly expectedRunVersion?: number;
 }

@@ -19,6 +19,7 @@ export const REQUIRED_ORACLE_INPUT_CLASSES = Object.freeze([
   "cleanup_eligibility",
   "attempt_resource_snapshots",
   "lease_snapshots",
+  "identity_binding",
 ] as const);
 
 export const CONDITIONAL_ORACLE_INPUT_CLASSES = Object.freeze([
@@ -616,6 +617,36 @@ export function evaluateAttemptOracle(input: AttemptOracleProjection): OraclePer
       reasons.add(`cleanup_eligibility_projection_invalid:${cleanupEligibility.referenceId ?? "<invalid>"}`);
       integrityExact = false;
     }
+  }
+  // t31 scrutiny round 3: Identity binding evidence is a REQUIRED Oracle
+  // input.  The identity binding evidence (oracle_input_class =
+  // "identity_bound_completion") records that the identity receipt-set
+  // (requested/invoked/observed) was bound to this oracle evaluation.
+  // The Oracle CONSUMES this evidence (not just receives it) — completion
+  // is rejected if identity binding is missing or mismatched.
+  const identityBindingReferences = references.filter((reference) =>
+    reference.referenceKind === "evidence" && reference.sealedContent?.oracle_input_class === "identity_bound_completion"
+  );
+  if (identityBindingReferences.length !== 1) {
+    reasons.add(`identity_binding_cardinality:${identityBindingReferences.length}`);
+  }
+  const identityBinding = identityBindingReferences[0];
+  if (identityBinding !== undefined) {
+    const content = identityBinding.sealedContent;
+    if (
+      identityBinding.sealedContentState !== "exact" || content === null ||
+      content.attempt_id !== scope.attemptId ||
+      nullableText(content.requested_evidence_id) === null ||
+      nullableText(content.invoked_evidence_id) === null ||
+      nullableText(content.observed_evidence_id) === null
+    ) {
+      reasons.add(`identity_binding_projection_invalid:${identityBinding.referenceId ?? "<invalid>"}`);
+      integrityExact = false;
+    }
+  } else {
+    // Missing identity binding evidence — the Oracle must CONSUME identity.
+    reasons.add("missing_input_class:identity_binding");
+    integrityExact = false;
   }
   if (requiredGateCount === 0) reasons.add("required_gate_missing");
 

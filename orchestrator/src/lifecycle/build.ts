@@ -105,7 +105,7 @@ import { ProcessSupervisor } from "../process/supervisor.js";
 import { resumeRun, type ResumeRunResult, type ResumeTicketPlan } from "./recovery.js";
 import { observeState } from "../state/store.js";
 import { executeDeliveryFlow } from "./pr-flow.js";
-import { GhCliPrProvider } from "../delivery/pull-request.js";
+import { GhCliPrProvider, resolveGitHubRepositoryIdentity } from "../delivery/pull-request.js";
 import { DeliveryAuthority } from "../state/transitions.js";
 
 export interface BuildOptions {
@@ -1237,7 +1237,27 @@ async function executeBuildViaRunner(
       try {
         const deliveryAuthority = new DeliveryAuthority(deliveryStore);
         const deliveryOid = allocatedRun.currentDeliveryOid;
-        const prProvider = new GhCliPrProvider(opts.workingDir);
+        // t34 scrutiny round 3: Resolve the canonical GitHub repository
+        // identity (owner/repo format) from the git remote, not a local
+        // filesystem path.  The PR provider receives the GitHub identity.
+        const repoIdentity = resolveGitHubRepositoryIdentity(opts.workingDir, "origin");
+        const prProvider = new GhCliPrProvider(repoIdentity);
+        // t33 scrutiny round 3: Observe and persist the expected remote OID
+        // at delivery-intent decision time via git ls-remote.  This is the
+        // decision-time observation — the pre-push ls-remote in
+        // executeVerifiedPush will compare against this to detect stale.
+        let expectedRemoteOid: string | null = null;
+        try {
+          const remoteBranch = opts.featureBranch ?? `rickgent-${allocatedRun.runId}`;
+          const lsRemoteOutput = execFileSync("git", [
+            "-C", opts.workingDir, "ls-remote", "origin", `refs/heads/${remoteBranch}`,
+          ], { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] }).trim();
+          if (lsRemoteOutput.length > 0) {
+            expectedRemoteOid = lsRemoteOutput.split("\t")[0]!;
+          }
+        } catch {
+          // Remote ref doesn't exist yet — null is correct (no stale check).
+        }
         const deliveryResult = executeDeliveryFlow({
           store: deliveryStore,
           authority: deliveryAuthority,
@@ -1247,11 +1267,12 @@ async function executeBuildViaRunner(
           remoteName: "origin",
           branchName: opts.featureBranch ?? `rickgent-${allocatedRun.runId}`,
           baseBranch: "main",
-          expectedRepositoryId: opts.workingDir,
+          expectedRepositoryId: repoIdentity,
           provider: prProvider,
           ownerContextId: `delivery-${allocatedRun.runId}`,
           ownerContextDigest: allocatedRun.manifestDigest || `sha256:delivery-${allocatedRun.runId}`,
           providerIdentityDigest: `sha256:gh-cli-provider`,
+          expectedRemoteOid,
         });
         if (deliveryResult.delivered) {
           report.push(`build: delivery flow complete — push verified, PR created`);
