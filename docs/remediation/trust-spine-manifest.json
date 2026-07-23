@@ -1331,6 +1331,7 @@
       ],
       "completed_at": {
         "commit": "8971fef59031b88d069707de6f2d5c7ad2fd3068",
+        "phase_report": "docs/remediation/phase-7-resume-reconcile-parity-execution-report-2026-07-22.md",
         "execution_report": "docs/remediation/phase-7-resume-reconcile-parity-execution-report-2026-07-22.md",
         "scrutiny_round_2_fix": "docs/remediation/phase-7-m7-scrutiny-round-2-production-wiring-fix-execution-report-2026-07-22.md",
         "scrutiny_round_3_fix": "docs/remediation/phase-7-m7-scrutiny-round-3-production-paths-execution-report-2026-07-22.md",
@@ -1369,6 +1370,7 @@
       ],
       "completed_at": {
         "commit": "fbfaea293f0e41c1521ff210a728dfc2d2da56c8",
+        "phase_report": "docs/remediation/phase-7-t30-remove-shortcuts-execution-report-2026-07-22.md",
         "execution_report": "docs/remediation/phase-7-t30-remove-shortcuts-execution-report-2026-07-22.md",
         "scrutiny_round_2_fix": "docs/remediation/phase-7-m7-scrutiny-round-2-production-wiring-fix-execution-report-2026-07-22.md",
         "scrutiny_round_4_fix": "docs/remediation/phase-7-m7-scrutiny-round-4-fresh-rereview-and-resume-execution-report-2026-07-22.md",

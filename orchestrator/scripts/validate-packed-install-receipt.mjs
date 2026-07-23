@@ -8,10 +8,9 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
-  relative,
   rmSync,
 } from "node:fs";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -33,6 +32,17 @@ const requiredChecks = [
   "missing_resource", "implicit_python", "wrong_python", "native_allow", "native_deny",
   "omnigent_identity", "sqlite_reopen", "git_containment", "typed_failure", "owned_cleanup",
   "failure_cleanup", "unrelated_state_preserved",
+];
+const completionPaths = [
+  "artifacts/reliability/npm-dist/",
+  "artifacts/reliability/python-dist/",
+  "artifacts/reliability/npm-pack-inventory.json",
+  "artifacts/reliability/packed-install-summary.json",
+  "artifacts/reliability/packed-install-summary.sha256",
+  "orchestrator/test/reliability/packed-install.test.ts",
+  "orchestrator/scripts/validate-packed-install-receipt.mjs",
+  "docs/remediation/phase-9-t37-packed-install-execution-report.md",
+  "docs/remediation/trust-spine-manifest.json",
 ];
 
 function fail(message) {
@@ -123,10 +133,27 @@ equal(readFileSync(checksumPath, "utf8").trim().split(/\s+/), [
 ], "checksum sidecar");
 
 const binding = record(receipt.binding, "binding");
-const sourceOid = execFileSync("git", ["rev-parse", "HEAD"], {
+const headOid = execFileSync("git", ["rev-parse", "HEAD"], {
   cwd: repositoryRoot, encoding: "utf8",
 }).trim();
-equal(binding.source_git_oid, sourceOid, "source Git OID");
+if (typeof binding.source_git_oid !== "string" || !/^[0-9a-f]{40}$/.test(binding.source_git_oid)) {
+  fail("source Git OID must be a full lowercase commit OID");
+}
+const sourceOid = binding.source_git_oid;
+if (sourceOid !== headOid) {
+  const parentOid = execFileSync("git", ["rev-parse", "HEAD^"], {
+    cwd: repositoryRoot, encoding: "utf8",
+  }).trim();
+  equal(sourceOid, parentOid, "non-self-referential source Git OID");
+  const changed = execFileSync("git", ["diff", "--name-only", sourceOid, headOid], {
+    cwd: repositoryRoot, encoding: "utf8",
+  }).trim().split("\n").filter(Boolean);
+  if (changed.some((path) => !completionPaths.some((owned) =>
+    owned.endsWith("/") ? path.startsWith(owned) : path === owned
+  ))) {
+    fail("completion commit contains a path outside the t37c ownership boundary");
+  }
+}
 const release = load(releasePath);
 equal(binding.release, {
   id: release.release_id,

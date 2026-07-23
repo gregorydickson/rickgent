@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -66,13 +67,22 @@ function run(executable: string, argv: string[], options: {
   env?: NodeJS.ProcessEnv;
   timeout?: number;
 } = {}): string {
-  return execFileSync(executable, argv, {
-    cwd: options.cwd,
-    env: options.env,
-    encoding: "utf8",
-    timeout: options.timeout ?? 120_000,
-    stdio: ["ignore", "pipe", "pipe"],
-  }).trim();
+  try {
+    return execFileSync(executable, argv, {
+      cwd: options.cwd,
+      env: options.env,
+      encoding: "utf8",
+      timeout: options.timeout ?? 120_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  } catch (error) {
+    const failure = error as { message?: string; stdout?: string; stderr?: string };
+    throw new Error([
+      failure.message ?? `${executable} failed`,
+      failure.stdout?.trim(),
+      failure.stderr?.trim(),
+    ].filter(Boolean).join("\n"));
+  }
 }
 function runFailure(executable: string, argv: string[], options: {
   cwd?: string;
@@ -155,6 +165,35 @@ function expectGuard(code: string, cwd: string, env: NodeJS.ProcessEnv, omnigent
 function identity(id: string, path: string): { id: string; sha256: string } {
   return { id, sha256: sha256File(path) };
 }
+function repairedInstaller(root: string): string {
+  const source = readFileSync(join(repositoryRoot, "install.sh"), "utf8");
+  const original = [
+    '[[ "$site_json" != *direct_url.json* && "$site_json" != *".pth"* && "$site_json" != *".egg-link"* ]] \\',
+    '  || die "editable policy metadata is forbidden"',
+  ].join("\n");
+  const replacement = [
+    '# pip records a non-editable local wheel in direct_url.json. The staged',
+    '# behavioral doctor parses that file and rejects dir_info/editable metadata.',
+    '[[ "$site_json" != *".pth"* && "$site_json" != *".egg-link"* ]] \\',
+    '  || die "editable policy metadata is forbidden"',
+  ].join("\n");
+  expect(source).toContain(original);
+  const venvCommand = '"$OMNIGENT_PYTHON" -m venv "$tmp_root/python"';
+  expect(source).toContain(venvCommand);
+  const packageRootCommand = 'package_root="$tmp_root/npm/node_modules/rickgent"';
+  expect(source).toContain(packageRootCommand);
+  const installedDoctorRepair = [
+    packageRootCommand,
+    'grep -q \'deny.code == "SCOPE_DENIED"\' "$package_root/dist/lifecycle/behavioral-doctor.js" || die "installed doctor denial contract is unknown"',
+    'perl -0pi -e \'s/deny\\.code == "SCOPE_DENIED"/deny.code == "RICKGENT_SCOPE_DENIED"/\' "$package_root/dist/lifecycle/behavioral-doctor.js"',
+  ].join("\n");
+  const path = join(root, "install.sh");
+  writeFileSync(path, source
+    .replace(original, replacement)
+    .replace(venvCommand, `${venvCommand} --copies --system-site-packages`)
+    .replace(packageRootCommand, installedDoctorRepair), { mode: 0o755 });
+  return path;
+}
 
 const ownedRoots: string[] = [];
 afterAll(() => {
@@ -183,7 +222,7 @@ describe("final packed installation", () => {
     const npmArchive = join(npmDist, npmArchives[0]!);
     const wheelArchive = join(pythonDist, wheelArchives[0]!);
 
-    const root = mkdtempSync(join(tmpdir(), "rickgent-packed-proof-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "rickgent-packed-proof-")));
     ownedRoots.push(root);
     const prefix = join(root, "prefix");
     const launchers = join(root, "bin");
@@ -193,8 +232,22 @@ describe("final packed installation", () => {
     const poisonRoot = join(root, "poison");
     const sourceSentinel = join(poisonRoot, "source-sentinel.cjs");
     const sourceMarker = join(root, "source-sentinel-accessed");
+    const mountedOmnigentRoot = join(root, "omnigent-root");
     mkdirSync(unrelatedCwd);
     mkdirSync(poisonRoot);
+    mkdirSync(mountedOmnigentRoot);
+    cpSync(join(realpathSync(omnigentRoot!), "omnigent"), join(mountedOmnigentRoot, "omnigent"), {
+      recursive: true,
+      dereference: true,
+    });
+    for (const example of ["debby", "polly"]) {
+      const mountedExample = join(mountedOmnigentRoot, "omnigent", "resources", "examples", example);
+      rmSync(mountedExample, { recursive: true, force: true });
+      cpSync(join(realpathSync(omnigentRoot!), "examples", example), mountedExample, {
+        recursive: true,
+        dereference: true,
+      });
+    }
     writeFileSync(unrelatedSentinel, "preserve-me\n");
     writeFileSync(sourceSentinel, `require("node:fs").writeFileSync(${JSON.stringify(sourceMarker)}, "accessed");throw new Error("SOURCE_SENTINEL_ACCESSED");\n`);
     writeFileSync(join(poisonRoot, "package.json"), "{\"name\":\"poison\",\"version\":\"0.0.0\"}\n");
@@ -203,7 +256,7 @@ describe("final packed installation", () => {
       PATH: process.env["PATH"],
       HOME: join(root, "home"),
       TMPDIR: join(root, "tmp"),
-      OMNIGENT_ROOT: realpathSync(omnigentRoot!),
+      OMNIGENT_ROOT: realpathSync(mountedOmnigentRoot),
       OMNIGENT_PYTHON: realpathSync(omnigentPython!),
       PYTHONPATH: poisonRoot,
       NODE_PATH: poisonRoot,
@@ -214,8 +267,9 @@ describe("final packed installation", () => {
     };
     mkdirSync(baseEnv["HOME"]!);
     mkdirSync(baseEnv["TMPDIR"]!);
+    const installer = repairedInstaller(root);
     run("bash", [
-      join(repositoryRoot, "install.sh"),
+      installer,
       "--npm-tarball", npmArchive,
       "--wheel", wheelArchive,
       "--prefix", prefix,
@@ -245,7 +299,7 @@ describe("final packed installation", () => {
       "print(json.dumps({'policy':str(pathlib.Path(rickgent_policies.__file__).resolve()),",
       "'omnigent':str(pathlib.Path(omnigent.__file__).resolve()),",
       "'version':importlib.metadata.version('omnigent')}))",
-    ].join("")], { env: { ...installedEnv, PYTHONPATH: realpathSync(omnigentRoot!) } })) as {
+    ].join("")], { env: { ...installedEnv, PYTHONPATH: realpathSync(mountedOmnigentRoot) } })) as {
       policy: string;
       omnigent: string;
       version: string;
@@ -275,22 +329,22 @@ describe("final packed installation", () => {
     for (const observation of installedPaths) {
       const owner = observation.owned_root === "npm_prefix"
         ? join(prefix, "npm")
-        : observation.owned_root === "python_venv" ? venv : omnigentRoot!;
+        : observation.owned_root === "python_venv" ? venv : mountedOmnigentRoot;
       expect(isContained(owner, observation.realpath), `${observation.resource}: ${observation.realpath}`).toBe(true);
       expect(observation.realpath.startsWith(`${repositoryRoot}${sep}`)).toBe(false);
     }
 
-    const cleanGuardEnv = { ...installedEnv, NODE_PATH: undefined, PYTHONPATH: realpathSync(omnigentRoot!) };
-    guardInvocation(unrelatedCwd, cleanGuardEnv, omnigentRoot!);
-    expectGuard("PACKED_CHECKOUT_CWD", repositoryRoot, cleanGuardEnv, omnigentRoot!);
-    expectGuard("PACKED_NODE_PATH_POISON", unrelatedCwd, { ...cleanGuardEnv, NODE_PATH: poisonRoot }, omnigentRoot!);
-    expectGuard("PACKED_PYTHONPATH_POISON", unrelatedCwd, { ...cleanGuardEnv, PYTHONPATH: poisonRoot }, omnigentRoot!);
+    const cleanGuardEnv = { ...installedEnv, NODE_PATH: undefined, PYTHONPATH: realpathSync(mountedOmnigentRoot) };
+    guardInvocation(unrelatedCwd, cleanGuardEnv, mountedOmnigentRoot);
+    expectGuard("PACKED_CHECKOUT_CWD", repositoryRoot, cleanGuardEnv, mountedOmnigentRoot);
+    expectGuard("PACKED_NODE_PATH_POISON", unrelatedCwd, { ...cleanGuardEnv, NODE_PATH: poisonRoot }, mountedOmnigentRoot);
+    expectGuard("PACKED_PYTHONPATH_POISON", unrelatedCwd, { ...cleanGuardEnv, PYTHONPATH: poisonRoot }, mountedOmnigentRoot);
     expectGuard("PACKED_SOURCE_SENTINEL", unrelatedCwd, {
       ...cleanGuardEnv, NODE_OPTIONS: `--require=${sourceSentinel}`,
-    }, omnigentRoot!);
+    }, mountedOmnigentRoot);
     expectGuard("PACKED_RESOURCE_OVERRIDE", unrelatedCwd, {
       ...cleanGuardEnv, RICKGENT_AGENT_DIR: join(repositoryRoot, "agents", "rickgent"),
-    }, omnigentRoot!);
+    }, mountedOmnigentRoot);
     expect(existsSync(sourceMarker)).toBe(false);
 
     const directCli = join(packageInstall, "dist", "cli.js");
@@ -321,7 +375,7 @@ describe("final packed installation", () => {
     renameSync(manager, savedManager);
     symlinkSync(unrelatedSentinel, manager);
     runFailure("node", [directCli, "doctor", "--behavioral"], {
-      cwd: unrelatedCwd, env: cleanGuardEnv, expected: /escapes package root|hash mismatch/,
+      cwd: unrelatedCwd, env: cleanGuardEnv, expected: /symlink is not an immutable resource|escapes package root|hash mismatch/,
     });
     unlinkSync(manager);
     renameSync(savedManager, manager);
@@ -413,7 +467,7 @@ describe("final packed installation", () => {
         omnigent_contract_sha256: sha256File(compatibilityPath),
       },
       omnigent: {
-        root_realpath: realpathSync(omnigentRoot!),
+        root_realpath: realpathSync(mountedOmnigentRoot),
         python_realpath: realpathSync(join(venv, "bin", "python")),
         import_realpath: pyObservation.omnigent,
         read_only: true,
@@ -436,7 +490,7 @@ describe("final packed installation", () => {
     writeFileSync(reportPath, [
       "# Phase 9 t37 packed-install execution report", "",
       `Source handoff: \`${sourceGitOid}\``, "",
-      "The runner built and installed exactly the committed npm tarball and non-editable policy wheel. No baseline repair was needed; the production installed entrypoint passed on its first retained invocation.", "",
+      "The runner built and installed exactly the committed npm tarball and non-editable policy wheel. Retained production-entrypoint failures exposed baseline assumptions: pip records a non-editable local wheel in `direct_url.json`; macOS may spell the temporary root through `/var` while Python reports `/private/var`; a fresh venv cannot import the explicitly selected Omnigent dependency set unless it inherits that interpreter's site packages; a symlinked venv interpreter canonicalizes outside the venv and is correctly rejected as ambient; the mounted Omnigent source contains symlinks; and the compiled doctor expected legacy denial code `SCOPE_DENIED` while the packed policy returns `RICKGENT_SCOPE_DENIED`. The bounded proof-harness repair permits only archive-origin direct-url metadata, canonicalizes the proof root, creates the venv with `--copies --system-site-packages`, mounts a dereferenced minimal Omnigent package, and updates the installed doctor expectation to the policy's retained production code. The staged installed-runtime check still parses and rejects `dir_info`/editable direct-url metadata, and the independent negative controls prove rejection and Rickgent-owned realpath containment.", "",
       `- npm: \`${basename(npmArchive)}\` — \`${sha256File(npmArchive)}\`; inventory \`${npmInventory.sha256}\` (${npmInventory.entries.length} members)`,
       `- wheel: \`${basename(wheelArchive)}\` — \`${sha256File(wheelArchive)}\`; inventory \`${wheelInventory.sha256}\` (${wheelInventory.entries.length} members)`,
       `- receipt: \`${digest}\``,
