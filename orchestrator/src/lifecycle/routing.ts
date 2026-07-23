@@ -56,6 +56,14 @@ export function callSelectModel(
   costBudgetUsd?: number | null,
   softThresholdUsd?: number | null,
 ): RouterVerdict {
+  const selectedPython = process.env["OMNIGENT_PYTHON"];
+  if (selectedPython === undefined || selectedPython === "") {
+    return {
+      result: "DENY",
+      reason: "routing: OMNIGENT_PYTHON is required; ambient python3 is forbidden",
+      code: "ROUTING_PYTHON_NOT_SELECTED",
+    };
+  }
   const payload = JSON.stringify({
     roster,
     role,
@@ -75,7 +83,7 @@ export function callSelectModel(
     "soft_threshold_usd=args['soft_threshold_usd'])))";
 
   try {
-    const stdout = execFileSync("python3", ["-c", script], {
+    const stdout = execFileSync(selectedPython, ["-c", script], {
       encoding: "utf-8",
       input: payload,
       stdio: ["pipe", "pipe", "pipe"],

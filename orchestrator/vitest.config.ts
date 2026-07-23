@@ -3,6 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
+    exclude: ["test/reliability/protected-release.live.test.ts"],
     environment: "node",
     globalSetup: ["./test/global-setup.ts"],
     maxWorkers: 2,

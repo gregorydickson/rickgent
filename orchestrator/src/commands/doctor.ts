@@ -11,6 +11,7 @@ import { runDoctorCheck, type DoctorResult } from "../lifecycle/doctor.js";
 import { execFileSync } from "child_process";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
+import { runBehavioralDoctor, type BehavioralDoctorResult } from "../lifecycle/behavioral-doctor.js";
 
 type CheckStatus = "pass" | "fail";
 
@@ -68,7 +69,9 @@ function readLockfileVersion(): string {
 
 function readPythonVersion(): string {
   try {
-    const output = execFileSync("python3", ["--version"], {
+    const python = process.env["OMNIGENT_PYTHON"];
+    if (python === undefined || python === "") return "unavailable";
+    const output = execFileSync(python, ["--version"], {
       encoding: "utf-8",
       timeout: 10_000,
       stdio: ["ignore", "pipe", "pipe"],
@@ -161,7 +164,23 @@ function formatToolchain(payload: DoctorJson): string {
   ].join("\n");
 }
 
-export async function runDoctorCommand(asJson: boolean): Promise<DoctorResult> {
+export async function runDoctorCommand(asJson: boolean, behavioral = false): Promise<DoctorResult> {
+  if (behavioral) {
+    const python = process.env["OMNIGENT_PYTHON"];
+    const result: BehavioralDoctorResult = python === undefined || python === ""
+      ? {
+          ok: false,
+          mode: "behavioral",
+          authenticated_hosted_evidence: false,
+          checks: [],
+          owned_root: "",
+          cleaned: true,
+          report: "OMNIGENT_PYTHON is required for behavioral doctor",
+        }
+      : runBehavioralDoctor(python);
+    console.log(asJson ? JSON.stringify(result) : result.report);
+    return { ok: result.ok, report: result.report };
+  }
   const { result, payload } = await evaluateDoctor();
   if (asJson) {
     console.log(JSON.stringify(payload));

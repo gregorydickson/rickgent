@@ -1,0 +1,11 @@
+{
+  "schema_version": "rickgent-packaging-corpus/v1",
+  "negative_cases": [
+    "checkout_path",
+    "editable_metadata",
+    "escaping_symlink",
+    "source_node_modules",
+    "repository_fallback",
+    "ambient_python"
+  ]
+}

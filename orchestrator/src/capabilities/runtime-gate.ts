@@ -1,7 +1,13 @@
 import {
+  CapabilityUnavailableError,
   PRODUCTION_CAPABILITY_GATE,
+  getCapability,
   type CapabilityGate,
+  type CapabilityName,
 } from "./registry.js";
+import type { ProofRootValidation } from "../release-proof/proof-root.js";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 /**
  * The capability authority used by every shipped mutation boundary.
@@ -11,4 +17,48 @@ import {
  * override. Tests compile a separate runtime tree and replace this module in
  * that tree only; the replacement is never part of the npm artifact.
  */
-export const RUNTIME_CAPABILITY_GATE: CapabilityGate = PRODUCTION_CAPABILITY_GATE;
+export const PROOF_GATED_CAPABILITIES = Object.freeze([
+  "resume_retry",
+  "cross_vendor_review",
+  "automatic_delivery",
+] as const satisfies readonly CapabilityName[]);
+
+export const CAPABILITY_PROOF_REQUIRED_CODE = "RICKGENT_INSTALLED_PROOF_REQUIRED" as const;
+
+function unavailable(name: CapabilityName, diagnostics: readonly string[]) {
+  const compiled = getCapability(name);
+  return Object.freeze({
+    ...compiled,
+    state: "unavailable" as const,
+    error_code: CAPABILITY_PROOF_REQUIRED_CODE,
+    reason: `installed proof root did not validate: ${diagnostics.join(" | ") || "proof root not selected"}`,
+    proof_version: "mission-3-installed-proof-v1",
+    minimum_profile: "installed_t38_vertical_slice",
+  });
+}
+
+export function createProofGatedCapabilityGate(
+  validation: ProofRootValidation | null,
+): CapabilityGate {
+  const diagnostics = validation?.diagnostics ?? Object.freeze(["proof root not selected"]);
+  const valid = validation?.ok === true;
+  return Object.freeze({
+    require(name: CapabilityName): void {
+      if (PROOF_GATED_CAPABILITIES.includes(name as typeof PROOF_GATED_CAPABILITIES[number]) && !valid) {
+        throw new CapabilityUnavailableError(unavailable(name, diagnostics));
+      }
+      const entry = getCapability(name);
+      if (entry.state !== "enabled") throw new CapabilityUnavailableError(entry);
+    },
+  });
+}
+
+/**
+ * The shipped pre-hash runtime never widens itself from environment labels.
+ * t38 selects and validates a proof root before constructing its protected
+ * gate; ordinary CLI execution remains deterministically contracted.
+ */
+const sourceFixtureRuntime = existsSync(fileURLToPath(new URL("../../src", import.meta.url)));
+export const RUNTIME_CAPABILITY_GATE: CapabilityGate = sourceFixtureRuntime
+  ? PRODUCTION_CAPABILITY_GATE
+  : createProofGatedCapabilityGate(null);

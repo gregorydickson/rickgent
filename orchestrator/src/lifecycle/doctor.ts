@@ -8,15 +8,18 @@ import { createHash } from "crypto";
 import { existsSync, readFileSync, realpathSync } from "fs";
 import { join } from "path";
 import { fileURLToPath } from "url";
+import { resolveInstalledRuntimeFromEnvironment, type InstalledRuntime } from "../install/installed-runtime.js";
 
 export interface DoctorResult {
   ok: boolean;
   report: string;
 }
 
-export async function runDoctorCheck(): Promise<DoctorResult> {
+export async function runDoctorCheck(installed?: InstalledRuntime): Promise<DoctorResult> {
   const checks: { name: string; pass: boolean; detail: string }[] = [];
-  const cliEntrypoint = realpathSync(fileURLToPath(new URL("../../dist/cli.js", import.meta.url)));
+  const packageRoot = fileURLToPath(new URL("../../", import.meta.url));
+  const runtime = installed ?? resolveInstalledRuntimeFromEnvironment(packageRoot);
+  const cliEntrypoint = runtime.cli.realpath;
   const cliSha256 = createHash("sha256").update(readFileSync(cliEntrypoint)).digest("hex");
   const nodeEntrypoint = realpathSync(process.execPath);
   const nodeSha256 = createHash("sha256").update(readFileSync(nodeEntrypoint)).digest("hex");
@@ -32,10 +35,10 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
   // discover external bundles through the same explicit variables consumed by
   // the configured-attachment audit below.
   const repoRoot = new URL("../../../", import.meta.url);
-  const managerDir = process.env.RICKGENT_MANAGER_DIR
-    ?? fileURLToPath(new URL("agents/rickgent/", repoRoot));
-  const workerDir = process.env.RICKGENT_WORKER_DIR
-    ?? fileURLToPath(new URL("agents/rickgent/agents/worker/", repoRoot));
+  void repoRoot;
+  const managerDir = join(runtime.manager.realpath, "..");
+  const workerDir = join(runtime.worker.realpath, "..");
+  const selectedPython = runtime.omnigent_python.realpath;
 
   // 1. build_commit is available
   const commitValue: string = BUILD_COMMIT;
@@ -49,7 +52,7 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
   let omnigentOk = false;
   let omnigentDetail = "";
   try {
-    const version = execFileSync("python3", ["-c", "import importlib.metadata; print(importlib.metadata.version('omnigent'))"], {
+    const version = execFileSync(selectedPython, ["-c", "import importlib.metadata; print(importlib.metadata.version('omnigent'))"], {
       encoding: "utf-8",
       timeout: 10000,
       stdio: ["pipe", "pipe", "pipe"],
@@ -66,7 +69,7 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
   let policiesOk = false;
   let policiesDetail = "";
   try {
-    const result = execFileSync("python3", ["-c", "import rickgent_policies; print('ok')"], {
+    const result = execFileSync(selectedPython, ["-c", "import rickgent_policies; print('ok')"], {
       encoding: "utf-8",
       timeout: 10000,
       stdio: ["pipe", "pipe", "pipe"],
@@ -84,7 +87,7 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
   let registryDetail = "";
   try {
     const result = execFileSync(
-      "python3",
+      selectedPython,
       ["-c", "from omnigent.policies.registry import load_registry; load_registry(extra_modules=['rickgent_policies']); from omnigent.policies.registry import is_registered_handler; print('ok')"],
       { encoding: "utf-8", timeout: 10000, stdio: ["pipe", "pipe", "pipe"], env: pythonEnv },
     ).trim();
@@ -140,7 +143,7 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
   let shimOk = false;
   let shimDetail = "";
   try {
-    const pyCommit = execFileSync("python3", ["-c", "import rickgent_policies; print(rickgent_policies.BUILD_COMMIT)"], {
+    const pyCommit = execFileSync(selectedPython, ["-c", "import rickgent_policies; print(rickgent_policies.BUILD_COMMIT)"], {
       encoding: "utf-8",
       timeout: 10000,
       stdio: ["pipe", "pipe", "pipe"],
@@ -171,7 +174,7 @@ export async function runDoctorCheck(): Promise<DoctorResult> {
       "        errors[label] = str(e)",
       "print(json.dumps(errors))",
     ].join("\n");
-    const raw = execFileSync("python3", ["-"], {
+    const raw = execFileSync(selectedPython, ["-"], {
       encoding: "utf-8",
       timeout: 15000,
       input: py,

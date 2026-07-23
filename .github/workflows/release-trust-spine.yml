@@ -1,0 +1,31 @@
+name: Protected release trust spine
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Absolute protected profile path on the authority-bearing runner
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  protected-release:
+    runs-on: [self-hosted, rickgent-protected]
+    timeout-minutes: 30
+    environment: rickgent-protected-release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.22.0
+      - run: pnpm --dir orchestrator install --frozen-lockfile
+      - name: Prove ordinary-test isolation
+        run: node orchestrator/scripts/assert-protected-test-isolation.mjs
+      - name: Run protected installed release
+        env:
+          RICKGENT_PROTECTED_AUTHORITY: I_ACCEPT_REMOTE_MUTATION
+          RICKGENT_INSTALLED_CLI: ${{ secrets.RICKGENT_INSTALLED_CLI }}
+          RICKGENT_PROTECTED_ADAPTER: ${{ secrets.RICKGENT_PROTECTED_ADAPTER }}
+        run: node orchestrator/scripts/run-protected-release.mjs "${{ inputs.profile }}"

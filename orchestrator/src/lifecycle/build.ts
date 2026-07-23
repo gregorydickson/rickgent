@@ -2383,7 +2383,16 @@ export function verifyPolicyAttachment(agentDir: string, env: NodeJS.ProcessEnv)
   ].join("\n");
 
   try {
-    const stdout = execFileSync("python3", ["-c", py], {
+    const selectedPython = env["OMNIGENT_PYTHON"];
+    if (selectedPython === undefined || selectedPython === "") {
+      return {
+        ok: false,
+        detail: "OMNIGENT_PYTHON is required; ambient python3 is forbidden",
+        managerCount: 0,
+        workerCount: 0,
+      };
+    }
+    const stdout = execFileSync(selectedPython, ["-c", py], {
       encoding: "utf-8",
       timeout: 15000,
       stdio: ["pipe", "pipe", "pipe"],

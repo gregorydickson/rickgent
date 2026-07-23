@@ -1,153 +1,100 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Rickgent installer — detects/installs omnigent, rickgent, and skills for Claude Code + Codex.
-# Idempotent: safe to run multiple times.
+# Archive-only Rickgent installer. It intentionally has no repository-root
+# discovery: every executable byte comes from the two supplied archives.
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-omnigent_pin="6e3c7785"
-omnigent_github="https://github.com/gregorydickson/omnigent.git"
+die() { printf 'RICKGENT_INSTALL_ERROR: %s\n' "$*" >&2; exit 2; }
+note() { printf '==> %s\n' "$*"; }
 
-# --- Helpers ----------------------------------------------------------------
+npm_tarball=""
+policy_wheel=""
+install_prefix=""
+launcher_dir=""
 
-info()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
-ok()    { printf '\033[1;32m  ✓\033[0m %s\n' "$*"; }
-warn()  { printf '\033[1;33m  !\033[0m %s\n' "$*"; }
-fail()  { printf '\033[1;31m  ✗\033[0m %s\n' "$*" >&2; exit 1; }
-
-check_cmd() {
-  command -v "$1" >/dev/null 2>&1
-}
-
-# --- Prerequisites -----------------------------------------------------------
-
-info "Checking prerequisites"
-check_cmd node   || fail "node not found (install Node.js 24+)"
-check_cmd pnpm   || fail "pnpm not found (install pnpm 10+)"
-check_cmd python3 || fail "python3 not found (install Python 3.12+)"
-check_cmd pip3   || fail "pip3 not found (install pip)"
-check_cmd git    || fail "git not found"
-ok "prerequisites satisfied"
-
-# --- omnigent ----------------------------------------------------------------
-
-info "Checking omnigent"
-
-omnigent_installed() {
-  python3 -c "import importlib.metadata; print(importlib.metadata.version('omnigent'))" 2>/dev/null
-}
-
-if omnigent_ver="$(omnigent_installed)"; then
-  ok "omnigent ${omnigent_ver} already installed"
-else
-  warn "omnigent not found — installing"
-
-  # Try sibling directory first
-  omnigent_src=""
-  if [[ -f "$repo_root/../omnigent/setup.py" ]] || [[ -f "$repo_root/../omnigent/pyproject.toml" ]]; then
-    omnigent_src="$(cd "$repo_root/../omnigent" && pwd)"
-    info "Found omnigent source at $omnigent_src"
-  else
-    # Clone from GitHub
-    omnigent_src="$(cd "$repo_root/.." && pwd)/omnigent"
-    info "Cloning omnigent from GitHub to $omnigent_src"
-    git clone "$omnigent_github" "$omnigent_src" || fail "failed to clone omnigent"
-  fi
-
-  (cd "$omnigent_src" && pip3 install -e .) || fail "failed to install omnigent"
-  omnigent_ver="$(omnigent_installed)" || fail "omnigent install verification failed"
-  ok "omnigent ${omnigent_ver} installed"
-fi
-
-# --- rickgent orchestrator ---------------------------------------------------
-
-info "Installing rickgent orchestrator"
-( cd "$repo_root/orchestrator" && pnpm install --frozen-lockfile 2>/dev/null || pnpm install ) \
-  || fail "pnpm install failed"
-( cd "$repo_root/orchestrator" && pnpm build ) || fail "pnpm build failed"
-ok "orchestrator built"
-
-# --- rickgent policies -------------------------------------------------------
-
-info "Installing rickgent policies"
-( cd "$repo_root/rickgent-policies" && pip3 install -e . ) || fail "pip install rickgent-policies failed"
-ok "policies installed"
-
-# --- Verify with doctor (behavioral gate, fail closed) ----------------------
-
-info "Running rickgent doctor"
-if ( cd "$repo_root" && node orchestrator/dist/cli.js doctor ); then
-  ok "doctor passed"
-else
-  fail "rickgent doctor failed — installation is incomplete; aborting (fail closed)"
-fi
-
-# --- Link the rickgent executable onto PATH ----------------------------------
-
-info "Linking rickgent executable"
-
-# Choose the first writable directory already on PATH; fall back to ~/.local/bin.
-link_dir=""
-IFS=":" read -r -a path_dirs <<< "$PATH"
-for candidate in "${path_dirs[@]}"; do
-  [[ -z "$candidate" ]] && continue
-  if [[ -d "$candidate" ]] && [[ -w "$candidate" ]]; then
-    link_dir="$candidate"
-    break
-  fi
-done
-if [[ -z "$link_dir" ]]; then
-  link_dir="$HOME/.local/bin"
-  mkdir -p "$link_dir"
-fi
-
-launcher="$repo_root/rickgent"
-link_path="$link_dir/rickgent"
-# Preserve unrelated user data: only touch the rickgent entry itself.
-if [[ -L "$link_path" || -f "$link_path" ]] && [[ ! -L "$link_path" ]]; then
-  warn "an existing non-symlink rickgent exists at $link_path — leaving it in place (preserves user data)"
-else
-  ln -sfn "$launcher" "$link_path"
-  ok "linked rickgent -> $link_path"
-fi
-# Ensure the launcher is executable.
-chmod +x "$launcher"
-
-# --- Claude Code skills ------------------------------------------------------
-
-info "Installing Claude Code skills globally"
-
-claude_commands_dir="$HOME/.claude/commands"
-mkdir -p "$claude_commands_dir"
-
-for skill_file in "$repo_root/.claude/commands/"*.md; do
-  [[ -f "$skill_file" ]] || continue
-  skill_name="$(basename "$skill_file")"
-  cp "$skill_file" "$claude_commands_dir/"
-  ok "installed /$(basename "$skill_name" .md) for Claude Code"
+while (($#)); do
+  case "$1" in
+    --npm-tarball) (($# >= 2)) || die "--npm-tarball requires a value"; npm_tarball="$2"; shift 2 ;;
+    --wheel) (($# >= 2)) || die "--wheel requires a value"; policy_wheel="$2"; shift 2 ;;
+    --prefix) (($# >= 2)) || die "--prefix requires a value"; install_prefix="$2"; shift 2 ;;
+    --launcher-dir) (($# >= 2)) || die "--launcher-dir requires a value"; launcher_dir="$2"; shift 2 ;;
+    --help)
+      printf 'Usage: install.sh --npm-tarball FILE --wheel FILE --prefix DIR --launcher-dir DIR\n'
+      printf 'Requires absolute OMNIGENT_ROOT and OMNIGENT_PYTHON environment values.\n'
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
 done
 
-# --- Codex skills ------------------------------------------------------------
+[[ -n "$npm_tarball" && -n "$policy_wheel" && -n "$install_prefix" && -n "$launcher_dir" ]] \
+  || die "explicit --npm-tarball, --wheel, --prefix, and --launcher-dir are required"
+[[ -n "${OMNIGENT_ROOT:-}" && -n "${OMNIGENT_PYTHON:-}" ]] \
+  || die "OMNIGENT_ROOT and OMNIGENT_PYTHON are required"
 
-info "Installing Codex skills globally"
-
-codex_skills_dir="$HOME/.codex/skills"
-mkdir -p "$codex_skills_dir"
-
-for skill_dir in "$repo_root/.codex/skills"/*; do
-  [[ -d "$skill_dir" ]] || continue
-  skill_name="$(basename "$skill_dir")"
-  rm -rf "$codex_skills_dir/$skill_name"
-  cp -R "$skill_dir" "$codex_skills_dir/"
-  ok "installed $skill_name for Codex"
+for absolute_input in "$npm_tarball" "$policy_wheel" "$install_prefix" "$launcher_dir" "$OMNIGENT_ROOT" "$OMNIGENT_PYTHON"; do
+  [[ "$absolute_input" = /* ]] || die "all archive, root, interpreter, and destination paths must be absolute: $absolute_input"
 done
+[[ -f "$npm_tarball" ]] || die "npm tarball not found: $npm_tarball"
+[[ "$npm_tarball" == *.tgz ]] || die "npm archive must be a .tgz"
+[[ -f "$policy_wheel" ]] || die "policy wheel not found: $policy_wheel"
+[[ "$policy_wheel" == *.whl ]] || die "policy archive must be a wheel"
+[[ -d "$OMNIGENT_ROOT" ]] || die "OMNIGENT_ROOT is not a directory"
+[[ -x "$OMNIGENT_PYTHON" ]] || die "OMNIGENT_PYTHON is not executable"
 
-# --- Done --------------------------------------------------------------------
+command -v node >/dev/null || die "node is required"
+command -v npm >/dev/null || die "npm is required"
 
-echo
-info "Rickgent installation complete"
-echo
-echo "  CLI:      node $repo_root/orchestrator/dist/cli.js <command>"
-echo "  Commands: rickgent prd | refine | build | pipeline | citadel | szechuan | anatomy | microverse | cronenberg"
-echo "  Skills:   /rickgent-prd, /rickgent-models (Claude Code + Codex)"
-echo "  Verify:   node $repo_root/orchestrator/dist/cli.js doctor"
+npm_root="$install_prefix/npm"
+venv_root="$install_prefix/python"
+tmp_root="$install_prefix/.installing"
+mkdir -p "$install_prefix" "$launcher_dir"
+[[ ! -e "$tmp_root" ]] || die "interrupted installation staging exists: $tmp_root"
+mkdir "$tmp_root"
+cleanup() { rm -rf -- "$tmp_root"; }
+trap cleanup EXIT INT TERM HUP
+
+note "Installing immutable npm archive"
+mkdir "$tmp_root/npm"
+npm install --prefix "$tmp_root/npm" --ignore-scripts --omit=dev --no-audit --no-fund "$npm_tarball"
+package_root="$tmp_root/npm/node_modules/rickgent"
+[[ -x "$package_root/dist/cli.js" ]] || die "archive has no executable dist/cli.js"
+for resource in agents/rickgent/config.yaml agents/rickgent/agents/worker/config.yaml runtime/resource-map.json proof/metadata.json validators LICENSE; do
+  [[ -e "$package_root/$resource" ]] || die "archive resource missing: $resource"
+done
+[[ ! -e "$package_root/src" && ! -e "$package_root/test" ]] || die "source/test content is forbidden in installed archive"
+
+note "Installing non-editable policy wheel"
+"$OMNIGENT_PYTHON" -m venv --system-site-packages "$tmp_root/python"
+"$tmp_root/python/bin/python" -m pip install --no-deps --no-cache-dir "$policy_wheel"
+site_json="$("$tmp_root/python/bin/python" -c 'import importlib.metadata,json; d=importlib.metadata.distribution("rickgent-policies"); print(json.dumps([str(p) for p in d.files or []]))')"
+[[ "$site_json" != *direct_url.json* && "$site_json" != *".pth"* && "$site_json" != *".egg-link"* ]] \
+  || die "editable policy metadata is forbidden"
+
+rm -rf -- "$npm_root" "$venv_root"
+mv "$tmp_root/npm" "$npm_root"
+mv "$tmp_root/python" "$venv_root"
+
+installed_cli="$npm_root/node_modules/rickgent/dist/cli.js"
+launcher="$launcher_dir/rickgent"
+launcher_tmp="$launcher.tmp.$$"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'set -euo pipefail\n'
+  printf 'export OMNIGENT_ROOT=%q\n' "$OMNIGENT_ROOT"
+  printf 'export OMNIGENT_PYTHON=%q\n' "$venv_root/bin/python"
+  printf 'export PYTHONPATH=%q\n' "$OMNIGENT_ROOT"
+  printf 'exec node %q "$@"\n' "$installed_cli"
+} >"$launcher_tmp"
+chmod 0755 "$launcher_tmp"
+mv "$launcher_tmp" "$launcher"
+
+note "Running installed behavioral doctor"
+OMNIGENT_ROOT="$OMNIGENT_ROOT" \
+OMNIGENT_PYTHON="$venv_root/bin/python" \
+PYTHONPATH="$OMNIGENT_ROOT" \
+node "$installed_cli" doctor --behavioral
+
+trap - EXIT INT TERM HUP
+cleanup
+printf 'Installed rickgent launcher: %s\n' "$launcher"

@@ -372,101 +372,12 @@ export function buildAttemptRunnerProviders(
       // as same-vendor).  The approved distinction is passed into the policy
       // event (verdict evidence).
 
-      // t32 scrutiny round 3: Persist reviewer identity receipts on the
-      // t32 scrutiny round 4: Reviewer identity is derived from the REAL
-      // review phase context (phase execution ID and context digest), NOT
-      // fabricated as hardcoded "reviewer"/"reviewer"/"reviewer" strings.
-      // The dispatch_id is the real review phase execution ID, and the
-      // harness/model are derived from the review context digest to ensure
-      // they differ from the implementer's identity (genuine distinction).
+      // Reviewer receipts are accepted only when a separately supervised
+      // production dispatch has already persisted requested, invoked, and
+      // chat.db-observed evidence. This provider never synthesizes identity
+      // from phase labels, IDs, or context digests.
       const reviewerRequestedEvidenceId = `evidence-identity-requested-reviewer-${attemptId}`;
       const reviewerObservedEvidenceId = `evidence-identity-observed-reviewer-${attemptId}`;
-      // Only persist if not already present (idempotent).
-      if (store.readEvidence(reviewerRequestedEvidenceId) === undefined) {
-        const reviewerDispatchId = `review-${phase.phaseExecutionId}`;
-        // Derive reviewer harness/model from the review phase context digest
-        // (NOT hardcoded "reviewer").  The context digest is unique per
-        // review phase, ensuring the reviewer identity differs from the
-        // implementer's identity.
-        const reviewerHarness = `reviewer-${phase.contextDigest.slice(7, 19)}`;
-        const reviewerModel = `review-model-${phase.contextDigest.slice(7, 15)}`;
-        const reviewerVendor = `review-vendor-${phase.phaseExecutionId.slice(-8)}`;
-        const reviewerBundleDigest = `sha256:reviewer-bundle-${phase.phaseExecutionId}`;
-        const reviewerConfigDigest = phase.contextDigest;
-        const reviewerContextDigest = phase.contextDigest;
-        store.persistAuthorityEvidence({
-          evidenceId: reviewerRequestedEvidenceId,
-          attemptId,
-          phaseExecutionId: phase.phaseExecutionId,
-          contextId: phase.contextId,
-          producerService: "IdentityCapture",
-          scope: "identity-receipt:requested:reviewer",
-          schemaVersion: "rickgent-identity-receipt/v1",
-          payload: {
-            producer: "requested",
-            dispatch_id: reviewerDispatchId,
-            role: "reviewer",
-            canonical_harness: reviewerHarness,
-            canonical_model: reviewerModel,
-            canonical_vendor: reviewerVendor,
-            bundle_digest: reviewerBundleDigest,
-            config_digest: reviewerConfigDigest,
-            context_digest: reviewerContextDigest,
-            provenance: "review-phase",
-          },
-          idempotencyKey: `identity-receipt:requested:reviewer:${attemptId}`,
-          observedAt: createdAt,
-        }, mintCapability);
-        store.persistAuthorityEvidence({
-          evidenceId: `evidence-identity-invoked-reviewer-${attemptId}`,
-          attemptId,
-          phaseExecutionId: phase.phaseExecutionId,
-          contextId: phase.contextId,
-          producerService: "IdentityCapture",
-          scope: "identity-receipt:invoked:reviewer",
-          schemaVersion: "rickgent-identity-receipt/v1",
-          payload: {
-            producer: "invoked",
-            dispatch_id: reviewerDispatchId,
-            role: "reviewer",
-            canonical_harness: reviewerHarness,
-            canonical_model: reviewerModel,
-            canonical_vendor: reviewerVendor,
-            bundle_digest: reviewerBundleDigest,
-            config_digest: reviewerConfigDigest,
-            context_digest: reviewerContextDigest,
-            provenance: "review-phase",
-            invoked_argv0: "review-hook",
-          },
-          idempotencyKey: `identity-receipt:invoked:reviewer:${attemptId}`,
-          observedAt: createdAt,
-        }, mintCapability);
-        store.persistAuthorityEvidence({
-          evidenceId: reviewerObservedEvidenceId,
-          attemptId,
-          phaseExecutionId: phase.phaseExecutionId,
-          contextId: phase.contextId,
-          producerService: "IdentityCapture",
-          scope: "identity-receipt:observed:reviewer",
-          schemaVersion: "rickgent-identity-receipt/v1",
-          payload: {
-            producer: "observed",
-            dispatch_id: reviewerDispatchId,
-            role: "reviewer",
-            canonical_harness: reviewerHarness,
-            canonical_model: reviewerModel,
-            canonical_vendor: reviewerVendor,
-            bundle_digest: reviewerBundleDigest,
-            config_digest: reviewerConfigDigest,
-            context_digest: reviewerContextDigest,
-            provenance: "isolated-omnigent-chat-db-root-conversation",
-            conversation_id: `review-conv-${phase.phaseExecutionId}`,
-            root_conversation_id: `review-conv-${phase.phaseExecutionId}`,
-          },
-          idempotencyKey: `identity-receipt:observed:reviewer:${attemptId}`,
-          observedAt: createdAt,
-        }, mintCapability);
-      }
 
       let crossVendorResult: CrossVendorDistinctionResult;
       const implementerRequestedEvidence = store.readEvidence(

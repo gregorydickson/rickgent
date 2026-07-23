@@ -1,0 +1,177 @@
+import { readFileSync } from "node:fs";
+import { receiptDigest } from "./canonical.js";
+import { validateAgainstSchema } from "./schema-validator.js";
+
+export type ProofDiagnosticCode =
+  | "PROOF_MALFORMED"
+  | "PROOF_SCHEMA_INVALID"
+  | "PROOF_DIGEST_MISMATCH"
+  | "PROOF_BINDING_MISMATCH"
+  | "PROOF_FIXTURE_FORBIDDEN"
+  | "PROOF_SECRET_PRESENT"
+  | "PROOF_CHECK_INCOMPLETE"
+  | "PROOF_CHECK_FAILED"
+  | "PROOF_EVIDENCE_INCOMPLETE"
+  | "PROOF_RUN_INCOMPLETE"
+  | "PROOF_STALE";
+
+export interface ProofDiagnostic {
+  readonly code: ProofDiagnosticCode;
+  readonly detail: string;
+}
+
+export interface ReceiptValidationResult {
+  readonly ok: boolean;
+  readonly diagnostics: readonly ProofDiagnostic[];
+  readonly digest: string | null;
+}
+
+export interface ReceiptExpectations {
+  readonly sourceGitOid: string;
+  readonly releaseId: string;
+  readonly releaseSha256: string;
+  readonly buildId: string;
+  readonly buildSha256: string;
+  readonly npmArchiveSha256: string;
+  readonly wheelArchiveSha256: string;
+  readonly requiredCheckIds: readonly string[];
+  readonly requiredCorpusIds?: readonly string[];
+  readonly packedInstallReceiptSha256?: string;
+  readonly now?: Date;
+  readonly maxAgeMs?: number;
+}
+
+function parse(value: unknown, diagnostics: ProofDiagnostic[]): Record<string, unknown> | null {
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      diagnostics.push({ code: "PROOF_MALFORMED", detail: "receipt is not valid JSON" });
+      return null;
+    }
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    diagnostics.push({ code: "PROOF_MALFORMED", detail: "receipt must be an object" });
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function array(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function containsSecret(value: unknown): boolean {
+  const serialized = JSON.stringify(value);
+  return /(?:gh[opsu]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{16,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|authorization["']?\s*:\s*["']?(?:bearer|token))/i.test(serialized);
+}
+
+function commonSemanticChecks(
+  receipt: Record<string, unknown>,
+  expected: ReceiptExpectations,
+  diagnostics: ProofDiagnostic[],
+): void {
+  if (receipt["digest"] !== receiptDigest(receipt)) diagnostics.push({ code: "PROOF_DIGEST_MISMATCH", detail: "canonical digest mismatch" });
+  const binding = record(receipt["binding"]);
+  const release = record(binding["release"]);
+  const build = record(binding["build"]);
+  const mismatch =
+    binding["source_git_oid"] !== expected.sourceGitOid ||
+    release["id"] !== expected.releaseId ||
+    release["sha256"] !== expected.releaseSha256 ||
+    build["id"] !== expected.buildId ||
+    build["sha256"] !== expected.buildSha256;
+  if (mismatch) diagnostics.push({ code: "PROOF_BINDING_MISMATCH", detail: "release/build/source binding mismatch" });
+  const corpora = array(binding["corpora"]).map(record);
+  for (const id of expected.requiredCorpusIds ?? []) {
+    if (!corpora.some((corpus) => corpus["id"] === id)) diagnostics.push({ code: "PROOF_BINDING_MISMATCH", detail: `required corpus missing: ${id}` });
+  }
+  const evidence = record(receipt["evidence"]);
+  const items = array(evidence["items"]).map(record);
+  if (evidence["contains_raw_secrets"] !== false || containsSecret(receipt)) diagnostics.push({ code: "PROOF_SECRET_PRESENT", detail: "raw secret evidence is forbidden" });
+  if (items.some((item) => item["classification"] === "fixture")) diagnostics.push({ code: "PROOF_FIXTURE_FORBIDDEN", detail: "fixture evidence cannot restore production capability" });
+  const ids = new Set(items.map((item) => item["evidence_id"]).filter((id): id is string => typeof id === "string"));
+  const checks = array(receipt["checks"]).map(record);
+  const checkIds = new Set(checks.map((check) => check["check_id"]));
+  for (const required of expected.requiredCheckIds) {
+    if (!checkIds.has(required)) diagnostics.push({ code: "PROOF_CHECK_INCOMPLETE", detail: `required check missing: ${required}` });
+  }
+  for (const check of checks) {
+    if (check["required"] !== true || check["outcome"] !== "pass") diagnostics.push({ code: "PROOF_CHECK_FAILED", detail: `non-passing required check: ${String(check["check_id"])}` });
+    for (const evidenceId of array(check["evidence_ids"])) {
+      if (typeof evidenceId !== "string" || !ids.has(evidenceId)) diagnostics.push({ code: "PROOF_EVIDENCE_INCOMPLETE", detail: `unknown check evidence: ${String(evidenceId)}` });
+    }
+  }
+}
+
+function finish(receipt: Record<string, unknown> | null, diagnostics: ProofDiagnostic[]): ReceiptValidationResult {
+  return Object.freeze({
+    ok: receipt !== null && diagnostics.length === 0,
+    diagnostics: Object.freeze(diagnostics),
+    digest: receipt === null ? null : receiptDigest(receipt),
+  });
+}
+
+export function validatePackedInstallReceipt(
+  value: unknown,
+  schema: Record<string, unknown>,
+  expected: ReceiptExpectations,
+): ReceiptValidationResult {
+  const diagnostics: ProofDiagnostic[] = [];
+  const receipt = parse(value, diagnostics);
+  if (receipt === null) return finish(null, diagnostics);
+  const schemaErrors = validateAgainstSchema(receipt, schema);
+  if (schemaErrors.length > 0) diagnostics.push({ code: "PROOF_SCHEMA_INVALID", detail: schemaErrors.join("; ") });
+  commonSemanticChecks(receipt, expected, diagnostics);
+  const archives = array(record(receipt["binding"])["archives"]).map(record);
+  if (
+    archives.find((archive) => archive["kind"] === "npm_tarball")?.["sha256"] !== expected.npmArchiveSha256 ||
+    archives.find((archive) => archive["kind"] === "python_wheel")?.["sha256"] !== expected.wheelArchiveSha256
+  ) diagnostics.push({ code: "PROOF_BINDING_MISMATCH", detail: "archive binding mismatch" });
+  return finish(receipt, diagnostics);
+}
+
+export function validateVerticalSliceReceipt(
+  value: unknown,
+  schema: Record<string, unknown>,
+  expected: ReceiptExpectations,
+): ReceiptValidationResult {
+  const diagnostics: ProofDiagnostic[] = [];
+  const receipt = parse(value, diagnostics);
+  if (receipt === null) return finish(null, diagnostics);
+  const schemaErrors = validateAgainstSchema(receipt, schema);
+  if (schemaErrors.length > 0) diagnostics.push({ code: "PROOF_SCHEMA_INVALID", detail: schemaErrors.join("; ") });
+  commonSemanticChecks(receipt, expected, diagnostics);
+  const binding = record(receipt["binding"]);
+  if (
+    binding["npm_archive_sha256"] !== expected.npmArchiveSha256 ||
+    binding["wheel_archive_sha256"] !== expected.wheelArchiveSha256 ||
+    binding["packed_install_receipt_sha256"] !== expected.packedInstallReceiptSha256
+  ) diagnostics.push({ code: "PROOF_BINDING_MISMATCH", detail: "archive or packed-receipt linkage mismatch" });
+  const runs = array(receipt["runs"]).map(record);
+  if (runs.length !== 2 || new Set(runs.map((run) => run["run_id"])).size !== 2) diagnostics.push({ code: "PROOF_RUN_INCOMPLETE", detail: "exactly two independent runs are required" });
+  const cutoff = (expected.now ?? new Date()).getTime() - (expected.maxAgeMs ?? 7 * 24 * 60 * 60 * 1000);
+  for (const run of runs) {
+    const attempts = array(run["attempts"]).map(record);
+    if (
+      attempts.length !== 2 ||
+      attempts[0]?.["phase"] !== "crash" ||
+      attempts[0]?.["death_observed"] !== true ||
+      attempts[1]?.["phase"] !== "resume" ||
+      attempts[1]?.["death_observed"] !== false
+    ) diagnostics.push({ code: "PROOF_RUN_INCOMPLETE", detail: `crash/resume topology incomplete: ${String(run["run_id"])}` });
+    const started = attempts[0]?.["started_at"];
+    if (typeof started !== "string" || Date.parse(started) < cutoff) diagnostics.push({ code: "PROOF_STALE", detail: `run is stale: ${String(run["run_id"])}` });
+  }
+  return finish(receipt, diagnostics);
+}
+
+export function readJsonFile(path: string): unknown {
+  return JSON.parse(readFileSync(path, "utf8"));
+}

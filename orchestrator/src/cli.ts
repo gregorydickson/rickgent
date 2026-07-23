@@ -59,7 +59,7 @@ Usage:
   rickgent status [--deep]     Read-only SQLite lifecycle observation
   rickgent metrics [--json]    SQLite lifecycle + legacy diagnostics
   rickgent reconcile           Unavailable (exit 3)
-  rickgent doctor [--json]     Read-only health and capability contract
+  rickgent doctor [--json] [--behavioral]  Read-only audit or explicit installed proof
   rickgent verdict <check> --json
   rickgent --version
   rickgent --build-commit
@@ -114,7 +114,7 @@ ${formatPublicSurfaceMatrixText()}
 `;
 
 const SIMPLE_COMMAND_USAGE: Readonly<Record<string, string>> = {
-  doctor: "Usage: rickgent doctor [--json]",
+  doctor: "Usage: rickgent doctor [--json] [--behavioral]",
   status: "Usage: rickgent status [--deep]",
   metrics: "Usage: rickgent metrics [--json]",
   reconcile: "Usage: rickgent reconcile",
@@ -141,7 +141,7 @@ const BUILD_OPTIONS: OptionSpec = {
 };
 
 const COMMAND_OPTIONS: Readonly<Record<string, { options: OptionSpec; maxPositionals: number }>> = {
-  doctor: { options: { ...HELP_OPTIONS, "--json": "boolean" }, maxPositionals: 0 },
+  doctor: { options: { ...HELP_OPTIONS, "--json": "boolean", "--behavioral": "boolean" }, maxPositionals: 0 },
   status: { options: { ...HELP_OPTIONS, "--deep": "boolean" }, maxPositionals: 0 },
   metrics: { options: { ...HELP_OPTIONS, "--json": "boolean" }, maxPositionals: 0 },
   reconcile: { options: HELP_OPTIONS, maxPositionals: 0 },
@@ -333,7 +333,7 @@ function requireBuildCapabilities(rest: string[]): void {
 
 async function runDoctor(rest: string[]): Promise<void> {
   const { runDoctorCommand } = await import("./commands/doctor.js");
-  const result = await runDoctorCommand(rest.includes("--json"));
+  const result = await runDoctorCommand(rest.includes("--json"), rest.includes("--behavioral"));
   if (!result.ok) process.exit(1);
 }
 
