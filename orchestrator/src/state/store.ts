@@ -2793,6 +2793,82 @@ export class StateStore {
       return this.#transitionResult(command, transition, command.expectedVersion + 1, inputDigest, evidence);
   }
 
+  /**
+   * t31 scrutiny round 4: Resolve the oracle projection for an attempt
+   * WITHOUT evaluating or persisting.  This exposes the store's identity
+   * binding validation (whether the referenced identity receipt evidence IDs
+   * resolve to coherent identity receipts) so tests can verify the store
+   * rejects arbitrary/fabricated evidence IDs.
+   */
+  resolveAttemptOracleProjectionForTesting(attemptId: string): { readonly attemptState: string; readonly projection: AttemptOracleProjection } {
+    return this.#resolveAttemptOracleProjection(attemptId);
+  }
+
+  /**
+   * t34 scrutiny round 4: Resolve a real execution context for a run's
+   * delivery intent ownerContextId/ownerContextDigest.  The delivery intent
+   * requires a real execution_contexts row linked to an attempt in the run.
+   * This method queries the first attempt's latest execution context for the
+   * run and returns its context_id and context_digest.
+   *
+   * @throws if no execution context is found for the run.
+   */
+  resolveDeliveryOwnerContext(runId: string): { readonly contextId: string; readonly contextDigest: string } {
+    const db = this.#requireDatabase();
+    const row = db.prepare(`
+      SELECT c.context_id, c.context_digest
+      FROM execution_contexts c
+      JOIN attempts a ON a.attempt_id = c.attempt_id
+      WHERE a.run_id = ?
+      ORDER BY c.created_at DESC, c.context_id DESC LIMIT 1
+    `).get(runId) as MutableStateRecord | undefined;
+    if (row === undefined) {
+      throw new StateStoreError("RICKGENT_STATE_RESUME_INCOMPATIBLE", "no execution context found for delivery run", { databasePath: this.location.databasePath });
+    }
+    return Object.freeze({
+      contextId: String(row.context_id),
+      contextDigest: String(row.context_digest),
+    });
+  }
+
+  /**
+   * t34 scrutiny round 4: Read the real run state version for the delivery
+   * decision transition.  The recordDecision transition requires the exact
+   * expected run state version (not a hardcoded 0 default).
+   */
+  readRunStateVersion(runId: string): number {
+    const db = this.#requireDatabase();
+    const row = db.prepare("SELECT state_version FROM runs WHERE run_id = ?").get(runId) as MutableStateRecord | undefined;
+    if (row === undefined) {
+      throw new StateStoreError("RICKGENT_STATE_RESUME_INCOMPATIBLE", "run not found for state version query", { databasePath: this.location.databasePath });
+    }
+    return Number(row.state_version);
+  }
+
+  /**
+   * t34 scrutiny round 4: Resolve the real cleanup record ID for a run's
+   * delivery decision.  The recordDecision requires a cleanup_records row
+   * with group_dead=1, resources_absent=1, lease_release_eligible=1, linked
+   * to an attempt in the run.  This method queries the first such cleanup
+   * record for the run.
+   *
+   * @throws if no valid cleanup record is found for the run.
+   */
+  resolveRunCleanupRecordId(runId: string): string {
+    const db = this.#requireDatabase();
+    const row = db.prepare(`
+      SELECT cr.cleanup_record_id
+      FROM cleanup_records cr
+      JOIN attempts a ON a.attempt_id = cr.attempt_id
+      WHERE a.run_id = ? AND cr.group_dead = 1 AND cr.resources_absent = 1 AND cr.lease_release_eligible = 1
+      ORDER BY cr.created_at DESC LIMIT 1
+    `).get(runId) as MutableStateRecord | undefined;
+    if (row === undefined) {
+      throw new StateStoreError("RICKGENT_STATE_RESUME_INCOMPATIBLE", "no valid cleanup record found for delivery run", { databasePath: this.location.databasePath });
+    }
+    return String(row.cleanup_record_id);
+  }
+
   /** Resolve, evaluate, and persist one attempt oracle decision in the same immediate transaction. */
   evaluateAndPersistAttemptOracle(request: EvaluateAttemptOracleRequest): PersistedAttemptOracleDecision {
     if (request.attemptId.length === 0 || request.idempotencyKey.length === 0) throw new TypeError("oracle attempt id and idempotency key are required");
@@ -4472,6 +4548,75 @@ export class StateStore {
     }
   }
 
+  /**
+   * t31 scrutiny round 4: Validate that the three referenced identity receipt
+   * evidence IDs (requested/invoked/observed) resolve to ACTUAL identity
+   * receipt rows and form a coherent set.
+   *
+   * Each evidence ID must resolve to an evidence row with:
+   *   - schema_version = 'rickgent-identity-receipt/v1'
+   *   - producer_service = 'IdentityCapture'
+   *   - The correct producer role in the payload (requested/invoked/observed)
+   *
+   * The three receipts must form a coherent set:
+   *   - All three share the same dispatch_id
+   *   - The canonical_harness matches across all three (where non-null)
+   *   - The canonical_model matches across all three (where non-null)
+   *
+   * Returns true only if all checks pass.  Returns false if any evidence ID
+   * does not resolve, is not an identity receipt, has the wrong role, or if
+   * the receipts are incoherent.
+   */
+  #validateIdentityReceiptSet(
+    db: DatabaseSync,
+    attemptId: string,
+    requestedId: string | null,
+    invokedId: string | null,
+    observedId: string | null,
+  ): boolean {
+    if (requestedId === null || invokedId === null || observedId === null) return false;
+    const ids = [
+      { id: requestedId, expectedProducer: "requested" },
+      { id: invokedId, expectedProducer: "invoked" },
+      { id: observedId, expectedProducer: "observed" },
+    ];
+    interface IdentityReceiptRow {
+      readonly schema_version: string;
+      readonly producer_service: string;
+      readonly inline_payload_json: string;
+    }
+    const receipts: Array<{ readonly producer: string; readonly dispatch_id: string; readonly canonical_harness: string | null; readonly canonical_model: string | null }> = [];
+    for (const { id, expectedProducer } of ids) {
+      const row = db.prepare(
+        "SELECT schema_version, producer_service, inline_payload_json FROM evidence WHERE evidence_id = ? AND attempt_id = ?",
+      ).get(id, attemptId) as IdentityReceiptRow | undefined;
+      if (row === undefined) return false;
+      // Must be an identity receipt with the correct schema and producer.
+      if (String(row.schema_version) !== "rickgent-identity-receipt/v1") return false;
+      if (String(row.producer_service) !== "IdentityCapture") return false;
+      const payload = this.#parseJsonObject(String(row.inline_payload_json), "identity receipt evidence");
+      const producer = typeof payload.producer === "string" ? payload.producer : null;
+      if (producer !== expectedProducer) return false;
+      const dispatchId = typeof payload.dispatch_id === "string" ? payload.dispatch_id : null;
+      if (dispatchId === null) return false;
+      const harness = payload.canonical_harness === null || payload.canonical_harness === undefined
+        ? null : (typeof payload.canonical_harness === "string" ? payload.canonical_harness : null);
+      const model = payload.canonical_model === null || payload.canonical_model === undefined
+        ? null : (typeof payload.canonical_model === "string" ? payload.canonical_model : null);
+      receipts.push({ producer, dispatch_id: dispatchId, canonical_harness: harness, canonical_model: model });
+    }
+    // Coherence: all three receipts must share the same dispatch_id.
+    const dispatchIds = new Set(receipts.map((r) => r.dispatch_id));
+    if (dispatchIds.size !== 1) return false;
+    // Coherence: canonical_harness must match across all non-null receipts.
+    const harnesses = receipts.map((r) => r.canonical_harness).filter((h): h is string => h !== null);
+    if (harnesses.length > 0 && new Set(harnesses).size !== 1) return false;
+    // Coherence: canonical_model must match across all non-null receipts.
+    const models = receipts.map((r) => r.canonical_model).filter((m): m is string => m !== null);
+    if (models.length > 0 && new Set(models).size !== 1) return false;
+    return true;
+  }
+
   #resolveAttemptOracleProjection(attemptId: string): { readonly attemptState: string; readonly projection: AttemptOracleProjection } {
     const db = this.#requireDatabase();
     const lineage = db.prepare(`
@@ -4976,14 +5121,21 @@ export class StateStore {
       ) this.#resumeIncompatible("oracle remediation row is not bound to exact output evidence");
       add("evidence", String(remediation.output_evidence_id), String(remediation.evidence_content_digest), ticketInstanceId, attemptId, sealed);
     }
-    // t31 scrutiny round 3: Collect identity binding evidence as a REQUIRED
+    // t31 scrutiny round 4: Collect identity binding evidence as a REQUIRED
     // Oracle input.  The identity binding evidence (oracle_input_class =
     // "identity_bound_completion") is persisted by the oracle provider
     // before calling the CompletionService.  The store resolves it and
     // includes it in the projection so the Oracle can CONSUME (verify) it.
-    // The store also verifies that the referenced identity receipt evidence
-    // IDs (requested/invoked/observed) actually exist as evidence rows for
-    // this attempt.  If they don't, the binding evidence is not included
+    //
+    // The store verifies that the referenced identity receipt evidence IDs
+    // (requested/invoked/observed) resolve to ACTUAL identity receipt rows
+    // (schema_version = rickgent-identity-receipt/v1, producer_service =
+    // IdentityCapture) and that they form a COHERENT set:
+    //   - Each receipt has the correct producer role (requested/invoked/observed)
+    //   - All three receipts share the same dispatch_id
+    //   - The canonical_harness and canonical_model match across all three
+    // If any evidence ID does not resolve to a real identity receipt, or if
+    // the receipts are incoherent, the binding evidence is NOT included
     // (the Oracle will reject with missing_input_class:identity_binding).
     const identityBindingEvidence = db.prepare(`
       SELECT * FROM evidence
@@ -4997,14 +5149,12 @@ export class StateStore {
       const requestedId = typeof sealed.requested_evidence_id === "string" ? sealed.requested_evidence_id : null;
       const invokedId = typeof sealed.invoked_evidence_id === "string" ? sealed.invoked_evidence_id : null;
       const observedId = typeof sealed.observed_evidence_id === "string" ? sealed.observed_evidence_id : null;
-      // Verify the referenced identity receipt evidence IDs actually exist.
-      const allExist = [requestedId, invokedId, observedId].every((id) => {
-        if (id === null) return false;
-        const row = db.prepare("SELECT 1 FROM evidence WHERE evidence_id = ? AND attempt_id = ?").get(id, attemptId);
-        return row !== undefined;
-      });
+      // t31 scrutiny round 4: Verify the referenced identity receipt evidence
+      // IDs resolve to ACTUAL identity receipt rows with correct roles and
+      // coherent set (same dispatch_id, matching harness/model).
+      const identityReceiptsValid = this.#validateIdentityReceiptSet(db, attemptId, requestedId, invokedId, observedId);
       if (
-        allExist &&
+        identityReceiptsValid &&
         String(identityBindingEvidence.content_digest) === sha256Text(canonicalJson(sealed))
       ) {
         add("evidence", String(identityBindingEvidence.evidence_id), String(identityBindingEvidence.content_digest), ticketInstanceId, attemptId, sealed);

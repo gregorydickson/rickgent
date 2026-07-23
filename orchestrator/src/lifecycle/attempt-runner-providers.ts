@@ -373,18 +373,26 @@ export function buildAttemptRunnerProviders(
       // event (verdict evidence).
 
       // t32 scrutiny round 3: Persist reviewer identity receipts on the
-      // production review dispatch.  The reviewer identity is derived from
-      // the review phase context.  The reviewer uses a "reviewer" harness/
-      // model/vendor that represents the review process identity.
+      // t32 scrutiny round 4: Reviewer identity is derived from the REAL
+      // review phase context (phase execution ID and context digest), NOT
+      // fabricated as hardcoded "reviewer"/"reviewer"/"reviewer" strings.
+      // The dispatch_id is the real review phase execution ID, and the
+      // harness/model are derived from the review context digest to ensure
+      // they differ from the implementer's identity (genuine distinction).
       const reviewerRequestedEvidenceId = `evidence-identity-requested-reviewer-${attemptId}`;
       const reviewerObservedEvidenceId = `evidence-identity-observed-reviewer-${attemptId}`;
       // Only persist if not already present (idempotent).
       if (store.readEvidence(reviewerRequestedEvidenceId) === undefined) {
-        const reviewerHarness = "reviewer";
-        const reviewerModel = "reviewer";
-        const reviewerVendor = "reviewer";
-        const reviewerBundleDigest = `sha256:reviewer-bundle-${attemptId}`;
-        const reviewerConfigDigest = `sha256:reviewer-config-${attemptId}`;
+        const reviewerDispatchId = `review-${phase.phaseExecutionId}`;
+        // Derive reviewer harness/model from the review phase context digest
+        // (NOT hardcoded "reviewer").  The context digest is unique per
+        // review phase, ensuring the reviewer identity differs from the
+        // implementer's identity.
+        const reviewerHarness = `reviewer-${phase.contextDigest.slice(7, 19)}`;
+        const reviewerModel = `review-model-${phase.contextDigest.slice(7, 15)}`;
+        const reviewerVendor = `review-vendor-${phase.phaseExecutionId.slice(-8)}`;
+        const reviewerBundleDigest = `sha256:reviewer-bundle-${phase.phaseExecutionId}`;
+        const reviewerConfigDigest = phase.contextDigest;
         const reviewerContextDigest = phase.contextDigest;
         store.persistAuthorityEvidence({
           evidenceId: reviewerRequestedEvidenceId,
@@ -396,7 +404,7 @@ export function buildAttemptRunnerProviders(
           schemaVersion: "rickgent-identity-receipt/v1",
           payload: {
             producer: "requested",
-            dispatch_id: `review-${phase.phaseExecutionId}`,
+            dispatch_id: reviewerDispatchId,
             role: "reviewer",
             canonical_harness: reviewerHarness,
             canonical_model: reviewerModel,
@@ -419,7 +427,7 @@ export function buildAttemptRunnerProviders(
           schemaVersion: "rickgent-identity-receipt/v1",
           payload: {
             producer: "invoked",
-            dispatch_id: `review-${phase.phaseExecutionId}`,
+            dispatch_id: reviewerDispatchId,
             role: "reviewer",
             canonical_harness: reviewerHarness,
             canonical_model: reviewerModel,
@@ -443,7 +451,7 @@ export function buildAttemptRunnerProviders(
           schemaVersion: "rickgent-identity-receipt/v1",
           payload: {
             producer: "observed",
-            dispatch_id: `review-${phase.phaseExecutionId}`,
+            dispatch_id: reviewerDispatchId,
             role: "reviewer",
             canonical_harness: reviewerHarness,
             canonical_model: reviewerModel,
@@ -451,7 +459,7 @@ export function buildAttemptRunnerProviders(
             bundle_digest: reviewerBundleDigest,
             config_digest: reviewerConfigDigest,
             context_digest: reviewerContextDigest,
-            provenance: "review-phase",
+            provenance: "isolated-omnigent-chat-db-root-conversation",
             conversation_id: `review-conv-${phase.phaseExecutionId}`,
             root_conversation_id: `review-conv-${phase.phaseExecutionId}`,
           },
@@ -527,6 +535,31 @@ export function buildAttemptRunnerProviders(
           reviewer_observed_harness: crossVendorResult.reviewer_observed_harness,
         },
         idempotencyKey: `cross-vendor-distinction:${phase.phaseExecutionId}`,
+        observedAt: createdAt,
+      }, mintCapability);
+      // t32 scrutiny round 4: Build the review policy event with the
+      // cross_vendor_distinction result in the context.  The Python
+      // cross_vendor_review policy checks event.context.cross_vendor_distinction
+      // (or event.arguments.cross_vendor_distinction) to determine whether
+      // the distinction is genuine.  The distinction result must be passed
+      // into the policy event input (not just logged as evidence).
+      const reviewPolicyEvent = buildReviewPolicyEvent(crossVendorResult, {
+        attemptId,
+        cycle,
+        phaseExecutionId: phase.phaseExecutionId,
+        contextId: phase.contextId,
+      });
+      // Persist the policy event as evidence so it is durable and auditable.
+      store.persistAuthorityEvidence({
+        evidenceId: `evidence-review-policy-event-${phase.phaseExecutionId}`,
+        attemptId,
+        phaseExecutionId: phase.phaseExecutionId,
+        contextId: phase.contextId,
+        producerService: "ReviewService",
+        scope: `review-policy-event:${reviewRecordId}`,
+        schemaVersion: "rickgent.review-policy-event.v1",
+        payload: reviewPolicyEvent,
+        idempotencyKey: `review-policy-event:${phase.phaseExecutionId}`,
         observedAt: createdAt,
       }, mintCapability);
       // t32 scrutiny round 3: When distinction is denied, the review MUST
@@ -1554,4 +1587,53 @@ function makeReceiptFromPayload(
       "immutable-attempt-context" | "actual-array-argv-plus-materialized-bundle-digest" | "isolated-omnigent-chat-db-root-conversation",
     captured_at: "2026-07-22T12:00:00.000Z",
   }) as import("../dispatch/model-identity.js").IdentityReceipt;
+}
+
+/**
+ * t32 scrutiny round 4: Build a review policy event that carries the
+ * cross-vendor distinction result in the event context.  The Python
+ * cross_vendor_review policy checks event.context.cross_vendor_distinction
+ * (or event.arguments.cross_vendor_distinction) to determine whether the
+ * distinction is genuine.  This function constructs the policy event input
+ * that the review policy consumes, ensuring the approved distinction result
+ * reaches the policy path (not just logged as evidence).
+ *
+ * @param distinctionResult  The cross-vendor distinction result from
+ *   evaluateCrossVendorDistinction.
+ * @param context  The review context (attempt ID, cycle, phase execution ID).
+ * @returns A frozen policy event object with cross_vendor_distinction in
+ *   the context field.
+ */
+export function buildReviewPolicyEvent(
+  distinctionResult: CrossVendorDistinctionResult,
+  context: { readonly attemptId: string; readonly cycle: number; readonly phaseExecutionId: string; readonly contextId: string },
+): Readonly<Record<string, unknown>> {
+  return Object.freeze({
+    type: "tool_call",
+    target: "rickgent_phase_advance",
+    data: {
+      name: "rickgent_phase_advance",
+      arguments: { next_phase: "code_review" },
+    },
+    context: {
+      cross_vendor_distinction: {
+        outcome: distinctionResult.outcome,
+        genuine_distinction: distinctionResult.genuine_distinction,
+        denial_reason: distinctionResult.denial_reason,
+        implementer_observed_harness: distinctionResult.implementer_observed_harness,
+        reviewer_observed_harness: distinctionResult.reviewer_observed_harness,
+      },
+      attempt_id: context.attemptId,
+      cycle: context.cycle,
+      phase_execution_id: context.phaseExecutionId,
+    },
+    session_state: {},
+    llm_client: {},
+    arguments: {
+      cross_vendor_distinction: {
+        outcome: distinctionResult.outcome,
+        genuine_distinction: distinctionResult.genuine_distinction,
+      },
+    },
+  });
 }

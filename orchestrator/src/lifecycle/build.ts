@@ -1236,7 +1236,13 @@ async function executeBuildViaRunner(
       const deliveryStore = openStateStore({ repoPath: opts.workingDir });
       try {
         const deliveryAuthority = new DeliveryAuthority(deliveryStore);
-        const deliveryOid = allocatedRun.currentDeliveryOid;
+        // t34 scrutiny round 4: Use the REAL commit OID from git rev-parse HEAD,
+        // not the stale allocatedRun.currentDeliveryOid (which is the initial
+        // delivery OID from run allocation, not the current HEAD after ticket
+        // implementation).
+        const realDeliveryOid = execFileSync("git", [
+          "-C", opts.workingDir, "rev-parse", "HEAD",
+        ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
         // t34 scrutiny round 3: Resolve the canonical GitHub repository
         // identity (owner/repo format) from the git remote, not a local
         // filesystem path.  The PR provider receives the GitHub identity.
@@ -1258,21 +1264,36 @@ async function executeBuildViaRunner(
         } catch {
           // Remote ref doesn't exist yet — null is correct (no stale check).
         }
+        // t34 scrutiny round 4: Resolve a REAL execution context from the
+        // state store for the delivery intent's ownerContextId and
+        // ownerContextDigest.  The fabricated `delivery-${runId}` and
+        // `sha256:delivery-${runId}` are NOT real execution contexts and
+        // are rejected by StateStore.createIntent.
+        // Query the first attempt's execution context for this run.
+        const realContext = deliveryStore.resolveDeliveryOwnerContext(allocatedRun.runId);
+        // t34 scrutiny round 4: Read the REAL run state version for the
+        // delivery decision transition (not a hardcoded 0 default).
+        const realRunVersion = deliveryStore.readRunStateVersion(allocatedRun.runId);
+        // t34 scrutiny round 4: Resolve the REAL cleanup record ID from the
+        // delivery state (the run's cleanup record), not a fabricated default.
+        const realCleanupRecordId = deliveryStore.resolveRunCleanupRecordId(allocatedRun.runId);
         const deliveryResult = executeDeliveryFlow({
           store: deliveryStore,
           authority: deliveryAuthority,
           repoPath: opts.workingDir,
           runId: allocatedRun.runId,
-          deliveryOid,
+          deliveryOid: realDeliveryOid,
           remoteName: "origin",
           branchName: opts.featureBranch ?? `rickgent-${allocatedRun.runId}`,
           baseBranch: "main",
           expectedRepositoryId: repoIdentity,
           provider: prProvider,
-          ownerContextId: `delivery-${allocatedRun.runId}`,
-          ownerContextDigest: allocatedRun.manifestDigest || `sha256:delivery-${allocatedRun.runId}`,
+          ownerContextId: realContext.contextId,
+          ownerContextDigest: realContext.contextDigest,
           providerIdentityDigest: `sha256:gh-cli-provider`,
           expectedRemoteOid,
+          cleanupRecordId: realCleanupRecordId,
+          expectedRunVersion: realRunVersion,
         });
         if (deliveryResult.delivered) {
           report.push(`build: delivery flow complete — push verified, PR created`);

@@ -391,14 +391,14 @@ export class GhCliPrProvider implements PrProvider {
         headRefOid: string;
         baseRefName: string;
         headRefName: string;
-        repository: { id: string };
+        repository: { id: string; nameWithOwner?: string };
       }>;
       if (!Array.isArray(prs) || prs.length === 0) return null;
       const pr = prs[0]!;
       return {
         prNumber: pr.number,
         prUrl: pr.url,
-        repositoryId: String(pr.repository?.id ?? ""),
+        repositoryId: parseOwnerRepoFromUrl(pr.url, String(pr.repository?.nameWithOwner ?? "")),
         baseBranch: pr.baseRefName,
         headBranch: pr.headRefName,
         headOid: pr.headRefOid,
@@ -429,12 +429,12 @@ export class GhCliPrProvider implements PrProvider {
       headRefOid: string;
       baseRefName: string;
       headRefName: string;
-      repository: { id: string };
+      repository: { id: string; nameWithOwner?: string };
     };
     return {
       prNumber: pr.number,
       prUrl: pr.url,
-      repositoryId: String(pr.repository?.id ?? ""),
+      repositoryId: parseOwnerRepoFromUrl(pr.url, String(pr.repository?.nameWithOwner ?? "")),
       baseBranch: pr.baseRefName,
       headBranch: pr.headRefName,
       headOid: pr.headRefOid,
@@ -457,15 +457,41 @@ export class GhCliPrProvider implements PrProvider {
       headRefOid: string;
       baseRefName: string;
       headRefName: string;
-      repository: { id: string };
+      repository: { id: string; nameWithOwner?: string };
     };
     return {
       prNumber: pr.number,
       prUrl: pr.url,
-      repositoryId: String(pr.repository?.id ?? ""),
+      repositoryId: parseOwnerRepoFromUrl(pr.url, String(pr.repository?.nameWithOwner ?? "")),
       baseBranch: pr.baseRefName,
       headBranch: pr.headRefName,
       headOid: pr.headRefOid,
     };
   }
+}
+
+/**
+ * t34 scrutiny round 4: Parse the canonical owner/repo identity from a PR URL
+ * or the gh CLI's nameWithOwner field.  The gh CLI's `--json repository` returns
+ * a GraphQL node ID (e.g., "R_kgD...") in the `repository.id` field, which is
+ * NOT compatible with the owner/repo format used by resolveGitHubRepositoryIdentity.
+ *
+ * This function extracts owner/repo from either:
+ *   (a) the PR URL (https://github.com/owner/repo/pull/123), or
+ *   (b) the repository.nameWithOwner field ("owner/repo")
+ *
+ * The result is always in "owner/repo" format, matching the expectedRepositoryId.
+ */
+function parseOwnerRepoFromUrl(prUrl: string, nameWithOwner: string): string {
+  // Prefer nameWithOwner if it's in the correct format.
+  if (nameWithOwner.length > 0 && /^[^/]+\/[^/]+$/.test(nameWithOwner) && !nameWithOwner.startsWith("R_")) {
+    return nameWithOwner;
+  }
+  // Parse from the PR URL: https://github.com/owner/repo/pull/123
+  const match = prUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\//);
+  if (match !== null) {
+    return `${match[1]}/${match[2]!.replace(/\.git$/, "")}`;
+  }
+  // Fallback: return whatever we have (will fail the identity comparison).
+  return nameWithOwner.length > 0 ? nameWithOwner : prUrl;
 }

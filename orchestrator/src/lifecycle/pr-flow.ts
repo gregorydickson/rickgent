@@ -116,32 +116,28 @@ export function executeDeliveryFlow(
 
   // If push is not verified, record delivery_failed and return.
   if (pushResult.status !== "verified") {
-    // t34 scrutiny round 3: Record the terminal delivery_failed decision.
+    // t34 scrutiny round 4: Record the terminal delivery_failed decision.
+    // Failures are NOT caught/swallowed — if recordDecision throws, the
+    // delivery flow must fail closed (propagate the error).
     const deliveryRecordId = `delivery-record-${runId}`;
-    try {
-      authority.recordDecision({
-        deliveryIntentId,
-        deliveryRecordId,
-        terminalFromState: "intent_recorded",
-        remoteObservationId: null,
-        prObservationId: null,
-        cleanupRecordId: params.cleanupRecordId ?? `cleanup-${runId}`,
-        deliveryOid,
-        decision: "delivery_failed",
-        runId,
-        expectedRunVersion: params.expectedRunVersion ?? 0,
-        ownerContextId: params.ownerContextId,
-        ownerContextDigest: params.ownerContextDigest,
-        evidenceIdempotencyKey: `delivery-decision-failed:${runId}`,
-        transitionIdempotencyKey: `delivery-transition-failed:${runId}`,
-        transitionEvidence: [],
-        createdAt: new Date().toISOString(),
-      });
-    } catch {
-      // Best-effort: if the decision cannot be persisted (e.g., missing
-      // cleanup record in test environments), the delivery is still
-      // reported as failed.  The push result is the authoritative signal.
-    }
+    authority.recordDecision({
+      deliveryIntentId,
+      deliveryRecordId,
+      terminalFromState: "intent_recorded",
+      remoteObservationId: null,
+      prObservationId: null,
+      cleanupRecordId: params.cleanupRecordId,
+      deliveryOid,
+      decision: "delivery_failed",
+      runId,
+      expectedRunVersion: params.expectedRunVersion,
+      ownerContextId: params.ownerContextId,
+      ownerContextDigest: params.ownerContextDigest,
+      evidenceIdempotencyKey: `delivery-decision-failed:${runId}`,
+      transitionIdempotencyKey: `delivery-transition-failed:${runId}`,
+      transitionEvidence: [],
+      createdAt: new Date().toISOString(),
+    });
     return {
       pushResult,
       prResult: null,
@@ -170,36 +166,32 @@ export function executeDeliveryFlow(
   };
   const prResult = executeVerifiedPullRequest(prRequest);
 
-  // t34 scrutiny round 3: Record the terminal delivery decision.
+  // t34 scrutiny round 4: Record the terminal delivery decision.
+  // Failures are NOT caught/swallowed — if recordDecision throws, the
+  // delivery flow must fail closed (propagate the error).
   const delivered = prResult.status === "verified";
   const deliveryRecordId = `delivery-record-${runId}`;
   const remoteObservationId = pushResult.status === "verified" ? pushResult.lsRemoteObservationId : null;
   const prObservationId = prResult.status === "verified" ? prResult.prObservationId : null;
 
-  try {
-    authority.recordDecision({
-      deliveryIntentId,
-      deliveryRecordId,
-      terminalFromState: prObservationId !== null ? "pr_observed" : "remote_observed",
-      remoteObservationId,
-      prObservationId,
-      cleanupRecordId: params.cleanupRecordId ?? `cleanup-${runId}`,
-      deliveryOid,
-      decision: delivered ? "delivered" : "delivery_failed",
-      runId,
-      expectedRunVersion: params.expectedRunVersion ?? 0,
-      ownerContextId: params.ownerContextId,
-      ownerContextDigest: params.ownerContextDigest,
-      evidenceIdempotencyKey: `delivery-decision:${runId}`,
-      transitionIdempotencyKey: `delivery-transition:${runId}`,
-      transitionEvidence: [],
-      createdAt: new Date().toISOString(),
-    });
-  } catch {
-    // Best-effort: if the decision cannot be persisted (e.g., missing
-    // cleanup record in test environments), the delivery result is still
-    // returned.  The push/PR results are the authoritative signals.
-  }
+  authority.recordDecision({
+    deliveryIntentId,
+    deliveryRecordId,
+    terminalFromState: prObservationId !== null ? "pr_observed" : "remote_observed",
+    remoteObservationId,
+    prObservationId,
+    cleanupRecordId: params.cleanupRecordId,
+    deliveryOid,
+    decision: delivered ? "delivered" : "delivery_failed",
+    runId,
+    expectedRunVersion: params.expectedRunVersion,
+    ownerContextId: params.ownerContextId,
+    ownerContextDigest: params.ownerContextDigest,
+    evidenceIdempotencyKey: `delivery-decision:${runId}`,
+    transitionIdempotencyKey: `delivery-transition:${runId}`,
+    transitionEvidence: [],
+    createdAt: new Date().toISOString(),
+  });
 
   return {
     pushResult,
@@ -240,8 +232,8 @@ export interface DeliveryFlowParams {
   readonly prTitle?: string;
   readonly prBody?: string;
   readonly timeoutMs?: number;
-  /** t34 scrutiny round 3: The cleanup record ID for the delivery decision. */
-  readonly cleanupRecordId?: string;
-  /** t34 scrutiny round 3: The expected run version for the delivery decision transition. */
-  readonly expectedRunVersion?: number;
+  /** t34 scrutiny round 4: The cleanup record ID for the delivery decision (required, real value). */
+  readonly cleanupRecordId: string;
+  /** t34 scrutiny round 4: The expected run version for the delivery decision transition (required, real value). */
+  readonly expectedRunVersion: number;
 }
