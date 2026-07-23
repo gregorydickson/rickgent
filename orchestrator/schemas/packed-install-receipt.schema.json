@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rickgent.dev/schemas/packed-install-receipt-v1.json",
+  "title": "Rickgent packed-install receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "proof_version",
+    "redaction_version",
+    "canonicalization",
+    "digest_algorithm",
+    "digest",
+    "binding",
+    "omnigent",
+    "containment",
+    "evidence",
+    "checks",
+    "cleanup"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "proof_version": { "const": "packed-install-proof-v1" },
+    "redaction_version": { "const": "rickgent-redaction-v1" },
+    "canonicalization": { "const": "rickgent-canonical-json-v1" },
+    "digest_algorithm": { "const": "sha256_over_utf8_canonical_bytes_excluding_top_level_digest" },
+    "digest": { "$ref": "#/$defs/sha256" },
+    "binding": { "$ref": "#/$defs/binding" },
+    "omnigent": { "$ref": "#/$defs/omnigent" },
+    "containment": { "$ref": "#/$defs/containment" },
+    "evidence": { "$ref": "#/$defs/evidence" },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/check" }
+    },
+    "cleanup": { "$ref": "#/$defs/cleanup" }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "oid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sha256"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "archive": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "filename", "sha256", "inventory_sha256"],
+      "properties": {
+        "kind": { "enum": ["npm_tarball", "python_wheel"] },
+        "filename": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "inventory_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_git_oid",
+        "release",
+        "build",
+        "archives",
+        "corpora",
+        "omnigent_contract_sha256"
+      ],
+      "properties": {
+        "source_git_oid": { "$ref": "#/$defs/oid" },
+        "release": { "$ref": "#/$defs/identity" },
+        "build": { "$ref": "#/$defs/identity" },
+        "archives": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "$ref": "#/$defs/archive" }
+        },
+        "corpora": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/identity" }
+        },
+        "omnigent_contract_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "omnigent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root_realpath",
+        "python_realpath",
+        "import_realpath",
+        "read_only",
+        "compatibility_authority",
+        "observed_version",
+        "observed_git_oid"
+      ],
+      "properties": {
+        "root_realpath": { "type": "string", "pattern": "^/" },
+        "python_realpath": { "type": "string", "pattern": "^/" },
+        "import_realpath": { "type": "string", "pattern": "^/" },
+        "read_only": { "const": true },
+        "compatibility_authority": { "const": "offline_behavioral_probe" },
+        "observed_version": { "type": "string", "minLength": 1 },
+        "observed_git_oid": {
+          "anyOf": [
+            { "$ref": "#/$defs/oid" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "pathObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resource", "realpath", "owned_root", "contained"],
+      "properties": {
+        "resource": { "type": "string", "minLength": 1 },
+        "realpath": { "type": "string", "pattern": "^/" },
+        "owned_root": { "enum": ["npm_prefix", "python_venv", "omnigent_root"] },
+        "contained": { "const": true }
+      }
+    },
+    "containment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unrelated_cwd", "source_lookup_poisoned", "installed_realpaths"],
+      "properties": {
+        "unrelated_cwd": { "const": true },
+        "source_lookup_poisoned": { "const": true },
+        "installed_realpaths": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/pathObservation" }
+        }
+      }
+    },
+    "evidenceItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_id", "classification", "sha256", "redaction"],
+      "properties": {
+        "evidence_id": { "type": "string", "minLength": 1 },
+        "classification": { "enum": ["live", "fixture"] },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "redaction": { "enum": ["public", "sensitive_redacted", "secret_omitted"] }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["items", "contains_raw_secrets"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/evidenceItem" }
+        },
+        "contains_raw_secrets": { "const": false }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["check_id", "outcome", "required", "evidence_ids"],
+      "properties": {
+        "check_id": { "type": "string", "minLength": 1 },
+        "outcome": { "enum": ["pass", "fail", "infrastructure_error"] },
+        "required": { "const": true },
+        "evidence_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "cleanupObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "kind", "observed_absent"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^/" },
+        "kind": { "enum": ["success", "failure"] },
+        "observed_absent": { "const": true }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["success_path", "failure_path", "unrelated_state_preserved"],
+      "properties": {
+        "success_path": { "$ref": "#/$defs/cleanupObservation" },
+        "failure_path": { "$ref": "#/$defs/cleanupObservation" },
+        "unrelated_state_preserved": { "const": true }
+      }
+    }
+  }
+}

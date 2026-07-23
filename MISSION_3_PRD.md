@@ -60,14 +60,20 @@ be considered as a follow-on mission after the trust-spine is complete.
 
 ## 1. Authority and document hierarchy
 
-When documents disagree, use this order:
+When documents disagree, machine authority wins within its declared scope:
 
-1. [`docs/remediation/trust-spine-manifest.json`](docs/remediation/trust-spine-manifest.json) — canonical ticket status, dependency order, declared paths, verification commands, proof corpora, output artifacts.
-2. [`docs/remediation/trust-spine-prd.md`](docs/remediation/trust-spine-prd.md) — canonical product and engineering requirements, acceptance criteria, program completion rule.
-3. Machine-readable architecture contracts under [`docs/architecture/reliability`](docs/architecture/reliability/) — exact schemas, invariants, producers, state transitions, capability states.
-4. Phase design audits and execution reports under [`docs/remediation`](docs/remediation/) — current implementation boundary, discovered constraints, verification evidence, remaining work.
-5. [`master-plan.md`](master-plan.md) — navigation, sequencing, status summary.
-6. This mission PRD — mission-level sequencing, tranche decomposition, and exit gates.
+1. The session `refinement_manifest.json` is executable authority for the
+   guaranteed-sequential ticket order and ticket path ownership.
+2. [`docs/architecture/reliability/mission-3-release-contract.json`](docs/architecture/reliability/mission-3-release-contract.json)
+   is authority for the installed-release, Omnigent, evidence, capability,
+   protected-profile, hosted-resource, precedence, and milestone decisions
+   frozen by t37a.
+3. [`docs/remediation/trust-spine-manifest.json`](docs/remediation/trust-spine-manifest.json),
+   [`docs/remediation/trust-spine-prd.md`](docs/remediation/trust-spine-prd.md),
+   and the other machine-readable architecture contracts remain authoritative
+   for unaffected prior-ticket state and shared invariants.
+4. Phase reports, `master-plan.md`, and this PRD are prose mirrors and
+   navigation. They cannot override a machine authority.
 
 ## 2. Current-state assessment
 
@@ -518,9 +524,15 @@ Mutation runs must use disposable worktrees, and infrastructure failures must
 not be reported as successful quality results.
 
 ### t37 — Packed installation and behavioral doctor
-Test only packed artifacts with no source-tree fallback. Prove CLI, bundles,
-policies, native invocation behavior, capability reporting, and doctor output
-from a clean install.
+Test only one npm tarball and one non-editable `rickgent_policies` wheel with
+no source-tree fallback. The npm tarball owns the compiled CLI, agent bundles,
+runtime lookup metadata, LICENSE, immutable proof metadata, and package-owned
+validation resources. Omnigent is the only mounted external dependency and is
+selected explicitly through `OMNIGENT_ROOT` and `OMNIGENT_PYTHON`. Its
+behavioral compatibility is authoritative; observed version and Git OID are
+provenance only, the sibling is read-only, and no SHA is a compatibility
+authority. Prove CLI, bundles, policies, native invocation behavior,
+capability reporting, and doctor output from a clean install.
 
 ### t38 — Protected real installed vertical slice
 Against real compatible Omnigent, real selected models, and a disposable
@@ -529,10 +541,37 @@ independent review, gates, cleanup/oracle, verified push, and PR. Force an
 interruption and resume using the same persistent state directory. **The PRD
 requires the protected vertical slice to complete twice.**
 
+The `protected_release_verification` authority is non-public and fail-closed.
+It is unreachable through ordinary CLI selection, generic environment
+variables, or generic dependency injection, and it cannot activate a public
+capability. Before mutation it requires a pre-existing allowlisted disposable
+repository with canonical host/owner/name, immutable repository ID, exact
+base branch, and owned branch prefix. Each run owns only its namespaced branch
+and PR. Cleanup closes only the owned PR, compare-before-delete removes only
+the exact observed owned branch OID, and an independent re-query proves the
+result. Repository deletion is forbidden.
+
 ### t39 — Restore only proven capabilities and claims
 Make runtime capability flags, CLI help, doctor, README, changelog, and
 reliability documentation match the exact passed proof corpora. Every unproven
 capability remains unavailable.
+
+Reconciliation remains enabled only for its documented t29 local recovery
+profile. Installed resume/retry, cross-vendor review, and automatic delivery
+require valid t38 installed evidence in addition to their prior corpora.
+Parallel dispatch and raw shell remain unavailable in Mission 3.
+
+The strict packed-install and vertical-slice receipt schemas use
+`rickgent-canonical-json-v1` and SHA-256 over canonical UTF-8 bytes excluding
+the top-level digest. They bind release, source, build, archives, inventories,
+corpora, containment, redaction, evidence classification, typed check
+outcomes, lifecycle observations, and success/failure cleanup. The vertical
+receipt requires two complete live authenticated run trees and cannot be
+satisfied by fixtures or skips.
+
+Atomic refined tickets execute in this order:
+`t37a -> t37b -> t37c -> t38a -> t38b -> t38c -> t39a -> t39b`.
+The ordered milestone completion commits are t37c, t38c, and t39b.
 
 **Exit gate (Workstream 7 and program completion):**
 

@@ -2,7 +2,11 @@
   "schema_version": "1.0.0",
   "release_id": "rickgent-trust-spine-release-v1",
   "contract_mode": "cross-language-authoritative",
-  "description": "Single authoritative version/compatibility manifest for the rickgent trust-spine release. All npm, Python, CLI, build-identity, Omnigent-compatibility, toolchain, package-content, installer, runtime-path, and licensing values are generated or checked against this file. Packed installation is possible only when validate-release-manifest.mjs and assert-package-inventory.mjs both pass against this manifest.",
+  "description": "Single authoritative cross-language release manifest for the Rickgent trust-spine release. The supported install is assembled only from one npm tarball and one non-editable rickgent-policies wheel. Omnigent is the sole explicitly mounted external dependency and remains governed by behavioral current compatibility.",
+  "mission_3_contract": {
+    "path": "docs/architecture/reliability/mission-3-release-contract.json",
+    "contract_id": "rickgent-mission-3-release-v1"
+  },
   "version": {
     "npm": "0.1.0-alpha",
     "python": "0.1.0a0",
@@ -52,14 +56,28 @@
     "verifier": "orchestrator/scripts/verify-omnigent-contract.mjs",
     "root_env": "OMNIGENT_ROOT",
     "python_env": "OMNIGENT_PYTHON",
-    "pin": "omnigent is pinned at 0.6.0.dev0 (editable, read-only); exact commit pin is forbidden for the evolving contract; compatibility is proven by an offline behavioral probe, not a silent pin"
+    "selection": ["OMNIGENT_ROOT", "OMNIGENT_PYTHON"],
+    "compatibility_authority": "offline behavioral probe",
+    "observed_version_role": "provenance only",
+    "observed_git_oid_role": "provenance only",
+    "exact_sha_is_authority": false,
+    "access": "read-only",
+    "pin": "No version or Git SHA is compatibility authority. Behavioral current compatibility is proven against the explicitly selected read-only root and interpreter, with import-origin containment."
   },
   "package_contents": {
     "npm": {
       "manifest": "orchestrator/package.json",
       "pack_command": "cd orchestrator && npm pack --dry-run --json",
       "inventory_artifact": "artifacts/reliability/npm-pack-inventory.json",
-      "must_include": ["dist/cli.js", "dist/pnpm-lock.yaml"],
+      "must_include": [
+        "dist/cli.js",
+        "dist/pnpm-lock.yaml",
+        "agents/rickgent/",
+        "runtime/resource-map.json",
+        "LICENSE",
+        "proof/metadata.json",
+        "validators/"
+      ],
       "must_exclude": [
         "test/",
         "src/",
@@ -70,7 +88,15 @@
         "fixtures/",
         ".tsbuildinfo"
       ],
-      "role": "cli-only: the npm tarball ships the compiled CLI and its lockfile"
+      "owns": [
+        "compiled_cli",
+        "agent_bundles",
+        "runtime_lookup_metadata",
+        "LICENSE",
+        "immutable_proof_metadata",
+        "package_validation_resources"
+      ],
+      "role": "complete Rickgent JavaScript runtime archive; no checkout resource fallback"
     },
     "python": {
       "manifest": "rickgent-policies/pyproject.toml",
@@ -79,19 +105,24 @@
       "package": "rickgent-policies",
       "import_module": "rickgent_policies",
       "must_include_modules": ["rickgent_policies"],
-      "must_exclude": ["test/", "__pycache__", ".egg-info", ".venv"],
-      "role": "pure-Python policy shims over the TypeScript verdict core"
+      "must_exclude": ["test/", "__pycache__", ".egg-info", ".venv", "direct_url.json", "*.pth", "*.egg-link"],
+      "install_mode": "non_editable_wheel",
+      "owns": ["rickgent_policies"],
+      "role": "non-editable pure-Python policy wheel over the TypeScript verdict core"
     }
   },
   "installer": {
     "script": "install.sh",
-    "model": "installer-assembles-runtime",
-    "description": "install.sh assembles the full runtime: it installs (or locates) the compatible Omnigent, runs pnpm install + pnpm build for the orchestrator, pip-installs rickgent-policies, links the rickgent launcher onto PATH, and runs rickgent doctor as a behavioral gate. Agent bundles are resolved from the repository checkout during install; the installer records runtime lookup metadata.",
+    "model": "archive_only_install",
+    "description": "install.sh installs the already-built npm tarball and non-editable rickgent-policies wheel into isolated roots, binds the explicitly selected compatible Omnigent root and interpreter, links the installed launcher, and runs the installed doctor as a fail-closed behavioral gate. It performs no source build and resolves no checkout resource.",
     "installs": [
-      "omnigent (compatible, editable or pinned per the omnigent compatibility contract)",
-      "rickgent orchestrator (pnpm install --frozen-lockfile && pnpm build)",
-      "rickgent-policies (pip install -e rickgent-policies)"
+      "rickgent npm tarball (archive bytes only)",
+      "rickgent-policies wheel (pip install without editable or source fallback)",
+      "omnigent (explicit read-only external mount selected by OMNIGENT_ROOT and OMNIGENT_PYTHON)"
     ],
+    "builds_from_source": false,
+    "checkout_resource_resolution_allowed": false,
+    "editable_install_allowed": false,
     "links_executable": true,
     "executable": "rickgent",
     "launcher_source": "rickgent",
@@ -104,24 +135,34 @@
     "cli_entrypoint": "orchestrator/dist/cli.js",
     "launcher": "rickgent",
     "agent_bundles": "agents/rickgent",
-    "manager_bundle": "agents/rickgent/config.yaml",
-    "worker_bundle": "agents/rickgent/agents/worker/config.yaml",
+    "manager_bundle": "npm:agents/rickgent/config.yaml",
+    "worker_bundle": "npm:agents/rickgent/agents/worker/config.yaml",
+    "runtime_lookup_metadata": "npm:runtime/resource-map.json",
+    "license": "npm:LICENSE",
+    "proof_metadata": "npm:proof/metadata.json",
+    "validation_resources": "npm:validators/",
     "policies_module": "rickgent_policies",
     "policies_source": "rickgent-policies/rickgent_policies",
     "state_dir": ".rickgent/",
     "state_dir_env": "RICKGENT_DIR"
   },
   "assembly_plan": {
-    "model": "installer-assembles-runtime",
-    "npm_package_role": "cli-only",
-    "agent_bundles_source": "agents/rickgent",
-    "policies_source": "rickgent-policies",
-    "omnigent_source": "external compatible dependency installed by the installer",
-    "clean_packed_install_requirement": "a clean packed installation contains or installs the CLI, agent bundles, Python policies, LICENSE, and runtime lookup metadata without repository-relative fallback; source-tree fallback makes the install invalid"
+    "model": "archives_only",
+    "npm_package_role": "complete_javascript_runtime",
+    "agent_bundles_source": "npm_tarball",
+    "policies_source": "non_editable_wheel",
+    "omnigent_source": "explicit read-only mount selected by OMNIGENT_ROOT and OMNIGENT_PYTHON",
+    "allowed_mounted_external_dependencies": ["omnigent"],
+    "checkout_resource_resolution_allowed": false,
+    "editable_rickgent_install_allowed": false,
+    "source_build_allowed": false,
+    "clean_packed_install_requirement": "The compiled CLI, agent bundles, runtime metadata, LICENSE, proof metadata, validators, and rickgent_policies resolve only from installed archive roots. Omnigent is the sole mounted external dependency; any checkout, editable, or source-tree fallback invalidates the install."
   },
   "validators": {
     "manifest": "orchestrator/scripts/validate-release-manifest.mjs",
     "package_inventory": "orchestrator/scripts/assert-package-inventory.mjs",
-    "omnigent_contract": "orchestrator/scripts/verify-omnigent-contract.mjs"
+    "omnigent_contract": "orchestrator/scripts/verify-omnigent-contract.mjs",
+    "mission_3_contract": "orchestrator/scripts/validate-mission-3-contract.mjs",
+    "receipt_schemas": "orchestrator/scripts/validate-receipt-schema.mjs"
   }
 }

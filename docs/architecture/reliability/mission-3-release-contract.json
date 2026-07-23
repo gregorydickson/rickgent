@@ -1,0 +1,160 @@
+{
+  "schema_version": "1.0.0",
+  "contract_id": "rickgent-mission-3-release-v1",
+  "decision_status": "frozen_decision_only",
+  "activation_boundary": {
+    "enables_capability": false,
+    "provider_or_hosted_mutation_authorized": false
+  },
+  "omnigent": {
+    "compatibility_mode": "behavioral_current_compatible",
+    "selection": {
+      "root": "OMNIGENT_ROOT",
+      "python": "OMNIGENT_PYTHON",
+      "both_required_explicitly": true,
+      "path_or_ambient_discovery_allowed": false
+    },
+    "compatibility_authority": "offline_behavioral_probe",
+    "observed_version_role": "provenance_only",
+    "observed_git_oid_role": "provenance_only",
+    "sha_compatibility_authority": false,
+    "root_access": "read_only",
+    "python_access": "read_only",
+    "import_origin": "canonical_realpath_beneath_OMNIGENT_ROOT"
+  },
+  "installed_release": {
+    "installation_model": "archives_only",
+    "npm_tarball": {
+      "count": 1,
+      "owns": [
+        "compiled_cli",
+        "agent_bundles",
+        "runtime_lookup_metadata",
+        "LICENSE",
+        "immutable_proof_metadata",
+        "package_validation_resources"
+      ]
+    },
+    "python_wheel": {
+      "count": 1,
+      "distribution": "rickgent-policies",
+      "owns": ["rickgent_policies"],
+      "editable": false
+    },
+    "allowed_mounted_external_dependencies": ["omnigent"],
+    "checkout_resource_resolution_allowed": false,
+    "editable_rickgent_install_allowed": false,
+    "source_tree_fallback_allowed": false
+  },
+  "evidence": {
+    "canonicalization": "rickgent-canonical-json-v1",
+    "canonicalization_domain": "RFC-8785-equivalent for schema-admitted strings, booleans, null, arrays, objects with ASCII schema keys, and safe integers",
+    "digest": "sha256_over_utf8_canonical_bytes_excluding_top_level_digest",
+    "redaction_version": "rickgent-redaction-v1",
+    "check_outcomes": ["pass", "fail", "infrastructure_error"],
+    "skips_allowed": false,
+    "schemas": {
+      "packed_install": {
+        "path": "orchestrator/schemas/packed-install-receipt.schema.json",
+        "schema_id": "https://rickgent.dev/schemas/packed-install-receipt-v1.json",
+        "proof_version": "packed-install-proof-v1"
+      },
+      "vertical_slice": {
+        "path": "orchestrator/schemas/vertical-slice-receipt.schema.json",
+        "schema_id": "https://rickgent.dev/schemas/vertical-slice-receipt-v1.json",
+        "proof_version": "vertical-slice-proof-v1",
+        "required_successful_runs": 2
+      }
+    }
+  },
+  "capability_matrix": [
+    {
+      "capability": "reconciliation",
+      "state": "enabled_only_for_t29_local_recovery_profile",
+      "required_evidence": ["t29_recovery_parity"]
+    },
+    {
+      "capability": "resume_retry",
+      "state": "unavailable_for_installed_profile_until_t38",
+      "required_evidence": ["t29_recovery_parity", "valid_t38_installed_receipt"]
+    },
+    {
+      "capability": "cross_vendor_review",
+      "state": "unavailable_for_installed_profile_until_t38",
+      "required_evidence": ["t32_model_identity_corpus", "valid_t38_observed_identity_receipt"]
+    },
+    {
+      "capability": "automatic_delivery",
+      "state": "unavailable_for_installed_profile_until_t38",
+      "required_evidence": ["t34_delivery_corpus", "valid_t38_delivery_cleanup_receipt"]
+    },
+    {
+      "capability": "parallel_dispatch",
+      "state": "unavailable",
+      "required_evidence": []
+    },
+    {
+      "capability": "raw_shell",
+      "state": "unavailable",
+      "required_evidence": []
+    }
+  ],
+  "protected_release_verification": {
+    "visibility": "non_public",
+    "failure_mode": "fail_closed",
+    "purpose": "pre_activation_release_proof",
+    "activates_public_capability": false,
+    "ordinary_cli_selectable": false,
+    "generic_environment_bypass_allowed": false,
+    "generic_dependency_injection_bypass_allowed": false
+  },
+  "remote": {
+    "repository": {
+      "lifecycle": "pre_existing",
+      "classification": "allowlisted_disposable",
+      "canonical_identity_fields": ["host", "owner", "name"],
+      "immutable_repository_id_required": true,
+      "exact_base_branch_required": true,
+      "owned_branch_prefix_required": true,
+      "repository_deletion_allowed": false
+    },
+    "run_ownership": {
+      "branch": "exact_namespaced_branch_only",
+      "pull_request": "exact_namespaced_pull_request_only"
+    },
+    "cleanup": {
+      "close_owned_pull_request_only": true,
+      "branch_delete": "compare_before_delete_exact_observed_owned_oid",
+      "independent_remote_requery_required": true,
+      "forceful_foreign_cleanup_allowed": false
+    }
+  },
+  "source_precedence": [
+    {
+      "rank": 1,
+      "authority": "refinement_manifest.json",
+      "scope": "executable_sequencing_and_ticket_path_ownership"
+    },
+    {
+      "rank": 2,
+      "authority": "docs/architecture/reliability/mission-3-release-contract.json",
+      "scope": "t37a_frozen_decisions"
+    },
+    {
+      "rank": 3,
+      "authority": "existing_machine_readable_trust_spine_contracts_and_manifest",
+      "scope": "unaffected_prior_ticket_state_and_shared_invariants"
+    },
+    {
+      "rank": 4,
+      "authority": "prose_mirrors",
+      "scope": "non_overriding_explanation_only"
+    }
+  ],
+  "sequencing": {
+    "execution_authority": "refinement_manifest.json",
+    "guaranteed_path": "sequential_codex_exec",
+    "ticket_order": ["t37a", "t37b", "t37c", "t38a", "t38b", "t38c", "t39a", "t39b"],
+    "milestone_completion_commits": ["t37c", "t38c", "t39b"]
+  }
+}
