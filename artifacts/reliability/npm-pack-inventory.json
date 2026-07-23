@@ -3,10 +3,10 @@
     "id": "rickgent@0.1.0-alpha",
     "name": "rickgent",
     "version": "0.1.0-alpha",
-    "size": 1528257,
-    "unpackedSize": 7392537,
-    "shasum": "f89ae746096ccb90595101bd4d460e26925c605c",
-    "integrity": "sha512-BvR0wJsJkjsbBA7+eZa82/2uVCJIozLfrhQZ6GKitqqa8pKqBO7/lMckAk6YHchDoBLfnTRYRuhQSIhfQGoi6Q==",
+    "size": 1531969,
+    "unpackedSize": 7414120,
+    "shasum": "a85883223e227362fea2331d1dc81bddbad4f6f1",
+    "integrity": "sha512-RVDmjHuNR0j3IBAHVjMcljJKzrr6HIFB+pEztIukIr7tTlOJGNAQ3MhPX1of3PoWn2gkW6tvO/XaLN2LBvm2yw==",
     "filename": "rickgent-0.1.0-alpha.tgz",
     "files": [
       {
@@ -111,22 +111,22 @@
       },
       {
         "path": "dist/capabilities/runtime-gate.d.ts",
-        "size": 937,
+        "size": 966,
         "mode": 420
       },
       {
         "path": "dist/capabilities/runtime-gate.d.ts.map",
-        "size": 426,
+        "size": 452,
         "mode": 420
       },
       {
         "path": "dist/capabilities/runtime-gate.js",
-        "size": 2328,
+        "size": 2550,
         "mode": 420
       },
       {
         "path": "dist/capabilities/runtime-gate.js.map",
-        "size": 4191,
+        "size": 4614,
         "mode": 420
       },
       {
@@ -141,12 +141,12 @@
       },
       {
         "path": "dist/cli.js",
-        "size": 25885,
+        "size": 26219,
         "mode": 493
       },
       {
         "path": "dist/cli.js.map",
-        "size": 49551,
+        "size": 50166,
         "mode": 420
       },
       {
@@ -161,12 +161,12 @@
       },
       {
         "path": "dist/commands/doctor.js",
-        "size": 6415,
+        "size": 6854,
         "mode": 420
       },
       {
         "path": "dist/commands/doctor.js.map",
-        "size": 13652,
+        "size": 14414,
         "mode": 420
       },
       {
@@ -731,22 +731,22 @@
       },
       {
         "path": "dist/install/installed-runtime.d.ts",
-        "size": 1899,
+        "size": 1940,
         "mode": 420
       },
       {
         "path": "dist/install/installed-runtime.d.ts.map",
-        "size": 1455,
+        "size": 1493,
         "mode": 420
       },
       {
         "path": "dist/install/installed-runtime.js",
-        "size": 7898,
+        "size": 9606,
         "mode": 420
       },
       {
         "path": "dist/install/installed-runtime.js.map",
-        "size": 17376,
+        "size": 20754,
         "mode": 420
       },
       {
@@ -841,12 +841,12 @@
       },
       {
         "path": "dist/lifecycle/behavioral-doctor.js",
-        "size": 4685,
+        "size": 5706,
         "mode": 420
       },
       {
         "path": "dist/lifecycle/behavioral-doctor.js.map",
-        "size": 10081,
+        "size": 11170,
         "mode": 420
       },
       {
@@ -1876,22 +1876,22 @@
       },
       {
         "path": "dist/protected-release/controller.d.ts",
-        "size": 2283,
+        "size": 2477,
         "mode": 420
       },
       {
         "path": "dist/protected-release/controller.d.ts.map",
-        "size": 2250,
+        "size": 2422,
         "mode": 420
       },
       {
         "path": "dist/protected-release/controller.js",
-        "size": 3886,
+        "size": 5556,
         "mode": 420
       },
       {
         "path": "dist/protected-release/controller.js.map",
-        "size": 9204,
+        "size": 12779,
         "mode": 420
       },
       {
@@ -1926,32 +1926,32 @@
       },
       {
         "path": "dist/protected-release/production-review.js",
-        "size": 2894,
+        "size": 3111,
         "mode": 420
       },
       {
         "path": "dist/protected-release/production-review.js.map",
-        "size": 6418,
+        "size": 6803,
         "mode": 420
       },
       {
         "path": "dist/protected-release/profile.d.ts",
-        "size": 1098,
+        "size": 1200,
         "mode": 420
       },
       {
         "path": "dist/protected-release/profile.d.ts.map",
-        "size": 961,
+        "size": 1036,
         "mode": 420
       },
       {
         "path": "dist/protected-release/profile.js",
-        "size": 2081,
+        "size": 2293,
         "mode": 420
       },
       {
         "path": "dist/protected-release/profile.js.map",
-        "size": 4603,
+        "size": 5080,
         "mode": 420
       },
       {
@@ -2006,12 +2006,12 @@
       },
       {
         "path": "dist/release-proof/proof-root.js",
-        "size": 2710,
+        "size": 2778,
         "mode": 420
       },
       {
         "path": "dist/release-proof/proof-root.js.map",
-        "size": 5935,
+        "size": 6094,
         "mode": 420
       },
       {
@@ -2026,12 +2026,12 @@
       },
       {
         "path": "dist/release-proof/receipt-validator.js",
-        "size": 6890,
+        "size": 8234,
         "mode": 420
       },
       {
         "path": "dist/release-proof/receipt-validator.js.map",
-        "size": 15901,
+        "size": 18577,
         "mode": 420
       },
       {
@@ -2246,7 +2246,7 @@
       },
       {
         "path": "runtime/resource-map.json",
-        "size": 731,
+        "size": 863,
         "mode": 420
       },
       {
