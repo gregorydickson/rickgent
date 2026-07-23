@@ -1639,10 +1639,13 @@
         "Packed inventory and doctor receipts are redacted, hashed, classified as installed-artifact evidence, and contain no skipped required check."
       ],
       "verification": [
-        "test -n \"$OMNIGENT_ROOT\" && cd orchestrator && OMNIGENT_ROOT=\"$OMNIGENT_ROOT\" pnpm exec vitest run test/reliability/packed-install.test.ts --no-file-parallelism",
-        "node -e \"const f=require('fs');const x=JSON.parse(f.readFileSync('artifacts/reliability/packed-install-summary.json'));if(!x.cli_resolved||x.source_fallback||x.skipped_required?.length||!x.behavioral_doctor_passed)process.exit(1)\"",
-        "cd orchestrator && pnpm lint && pnpm typecheck && pnpm test",
-        "cd rickgent-policies && python3 -m pytest -q"
+        "cd orchestrator && pnpm build && npm pack --json --pack-destination ../artifacts/reliability/npm-dist",
+        "\"$OMNIGENT_PYTHON\" -m build rickgent-policies --wheel --outdir artifacts/reliability/python-dist",
+        "node orchestrator/scripts/assert-package-inventory.mjs artifacts/reliability/npm-pack-inventory.json artifacts/reliability/python-dist",
+        "cd orchestrator && OMNIGENT_ROOT=\"$OMNIGENT_ROOT\" OMNIGENT_PYTHON=\"$OMNIGENT_PYTHON\" pnpm exec vitest run test/reliability/packed-install.test.ts --no-file-parallelism",
+        "node orchestrator/scripts/validate-packed-install-receipt.mjs artifacts/reliability/packed-install-summary.json",
+        "node orchestrator/scripts/validate-trust-spine-manifest.mjs docs/remediation/trust-spine-manifest.json --require-done t37",
+        "git diff --check"
       ],
       "verification_env": {
         "mode": "merge",
@@ -1650,15 +1653,23 @@
           {
             "name": "OMNIGENT_ROOT",
             "format": "string"
+          },
+          {
+            "name": "OMNIGENT_PYTHON",
+            "format": "string"
           }
         ],
         "vars": {}
       },
       "output_artifacts": [
-        "orchestrator/test/reliability/packed-install.test.ts",
-        "orchestrator/src/lifecycle/doctor.ts",
+        "artifacts/reliability/npm-dist/rickgent-0.1.0-alpha.tgz",
+        "artifacts/reliability/python-dist/rickgent_policies-0.1.0a0-py3-none-any.whl",
+        "artifacts/reliability/npm-pack-inventory.json",
         "artifacts/reliability/packed-install-summary.json",
-        "orchestrator/test/fixtures/packaging-corpus/manifest.json"
+        "artifacts/reliability/packed-install-summary.sha256",
+        "orchestrator/test/reliability/packed-install.test.ts",
+        "orchestrator/scripts/validate-packed-install-receipt.mjs",
+        "docs/remediation/phase-9-t37-packed-install-execution-report.md"
       ],
       "proof_corpus": [
         "orchestrator/test/fixtures/packaging-corpus/manifest.json",
@@ -1672,10 +1683,14 @@
         "sha_source": ""
       },
       "priority": "P1",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t36"
-      ]
+      ],
+      "completed_at": {
+        "commit": "015b6bc964a779b77f854d58cad308b447b54ebd",
+        "phase_report": "docs/remediation/phase-9-t37-packed-install-execution-report.md"
+      }
     },
     {
       "id": "t38",
