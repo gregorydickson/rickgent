@@ -98,6 +98,16 @@ import {
   evaluateCrossVendorDistinction,
   type CrossVendorDistinctionResult,
 } from "../dispatch/cross-vendor-distinction.js";
+import { dispatchProductionReview } from "../protected-release/production-review.js";
+
+export interface AttemptRunnerProviderOptions {
+  /**
+   * Authenticated fixture-only authority. Production callers must never set
+   * this; it lets unrelated lifecycle tests exercise later phases without
+   * spending hosted reviewer tokens or manufacturing production evidence.
+   */
+  readonly fixtureReviewerIdentity?: boolean;
+}
 
 function sha256(value: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
@@ -270,6 +280,7 @@ export function buildAttemptRunnerProviders(
   leases: LeaseAuthority,
   processSupervisor?: ProcessSupervisor,
   agentDir?: string,
+  options: AttemptRunnerProviderOptions = {},
 ): AttemptRunnerPhaseProviders {
   const mintCapability = leases.issueDispositionMintCapability();
   const lifecycleRecords = new LifecycleRecordAuthority(store);
@@ -378,6 +389,106 @@ export function buildAttemptRunnerProviders(
       // from phase labels, IDs, or context digests.
       const reviewerRequestedEvidenceId = `evidence-identity-requested-reviewer-${attemptId}`;
       const reviewerObservedEvidenceId = `evidence-identity-observed-reviewer-${attemptId}`;
+      if (store.readEvidence(reviewerRequestedEvidenceId) === undefined) {
+        const reviewerDispatchId = `review-${phase.phaseExecutionId}`;
+        if (options.fixtureReviewerIdentity === true) {
+          const fixtureIdentity = {
+            dispatch_id: reviewerDispatchId,
+            role: "reviewer",
+            canonical_harness: "claude-sdk",
+            canonical_model: "fixture-reviewer",
+            canonical_vendor: "anthropic",
+            bundle_digest: "sha256:fixture-reviewer-bundle",
+            config_digest: phase.contextDigest,
+            context_digest: phase.contextDigest,
+          };
+          for (const [producer, evidenceId, provenance] of [
+            ["requested", reviewerRequestedEvidenceId, "authenticated-fixture-authority"],
+            ["invoked", `evidence-identity-invoked-reviewer-${attemptId}`, "authenticated-fixture-authority"],
+            ["observed", reviewerObservedEvidenceId, "isolated-omnigent-chat-db-root-conversation"],
+          ] as const) {
+            store.persistAuthorityEvidence({
+              evidenceId,
+              attemptId,
+              phaseExecutionId: phase.phaseExecutionId,
+              contextId: phase.contextId,
+              producerService: "IdentityCapture",
+              scope: `identity-receipt:${producer}:reviewer`,
+              schemaVersion: "rickgent-identity-receipt/v1",
+              payload: {
+                producer,
+                ...fixtureIdentity,
+                ...(producer === "invoked" ? { invoked_argv0: "authenticated-fixture-reviewer" } : {}),
+                ...(producer === "observed" ? {
+                  conversation_id: `fixture-review-${phase.phaseExecutionId}`,
+                  root_conversation_id: `fixture-review-${phase.phaseExecutionId}`,
+                } : {}),
+                provenance,
+              },
+              idempotencyKey: `identity-receipt:${producer}:reviewer:${attemptId}`,
+              observedAt: createdAt,
+            }, mintCapability);
+          }
+        } else {
+          const reviewerHarness = process.env.RICKGENT_REVIEW_HARNESS;
+          const reviewerModel = process.env.RICKGENT_REVIEW_MODEL;
+          const reviewerVendor = process.env.RICKGENT_REVIEW_VENDOR;
+          const reviewerExecutable = process.env.RICKGENT_OMNIGENT_EXECUTABLE;
+          const reviewerDataRoot = process.env.OMNIGENT_DATA_DIR;
+          const reviewerBundle = process.env.RICKGENT_REVIEW_BUNDLE;
+          if (
+            reviewerHarness !== undefined &&
+            reviewerModel !== undefined &&
+            reviewerVendor !== undefined &&
+            reviewerExecutable !== undefined &&
+            reviewerDataRoot !== undefined &&
+            reviewerBundle !== undefined
+          ) {
+            const observation = dispatchProductionReview({
+              omnigentExecutable: reviewerExecutable,
+              dataDir: join(reviewerDataRoot, "production-review", phase.phaseExecutionId),
+              reviewerBundle,
+              prompt: "Perform a read-only review of the immutable candidate evidence and return a structured verdict.",
+              harness: reviewerHarness,
+              model: reviewerModel,
+              vendor: reviewerVendor,
+              dispatchId: reviewerDispatchId,
+              contextDigest: phase.contextDigest,
+              timeoutMs: 60_000,
+            });
+            const requestedPayload = {
+              producer: "requested",
+              dispatch_id: reviewerDispatchId,
+              role: "reviewer",
+              canonical_harness: reviewerHarness,
+              canonical_model: reviewerModel,
+              canonical_vendor: reviewerVendor,
+              bundle_digest: observation.invoked.bundle_digest,
+              config_digest: observation.invoked.config_digest,
+              context_digest: phase.contextDigest,
+              provenance: "immutable-attempt-context",
+            };
+            for (const [producer, evidenceId, payload] of [
+              ["requested", reviewerRequestedEvidenceId, requestedPayload],
+              ["invoked", `evidence-identity-invoked-reviewer-${attemptId}`, { ...observation.invoked }],
+              ["observed", reviewerObservedEvidenceId, { ...observation.observed }],
+            ] as const) {
+              store.persistAuthorityEvidence({
+                evidenceId,
+                attemptId,
+                phaseExecutionId: phase.phaseExecutionId,
+                contextId: phase.contextId,
+                producerService: "IdentityCapture",
+                scope: `identity-receipt:${producer}:reviewer`,
+                schemaVersion: "rickgent-identity-receipt/v1",
+                payload,
+                idempotencyKey: `identity-receipt:${producer}:reviewer:${attemptId}`,
+                observedAt: createdAt,
+              }, mintCapability);
+            }
+          }
+        }
+      }
 
       let crossVendorResult: CrossVendorDistinctionResult;
       const implementerRequestedEvidence = store.readEvidence(

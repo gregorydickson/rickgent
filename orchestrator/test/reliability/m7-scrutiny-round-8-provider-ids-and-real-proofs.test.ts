@@ -260,7 +260,13 @@ function makeRealAuthorityRunner(
   // production providers.  The review, commitAttribution, verification,
   // oracle, and cleanupPreimage providers are all the real production
   // providers.  Only dispatch and remediation are overridden.
-  const realProviders = buildAttemptRunnerProviders(store, leases);
+  const realProviders = buildAttemptRunnerProviders(
+    store,
+    leases,
+    undefined,
+    undefined,
+    { fixtureReviewerIdentity: true },
+  );
   const mintCapability = leases.issueDispositionMintCapability();
 
   const runner = new AttemptRunner(store, leases, containment, targetStartGate, terminalization, executionContext, {
@@ -555,7 +561,13 @@ describe("M7 scrutiny round 8 — defect 3: resume runs real initial dispatch th
     const firstStore = openStateStore({ repoPath: repo });
     stores.add(firstStore);
     const firstLeases = new LeaseAuthority(firstStore);
-    const firstRealProviders = buildAttemptRunnerProviders(firstStore, firstLeases);
+    const firstRealProviders = buildAttemptRunnerProviders(
+      firstStore,
+      firstLeases,
+      undefined,
+      undefined,
+      { fixtureReviewerIdentity: true },
+    );
     const firstMintCapability = firstLeases.issueDispositionMintCapability();
     const firstLifecycleRecords = new LifecycleRecordAuthority(firstStore);
 

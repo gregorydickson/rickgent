@@ -257,6 +257,7 @@ describe("reliability-preview claim contract", () => {
 
     const result = cli(["status", "--deep"], {
       PATH: `${bin}:${process.env.PATH ?? ""}`,
+      OMNIGENT_PYTHON: python,
     });
     expect(result.status, output(result)).toBe(1);
     expect(result.stdout).toContain("[FAIL] python_runtime: 3.11.9");

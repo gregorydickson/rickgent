@@ -307,7 +307,13 @@ describe("structural: verification provider iterates all sealed contract verific
 describe("(a) multi-verification success: 2+ verification IDs all pass", () => {
   it("creates a gate result for EVERY sealed contract verification ID", () => {
     const fixture = buildFixture({ count: 3 });
-    const providers = buildAttemptRunnerProviders(fixture.store, fixture.leases);
+    const providers = buildAttemptRunnerProviders(
+      fixture.store,
+      fixture.leases,
+      undefined,
+      undefined,
+      { fixtureReviewerIdentity: true },
+    );
     const result = providers.verification!({
       ownership: fixture.ownership,
       phase: {
@@ -342,7 +348,13 @@ describe("(a) multi-verification success: 2+ verification IDs all pass", () => {
 
   it("the VerificationResult carries all gate result IDs (gateResultIds)", () => {
     const fixture = buildFixture({ count: 2 });
-    const providers = buildAttemptRunnerProviders(fixture.store, fixture.leases);
+    const providers = buildAttemptRunnerProviders(
+      fixture.store,
+      fixture.leases,
+      undefined,
+      undefined,
+      { fixtureReviewerIdentity: true },
+    );
     const result = providers.verification!({
       ownership: fixture.ownership,
       phase: {
@@ -374,7 +386,13 @@ describe("(a) multi-verification success: 2+ verification IDs all pass", () => {
 describe("(b) failed required verification: one verification fails, terminalization fails closed", () => {
   it("returns status 'fail' when one verification fails", () => {
     const fixture = buildFixture({ count: 2, failLast: true });
-    const providers = buildAttemptRunnerProviders(fixture.store, fixture.leases);
+    const providers = buildAttemptRunnerProviders(
+      fixture.store,
+      fixture.leases,
+      undefined,
+      undefined,
+      { fixtureReviewerIdentity: true },
+    );
     const result = providers.verification!({
       ownership: fixture.ownership,
       phase: {
@@ -414,7 +432,13 @@ describe("(b) failed required verification: one verification fails, terminalizat
     // so the bad executable must be in the SAME contract the attempt was
     // allocated with.
     const fixture = buildFixture({ count: 2, failLast: true, failExecutable: "/nonexistent/binary" });
-    const providers = buildAttemptRunnerProviders(fixture.store, fixture.leases);
+    const providers = buildAttemptRunnerProviders(
+      fixture.store,
+      fixture.leases,
+      undefined,
+      undefined,
+      { fixtureReviewerIdentity: true },
+    );
     // The bad executable triggers an infrastructure_error (ENOENT).
     const result = providers.verification!({
       ownership: fixture.ownership,

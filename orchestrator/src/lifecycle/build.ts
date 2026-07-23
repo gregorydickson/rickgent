@@ -270,6 +270,8 @@ export interface InternalBuildDependencies {
    * that seed durable receipt rows deterministically.
    */
   attemptRunnerProviders?: import("./attempt-runner.js").AttemptRunnerPhaseProviders;
+  /** Authenticated fixture bridge only; never set by public entrypoints. */
+  fixtureReviewerIdentity?: boolean;
   /**
    * t22D-fix-round-3: Override the supervised dispatch argv.  When supplied,
    * `executeBuildViaRunner` uses this argv instead of the real `omnigent run`
@@ -882,7 +884,9 @@ async function executeBuildViaRunner(
   const terminalization = new AttemptTerminalizationService(stateStore, leases);
   const executionContext = new AttemptExecutionContextAuthority(stateStore);
   const processSupervisor = new ProcessSupervisor(stateStore, leases);
-  const realProviders = buildAttemptRunnerProviders(stateStore, leases, processSupervisor, opts.agentDir);
+  const realProviders = buildAttemptRunnerProviders(stateStore, leases, processSupervisor, opts.agentDir,
+    { fixtureReviewerIdentity: dependencies.fixtureReviewerIdentity === true },
+  );
   const runner = new AttemptRunner(
     stateStore,
     leases,
@@ -2334,7 +2338,7 @@ export async function runBuildViaRunnerForTesting(
   dependencies: InternalBuildDependencies,
 ): Promise<BuildResult> {
   await requireFixtureRuntimeAuthority(authority);
-  return executeBuildViaRunner(opts, dependencies);
+  return executeBuildViaRunner(opts, { ...dependencies, fixtureReviewerIdentity: true });
 }
 
 // ── Policy attachment verification (B4 gate) ────────────────────────────────

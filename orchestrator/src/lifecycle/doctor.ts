@@ -18,8 +18,17 @@ export interface DoctorResult {
 export async function runDoctorCheck(installed?: InstalledRuntime): Promise<DoctorResult> {
   const checks: { name: string; pass: boolean; detail: string }[] = [];
   const packageRoot = fileURLToPath(new URL("../../", import.meta.url));
-  const runtime = installed ?? resolveInstalledRuntimeFromEnvironment(packageRoot);
-  const cliEntrypoint = runtime.cli.realpath;
+  // A source checkout is a development/test surface, not installed-release
+  // evidence. Keep its historical explicit paths so ordinary `doctor` can
+  // diagnose the checkout. Packed installations do not contain `src/` and
+  // must pass the strict archive/runtime resolver below; there is no source
+  // fallback on the installed path.
+  const sourceFixtureRuntime = installed === undefined
+    && existsSync(fileURLToPath(new URL("../../src", import.meta.url)));
+  const runtime = installed
+    ?? (sourceFixtureRuntime ? null : resolveInstalledRuntimeFromEnvironment(packageRoot));
+  const cliEntrypoint = runtime?.cli.realpath
+    ?? realpathSync(fileURLToPath(new URL("../../dist/cli.js", import.meta.url)));
   const cliSha256 = createHash("sha256").update(readFileSync(cliEntrypoint)).digest("hex");
   const nodeEntrypoint = realpathSync(process.execPath);
   const nodeSha256 = createHash("sha256").update(readFileSync(nodeEntrypoint)).digest("hex");
@@ -35,10 +44,15 @@ export async function runDoctorCheck(installed?: InstalledRuntime): Promise<Doct
   // discover external bundles through the same explicit variables consumed by
   // the configured-attachment audit below.
   const repoRoot = new URL("../../../", import.meta.url);
-  void repoRoot;
-  const managerDir = join(runtime.manager.realpath, "..");
-  const workerDir = join(runtime.worker.realpath, "..");
-  const selectedPython = runtime.omnigent_python.realpath;
+  const managerDir = runtime === null
+    ? (process.env.RICKGENT_MANAGER_DIR ?? fileURLToPath(new URL("agents/rickgent/", repoRoot)))
+    : join(runtime.manager.realpath, "..");
+  const workerDir = runtime === null
+    ? (process.env.RICKGENT_WORKER_DIR ?? fileURLToPath(new URL("agents/rickgent/agents/worker/", repoRoot)))
+    : join(runtime.worker.realpath, "..");
+  const selectedPython = runtime?.omnigent_python.realpath
+    ?? process.env.OMNIGENT_PYTHON
+    ?? "python3";
 
   // 1. build_commit is available
   const commitValue: string = BUILD_COMMIT;

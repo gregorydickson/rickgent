@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { resolveInstalledRuntime, InstalledRuntimeError } from "../../src/install/installed-runtime.js";
+import { isCliEntrypoint } from "../../src/cli.js";
 
 const roots: string[] = [];
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
@@ -74,5 +76,15 @@ describe("archive-only installer and installed resolver", () => {
     expect(source).not.toContain("pip install -e");
     expect(source).not.toContain("pnpm build");
     expect(source).not.toContain("git clone");
+  });
+
+  it("recognizes the npm bin symlink as the installed CLI entrypoint", () => {
+    const root = mkdtempSync(join(tmpdir(), "rickgent-bin-"));
+    roots.push(root);
+    const target = join(root, "cli.js");
+    const bin = join(root, "rickgent");
+    writeFileSync(target, "#!/usr/bin/env node\n");
+    symlinkSync(target, bin);
+    expect(isCliEntrypoint(bin, pathToFileURL(target).href)).toBe(true);
   });
 });

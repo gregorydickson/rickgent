@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { readFileSync } from "fs";
+import { readFileSync, realpathSync } from "fs";
 import { join, resolve } from "path";
-import { pathToFileURL } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import { BUILD_COMMIT } from "./build-commit.js";
 import {
   CAPABILITY_UNAVAILABLE_ERROR_CODE,
@@ -597,5 +597,18 @@ export function handleFatal(error: unknown): never {
   process.exit(70);
 }
 
-const isEntrypoint = process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
+export function isCliEntrypoint(argvPath: string | undefined, moduleUrl = import.meta.url): boolean {
+  if (argvPath === undefined) return false;
+  try {
+    // npm/pnpm expose package bins as symlinks. Compare the canonical target,
+    // otherwise an installed `rickgent` silently imports the CLI and exits 0
+    // without executing main.
+    const argvUrl = pathToFileURL(realpathSync(resolve(argvPath))).href;
+    const moduleTargetUrl = pathToFileURL(realpathSync(fileURLToPath(moduleUrl))).href;
+    return argvUrl === moduleTargetUrl;
+  } catch {
+    return false;
+  }
+}
+const isEntrypoint = isCliEntrypoint(process.argv[1]);
 if (isEntrypoint) main().catch(handleFatal);

@@ -213,7 +213,13 @@ function makeRealAuthorityRunner(
   const terminalization = new AttemptTerminalizationService(store, leases);
   const executionContext = fixture.executionContext;
 
-  const realProviders = buildAttemptRunnerProviders(store, leases);
+  const realProviders = buildAttemptRunnerProviders(
+    store,
+    leases,
+    undefined,
+    undefined,
+    { fixtureReviewerIdentity: true },
+  );
   const mintCapability = leases.issueDispositionMintCapability();
 
   const runner = new AttemptRunner(store, leases, containment, targetStartGate, terminalization, executionContext, {

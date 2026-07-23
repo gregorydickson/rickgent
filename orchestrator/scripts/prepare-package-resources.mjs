@@ -9,7 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -37,6 +37,7 @@ try {
     recursive: true,
     dereference: false,
     errorOnExist: true,
+    filter: (source) => basename(source) !== "__pycache__" && !source.endsWith(".pyc"),
   });
   mkdirSync(join(packageRoot, "runtime"), { recursive: true });
   mkdirSync(join(packageRoot, "proof"), { recursive: true });

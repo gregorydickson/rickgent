@@ -251,7 +251,13 @@ function callVerification(fixture: Fixture): {
   readonly status: "pass" | "fail" | "infrastructure_error";
   readonly gateResultIds: readonly string[];
 } {
-  const providers = buildAttemptRunnerProviders(fixture.store, fixture.leases);
+  const providers = buildAttemptRunnerProviders(
+    fixture.store,
+    fixture.leases,
+    undefined,
+    undefined,
+    { fixtureReviewerIdentity: true },
+  );
   const result = providers.verification!({
     ownership: fixture.ownership,
     phase: {

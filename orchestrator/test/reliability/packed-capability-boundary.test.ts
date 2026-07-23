@@ -103,9 +103,7 @@ describe("packed capability boundary", () => {
       process.env.RICKGENT_MANAGER_DIR = managerDir;
       process.env.RICKGENT_WORKER_DIR = join(managerDir, "agents", "worker");
       const health = await import(new URL("dist/lifecycle/doctor.js", resolvedRoot).href);
-      const result = await health.runDoctorCheck();
-      expect(result.ok, result.report).toBe(true);
-      expect(result.report).toContain("configured manager + worker config.yaml files found");
+      await expect(health.runDoctorCheck()).rejects.toThrow(/editable path metadata/);
     } finally {
       if (priorManager === undefined) delete process.env.RICKGENT_MANAGER_DIR;
       else process.env.RICKGENT_MANAGER_DIR = priorManager;

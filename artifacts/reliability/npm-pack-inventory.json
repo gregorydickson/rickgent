@@ -3,12 +3,72 @@
     "id": "rickgent@0.1.0-alpha",
     "name": "rickgent",
     "version": "0.1.0-alpha",
-    "size": 1472383,
-    "unpackedSize": 7175804,
-    "shasum": "a07191ca2eac227376a52179984f535235b2bece",
-    "integrity": "sha512-9vDALK3+JrXnqtI6fFYsFZaeDRrkEQYA8pp7ByQx75G10WP6R9fYYQ/udROE40t8g2ui67fT90LMixhxFBBymg==",
+    "size": 1528257,
+    "unpackedSize": 7392537,
+    "shasum": "f89ae746096ccb90595101bd4d460e26925c605c",
+    "integrity": "sha512-BvR0wJsJkjsbBA7+eZa82/2uVCJIozLfrhQZ6GKitqqa8pKqBO7/lMckAk6YHchDoBLfnTRYRuhQSIhfQGoi6Q==",
     "filename": "rickgent-0.1.0-alpha.tgz",
     "files": [
+      {
+        "path": "LICENSE",
+        "size": 11371,
+        "mode": 384
+      },
+      {
+        "path": "agents/rickgent/AGENTS.md",
+        "size": 3398,
+        "mode": 384
+      },
+      {
+        "path": "agents/rickgent/agents/worker/config.yaml",
+        "size": 2861,
+        "mode": 384
+      },
+      {
+        "path": "agents/rickgent/config.yaml",
+        "size": 3275,
+        "mode": 384
+      },
+      {
+        "path": "agents/rickgent/skills/anatomy-park/SKILL.md",
+        "size": 518,
+        "mode": 384
+      },
+      {
+        "path": "agents/rickgent/skills/citadel/SKILL.md",
+        "size": 407,
+        "mode": 384
+      },
+      {
+        "path": "agents/rickgent/skills/cronenberg/SKILL.md",
+        "size": 896,
+        "mode": 384
+      },
+      {
+        "path": "agents/rickgent/skills/cross-review/SKILL.md",
+        "size": 478,
+        "mode": 384
+      },
+      {
+        "path": "agents/rickgent/skills/implement/SKILL.md",
+        "size": 453,
+        "mode": 384
+      },
+      {
+        "path": "agents/rickgent/skills/prd-refine/SKILL.md",
+        "size": 639,
+        "mode": 384
+      },
+      {
+        "path": "agents/rickgent/skills/szechuan/SKILL.md",
+        "size": 613,
+        "mode": 384
+      },
+      {
+        "path": "agents/rickgent/tools/python/lifecycle_receipts.py",
+        "size": 2227,
+        "mode": 420
+      },
       {
         "path": "dist/build-commit.d.ts",
         "size": 122,
@@ -51,62 +111,62 @@
       },
       {
         "path": "dist/capabilities/runtime-gate.d.ts",
-        "size": 541,
+        "size": 937,
         "mode": 420
       },
       {
         "path": "dist/capabilities/runtime-gate.d.ts.map",
-        "size": 234,
+        "size": 426,
         "mode": 420
       },
       {
         "path": "dist/capabilities/runtime-gate.js",
-        "size": 552,
+        "size": 2328,
         "mode": 420
       },
       {
         "path": "dist/capabilities/runtime-gate.js.map",
-        "size": 828,
+        "size": 4191,
         "mode": 420
       },
       {
         "path": "dist/cli.d.ts",
-        "size": 1226,
+        "size": 1326,
         "mode": 420
       },
       {
         "path": "dist/cli.d.ts.map",
-        "size": 796,
+        "size": 875,
         "mode": 420
       },
       {
         "path": "dist/cli.js",
-        "size": 25235,
+        "size": 25885,
         "mode": 493
       },
       {
         "path": "dist/cli.js.map",
-        "size": 48486,
+        "size": 49551,
         "mode": 420
       },
       {
         "path": "dist/commands/doctor.d.ts",
-        "size": 1848,
+        "size": 1870,
         "mode": 420
       },
       {
         "path": "dist/commands/doctor.d.ts.map",
-        "size": 1592,
+        "size": 1608,
         "mode": 420
       },
       {
         "path": "dist/commands/doctor.js",
-        "size": 5556,
+        "size": 6415,
         "mode": 420
       },
       {
         "path": "dist/commands/doctor.js.map",
-        "size": 12049,
+        "size": 13652,
         "mode": 420
       },
       {
@@ -470,6 +530,26 @@
         "mode": 420
       },
       {
+        "path": "dist/dispatch/production-reviewer.d.ts",
+        "size": 1232,
+        "mode": 420
+      },
+      {
+        "path": "dist/dispatch/production-reviewer.d.ts.map",
+        "size": 1224,
+        "mode": 420
+      },
+      {
+        "path": "dist/dispatch/production-reviewer.js",
+        "size": 3482,
+        "mode": 420
+      },
+      {
+        "path": "dist/dispatch/production-reviewer.js.map",
+        "size": 7565,
+        "mode": 420
+      },
+      {
         "path": "dist/dispatch/queue.d.ts",
         "size": 1811,
         "mode": 420
@@ -630,6 +710,46 @@
         "mode": 420
       },
       {
+        "path": "dist/install/index.d.ts",
+        "size": 75,
+        "mode": 420
+      },
+      {
+        "path": "dist/install/index.d.ts.map",
+        "size": 136,
+        "mode": 420
+      },
+      {
+        "path": "dist/install/index.js",
+        "size": 73,
+        "mode": 420
+      },
+      {
+        "path": "dist/install/index.js.map",
+        "size": 199,
+        "mode": 420
+      },
+      {
+        "path": "dist/install/installed-runtime.d.ts",
+        "size": 1899,
+        "mode": 420
+      },
+      {
+        "path": "dist/install/installed-runtime.d.ts.map",
+        "size": 1455,
+        "mode": 420
+      },
+      {
+        "path": "dist/install/installed-runtime.js",
+        "size": 7898,
+        "mode": 420
+      },
+      {
+        "path": "dist/install/installed-runtime.js.map",
+        "size": 17376,
+        "mode": 420
+      },
+      {
         "path": "dist/lifecycle/anatomy.d.ts",
         "size": 196,
         "mode": 420
@@ -651,22 +771,22 @@
       },
       {
         "path": "dist/lifecycle/attempt-runner-providers.d.ts",
-        "size": 4919,
+        "size": 5306,
         "mode": 420
       },
       {
         "path": "dist/lifecycle/attempt-runner-providers.d.ts.map",
-        "size": 905,
+        "size": 1012,
         "mode": 420
       },
       {
         "path": "dist/lifecycle/attempt-runner-providers.js",
-        "size": 84882,
+        "size": 85924,
         "mode": 420
       },
       {
         "path": "dist/lifecycle/attempt-runner-providers.js.map",
-        "size": 123915,
+        "size": 125708,
         "mode": 420
       },
       {
@@ -710,23 +830,43 @@
         "mode": 420
       },
       {
+        "path": "dist/lifecycle/behavioral-doctor.d.ts",
+        "size": 1224,
+        "mode": 420
+      },
+      {
+        "path": "dist/lifecycle/behavioral-doctor.d.ts.map",
+        "size": 1197,
+        "mode": 420
+      },
+      {
+        "path": "dist/lifecycle/behavioral-doctor.js",
+        "size": 4685,
+        "mode": 420
+      },
+      {
+        "path": "dist/lifecycle/behavioral-doctor.js.map",
+        "size": 10081,
+        "mode": 420
+      },
+      {
         "path": "dist/lifecycle/build.d.ts",
-        "size": 14920,
+        "size": 15038,
         "mode": 420
       },
       {
         "path": "dist/lifecycle/build.d.ts.map",
-        "size": 4916,
+        "size": 4962,
         "mode": 420
       },
       {
         "path": "dist/lifecycle/build.js",
-        "size": 99133,
+        "size": 99599,
         "mode": 420
       },
       {
         "path": "dist/lifecycle/build.js.map",
-        "size": 174629,
+        "size": 175491,
         "mode": 420
       },
       {
@@ -1171,22 +1311,22 @@
       },
       {
         "path": "dist/lifecycle/doctor.d.ts",
-        "size": 172,
+        "size": 273,
         "mode": 420
       },
       {
         "path": "dist/lifecycle/doctor.d.ts.map",
-        "size": 244,
+        "size": 322,
         "mode": 420
       },
       {
         "path": "dist/lifecycle/doctor.js",
-        "size": 8572,
+        "size": 9671,
         "mode": 420
       },
       {
         "path": "dist/lifecycle/doctor.js.map",
-        "size": 15826,
+        "size": 17738,
         "mode": 420
       },
       {
@@ -1521,12 +1661,12 @@
       },
       {
         "path": "dist/lifecycle/routing.js",
-        "size": 4045,
+        "size": 4375,
         "mode": 420
       },
       {
         "path": "dist/lifecycle/routing.js.map",
-        "size": 7813,
+        "size": 8337,
         "mode": 420
       },
       {
@@ -1735,6 +1875,186 @@
         "mode": 420
       },
       {
+        "path": "dist/protected-release/controller.d.ts",
+        "size": 2283,
+        "mode": 420
+      },
+      {
+        "path": "dist/protected-release/controller.d.ts.map",
+        "size": 2250,
+        "mode": 420
+      },
+      {
+        "path": "dist/protected-release/controller.js",
+        "size": 3886,
+        "mode": 420
+      },
+      {
+        "path": "dist/protected-release/controller.js.map",
+        "size": 9204,
+        "mode": 420
+      },
+      {
+        "path": "dist/protected-release/index.d.ts",
+        "size": 138,
+        "mode": 420
+      },
+      {
+        "path": "dist/protected-release/index.d.ts.map",
+        "size": 190,
+        "mode": 420
+      },
+      {
+        "path": "dist/protected-release/index.js",
+        "size": 136,
+        "mode": 420
+      },
+      {
+        "path": "dist/protected-release/index.js.map",
+        "size": 322,
+        "mode": 420
+      },
+      {
+        "path": "dist/protected-release/production-review.d.ts",
+        "size": 763,
+        "mode": 420
+      },
+      {
+        "path": "dist/protected-release/production-review.d.ts.map",
+        "size": 786,
+        "mode": 420
+      },
+      {
+        "path": "dist/protected-release/production-review.js",
+        "size": 2894,
+        "mode": 420
+      },
+      {
+        "path": "dist/protected-release/production-review.js.map",
+        "size": 6418,
+        "mode": 420
+      },
+      {
+        "path": "dist/protected-release/profile.d.ts",
+        "size": 1098,
+        "mode": 420
+      },
+      {
+        "path": "dist/protected-release/profile.d.ts.map",
+        "size": 961,
+        "mode": 420
+      },
+      {
+        "path": "dist/protected-release/profile.js",
+        "size": 2081,
+        "mode": 420
+      },
+      {
+        "path": "dist/protected-release/profile.js.map",
+        "size": 4603,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/canonical.d.ts",
+        "size": 183,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/canonical.d.ts.map",
+        "size": 259,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/canonical.js",
+        "size": 634,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/canonical.js.map",
+        "size": 1594,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/index.d.ts",
+        "size": 140,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/index.d.ts.map",
+        "size": 188,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/index.js",
+        "size": 138,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/index.js.map",
+        "size": 322,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/proof-root.d.ts",
+        "size": 456,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/proof-root.d.ts.map",
+        "size": 465,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/proof-root.js",
+        "size": 2710,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/proof-root.js.map",
+        "size": 5935,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/receipt-validator.d.ts",
+        "size": 1495,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/receipt-validator.d.ts.map",
+        "size": 1388,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/receipt-validator.js",
+        "size": 6890,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/receipt-validator.js.map",
+        "size": 15901,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/schema-validator.d.ts",
+        "size": 194,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/schema-validator.d.ts.map",
+        "size": 284,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/schema-validator.js",
+        "size": 4885,
+        "mode": 420
+      },
+      {
+        "path": "dist/release-proof/schema-validator.js.map",
+        "size": 10460,
+        "mode": 420
+      },
+      {
         "path": "dist/state/leases.d.ts",
         "size": 9195,
         "mode": 420
@@ -1916,11 +2236,31 @@
       },
       {
         "path": "package.json",
-        "size": 1732,
-        "mode": 384
+        "size": 1960,
+        "mode": 420
+      },
+      {
+        "path": "proof/metadata.json",
+        "size": 424,
+        "mode": 420
+      },
+      {
+        "path": "runtime/resource-map.json",
+        "size": 731,
+        "mode": 420
+      },
+      {
+        "path": "validators/packed-install-receipt.schema.json",
+        "size": 6623,
+        "mode": 420
+      },
+      {
+        "path": "validators/vertical-slice-receipt.schema.json",
+        "size": 10270,
+        "mode": 420
       }
     ],
-    "entryCount": 382,
+    "entryCount": 450,
     "bundled": []
   }
 ]

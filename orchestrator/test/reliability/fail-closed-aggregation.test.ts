@@ -254,6 +254,7 @@ describe("fail-closed run aggregation", () => {
     executable(join(failingPython, "python3"), "#!/bin/sh\nexit 92\n");
     const infrastructure = runFixture(d, "build", writePrd(d, ["src/b.ts"]), {
       PATH: `${failingPython}:${FIXTURE_BIN}:${process.env.PATH ?? ""}`,
+      OMNIGENT_PYTHON: join(failingPython, "python3"),
     });
     expect(infrastructure.status).toBe(4);
     expect(infrastructure.stdout).toContain("infrastructure_error");

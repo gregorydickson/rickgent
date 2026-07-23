@@ -289,7 +289,13 @@ function makeRealAuthorityRunner(
   // This uses real authority APIs (persistAuthorityOwnershipSnapshot,
   // persistAuthorityClaimSnapshot, persistAuthorityEvidence,
   // createAndSealAuthorityTargetProofSet).
-  const realProviders = buildAttemptRunnerProviders(store, leases);
+  const realProviders = buildAttemptRunnerProviders(
+    store,
+    leases,
+    undefined,
+    undefined,
+    { fixtureReviewerIdentity: true },
+  );
   const mintCapability = leases.issueDispositionMintCapability();
   const lifecycleRecords = new LifecycleRecordAuthority(store);
 

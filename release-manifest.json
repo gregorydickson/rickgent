@@ -86,7 +86,9 @@
         "dist/internal/",
         "dist-fixture/",
         "fixtures/",
-        ".tsbuildinfo"
+        ".tsbuildinfo",
+        "__pycache__",
+        ".pyc"
       ],
       "owns": [
         "compiled_cli",
