@@ -68,6 +68,7 @@ try {
       worker: { path: "agents/rickgent/agents/worker/config.yaml", sha256: sha256(join(packageRoot, "agents", "rickgent", "agents", "worker", "config.yaml")) },
       proof_metadata: { path: "proof/metadata.json", sha256: sha256(join(packageRoot, "proof", "metadata.json")) },
       validators_root: { path: "validators" },
+      license: { path: "LICENSE", sha256: sha256(join(packageRoot, "LICENSE")) },
     },
   };
   writeFileSync(join(packageRoot, "runtime", "resource-map.json"), `${JSON.stringify(map, null, 2)}\n`);

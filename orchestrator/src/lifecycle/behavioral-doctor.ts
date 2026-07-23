@@ -40,28 +40,49 @@ export interface BehavioralDoctorDependencies {
 }
 
 const pythonProbe = String.raw`
-import json, os, sqlite3
+import importlib.metadata, json, os, sqlite3
 from pathlib import Path
+from rickgent_policies.policy_event import TicketScopeEntry
+from rickgent_policies.scope import ScopeOperation, evaluate_scope
 root = Path(os.environ["RICKGENT_BEHAVIORAL_ROOT"]).resolve()
+worktree = root / "policy-worktree"
+worktree.mkdir()
+target = worktree / "allowed.txt"
+target.write_text("before")
+declaration = TicketScopeEntry(path="allowed.txt", change_kind="modify", directory=False)
+allow = evaluate_scope(
+    worktree_root=str(worktree), authorized_root=str(worktree), reserved_roots=(),
+    declared_scope=(declaration,),
+    operation=ScopeOperation("modify", False, path="allowed.txt"),
+)
+deny = evaluate_scope(
+    worktree_root=str(worktree), authorized_root=str(worktree), reserved_roots=(),
+    declared_scope=(declaration,),
+    operation=ScopeOperation("modify", False, path="outside.txt"),
+)
+import omnigent
+omnigent_import = str(Path(omnigent.__file__).resolve())
+omnigent_root = str(Path(os.environ["OMNIGENT_ROOT"]).resolve())
+identity = {
+    "requested_root": omnigent_root,
+    "observed_import": omnigent_import,
+    "observed_version": importlib.metadata.version("omnigent"),
+}
 db_path = root / "chat.db"
 con = sqlite3.connect(db_path)
-con.execute("create table observations (id text primary key, harness text, model text, verdict text)")
-con.execute("insert into observations values ('doctor-root', 'fixture-harness', 'fixture-model', 'ALLOW')")
+con.execute("create table observations (id text primary key, payload text)")
+con.execute("insert into observations values (?, ?)", ("omnigent-runtime", json.dumps(identity, sort_keys=True)))
 con.commit()
 con.close()
 con = sqlite3.connect(db_path)
-row = con.execute("select id, harness, model, verdict from observations").fetchone()
+row = con.execute("select id, payload from observations").fetchone()
 con.close()
-try:
-    import rickgent_policies
-    imported = True
-except Exception:
-    imported = False
+reopened_identity = json.loads(row[1])
 print(json.dumps({
-    "native_allow": row[3] == "ALLOW" and imported,
-    "native_deny": "DENY" != row[3] and imported,
-    "identity": row[:3] == ("doctor-root", "fixture-harness", "fixture-model"),
-    "sqlite_reopen": row[0] == "doctor-root",
+    "native_allow": allow.result == "ALLOW",
+    "native_deny": deny.result == "DENY" and deny.code == "SCOPE_DENIED",
+    "identity": reopened_identity == identity and omnigent_import.startswith(omnigent_root + os.sep),
+    "sqlite_reopen": row[0] == "omnigent-runtime",
 }))
 `;
 

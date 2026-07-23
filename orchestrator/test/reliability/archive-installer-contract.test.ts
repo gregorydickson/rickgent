@@ -22,7 +22,7 @@ function fixture() {
     join(packageRoot, "validators"),
     omnigentRoot,
   ]) mkdirSync(path, { recursive: true });
-  for (const path of ["dist/cli.js", "agents/rickgent/config.yaml", "agents/rickgent/agents/worker/config.yaml", "proof/metadata.json", "validators/schema.json"]) {
+  for (const path of ["dist/cli.js", "agents/rickgent/config.yaml", "agents/rickgent/agents/worker/config.yaml", "proof/metadata.json", "validators/schema.json", "LICENSE"]) {
     writeFileSync(join(packageRoot, path), `${path}\n`);
   }
   writeFileSync(join(packageRoot, "runtime/resource-map.json"), JSON.stringify({
@@ -33,6 +33,7 @@ function fixture() {
       worker: { path: "agents/rickgent/agents/worker/config.yaml" },
       proof_metadata: { path: "proof/metadata.json" },
       validators_root: { path: "validators" },
+      license: { path: "LICENSE" },
     },
   }));
   return { root, packageRoot, omnigentRoot };
@@ -65,6 +66,27 @@ describe("archive-only installer and installed resolver", () => {
       omnigentRoot: value.omnigentRoot,
       omnigentPython: process.execPath,
     })).toThrow(/(?:escapes package root|symlink is not an immutable resource)/);
+  });
+
+  it("rejects source node_modules and incomplete runtime inventory", () => {
+    const source = fixture();
+    mkdirSync(join(source.packageRoot, "src"));
+    expect(() => resolveInstalledRuntime({
+      packageRoot: source.packageRoot,
+      omnigentRoot: source.omnigentRoot,
+      omnigentPython: process.execPath,
+    })).toThrow(/contains source tree/);
+
+    const incomplete = fixture();
+    const mapPath = join(incomplete.packageRoot, "runtime/resource-map.json");
+    const map = JSON.parse(readFileSync(mapPath, "utf8")) as { resources: Record<string, unknown> };
+    delete map.resources["license"];
+    writeFileSync(mapPath, JSON.stringify(map));
+    expect(() => resolveInstalledRuntime({
+      packageRoot: incomplete.packageRoot,
+      omnigentRoot: incomplete.omnigentRoot,
+      omnigentPython: process.execPath,
+    })).toThrow(/inventory is incomplete/);
   });
 
   it("installer contains no checkout build/editable/ambient fallback", () => {

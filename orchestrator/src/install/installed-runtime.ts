@@ -6,7 +6,7 @@ import {
   realpathSync,
   readdirSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 
 export const INSTALLED_RUNTIME_SCHEMA_VERSION = "rickgent-installed-runtime/v1" as const;
 
@@ -48,6 +48,7 @@ export interface InstalledRuntime {
   readonly resource_map: InstalledResource;
   readonly proof_metadata: InstalledResource;
   readonly validators_root: InstalledResource;
+  readonly license: InstalledResource;
   readonly omnigent_root: InstalledResource;
   readonly omnigent_python: InstalledResource;
 }
@@ -64,6 +65,15 @@ interface ResourceMap {
   readonly schema_version: "rickgent-resource-map/v1";
   readonly resources: Readonly<Record<string, { readonly path: string; readonly sha256?: string }>>;
 }
+
+const REQUIRED_RESOURCE_IDS = Object.freeze([
+  "cli",
+  "manager",
+  "worker",
+  "proof_metadata",
+  "validators_root",
+  "license",
+] as const);
 
 function sha256File(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -121,6 +131,27 @@ function rejectCheckout(path: string, roots: readonly string[]): void {
   }
 }
 
+function checkoutRoot(path: string): string | null {
+  let cursor = lstatSync(path).isDirectory() ? path : dirname(path);
+  for (;;) {
+    if (existsSync(join(cursor, ".git"))) return cursor;
+    const parent = dirname(cursor);
+    if (parent === cursor) return null;
+    cursor = parent;
+  }
+}
+
+function rejectCheckoutPackage(packageRoot: string): void {
+  const root = checkoutRoot(packageRoot);
+  if (root !== null) {
+    throw new InstalledRuntimeError(
+      "INSTALL_CHECKOUT_PATH",
+      `installed package resolves inside a source checkout: ${root}`,
+      packageRoot,
+    );
+  }
+}
+
 function rejectSourceNodeModules(packageRoot: string): void {
   if (basename(dirname(packageRoot)) === "node_modules" && existsSync(join(packageRoot, "src"))) {
     throw new InstalledRuntimeError(
@@ -156,7 +187,11 @@ function rejectEditableMetadata(python: string): void {
         } else {
           stack.push(path);
         }
-      } else if (name.endsWith(".pth") || name.endsWith(".egg-link")) {
+      } else if (
+        name.endsWith(".egg-link") ||
+        name.startsWith("__editable__") ||
+        (name.endsWith(".pth") && /(?:rickgent|omnigent|file:|\/src\/|\/checkout\/)/i.test(readFileSync(path, "utf8")))
+      ) {
         throw new InstalledRuntimeError("INSTALL_EDITABLE_METADATA", `editable path metadata: ${path}`, path);
       }
     }
@@ -168,7 +203,14 @@ function resource(
   id: string,
   entry: { readonly path: string; readonly sha256?: string } | undefined,
 ): InstalledResource {
-  if (entry === undefined || isAbsolute(entry.path)) {
+  if (
+    entry === undefined ||
+    typeof entry.path !== "string" ||
+    entry.path === "" ||
+    isAbsolute(entry.path) ||
+    normalize(entry.path) !== entry.path ||
+    entry.path.split(/[\\/]/).includes("..")
+  ) {
     throw new InstalledRuntimeError("INSTALL_RESOURCE_MAP_INVALID", `invalid or missing resource-map entry: ${id}`);
   }
   const lexical = resolve(packageRoot, entry.path);
@@ -188,11 +230,19 @@ export function resolveInstalledRuntime(input: ResolveInstalledRuntimeInput): In
   const omnigentRoot = canonicalAbsolute("OMNIGENT_ROOT", input.omnigentRoot);
   const omnigentPython = canonicalAbsolute("OMNIGENT_PYTHON", input.omnigentPython);
   const forbidden = (input.forbiddenCheckoutRoots ?? []).map((path) => canonicalAbsolute("forbiddenCheckoutRoot", path));
+  rejectCheckoutPackage(packageRoot);
   rejectCheckout(packageRoot, forbidden);
   rejectCheckout(omnigentRoot, forbidden);
   rejectCheckout(omnigentPython, forbidden);
   rejectSourceNodeModules(packageRoot);
-  if (basename(omnigentPython) === "python3" && !omnigentPython.includes(`${sep}bin${sep}`)) {
+  if (
+    /^(?:python|python3)(?:\.\d+)?$/.test(basename(omnigentPython)) &&
+    (
+      omnigentPython === "/usr/bin/python3" ||
+      omnigentPython === "/bin/python3" ||
+      !existsSync(join(dirname(dirname(omnigentPython)), "pyvenv.cfg"))
+    )
+  ) {
     throw new InstalledRuntimeError("INSTALL_PYTHON_AMBIENT", "ambient python3 is forbidden; select OMNIGENT_PYTHON", omnigentPython);
   }
   rejectEditableMetadata(omnigentPython);
@@ -207,6 +257,13 @@ export function resolveInstalledRuntime(input: ResolveInstalledRuntimeInput): In
   if (map.schema_version !== "rickgent-resource-map/v1" || map.resources === null || typeof map.resources !== "object") {
     throw new InstalledRuntimeError("INSTALL_RESOURCE_MAP_INVALID", "resource map schema is invalid", mapPath);
   }
+  const resourceIds = Object.keys(map.resources).sort();
+  if (
+    resourceIds.length !== REQUIRED_RESOURCE_IDS.length ||
+    REQUIRED_RESOURCE_IDS.some((id) => !resourceIds.includes(id))
+  ) {
+    throw new InstalledRuntimeError("INSTALL_RESOURCE_MAP_INVALID", "resource map inventory is incomplete or contains unknown entries", mapPath);
+  }
   const mapResource = Object.freeze({ id: "resource_map", realpath: mapPath, sha256: sha256File(mapPath) });
   return Object.freeze({
     schema_version: INSTALLED_RUNTIME_SCHEMA_VERSION,
@@ -217,6 +274,7 @@ export function resolveInstalledRuntime(input: ResolveInstalledRuntimeInput): In
     resource_map: mapResource,
     proof_metadata: resource(packageRoot, "proof_metadata", map.resources["proof_metadata"]),
     validators_root: resource(packageRoot, "validators_root", map.resources["validators_root"]),
+    license: resource(packageRoot, "license", map.resources["license"]),
     omnigent_root: Object.freeze({ id: "omnigent_root", realpath: omnigentRoot, sha256: digest(omnigentRoot) }),
     omnigent_python: Object.freeze({ id: "omnigent_python", realpath: omnigentPython, sha256: sha256File(omnigentPython) }),
   });

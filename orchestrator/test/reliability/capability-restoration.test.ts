@@ -1,32 +1,28 @@
 import { describe, expect, it } from "vitest";
 import { createProofGatedCapabilityGate } from "../../src/capabilities/runtime-gate.js";
-import type { ProofRootValidation } from "../../src/release-proof/proof-root.js";
 
 describe("proof-root capability restoration", () => {
   it.each(["resume_retry", "cross_vendor_review", "automatic_delivery"] as const)(
     "contracts %s without complete proof",
     (name) => {
       expect(() => createProofGatedCapabilityGate(null).require(name)).toThrow(/installed proof root did not validate/);
-      const invalid = {
-        ok: false,
-        diagnostics: ["PROOF_STALE: stale"],
-        packed: { ok: false, diagnostics: [], digest: null },
-        vertical: { ok: false, diagnostics: [], digest: null },
-      } satisfies ProofRootValidation;
-      expect(() => createProofGatedCapabilityGate(invalid).require(name)).toThrow(/PROOF_STALE/);
+      expect(() => createProofGatedCapabilityGate("/missing-proof-root", {
+        sourceGitOid: "a".repeat(40),
+        releaseId: "release",
+        releaseSha256: "b".repeat(64),
+        buildId: "build",
+        buildSha256: "c".repeat(64),
+        npmArchiveSha256: "d".repeat(64),
+        wheelArchiveSha256: "e".repeat(64),
+        requiredCheckIds: ["installed_behavior"],
+      }).require(name)).toThrow(/PROOF_MALFORMED/);
     },
   );
 
-  it("restores only after both strict receipts validate", () => {
-    const valid = {
-      ok: true,
-      diagnostics: [],
-      packed: { ok: true, diagnostics: [], digest: "a".repeat(64) },
-      vertical: { ok: true, diagnostics: [], digest: "b".repeat(64) },
-    } satisfies ProofRootValidation;
-    expect(() => createProofGatedCapabilityGate(valid).require("resume_retry")).not.toThrow();
-    expect(() => createProofGatedCapabilityGate(valid).require("cross_vendor_review")).not.toThrow();
-    expect(() => createProofGatedCapabilityGate(valid).require("automatic_delivery")).not.toThrow();
-    expect(() => createProofGatedCapabilityGate(valid).require("raw_shell")).toThrow();
+  it("does not accept caller-shaped validation objects as authority", () => {
+    const shaped = { ok: true, diagnostics: [], packed: {}, vertical: {} };
+    expect(() => createProofGatedCapabilityGate(shaped as unknown as string).require("resume_retry"))
+      .toThrow(/proof root not selected/);
+    expect(() => createProofGatedCapabilityGate(null).require("raw_shell")).toThrow();
   });
 });

@@ -5,7 +5,8 @@ import {
   type CapabilityGate,
   type CapabilityName,
 } from "./registry.js";
-import type { ProofRootValidation } from "../release-proof/proof-root.js";
+import { validateProofRoot } from "../release-proof/proof-root.js";
+import type { ReceiptExpectations } from "../release-proof/receipt-validator.js";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -38,8 +39,12 @@ function unavailable(name: CapabilityName, diagnostics: readonly string[]) {
 }
 
 export function createProofGatedCapabilityGate(
-  validation: ProofRootValidation | null,
+  proofRootPath: string | null,
+  expected?: ReceiptExpectations,
 ): CapabilityGate {
+  const validation = proofRootPath !== null && expected !== undefined
+    ? validateProofRoot(proofRootPath, expected)
+    : null;
   const diagnostics = validation?.diagnostics ?? Object.freeze(["proof root not selected"]);
   const valid = validation?.ok === true;
   return Object.freeze({

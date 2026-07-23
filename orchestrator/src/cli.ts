@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { readFileSync, realpathSync } from "fs";
+import { existsSync, readFileSync, realpathSync } from "fs";
 import { join, resolve } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
+import { resolveInstalledRuntimeFromEnvironment } from "./install/installed-runtime.js";
 import { BUILD_COMMIT } from "./build-commit.js";
 import {
   CAPABILITY_UNAVAILABLE_ERROR_CODE,
@@ -303,12 +304,16 @@ function resolveBuildOptions(rest: string[]): BuildOptions {
   const rosterPath = flagValue(rest, "--roster");
   const workingDir = flagValue(rest, "--repo") ?? process.env.RICKGENT_TARGET_REPO ?? process.cwd();
   const rickgentDir = getRickgentDir();
+  const packageRoot = fileURLToPath(new URL("../", import.meta.url));
+  const installedAgentDir = existsSync(join(packageRoot, "src"))
+    ? join(packageRoot, "..", "agents", "rickgent")
+    : join(resolveInstalledRuntimeFromEnvironment(packageRoot).manager.realpath, "..");
 
   const options: BuildOptions = {
     prdPath: prdPath ?? "",
     workingDir,
     rickgentDir,
-    agentDir: flagValue(rest, "--agent") ?? process.env.RICKGENT_AGENT_DIR ?? join(new URL("../../", import.meta.url).pathname, "agents", "rickgent"),
+    agentDir: flagValue(rest, "--agent") ?? process.env.RICKGENT_AGENT_DIR ?? installedAgentDir,
     dataDir: process.env.OMNIGENT_DATA_DIR ?? join(rickgentDir, "omnigent-data"),
     resume,
     rawShell: rest.includes("--raw-shell"),

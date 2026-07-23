@@ -12,6 +12,7 @@ import { execFileSync } from "child_process";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { runBehavioralDoctor, type BehavioralDoctorResult } from "../lifecycle/behavioral-doctor.js";
+import { resolveInstalledRuntimeFromEnvironment } from "../install/installed-runtime.js";
 
 type CheckStatus = "pass" | "fail";
 
@@ -166,18 +167,26 @@ function formatToolchain(payload: DoctorJson): string {
 
 export async function runDoctorCommand(asJson: boolean, behavioral = false): Promise<DoctorResult> {
   if (behavioral) {
-    const python = process.env["OMNIGENT_PYTHON"];
-    const result: BehavioralDoctorResult = python === undefined || python === ""
-      ? {
+    let result: BehavioralDoctorResult;
+    try {
+      const packageRoot = fileURLToPath(new URL("../../", import.meta.url));
+      const runtime = resolveInstalledRuntimeFromEnvironment(packageRoot);
+      result = runBehavioralDoctor(runtime.omnigent_python.realpath, {
+        ...process.env,
+        OMNIGENT_ROOT: runtime.omnigent_root.realpath,
+        OMNIGENT_PYTHON: runtime.omnigent_python.realpath,
+      });
+    } catch (error) {
+      result = {
           ok: false,
           mode: "behavioral",
           authenticated_hosted_evidence: false,
           checks: [],
           owned_root: "",
           cleaned: true,
-          report: "OMNIGENT_PYTHON is required for behavioral doctor",
-        }
-      : runBehavioralDoctor(python);
+          report: error instanceof Error ? error.message : String(error),
+        };
+    }
     console.log(asJson ? JSON.stringify(result) : result.report);
     return { ok: result.ok, report: result.report };
   }

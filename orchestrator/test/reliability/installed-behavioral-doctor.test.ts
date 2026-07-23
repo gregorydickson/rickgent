@@ -35,4 +35,16 @@ describe("installed behavioral doctor", () => {
     expect(result.checks.some((check) => check.check_id === "typed_failure" && check.outcome === "fail")).toBe(true);
     expect(result.cleaned).toBe(true);
   });
+
+  it("fails closed when owned-root cleanup cannot be observed", () => {
+    const root = mkdtempSync(join(tmpdir(), "doctor-cleanup-failure-"));
+    roots.push(root);
+    const result = runBehavioralDoctor(process.execPath, process.env, {
+      makeRoot: () => root,
+      runPython: () => JSON.stringify({ native_allow: true, native_deny: true, identity: true, sqlite_reopen: true }),
+      removeRoot: () => undefined,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.checks.at(-1)).toMatchObject({ check_id: "owned_cleanup", outcome: "fail" });
+  });
 });

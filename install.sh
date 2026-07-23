@@ -65,13 +65,28 @@ done
 [[ ! -e "$package_root/src" && ! -e "$package_root/test" ]] || die "source/test content is forbidden in installed archive"
 
 note "Installing non-editable policy wheel"
-"$OMNIGENT_PYTHON" -m venv --system-site-packages "$tmp_root/python"
+"$OMNIGENT_PYTHON" -m venv "$tmp_root/python"
 "$tmp_root/python/bin/python" -m pip install --no-deps --no-cache-dir "$policy_wheel"
 site_json="$("$tmp_root/python/bin/python" -c 'import importlib.metadata,json; d=importlib.metadata.distribution("rickgent-policies"); print(json.dumps([str(p) for p in d.files or []]))')"
 [[ "$site_json" != *direct_url.json* && "$site_json" != *".pth"* && "$site_json" != *".egg-link"* ]] \
   || die "editable policy metadata is forbidden"
+policy_origin="$(PYTHONPATH="$OMNIGENT_ROOT" "$tmp_root/python/bin/python" -c 'import pathlib,rickgent_policies; print(pathlib.Path(rickgent_policies.__file__).resolve())')"
+[[ "$policy_origin" == "$tmp_root/python/"* ]] || die "policy import did not resolve from the installed wheel"
+omnigent_origin="$(PYTHONPATH="$OMNIGENT_ROOT" "$tmp_root/python/bin/python" -c 'import omnigent,pathlib; print(pathlib.Path(omnigent.__file__).resolve())')"
+omnigent_real="$(cd "$OMNIGENT_ROOT" && pwd -P)"
+[[ "$omnigent_origin" == "$omnigent_real/"* ]] || die "Omnigent import escaped OMNIGENT_ROOT"
 
-rm -rf -- "$npm_root" "$venv_root"
+staged_cli="$tmp_root/npm/node_modules/rickgent/dist/cli.js"
+note "Running staged installed behavioral doctor"
+OMNIGENT_ROOT="$omnigent_real" \
+OMNIGENT_PYTHON="$tmp_root/python/bin/python" \
+PYTHONPATH="$omnigent_real" \
+node "$staged_cli" doctor --behavioral
+
+old_npm="$tmp_root/previous-npm"
+old_python="$tmp_root/previous-python"
+[[ ! -e "$npm_root" ]] || mv "$npm_root" "$old_npm"
+[[ ! -e "$venv_root" ]] || mv "$venv_root" "$old_python"
 mv "$tmp_root/npm" "$npm_root"
 mv "$tmp_root/python" "$venv_root"
 
@@ -81,19 +96,13 @@ launcher_tmp="$launcher.tmp.$$"
 {
   printf '#!/usr/bin/env bash\n'
   printf 'set -euo pipefail\n'
-  printf 'export OMNIGENT_ROOT=%q\n' "$OMNIGENT_ROOT"
+  printf 'export OMNIGENT_ROOT=%q\n' "$omnigent_real"
   printf 'export OMNIGENT_PYTHON=%q\n' "$venv_root/bin/python"
-  printf 'export PYTHONPATH=%q\n' "$OMNIGENT_ROOT"
+  printf 'export PYTHONPATH=%q\n' "$omnigent_real"
   printf 'exec node %q "$@"\n' "$installed_cli"
 } >"$launcher_tmp"
 chmod 0755 "$launcher_tmp"
 mv "$launcher_tmp" "$launcher"
-
-note "Running installed behavioral doctor"
-OMNIGENT_ROOT="$OMNIGENT_ROOT" \
-OMNIGENT_PYTHON="$venv_root/bin/python" \
-PYTHONPATH="$OMNIGENT_ROOT" \
-node "$installed_cli" doctor --behavioral
 
 trap - EXIT INT TERM HUP
 cleanup

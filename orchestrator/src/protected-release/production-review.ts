@@ -49,7 +49,8 @@ export function dispatchProductionReview(
 ): ProductionReviewObservation {
   if (
     request.vendor.toLowerCase() !== "anthropic" ||
-    !request.harness.toLowerCase().includes("claude")
+    !request.harness.toLowerCase().includes("claude") ||
+    !request.model.toLowerCase().includes("claude")
   ) {
     throw new Error("RICKGENT_PRODUCTION_REVIEW_REQUIRES_CLAUDE");
   }
@@ -62,6 +63,7 @@ export function dispatchProductionReview(
   mkdirSync(request.dataDir, { recursive: true, mode: 0o700 });
   const dataDir = realpathSync(request.dataDir);
   const before = baselineIds(dataDir);
+  if (before.size !== 0) throw new Error("RICKGENT_PRODUCTION_REVIEW_DATA_ROOT_NOT_ISOLATED");
   const argv = [
     "run", bundle, "--no-session", "-p", request.prompt,
     "--harness", request.harness, "--model", request.model,
@@ -95,6 +97,7 @@ export function dispatchProductionReview(
   if (
     observed.canonical_harness !== invoked.canonical_harness ||
     observed.canonical_model !== invoked.canonical_model ||
+    observed.canonical_vendor !== "anthropic" ||
     observed.conversation_id === null
   ) {
     throw new Error("RICKGENT_PRODUCTION_REVIEW_IDENTITY_MISMATCH");

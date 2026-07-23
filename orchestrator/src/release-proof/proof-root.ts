@@ -30,7 +30,10 @@ export function validateProofRoot(rootPath: string, expected: ReceiptExpectation
     };
     if (!Object.values(paths).every((path) => contained(root, path))) throw new Error("proof-root symlink escape");
     const maxAge = expected.maxAgeMs ?? 7 * 24 * 60 * 60 * 1000;
-    if (Date.now() - statSync(paths.vertical).mtimeMs > maxAge) throw new Error("proof-root receipt file is stale");
+    if (
+      Date.now() - statSync(paths.vertical).mtimeMs > maxAge ||
+      Date.now() - statSync(paths.packed).mtimeMs > maxAge
+    ) throw new Error("proof-root receipt file is stale");
     const packedValue = JSON.parse(readFileSync(paths.packed, "utf8"));
     const packedSchema = JSON.parse(readFileSync(paths.packedSchema, "utf8")) as Record<string, unknown>;
     const verticalValue = JSON.parse(readFileSync(paths.vertical, "utf8"));

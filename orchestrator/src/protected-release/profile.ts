@@ -1,5 +1,6 @@
 import { realpathSync } from "node:fs";
 import { isAbsolute } from "node:path";
+import type { InstalledRuntime } from "../install/installed-runtime.js";
 
 export const PROTECTED_PROFILE_SCHEMA_VERSION = "rickgent-protected-release-profile/v1" as const;
 
@@ -30,7 +31,10 @@ export class ProtectedProfileError extends Error {
 
 const sha = /^[0-9a-f]{64}$/;
 
-export function validateProtectedProfile(value: ProtectedReleaseProfile): ProtectedReleaseProfile {
+export function validateProtectedProfile(
+  value: ProtectedReleaseProfile,
+  installed: InstalledRuntime,
+): ProtectedReleaseProfile {
   if (value.schema_version !== PROTECTED_PROFILE_SCHEMA_VERSION) throw new ProtectedProfileError("wrong protected profile schema");
   if (value.authority_token.length < 16) throw new ProtectedProfileError("authority token is missing");
   if (!sha.test(value.npm_archive_sha256) || !sha.test(value.wheel_archive_sha256)) throw new ProtectedProfileError("archive digest is invalid");
@@ -38,6 +42,9 @@ export function validateProtectedProfile(value: ProtectedReleaseProfile): Protec
   const manager = realpathSync(value.manager_entrypoint);
   const worker = realpathSync(value.worker_entrypoint);
   if (manager !== value.manager_entrypoint || worker !== value.worker_entrypoint) throw new ProtectedProfileError("entrypoints must be canonical realpaths");
+  if (manager !== installed.manager.realpath || worker !== installed.worker.realpath) {
+    throw new ProtectedProfileError("entrypoints are not the exact installed resource-map entries");
+  }
   const repo = value.repository;
   if (repo.visibility === ("public" as string) || repo.allowlisted_disposable !== true || repo.pre_existing !== true) {
     throw new ProtectedProfileError("repository must be non-public, pre-existing, and explicitly disposable");

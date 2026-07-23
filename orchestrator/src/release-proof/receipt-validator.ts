@@ -155,7 +155,11 @@ export function validateVerticalSliceReceipt(
     binding["packed_install_receipt_sha256"] !== expected.packedInstallReceiptSha256
   ) diagnostics.push({ code: "PROOF_BINDING_MISMATCH", detail: "archive or packed-receipt linkage mismatch" });
   const runs = array(receipt["runs"]).map(record);
-  if (runs.length !== 2 || new Set(runs.map((run) => run["run_id"])).size !== 2) diagnostics.push({ code: "PROOF_RUN_INCOMPLETE", detail: "exactly two independent runs are required" });
+  if (
+    runs.length !== 2 ||
+    new Set(runs.map((run) => run["run_id"])).size !== 2 ||
+    new Set(runs.map((run) => run["persistent_state_id"])).size !== 2
+  ) diagnostics.push({ code: "PROOF_RUN_INCOMPLETE", detail: "exactly two independent runs and state roots are required" });
   const cutoff = (expected.now ?? new Date()).getTime() - (expected.maxAgeMs ?? 7 * 24 * 60 * 60 * 1000);
   for (const run of runs) {
     const attempts = array(run["attempts"]).map(record);
@@ -164,8 +168,28 @@ export function validateVerticalSliceReceipt(
       attempts[0]?.["phase"] !== "crash" ||
       attempts[0]?.["death_observed"] !== true ||
       attempts[1]?.["phase"] !== "resume" ||
-      attempts[1]?.["death_observed"] !== false
+      attempts[1]?.["death_observed"] !== false ||
+      attempts[0]?.["process_id"] === attempts[1]?.["process_id"] ||
+      attempts[0]?.["process_group_id"] === attempts[1]?.["process_group_id"]
     ) diagnostics.push({ code: "PROOF_RUN_INCOMPLETE", detail: `crash/resume topology incomplete: ${String(run["run_id"])}` });
+    const observations = array(run["model_observations"]).map(record);
+    if (
+      observations.length !== 2 ||
+      !observations.some((item) => item["role"] === "implementation") ||
+      !observations.some((item) => item["role"] === "review") ||
+      observations.some((item) =>
+        item["requested_model"] !== item["invoked_model"] ||
+        item["requested_model"] !== item["observed_model"] ||
+        typeof item["conversation_id"] !== "string" ||
+        item["conversation_id"] === ""
+      )
+    ) diagnostics.push({ code: "PROOF_RUN_INCOMPLETE", detail: `production identity evidence incomplete: ${String(run["run_id"])}` });
+    const delivery = record(run["delivery"]);
+    if (
+      delivery["observed_branch_oid"] !== delivery["pull_request_head_oid"] ||
+      delivery["observed_branch_oid"] !== delivery["delivery_oid"] ||
+      delivery["duplicate_side_effects"] !== false
+    ) diagnostics.push({ code: "PROOF_RUN_INCOMPLETE", detail: `delivery identity incomplete: ${String(run["run_id"])}` });
     const started = attempts[0]?.["started_at"];
     if (typeof started !== "string" || Date.parse(started) < cutoff) diagnostics.push({ code: "PROOF_STALE", detail: `run is stale: ${String(run["run_id"])}` });
   }

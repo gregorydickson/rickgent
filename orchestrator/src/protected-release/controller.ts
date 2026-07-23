@@ -1,5 +1,6 @@
 import type { ProtectedReleaseProfile } from "./profile.js";
 import { validateProtectedProfile } from "./profile.js";
+import type { InstalledRuntime } from "../install/installed-runtime.js";
 
 export interface RemoteObservation {
   readonly repository_id: string;
@@ -42,6 +43,7 @@ export interface RunObservation {
   };
   readonly owned_branch: string;
   readonly delivery_oid: string;
+  readonly response_loss_recovered: true;
 }
 
 export interface ProtectedExecutor {
@@ -54,6 +56,7 @@ export interface ProtectedExecutor {
     readonly timeoutMs: number;
     readonly nonInteractive: true;
   }): Promise<RunObservation>;
+  interruptRun(runId: string): Promise<void>;
 }
 
 export interface ProtectedReleaseResult {
@@ -75,42 +78,81 @@ function oid(value: string): boolean {
   return /^[0-9a-f]{40}$/.test(value);
 }
 
+async function bounded<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  code: string,
+  onTimeout?: () => Promise<void>,
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          void onTimeout?.().finally(() => reject(new ProtectedReleaseError(code, "protected operation timed out")));
+        }, timeoutMs);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+async function assertRemoteIdentity(
+  profile: ProtectedReleaseProfile,
+  remote: ProtectedRemote,
+): Promise<RemoteObservation> {
+  const observed = await bounded(remote.observeRepository(), profile.command_timeout_ms, "REMOTE_TIMEOUT");
+  if (
+    observed.repository_id !== profile.repository.repository_id ||
+    observed.visibility === "public" ||
+    observed.default_branch !== profile.repository.base_branch
+  ) throw new ProtectedReleaseError("REMOTE_IDENTITY_MISMATCH", "remote identity, visibility, or base branch mismatch");
+  return observed;
+}
+
 async function cleanupOwned(
   profile: ProtectedReleaseProfile,
   remote: ProtectedRemote,
   branches: readonly string[],
 ): Promise<void> {
   const prefix = profile.repository.owned_branch_prefix;
-  for (const pr of await remote.observeOwnedPullRequests(prefix)) {
+  await assertRemoteIdentity(profile, remote);
+  for (const pr of await bounded(remote.observeOwnedPullRequests(prefix), profile.command_timeout_ms, "REMOTE_TIMEOUT")) {
     if (!pr.head.startsWith(prefix)) throw new ProtectedReleaseError("CLEANUP_SCOPE_VIOLATION", `non-owned PR returned by remote: ${pr.id}`);
-    if (pr.open) await remote.closePullRequest(pr.id);
+    if (pr.open) {
+      await assertRemoteIdentity(profile, remote);
+      await bounded(remote.closePullRequest(pr.id), profile.command_timeout_ms, "REMOTE_TIMEOUT");
+      await assertRemoteIdentity(profile, remote);
+    }
   }
   for (const name of branches) {
     if (!name.startsWith(prefix)) throw new ProtectedReleaseError("CLEANUP_SCOPE_VIOLATION", `refusing non-owned branch cleanup: ${name}`);
-    const before = await remote.observeBranch(name);
+    await assertRemoteIdentity(profile, remote);
+    const before = await bounded(remote.observeBranch(name), profile.command_timeout_ms, "REMOTE_TIMEOUT");
     if (before === null) continue;
     if (!oid(before.oid)) throw new ProtectedReleaseError("CLEANUP_OID_INVALID", `invalid observed branch OID: ${name}`);
-    const compare = await remote.observeBranch(name);
+    const compare = await bounded(remote.observeBranch(name), profile.command_timeout_ms, "REMOTE_TIMEOUT");
     if (compare === null || compare.oid !== before.oid) throw new ProtectedReleaseError("CLEANUP_COMPARE_CHANGED", `branch changed before delete: ${name}`);
-    await remote.deleteBranch(name, before.oid);
-    if (await remote.observeBranch(name) !== null) throw new ProtectedReleaseError("CLEANUP_REQUERY_FAILED", `branch remains after delete: ${name}`);
+    await bounded(remote.deleteBranch(name, before.oid), profile.command_timeout_ms, "REMOTE_TIMEOUT");
+    await assertRemoteIdentity(profile, remote);
+    if (await bounded(remote.observeBranch(name), profile.command_timeout_ms, "REMOTE_TIMEOUT") !== null) {
+      throw new ProtectedReleaseError("CLEANUP_REQUERY_FAILED", `branch remains after delete: ${name}`);
+    }
   }
-  const repository = await remote.observeRepository();
-  if (repository.repository_id !== profile.repository.repository_id) throw new ProtectedReleaseError("REPOSITORY_ID_CHANGED", "repository identity changed during cleanup");
+  await assertRemoteIdentity(profile, remote);
 }
 
 export async function runProtectedRelease(
   rawProfile: ProtectedReleaseProfile,
+  installed: InstalledRuntime,
   remote: ProtectedRemote,
   executor: ProtectedExecutor,
 ): Promise<ProtectedReleaseResult> {
-  const profile = validateProtectedProfile(rawProfile);
-  const observed = await remote.observeRepository();
-  if (
-    observed.repository_id !== profile.repository.repository_id ||
-    observed.visibility === "public" ||
-    observed.default_branch !== profile.repository.base_branch
-  ) throw new ProtectedReleaseError("REMOTE_IDENTITY_MISMATCH", "remote identity, visibility, or base branch mismatch");
+  const profile = validateProtectedProfile(rawProfile, installed);
+  const observed = await assertRemoteIdentity(profile, remote);
   const branchNames: string[] = [];
   const runs: RunObservation[] = [];
   try {
@@ -118,7 +160,8 @@ export async function runProtectedRelease(
       const runId = `protected-${index}`;
       const branch = `${profile.repository.owned_branch_prefix}${runId}`;
       branchNames.push(branch);
-      const run = await executor.executeTwoPhaseRun({
+      await assertRemoteIdentity(profile, remote);
+      const run = await bounded(executor.executeTwoPhaseRun({
         runId,
         persistentStateId: `state-${runId}`,
         managerEntrypoint: profile.manager_entrypoint,
@@ -126,15 +169,20 @@ export async function runProtectedRelease(
         branch,
         timeoutMs: profile.command_timeout_ms,
         nonInteractive: true,
-      });
+      }), profile.command_timeout_ms, "RUN_TIMEOUT", () => executor.interruptRun(runId));
       if (
         run.run_id !== runId ||
         run.owned_branch !== branch ||
         !run.crash.death_observed ||
         run.resume.death_observed ||
+        run.crash.process_id === run.resume.process_id ||
+        run.crash.process_group_id === run.resume.process_group_id ||
+        run.persistent_state_id !== `state-${runId}` ||
+        run.response_loss_recovered !== true ||
         !oid(run.delivery_oid)
       ) throw new ProtectedReleaseError("RUN_TOPOLOGY_INVALID", `protected run topology invalid: ${runId}`);
       runs.push(Object.freeze(run));
+      await assertRemoteIdentity(profile, remote);
     }
   } finally {
     await cleanupOwned(profile, remote, branchNames);
