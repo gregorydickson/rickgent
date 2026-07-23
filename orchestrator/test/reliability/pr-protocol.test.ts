@@ -77,33 +77,35 @@ function tmpDir(prefix: string): string {
   return root;
 }
 
+const GIT_TIMEOUT = 15_000;
+
 function makeRepo(label: string): string {
   const repo = join(tmpDir(`repo-${label}`), "repo");
   mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", repo]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "PR Protocol Test"]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "pr-protocol@example.test"]);
+  execFileSync("git", ["init", "-q", repo], { timeout: GIT_TIMEOUT });
+  execFileSync("git", ["-C", repo, "config", "user.name", "PR Protocol Test"], { timeout: GIT_TIMEOUT });
+  execFileSync("git", ["-C", repo, "config", "user.email", "pr-protocol@example.test"], { timeout: GIT_TIMEOUT });
   writeFileSync(join(repo, "README.md"), "pr protocol\n", "utf8");
-  execFileSync("git", ["-C", repo, "add", "README.md"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "initial"]);
+  execFileSync("git", ["-C", repo, "add", "README.md"], { timeout: GIT_TIMEOUT });
+  execFileSync("git", ["-C", repo, "commit", "-qm", "initial"], { timeout: GIT_TIMEOUT });
   return realpathSync(repo);
 }
 
 function makeBareRepo(label: string): string {
   const bare = join(tmpDir(`bare-${label}`), "bare.git");
   mkdirSync(bare, { recursive: true });
-  execFileSync("git", ["init", "--bare", "-q", bare]);
+  execFileSync("git", ["init", "--bare", "-q", bare], { timeout: GIT_TIMEOUT });
   return realpathSync(bare);
 }
 
 function repoHead(repo: string): string {
-  return execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  return execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8", timeout: GIT_TIMEOUT }).trim();
 }
 
 function createDeliveryCommit(repo: string, content: string): string {
   writeFileSync(join(repo, "delivery.txt"), content, "utf8");
-  execFileSync("git", ["-C", repo, "add", "delivery.txt"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "delivery candidate"]);
+  execFileSync("git", ["-C", repo, "add", "delivery.txt"], { timeout: GIT_TIMEOUT });
+  execFileSync("git", ["-C", repo, "commit", "-qm", "delivery candidate"], { timeout: GIT_TIMEOUT });
   return repoHead(repo);
 }
 
@@ -209,7 +211,7 @@ interface PrFixture {
 function preparePrFixture(label: string): PrFixture {
   const repo = makeRepo(label);
   const bare = makeBareRepo(label);
-  execFileSync("git", ["-C", repo, "remote", "add", "origin", bare]);
+  execFileSync("git", ["-C", repo, "remote", "add", "origin", bare], { timeout: GIT_TIMEOUT });
 
   const store = openStateStore({ repoPath: repo });
   const contract = ticketContract(repo);
@@ -241,7 +243,7 @@ function preparePrFixture(label: string): PrFixture {
   });
 
   const deliveryOid = createDeliveryCommit(repo, "verified delivery\n");
-  execFileSync("git", ["-C", repo, "update-ref", run.deliveryRef, deliveryOid]);
+  execFileSync("git", ["-C", repo, "update-ref", run.deliveryRef, deliveryOid], { timeout: GIT_TIMEOUT });
   updateRunState(store.location.databasePath, run.runId, "ready_for_delivery", deliveryOid);
 
   const authority = new DeliveryAuthority(store);

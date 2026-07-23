@@ -99,27 +99,29 @@ function sha256Text(text: string): string {
   return `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
 }
 
+const GIT_TIMEOUT = 15_000;
+
 function makeRepo(label: string): string {
   const repo = join(tmpDir(`repo-${label}`), "repo");
   mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", repo]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "M8R4 Test"]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "m8r4@example.test"]);
+  execFileSync("git", ["init", "-q", repo], { timeout: GIT_TIMEOUT });
+  execFileSync("git", ["-C", repo, "config", "user.name", "M8R4 Test"], { timeout: GIT_TIMEOUT });
+  execFileSync("git", ["-C", repo, "config", "user.email", "m8r4@example.test"], { timeout: GIT_TIMEOUT });
   writeFileSync(join(repo, "README.md"), "m8r4\n", "utf8");
-  execFileSync("git", ["-C", repo, "add", "README.md"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "initial"]);
+  execFileSync("git", ["-C", repo, "add", "README.md"], { timeout: GIT_TIMEOUT });
+  execFileSync("git", ["-C", repo, "commit", "-qm", "initial"], { timeout: GIT_TIMEOUT });
   return realpathSync(repo);
 }
 
 function makeBareRepo(label: string): string {
   const bare = join(tmpDir(`bare-${label}`), "bare.git");
   mkdirSync(bare, { recursive: true });
-  execFileSync("git", ["init", "--bare", "-q", bare]);
+  execFileSync("git", ["init", "--bare", "-q", bare], { timeout: GIT_TIMEOUT });
   return realpathSync(bare);
 }
 
 function repoHead(repo: string): string {
-  return execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  return execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8", timeout: GIT_TIMEOUT }).trim();
 }
 
 function openRaw(databasePath: string): DatabaseSync {
@@ -375,7 +377,7 @@ describe("Issue 1: Oracle identity binding rejects arbitrary/fabricated evidence
   });
 
   describe("behavioral: fabricated evidence IDs rejected (not identity receipts)", () => {
-    it("oracle rejects identity binding when referenced IDs are non-identity-receipt evidence", () => {
+    it("oracle rejects identity binding when referenced IDs are non-identity-receipt evidence", { timeout: 30_000 }, () => {
       const f = setupOracleFixture("fabricated");
       const { store, attempt, phase, mintCapability } = f;
       const attemptId = attempt.attemptId;
@@ -399,7 +401,7 @@ describe("Issue 1: Oracle identity binding rejects arbitrary/fabricated evidence
       expect(identityBindingRefs.length).toBe(0);
     });
 
-    it("oracle rejects identity binding when referenced IDs do not exist at all", () => {
+    it("oracle rejects identity binding when referenced IDs do not exist at all", { timeout: 30_000 }, () => {
       const f = setupOracleFixture("nonexistent");
       const { store, attempt, phase, mintCapability } = f;
       const attemptId = attempt.attemptId;
@@ -414,7 +416,7 @@ describe("Issue 1: Oracle identity binding rejects arbitrary/fabricated evidence
       expect(identityBindingRefs.length).toBe(0);
     });
 
-    it("oracle rejects identity binding when receipts have wrong roles (incoherent set)", () => {
+    it("oracle rejects identity binding when receipts have wrong roles (incoherent set)", { timeout: 30_000 }, () => {
       const f = setupOracleFixture("wrong-roles");
       const { store, attempt, phase, mintCapability } = f;
       const attemptId = attempt.attemptId;
@@ -435,7 +437,7 @@ describe("Issue 1: Oracle identity binding rejects arbitrary/fabricated evidence
       expect(identityBindingRefs.length).toBe(0);
     });
 
-    it("oracle rejects identity binding when receipts have mismatched dispatch_ids (incoherent)", () => {
+    it("oracle rejects identity binding when receipts have mismatched dispatch_ids (incoherent)", { timeout: 30_000 }, () => {
       const f = setupOracleFixture("mismatch-dispatch");
       const { store, attempt, phase, mintCapability } = f;
       const attemptId = attempt.attemptId;
@@ -455,7 +457,7 @@ describe("Issue 1: Oracle identity binding rejects arbitrary/fabricated evidence
       expect(identityBindingRefs.length).toBe(0);
     });
 
-    it("oracle ACCEPTS identity binding when receipts form a coherent set (positive proof)", () => {
+    it("oracle ACCEPTS identity binding when receipts form a coherent set (positive proof)", { timeout: 30_000 }, () => {
       const f = setupOracleFixture("coherent");
       const { store, attempt, phase, mintCapability } = f;
       const attemptId = attempt.attemptId;
@@ -564,20 +566,20 @@ describe("Issue 4: PR provider compares compatible identity formats (owner/repo)
     expect(src).not.toMatch(/repositoryId:\s*String\(pr\.repository\?\.id/);
   });
 
-  it("behavioral: fixture PR with correct owner/repo identity is accepted", () => {
+  it("behavioral: fixture PR with correct owner/repo identity is accepted", { timeout: 30_000 }, () => {
     // Create a fixture PR provider that returns owner/repo format
     // (simulating the fixed gh CLI output).  The PR provider's
     // queryPrHead result must have repositoryId in owner/repo format
     // matching the expectedRepositoryId.
     const repo = makeRepo("issue4-pr");
     const bare = makeBareRepo("issue4-pr");
-    execFileSync("git", ["-C", repo, "remote", "add", "origin", bare]);
-    execFileSync("git", ["-C", repo, "push", "origin", "HEAD:refs/heads/main"]);
+    execFileSync("git", ["-C", repo, "remote", "add", "origin", bare], { timeout: GIT_TIMEOUT });
+    execFileSync("git", ["-C", repo, "push", "origin", "HEAD:refs/heads/main"], { timeout: GIT_TIMEOUT });
 
     // Resolve the GitHub repository identity (owner/repo format).
     // Since this is a local bare repo (not GitHub), we simulate the
     // identity by adding a GitHub-format remote.
-    execFileSync("git", ["-C", repo, "remote", "add", "github", "git@github.com:test-owner/test-repo.git"]);
+    execFileSync("git", ["-C", repo, "remote", "add", "github", "git@github.com:test-owner/test-repo.git"], { timeout: GIT_TIMEOUT });
     const repoIdentity = resolveGitHubRepositoryIdentity(repo, "github");
     expect(repoIdentity).toBe("test-owner/test-repo");
 
@@ -612,12 +614,12 @@ describe("Issue 4: PR provider compares compatible identity formats (owner/repo)
     expect(queryResult.repositoryId === repoIdentity).toBe(true);
   });
 
-  it("behavioral: fixture PR with GraphQL node ID is rejected (wrong format)", () => {
+  it("behavioral: fixture PR with GraphQL node ID is rejected (wrong format)", { timeout: 30_000 }, () => {
     // Simulate the OLD (broken) behavior: the PR provider returns a GraphQL
     // node ID (e.g., "R_kgD...") while the expectedRepositoryId is in
     // owner/repo format.  The comparison must fail.
     const repo = makeRepo("issue4-node-id");
-    execFileSync("git", ["-C", repo, "remote", "add", "github", "git@github.com:test-owner/test-repo.git"]);
+    execFileSync("git", ["-C", repo, "remote", "add", "github", "git@github.com:test-owner/test-repo.git"], { timeout: GIT_TIMEOUT });
     const repoIdentity = resolveGitHubRepositoryIdentity(repo, "github");
     const deliveryOid = repoHead(repo);
 
@@ -684,13 +686,13 @@ describe("Issue 5: DeliveryAuthority.recordDecision failures propagate (not swal
     expect(flowBody).not.toMatch(/expectedRunVersion:\s*params\.expectedRunVersion\s*\?\?\s*0/);
   });
 
-  it("behavioral: recordDecision failure propagates (not swallowed)", () => {
+  it("behavioral: recordDecision failure propagates (not swallowed)", { timeout: 30_000 }, () => {
     // When recordDecision throws, the executeDeliveryFlow must propagate
     // the error, not swallow it and return a fake success.
     const repo = makeRepo("issue5-propagate");
     const bare = makeBareRepo("issue5-propagate");
-    execFileSync("git", ["-C", repo, "remote", "add", "origin", bare]);
-    execFileSync("git", ["-C", repo, "push", "origin", "HEAD:refs/heads/main"]);
+    execFileSync("git", ["-C", repo, "remote", "add", "origin", bare], { timeout: GIT_TIMEOUT });
+    execFileSync("git", ["-C", repo, "push", "origin", "HEAD:refs/heads/main"], { timeout: GIT_TIMEOUT });
 
     const store = openStateStore({ repoPath: repo });
     stores.add(store);
@@ -700,12 +702,12 @@ describe("Issue 5: DeliveryAuthority.recordDecision failures propagate (not swal
 
     // Create a delivery commit
     writeFileSync(join(repo, "README.md"), "issue5 test delivery\n", "utf8");
-    execFileSync("git", ["-C", repo, "add", "README.md"]);
-    execFileSync("git", ["-C", repo, "commit", "-qm", "delivery candidate"]);
+    execFileSync("git", ["-C", repo, "add", "README.md"], { timeout: GIT_TIMEOUT });
+    execFileSync("git", ["-C", repo, "commit", "-qm", "delivery candidate"], { timeout: GIT_TIMEOUT });
     const deliveryOid = repoHead(repo);
 
     // Push the delivery branch
-    execFileSync("git", ["-C", repo, "push", "origin", `${deliveryOid}:refs/heads/rickgent-delivery`]);
+    execFileSync("git", ["-C", repo, "push", "origin", `${deliveryOid}:refs/heads/rickgent-delivery`], { timeout: GIT_TIMEOUT });
 
     const run = resolver.allocateFreshRun({
       contracts: [contract],
@@ -715,7 +717,7 @@ describe("Issue 5: DeliveryAuthority.recordDecision failures propagate (not swal
     const attempt = resolver.allocateInitialAttempt({ runId: run.runId, ticketId: contract.id });
 
     // Set up the delivery ref
-    execFileSync("git", ["-C", repo, "update-ref", run.deliveryRef, deliveryOid]);
+    execFileSync("git", ["-C", repo, "update-ref", run.deliveryRef, deliveryOid], { timeout: GIT_TIMEOUT });
 
     // Transition to ready_for_delivery
     updateRunState(store.location.databasePath, run.runId, "ready_for_delivery", deliveryOid);

@@ -66,33 +66,35 @@ function tmpDir(prefix: string): string {
   return root;
 }
 
+const GIT_TIMEOUT = 15_000;
+
 function makeRepo(label: string): string {
   const repo = join(tmpDir(`repo-${label}`), "repo");
   mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", repo]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "Push Protocol Test"]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "push-protocol@example.test"]);
+  execFileSync("git", ["init", "-q", repo], { timeout: GIT_TIMEOUT });
+  execFileSync("git", ["-C", repo, "config", "user.name", "Push Protocol Test"], { timeout: GIT_TIMEOUT });
+  execFileSync("git", ["-C", repo, "config", "user.email", "push-protocol@example.test"], { timeout: GIT_TIMEOUT });
   writeFileSync(join(repo, "README.md"), "push protocol\n", "utf8");
-  execFileSync("git", ["-C", repo, "add", "README.md"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "initial"]);
+  execFileSync("git", ["-C", repo, "add", "README.md"], { timeout: GIT_TIMEOUT });
+  execFileSync("git", ["-C", repo, "commit", "-qm", "initial"], { timeout: GIT_TIMEOUT });
   return realpathSync(repo);
 }
 
 function makeBareRepo(label: string): string {
   const bare = join(tmpDir(`bare-${label}`), "bare.git");
   mkdirSync(bare, { recursive: true });
-  execFileSync("git", ["init", "--bare", "-q", bare]);
+  execFileSync("git", ["init", "--bare", "-q", bare], { timeout: GIT_TIMEOUT });
   return realpathSync(bare);
 }
 
 function repoHead(repo: string): string {
-  return execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  return execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8", timeout: GIT_TIMEOUT }).trim();
 }
 
 function createDeliveryCommit(repo: string, content: string): string {
   writeFileSync(join(repo, "delivery.txt"), content, "utf8");
-  execFileSync("git", ["-C", repo, "add", "delivery.txt"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "delivery candidate"]);
+  execFileSync("git", ["-C", repo, "add", "delivery.txt"], { timeout: GIT_TIMEOUT });
+  execFileSync("git", ["-C", repo, "commit", "-qm", "delivery candidate"], { timeout: GIT_TIMEOUT });
   return repoHead(repo);
 }
 
@@ -217,7 +219,7 @@ function preparePushFixture(label: string, bareRepo?: string): PushFixture {
   const repo = makeRepo(label);
   const bare = bareRepo ?? makeBareRepo(label);
   // Add the bare repo as a remote named "origin"
-  execFileSync("git", ["-C", repo, "remote", "add", "origin", bare]);
+  execFileSync("git", ["-C", repo, "remote", "add", "origin", bare], { timeout: GIT_TIMEOUT });
 
   const store = openStateStore({ repoPath: repo });
   const contract = ticketContract(repo);
@@ -250,7 +252,7 @@ function preparePushFixture(label: string, bareRepo?: string): PushFixture {
 
   // Create the delivery commit and update the delivery ref
   const deliveryOid = createDeliveryCommit(repo, "verified delivery\n");
-  execFileSync("git", ["-C", repo, "update-ref", run.deliveryRef, deliveryOid]);
+  execFileSync("git", ["-C", repo, "update-ref", run.deliveryRef, deliveryOid], { timeout: GIT_TIMEOUT });
 
   // Advance the run to ready_for_delivery (simulating completed lifecycle)
   updateRunState(store.location.databasePath, run.runId, "ready_for_delivery", deliveryOid);
@@ -301,6 +303,7 @@ describe("t33 verified push protocol", () => {
       // Assert the actual remote ref matches the delivery OID
       const remoteRef = execFileSync("git", ["ls-remote", fixture.bare, "refs/heads/rickgent-delivery"], {
         encoding: "utf8",
+      timeout: GIT_TIMEOUT,
       }).trim();
       expect(remoteRef).toContain(fixture.deliveryOid);
 
@@ -341,17 +344,17 @@ describe("t33 verified push protocol", () => {
       // so the push is non-fast-forward
       const otherRepo = join(tmpDir("rejection-other"), "other");
       mkdirSync(otherRepo, { recursive: true });
-      execFileSync("git", ["init", "-q", otherRepo]);
-      execFileSync("git", ["-C", otherRepo, "config", "user.name", "Other"]);
-      execFileSync("git", ["-C", otherRepo, "config", "user.email", "other@test"]);
+      execFileSync("git", ["init", "-q", otherRepo], { timeout: GIT_TIMEOUT });
+      execFileSync("git", ["-C", otherRepo, "config", "user.name", "Other"], { timeout: GIT_TIMEOUT });
+      execFileSync("git", ["-C", otherRepo, "config", "user.email", "other@test"], { timeout: GIT_TIMEOUT });
       writeFileSync(join(otherRepo, "README.md"), "other\n", "utf8");
-      execFileSync("git", ["-C", otherRepo, "add", "README.md"]);
-      execFileSync("git", ["-C", otherRepo, "commit", "-qm", "other initial"]);
+      execFileSync("git", ["-C", otherRepo, "add", "README.md"], { timeout: GIT_TIMEOUT });
+      execFileSync("git", ["-C", otherRepo, "commit", "-qm", "other initial"], { timeout: GIT_TIMEOUT });
       writeFileSync(join(otherRepo, "foreign.txt"), "foreign\n", "utf8");
-      execFileSync("git", ["-C", otherRepo, "add", "foreign.txt"]);
-      execFileSync("git", ["-C", otherRepo, "commit", "-qm", "foreign commit"]);
-      execFileSync("git", ["-C", otherRepo, "remote", "add", "origin", fixture.bare]);
-      execFileSync("git", ["-C", otherRepo, "push", "-q", "origin", `HEAD:refs/heads/rickgent-delivery`]);
+      execFileSync("git", ["-C", otherRepo, "add", "foreign.txt"], { timeout: GIT_TIMEOUT });
+      execFileSync("git", ["-C", otherRepo, "commit", "-qm", "foreign commit"], { timeout: GIT_TIMEOUT });
+      execFileSync("git", ["-C", otherRepo, "remote", "add", "origin", fixture.bare], { timeout: GIT_TIMEOUT });
+      execFileSync("git", ["-C", otherRepo, "push", "-q", "origin", `HEAD:refs/heads/rickgent-delivery`], { timeout: GIT_TIMEOUT });
 
       const result = executeVerifiedPush(pushRequest(fixture));
 
@@ -438,7 +441,7 @@ describe("t33 verified push protocol", () => {
 
       // Manually execute the push (simulating what the service would do)
       execFileSync("git", ["-C", fixture.repo, "push", "origin",
-        `${fixture.deliveryOid}:refs/heads/rickgent-delivery`]);
+        `${fixture.deliveryOid}:refs/heads/rickgent-delivery`], { timeout: GIT_TIMEOUT });
 
       // Record the push observation (simulating push success before crash)
       fixture.authority.recordRemoteObservation({
@@ -487,7 +490,7 @@ describe("t33 verified push protocol", () => {
 
       // First, execute the push successfully
       execFileSync("git", ["-C", fixture.repo, "push", "origin",
-        `${fixture.deliveryOid}:refs/heads/rickgent-delivery`]);
+        `${fixture.deliveryOid}:refs/heads/rickgent-delivery`], { timeout: GIT_TIMEOUT });
 
       // Record the push observation
       fixture.authority.createIntent({
@@ -519,20 +522,20 @@ describe("t33 verified push protocol", () => {
 
       // Move the remote ref to a different OID (simulating a concurrent push)
       const otherOid = repoHead(fixture.repo) === fixture.deliveryOid
-        ? execFileSync("git", ["-C", fixture.repo, "rev-parse", "HEAD~1"], { encoding: "utf8" }).trim()
+        ? execFileSync("git", ["-C", fixture.repo, "rev-parse", "HEAD~1"], { encoding: "utf8", timeout: GIT_TIMEOUT }).trim()
         : fixture.deliveryOid;
       // Create a different commit on the remote
       const raceRepo = join(tmpDir("ref-race-other"), "race");
       mkdirSync(raceRepo, { recursive: true });
-      execFileSync("git", ["init", "-q", raceRepo]);
-      execFileSync("git", ["-C", raceRepo, "config", "user.name", "Race"]);
-      execFileSync("git", ["-C", raceRepo, "config", "user.email", "race@test"]);
+      execFileSync("git", ["init", "-q", raceRepo], { timeout: GIT_TIMEOUT });
+      execFileSync("git", ["-C", raceRepo, "config", "user.name", "Race"], { timeout: GIT_TIMEOUT });
+      execFileSync("git", ["-C", raceRepo, "config", "user.email", "race@test"], { timeout: GIT_TIMEOUT });
       writeFileSync(join(raceRepo, "README.md"), "race\n", "utf8");
-      execFileSync("git", ["-C", raceRepo, "add", "README.md"]);
-      execFileSync("git", ["-C", raceRepo, "commit", "-qm", "race commit"]);
-      execFileSync("git", ["-C", raceRepo, "remote", "add", "origin", fixture.bare]);
+      execFileSync("git", ["-C", raceRepo, "add", "README.md"], { timeout: GIT_TIMEOUT });
+      execFileSync("git", ["-C", raceRepo, "commit", "-qm", "race commit"], { timeout: GIT_TIMEOUT });
+      execFileSync("git", ["-C", raceRepo, "remote", "add", "origin", fixture.bare], { timeout: GIT_TIMEOUT });
       const raceOid = repoHead(raceRepo);
-      execFileSync("git", ["-C", raceRepo, "push", "-f", "origin", `HEAD:refs/heads/rickgent-delivery`]);
+      execFileSync("git", ["-C", raceRepo, "push", "-f", "origin", `HEAD:refs/heads/rickgent-delivery`], { timeout: GIT_TIMEOUT });
 
       // Now resume — ls-remote should observe the race OID, not the delivery OID
       const result = executeVerifiedPush(pushRequest(fixture));
@@ -558,7 +561,7 @@ describe("t33 verified push protocol", () => {
       // The run stays in 'planned' state.
       const repo = makeRepo("precondition-not-ready");
       const bare = makeBareRepo("precondition-not-ready");
-      execFileSync("git", ["-C", repo, "remote", "add", "origin", bare]);
+      execFileSync("git", ["-C", repo, "remote", "add", "origin", bare], { timeout: GIT_TIMEOUT });
 
       const store = openStateStore({ repoPath: repo });
       const contract = ticketContract(repo);
@@ -592,7 +595,7 @@ describe("t33 verified push protocol", () => {
       const deliveryOid = createDeliveryCommit(repo, "not ready\n");
       // Update the delivery ref to point to the delivery commit,
       // but do NOT advance the run state to ready_for_delivery.
-      execFileSync("git", ["-C", repo, "update-ref", run.deliveryRef, deliveryOid]);
+      execFileSync("git", ["-C", repo, "update-ref", run.deliveryRef, deliveryOid], { timeout: GIT_TIMEOUT });
       const authority = new DeliveryAuthority(store);
 
       const result = executeVerifiedPush({
@@ -621,8 +624,8 @@ describe("t33 verified push protocol", () => {
     it("push is unreachable when delivery ref does not equal delivery OID", { timeout: TEST_TIMEOUT }, () => {
       const fixture = preparePushFixture("precondition-ref");
       // Move the delivery ref to a different OID
-      const wrongOid = execFileSync("git", ["-C", fixture.repo, "rev-parse", "HEAD~1"], { encoding: "utf8" }).trim();
-      execFileSync("git", ["-C", fixture.repo, "update-ref", fixture.run.deliveryRef, wrongOid]);
+      const wrongOid = execFileSync("git", ["-C", fixture.repo, "rev-parse", "HEAD~1"], { encoding: "utf8", timeout: GIT_TIMEOUT }).trim();
+      execFileSync("git", ["-C", fixture.repo, "update-ref", fixture.run.deliveryRef, wrongOid], { timeout: GIT_TIMEOUT });
 
       const result = executeVerifiedPush(pushRequest(fixture));
 

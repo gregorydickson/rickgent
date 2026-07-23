@@ -296,10 +296,10 @@ describe("Issue 3 behavioral: stale expectedRemoteOid rejected", () => {
   it("executeVerifiedPush rejects stale expected OID (decision-time persisted)", { timeout: 120_000 }, () => {
     const repo = makeRepo("stale-oid-r3");
     const bare = makeBareRepo("stale-oid-r3");
-    execFileSync("git", ["-C", repo, "remote", "add", "origin", bare]);
+    execFileSync("git", ["-C", repo, "remote", "add", "origin", bare], { timeout: GIT_TIMEOUT });
 
     // Push to the bare remote (push HEAD first, then the delivery branch)
-    execFileSync("git", ["-C", repo, "push", "origin", "HEAD:refs/heads/main"]);
+    execFileSync("git", ["-C", repo, "push", "origin", "HEAD:refs/heads/main"], { timeout: GIT_TIMEOUT });
 
     const store = openStateStore({ repoPath: repo });
     const contract = staleOidContract();
@@ -317,30 +317,31 @@ describe("Issue 3 behavioral: stale expectedRemoteOid rejected", () => {
 
     // Now create the delivery commit
     writeFileSync(join(repo, "delivery.txt"), "stale oid test r3\n", "utf8");
-    execFileSync("git", ["-C", repo, "add", "delivery.txt"]);
-    execFileSync("git", ["-C", repo, "commit", "-qm", "delivery candidate"]);
+    execFileSync("git", ["-C", repo, "add", "delivery.txt"], { timeout: GIT_TIMEOUT });
+    execFileSync("git", ["-C", repo, "commit", "-qm", "delivery candidate"], { timeout: GIT_TIMEOUT });
     const deliveryOid = repoHead(repo);
 
     // Push the delivery branch to the bare remote
-    execFileSync("git", ["-C", repo, "push", "origin", `${deliveryOid}:refs/heads/rickgent-delivery`]);
+    execFileSync("git", ["-C", repo, "push", "origin", `${deliveryOid}:refs/heads/rickgent-delivery`], { timeout: GIT_TIMEOUT });
 
     // Observe the expected OID at "decision time" (current remote state)
     const expectedOid = execFileSync("git", ["ls-remote", bare, "refs/heads/rickgent-delivery"], {
       encoding: "utf8",
+      timeout: GIT_TIMEOUT,
     }).trim().split("\t")[0]!;
 
     // Move the remote ref to a DIFFERENT OID (simulating a race/stale)
     writeFileSync(join(repo, "delivery2.txt"), "stale oid test r3 2\n", "utf8");
-    execFileSync("git", ["-C", repo, "add", "delivery2.txt"]);
-    execFileSync("git", ["-C", repo, "commit", "-qm", "second commit"]);
+    execFileSync("git", ["-C", repo, "add", "delivery2.txt"], { timeout: GIT_TIMEOUT });
+    execFileSync("git", ["-C", repo, "commit", "-qm", "second commit"], { timeout: GIT_TIMEOUT });
     const staleOid = repoHead(repo);
-    execFileSync("git", ["-C", repo, "push", "--force", "origin", `${staleOid}:refs/heads/rickgent-delivery`]);
+    execFileSync("git", ["-C", repo, "push", "--force", "origin", `${staleOid}:refs/heads/rickgent-delivery`], { timeout: GIT_TIMEOUT });
 
     // Reset the repo HEAD back to the delivery OID
-    execFileSync("git", ["-C", repo, "reset", "--hard", deliveryOid]);
+    execFileSync("git", ["-C", repo, "reset", "--hard", deliveryOid], { timeout: GIT_TIMEOUT });
 
     // Set up the delivery ref
-    execFileSync("git", ["-C", repo, "update-ref", run.deliveryRef, deliveryOid]);
+    execFileSync("git", ["-C", repo, "update-ref", run.deliveryRef, deliveryOid], { timeout: GIT_TIMEOUT });
 
     // Advance to ready_for_delivery
     updateRunState(store.location.databasePath, run.runId, "ready_for_delivery", deliveryOid);
@@ -414,27 +415,29 @@ describe("Issue 5 behavioral: delivery decision persisted", () => {
 
 // ─── Helpers ────────────────────────────────────────────────────────────
 
+const GIT_TIMEOUT = 15_000;
+
 function makeRepo(label: string): string {
   const repo = join(tmpDir(`repo-${label}`), "repo");
   mkdirSync(repo, { recursive: true });
-  execFileSync("git", ["init", "-q", repo]);
-  execFileSync("git", ["-C", repo, "config", "user.name", "M8R3 Test"]);
-  execFileSync("git", ["-C", repo, "config", "user.email", "m8r3@example.test"]);
+  execFileSync("git", ["init", "-q", repo], { timeout: GIT_TIMEOUT });
+  execFileSync("git", ["-C", repo, "config", "user.name", "M8R3 Test"], { timeout: GIT_TIMEOUT });
+  execFileSync("git", ["-C", repo, "config", "user.email", "m8r3@example.test"], { timeout: GIT_TIMEOUT });
   writeFileSync(join(repo, "README.md"), "m8r3\n", "utf8");
-  execFileSync("git", ["-C", repo, "add", "README.md"]);
-  execFileSync("git", ["-C", repo, "commit", "-qm", "initial"]);
+  execFileSync("git", ["-C", repo, "add", "README.md"], { timeout: GIT_TIMEOUT });
+  execFileSync("git", ["-C", repo, "commit", "-qm", "initial"], { timeout: GIT_TIMEOUT });
   return realpathSync(repo);
 }
 
 function makeBareRepo(label: string): string {
   const bare = join(tmpDir(`bare-${label}`), "bare.git");
   mkdirSync(bare, { recursive: true });
-  execFileSync("git", ["init", "--bare", "-q", bare]);
+  execFileSync("git", ["init", "--bare", "-q", bare], { timeout: GIT_TIMEOUT });
   return realpathSync(bare);
 }
 
 function repoHead(repo: string): string {
-  return execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  return execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8", timeout: GIT_TIMEOUT }).trim();
 }
 
 function staleOidContract(): TicketContract {

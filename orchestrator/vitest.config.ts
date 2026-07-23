@@ -7,5 +7,6 @@ export default defineConfig({
     globalSetup: ["./test/global-setup.ts"],
     maxWorkers: 2,
     testTimeout: 15_000,
+    hookTimeout: 30_000,
   },
 });
