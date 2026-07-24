@@ -107,16 +107,28 @@ async function bounded<T>(operation: Promise<T>, timeoutMs = 250): Promise<T> {
   }
 }
 
+async function settleBoundedly(operation: Promise<void>): Promise<void> {
+  try {
+    await bounded(operation);
+  } catch (error) {
+    expect(error).not.toEqual(new Error("unbounded operation"));
+  }
+}
+
+async function cleanupCompletely(run: HermeticProtectedRun): Promise<void> {
+  await settleBoundedly(run.cleanup());
+  await bounded(run.cleanup());
+}
+
 describe("protected release hermetic failure matrix", () => {
   it.each(fixture.fault_points)("%s terminates boundedly and cleanup is idempotent and owned", async (fault) => {
     const run = new HermeticProtectedRun(fault);
-    await bounded(run.execute()).catch(() => undefined);
+    await settleBoundedly(run.execute());
 
     if (fault === "push_response_loss" || fault === "pull_request_response_loss" || fault === "crash") {
-      await bounded(run.execute()).catch(() => undefined);
+      await settleBoundedly(run.execute());
     }
-    await bounded(run.cleanup()).catch(async () => bounded(run.cleanup()));
-    await bounded(run.cleanup());
+    await cleanupCompletely(run);
 
     expect(run.repositoryPreserved).toBe(true);
     expect(run.state.cleanup_complete).toBe(true);
@@ -136,12 +148,11 @@ describe("protected release hermetic failure matrix", () => {
   it("recovers response loss from durable observation without duplicate push or PR creation", async () => {
     for (const fault of ["push_response_loss", "pull_request_response_loss"] as const) {
       const run = new HermeticProtectedRun(fault);
-      await bounded(run.execute()).catch(() => undefined);
-      await bounded(run.execute()).catch(() => undefined);
+      await settleBoundedly(run.execute());
+      await settleBoundedly(run.execute());
       expect(run.mutations.filter((entry) => entry.operation === "push")).toHaveLength(1);
       expect(run.mutations.filter((entry) => entry.operation === "create_pr")).toHaveLength(1);
-      await bounded(run.cleanup());
-      await bounded(run.cleanup());
+      await cleanupCompletely(run);
     }
   });
 
