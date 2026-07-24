@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { requireUnchangedRemoteObservation } from "../../scripts/run-protected-release.mjs";
+import {
+  completeGitHubCollection,
+  requireUnchangedRemoteObservation,
+} from "../../scripts/run-protected-release.mjs";
 
 function observation() {
   return {
@@ -18,6 +21,24 @@ function observation() {
 }
 
 describe("protected release preflight remote observation", () => {
+  it("retains records from every GitHub response page", () => {
+    const pages = [
+      Array.from({ length: 100 }, (_, index) => ({ name: `branch-${index}` })),
+      [{ name: "rickgent/protected/leaked-owned-branch" }],
+    ];
+
+    const collection = completeGitHubCollection(pages, "branch");
+
+    expect(collection).toHaveLength(101);
+    expect(collection.at(-1)).toEqual({ name: "rickgent/protected/leaked-owned-branch" });
+    expect(() => completeGitHubCollection([], "branch")).toThrow(
+      "paginated GitHub branch observation is invalid",
+    );
+    expect(() => completeGitHubCollection([[{ name: "main" }], null], "branch")).toThrow(
+      "paginated GitHub branch observation is invalid",
+    );
+  });
+
   it("requires independently queried remote state to remain identical", () => {
     const before = observation();
     expect(() => requireUnchangedRemoteObservation(before, structuredClone(before))).not.toThrow();

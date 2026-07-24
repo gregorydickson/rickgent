@@ -356,6 +356,22 @@ function authenticationChecks() {
   };
 }
 
+export function completeGitHubCollection(pages, label) {
+  // Trap door: GitHub list endpoints cap a single response at 100 records.
+  // A clean-baseline or no-mutation claim must consume every slurped page;
+  // treating the first page as the collection can hide owned remote state.
+  if (
+    typeof label !== "string"
+    || label === ""
+    || !Array.isArray(pages)
+    || pages.length === 0
+    || pages.some((page) => !Array.isArray(page))
+  ) {
+    fail(`paginated GitHub ${label || "collection"} observation is invalid`);
+  }
+  return pages.flat();
+}
+
 function remoteObservation(contractPath, namespaceSeed) {
   let contract;
   try {
@@ -374,8 +390,18 @@ function remoteObservation(contractPath, namespaceSeed) {
   const slug = `${contract.owner}/${contract.repository}`;
   const repository = run("gh", ["api", `repos/${slug}`], { json: true, timeout: 30_000 });
   const actor = run("gh", ["api", "user"], { json: true, timeout: 30_000 });
-  const branches = run("gh", ["api", `repos/${slug}/branches?per_page=100`], { json: true, timeout: 30_000 });
-  const pulls = run("gh", ["api", `repos/${slug}/pulls?state=all&per_page=100`], { json: true, timeout: 30_000 });
+  const branches = completeGitHubCollection(
+    run("gh", [
+      "api", "--paginate", "--slurp", `repos/${slug}/branches?per_page=100`,
+    ], { json: true, timeout: 30_000 }),
+    "branch",
+  );
+  const pulls = completeGitHubCollection(
+    run("gh", [
+      "api", "--paginate", "--slurp", `repos/${slug}/pulls?state=all&per_page=100`,
+    ], { json: true, timeout: 30_000 }),
+    "pull request",
+  );
   const repositoryId = String(repository.id ?? "");
   if (
     !repositoryId
