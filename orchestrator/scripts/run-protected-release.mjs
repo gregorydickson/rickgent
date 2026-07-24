@@ -659,11 +659,11 @@ function providerProbe(role, runId) {
 function persistAttempt(config, phase) {
   const script = String.raw`
 import sqlite3, sys
-db, run_id, attempt_id, phase, payload = sys.argv[1:]
+db, run_id, persistent_state_id, attempt_id, phase, payload = sys.argv[1:]
 con = sqlite3.connect(db)
 con.execute("pragma journal_mode=wal")
-con.execute("create table if not exists attempts (attempt_id text primary key, run_id text not null, phase text not null, payload_sha256 text not null)")
-con.execute("insert into attempts values (?, ?, ?, ?)", (attempt_id, run_id, phase, payload))
+con.execute("create table if not exists attempts (attempt_id text primary key, run_id text not null, persistent_state_id text not null, phase text not null, payload_sha256 text not null)")
+con.execute("insert into attempts values (?, ?, ?, ?, ?)", (attempt_id, run_id, persistent_state_id, phase, payload))
 con.commit()
 con.close()
 `;
@@ -671,6 +671,7 @@ con.close()
     "-c", script,
     config.sqlite,
     config.run_id,
+    config.persistent_state_id,
     config.attempt_id,
     phase,
     config.provider.bundle_sha256,
@@ -683,6 +684,59 @@ con.close()
     },
     timeout: 30_000,
   });
+}
+
+function observePersistentAttempts(config) {
+  const script = String.raw`
+import json, sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+con.row_factory = sqlite3.Row
+rows = con.execute(
+    "select attempt_id, run_id, persistent_state_id, phase, payload_sha256 from attempts order by rowid"
+).fetchall()
+print(json.dumps([dict(row) for row in rows], sort_keys=True))
+con.close()
+`;
+  return run(config.python, ["-c", script, config.sqlite], { json: true });
+}
+
+export function requirePersistentLifecycleObservation(observation, expected) {
+  // Trap door: two processes receiving the same parent-constructed path and ID
+  // is not persistence continuity. Resume must read the crash checkpoint and
+  // SQLite row, and completion must be based on the exact two persisted rows.
+  const expectedCheckpoint = {
+    attempt_id: `${expected.run_id}:crash`,
+    persistent_state_id: expected.persistent_state_id,
+    provider_bundle_sha256: expected.crash_provider_bundle_sha256,
+    run_id: expected.run_id,
+  };
+  const expectedAttempts = [{
+    attempt_id: `${expected.run_id}:crash`,
+    payload_sha256: expected.crash_provider_bundle_sha256,
+    persistent_state_id: expected.persistent_state_id,
+    phase: "crash",
+    run_id: expected.run_id,
+  }];
+  if (expected.resume_provider_bundle_sha256 !== undefined) {
+    expectedAttempts.push({
+      attempt_id: `${expected.run_id}:resume`,
+      payload_sha256: expected.resume_provider_bundle_sha256,
+      persistent_state_id: expected.persistent_state_id,
+      phase: "resume",
+      run_id: expected.run_id,
+    });
+  }
+  if (
+    !SHA256.test(expected.crash_provider_bundle_sha256 ?? "")
+    || (
+      expected.resume_provider_bundle_sha256 !== undefined
+      && !SHA256.test(expected.resume_provider_bundle_sha256)
+    )
+    || canonical(observation?.checkpoint) !== canonical(expectedCheckpoint)
+    || canonical(observation?.attempts) !== canonical(expectedAttempts)
+  ) {
+    fail("persistent crash/resume lifecycle was not independently read back");
+  }
 }
 
 async function runAttemptWorker() {
@@ -705,16 +759,41 @@ async function runAttemptWorker() {
   if (buildId !== config.build_id) fail("attempt did not execute the exact installed CLI");
   config.provider = providerProbe(config.role, config.run_id);
   writeFileSync(config.provider_file, `${canonical(config.provider)}\n`);
+  let checkpointObservation;
+  if (config.phase === "resume") {
+    checkpointObservation = JSON.parse(readFileSync(config.checkpoint_file, "utf8"));
+    requirePersistentLifecycleObservation({
+      attempts: observePersistentAttempts(config),
+      checkpoint: checkpointObservation,
+    }, {
+      crash_provider_bundle_sha256: checkpointObservation.provider_bundle_sha256,
+      persistent_state_id: config.persistent_state_id,
+      run_id: config.run_id,
+    });
+  }
   persistAttempt(config, config.phase);
   if (config.phase === "crash") {
     writeFileSync(config.checkpoint_file, `${canonical({
       attempt_id: config.attempt_id,
       persistent_state_id: config.persistent_state_id,
+      provider_bundle_sha256: config.provider.bundle_sha256,
       run_id: config.run_id,
     })}\n`);
     await new Promise(() => {
       setInterval(() => {}, 60_000);
     });
+  } else {
+    const lifecycle = {
+      attempts: observePersistentAttempts(config),
+      checkpoint: checkpointObservation,
+    };
+    requirePersistentLifecycleObservation(lifecycle, {
+      crash_provider_bundle_sha256: checkpointObservation.provider_bundle_sha256,
+      persistent_state_id: config.persistent_state_id,
+      resume_provider_bundle_sha256: config.provider.bundle_sha256,
+      run_id: config.run_id,
+    });
+    writeFileSync(config.lifecycle_file, `${canonical(lifecycle)}\n`);
   }
 }
 
@@ -1160,10 +1239,13 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
   const resumeStarted = crashEnded;
   const resumeConfigPath = join(runRoot, "resume.json");
   const reviewProviderPath = join(runRoot, "review.json");
+  const lifecyclePath = join(runRoot, "lifecycle.json");
   writeFileSync(resumeConfigPath, `${canonical({
     attempt_id: `${runId}:resume`,
     build_id: preflight.binding.build_id,
+    checkpoint_file: checkpoint,
     cli: runtime.cli,
+    lifecycle_file: lifecyclePath,
     nonce,
     nonce_file: nonceFile,
     omnigent_root: runtime.omnigentRoot,
@@ -1181,6 +1263,16 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
   const resumePid = resumeChild.pid;
   if (resumePid === undefined || resumePid === crashPid) fail("resume process identity is invalid");
   providers.push(JSON.parse(readFileSync(reviewProviderPath, "utf8")));
+  const lifecycleObservation = JSON.parse(readFileSync(lifecyclePath, "utf8"));
+  requirePersistentLifecycleObservation(
+    lifecycleObservation,
+    {
+      crash_provider_bundle_sha256: providers[0].bundle_sha256,
+      persistent_state_id: persistentStateId,
+      resume_provider_bundle_sha256: providers[1].bundle_sha256,
+      run_id: runId,
+    },
+  );
   attempts.push({
     attempt_id: `${runId}:resume`,
     death_observed: false,
@@ -1191,6 +1283,7 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
     started_at: resumeStarted,
   });
   const phaseEvidence = deriveLocalLifecycle(runtime, runRoot, runId, attempts, providers);
+  phaseEvidence.persistence = lifecycleObservation;
   const delivery = createDelivery(preflight, runId, providers);
   phaseEvidence.push = {
     branch: delivery.branch,
