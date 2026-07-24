@@ -130,6 +130,7 @@ if (!Array.isArray(receipt.runs) || receipt.runs.length !== 2) fail("exactly two
 const runIds = new Set();
 const stateIds = new Set();
 const processIds = new Set();
+const pullRequestIds = new Set();
 let priorEndedAt = null;
 for (const [index, run] of receipt.runs.entries()) {
   const number = index + 1;
@@ -182,6 +183,39 @@ for (const [index, run] of receipt.runs.entries()) {
   requireTrue(run.cleanup.owned_branch_absent_on_requery, `${run.run_id} branch cleanup`);
   requireTrue(run.cleanup.owned_pull_request_closed, `${run.run_id} pull-request cleanup`);
   requireTrue(run.cleanup.repository_preserved, `${run.run_id} repository preservation`);
+  const failureCleanup = run.cleanup.failure_path;
+  equal(failureCleanup?.run_id, run.run_id, `${run.run_id} failure-cleanup run`);
+  equal(failureCleanup?.base_branch, preflight.remote.base_branch, `${run.run_id} failure-cleanup base`);
+  equal(
+    failureCleanup?.branch,
+    `${preflight.remote.owned_namespace}/${run.run_id}-failure-cleanup`,
+    `${run.run_id} failure-cleanup branch`,
+  );
+  equal(failureCleanup?.delivery_oid, delivery.delivery_oid, `${run.run_id} failure-cleanup delivery OID`);
+  equal(
+    failureCleanup?.pull_request_head_oid,
+    delivery.delivery_oid,
+    `${run.run_id} failure-cleanup pull-request head OID`,
+  );
+  if (!/^[1-9][0-9]*$/.test(failureCleanup?.pull_request_id ?? "")) {
+    fail(`${run.run_id} failure-cleanup pull request ID is invalid`);
+  }
+  for (const pullRequestId of [delivery.pull_request_id, failureCleanup.pull_request_id]) {
+    if (pullRequestIds.has(pullRequestId)) fail("pull request identity was reused across deliveries");
+    pullRequestIds.add(pullRequestId);
+  }
+  requireTrue(
+    failureCleanup?.owned_branch_absent_on_requery,
+    `${run.run_id} failure-cleanup branch absence`,
+  );
+  requireTrue(
+    failureCleanup?.owned_pull_request_closed,
+    `${run.run_id} failure-cleanup pull-request closure`,
+  );
+  requireTrue(
+    failureCleanup?.repository_preserved,
+    `${run.run_id} failure-cleanup repository preservation`,
+  );
 
   const observations = new Map((run.model_observations ?? []).map((item) => [item.role, item]));
   const implementation = observations.get("implementation");

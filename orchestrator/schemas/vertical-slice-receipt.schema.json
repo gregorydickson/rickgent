@@ -291,13 +291,41 @@
       "required": [
         "owned_pull_request_closed",
         "branch_compare_before_delete_oid",
+        "failure_path",
         "owned_branch_absent_on_requery",
         "repository_preserved"
       ],
       "properties": {
         "owned_pull_request_closed": { "const": true },
         "branch_compare_before_delete_oid": { "$ref": "#/$defs/oid" },
+        "failure_path": { "$ref": "#/$defs/failureRunCleanup" },
         "owned_branch_absent_on_requery": { "const": true },
+        "repository_preserved": { "const": true }
+      }
+    },
+    "failureRunCleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "base_branch",
+        "branch",
+        "delivery_oid",
+        "pull_request_id",
+        "pull_request_head_oid",
+        "owned_branch_absent_on_requery",
+        "owned_pull_request_closed",
+        "repository_preserved"
+      ],
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1 },
+        "base_branch": { "type": "string", "minLength": 1 },
+        "branch": { "type": "string", "minLength": 1 },
+        "delivery_oid": { "$ref": "#/$defs/oid" },
+        "pull_request_id": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "pull_request_head_oid": { "$ref": "#/$defs/oid" },
+        "owned_branch_absent_on_requery": { "const": true },
+        "owned_pull_request_closed": { "const": true },
         "repository_preserved": { "const": true }
       }
     },

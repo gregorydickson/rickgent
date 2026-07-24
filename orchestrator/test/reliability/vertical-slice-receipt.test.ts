@@ -113,6 +113,17 @@ function makeReceipt(): Json {
       cleanup: {
         owned_pull_request_closed: true,
         branch_compare_before_delete_oid: oid,
+        failure_path: {
+          run_id: `protected-${run}`,
+          base_branch: fixture.remote.base_branch,
+          branch: `${fixture.remote.owned_branch_prefix}protected-${run}-failure-cleanup`,
+          delivery_oid: oid,
+          pull_request_id: String(100 + run),
+          pull_request_head_oid: oid,
+          owned_branch_absent_on_requery: true,
+          owned_pull_request_closed: true,
+          repository_preserved: true,
+        },
         owned_branch_absent_on_requery: true,
         repository_preserved: true,
       },
@@ -208,6 +219,18 @@ function verticalSemantics(receipt: Json): string[] {
       run.cleanup.repository_preserved !== true ||
       run.cleanup.branch_compare_before_delete_oid !== run.delivery.delivery_oid
     ) errors.push("per-run cleanup incomplete");
+    const failureCleanup = run.cleanup.failure_path;
+    if (
+      failureCleanup.run_id !== run.run_id ||
+      failureCleanup.base_branch !== fixture.remote.base_branch ||
+      failureCleanup.branch !== `${fixture.remote.owned_branch_prefix}${run.run_id}-failure-cleanup` ||
+      failureCleanup.delivery_oid !== run.delivery.delivery_oid ||
+      failureCleanup.pull_request_head_oid !== run.delivery.delivery_oid ||
+      !/^[1-9][0-9]*$/.test(failureCleanup.pull_request_id) ||
+      failureCleanup.owned_branch_absent_on_requery !== true ||
+      failureCleanup.owned_pull_request_closed !== true ||
+      failureCleanup.repository_preserved !== true
+    ) errors.push("per-run failure cleanup identity changed");
   }
   if (
     receipt.cleanup.success_path.completed !== true ||
@@ -282,6 +305,7 @@ describe("t37 vertical-slice receipt hermetic contract", () => {
       (receipt) => { receipt.runs[0].delivery.duplicate_side_effects = true; },
       (receipt) => { receipt.runs[0].attempts[0].started_at = "2020-01-01T00:00:00.000Z"; },
       (receipt) => { receipt.runs[1].cleanup.owned_branch_absent_on_requery = false; },
+      (receipt) => { receipt.runs[0].cleanup.failure_path.pull_request_head_oid = "d".repeat(40); },
       (receipt) => { receipt.cleanup.failure_path.independently_requeried = false; },
       (receipt) => { receipt.binding.packed_install_receipt_sha256 = "0".repeat(64); },
     ];

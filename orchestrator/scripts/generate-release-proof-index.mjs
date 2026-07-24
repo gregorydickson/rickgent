@@ -171,6 +171,37 @@ export function validateProofAuthorities({
     same(run.delivery?.delivery_oid, run.delivery?.observed_branch_oid, `delivery.${run.run_id}.branch_oid`);
     same(run.delivery?.delivery_oid, run.delivery?.pull_request_head_oid, `delivery.${run.run_id}.pr_oid`);
     same(run.delivery?.duplicate_side_effects, false, `delivery.${run.run_id}.idempotence`);
+    const failureCleanup = run.cleanup?.failure_path;
+    // Legacy retained v1 proofs predate the exact failure-path projection.
+    // New receipts require it in JSON Schema and validate it here whenever
+    // present, without rewriting historical signed evidence.
+    if (failureCleanup !== undefined) {
+      same(failureCleanup.run_id, run.run_id, `cleanup.${run.run_id}.failure_run`);
+      same(failureCleanup.base_branch, vertical.repository?.base_branch, `cleanup.${run.run_id}.failure_base`);
+      same(
+        failureCleanup.branch,
+        `${vertical.repository?.owned_branch_prefix}${run.run_id}-failure-cleanup`,
+        `cleanup.${run.run_id}.failure_branch`,
+      );
+      same(failureCleanup.delivery_oid, run.delivery?.delivery_oid, `cleanup.${run.run_id}.failure_oid`);
+      same(
+        failureCleanup.pull_request_head_oid,
+        run.delivery?.delivery_oid,
+        `cleanup.${run.run_id}.failure_pr_oid`,
+      );
+      claim(
+        /^[1-9][0-9]*$/.test(failureCleanup.pull_request_id ?? ""),
+        `cleanup.${run.run_id}.failure_pr`,
+        "failure cleanup pull request identity is invalid",
+      );
+      claim(
+        failureCleanup.owned_branch_absent_on_requery === true
+          && failureCleanup.owned_pull_request_closed === true
+          && failureCleanup.repository_preserved === true,
+        `cleanup.${run.run_id}.failure_observation`,
+        "failure cleanup was not independently observed",
+      );
+    }
     const observations = Object.fromEntries((run.model_observations ?? []).map((x) => [x.role, x]));
     same(
       [observations.implementation?.adapter, observations.implementation?.invoked_model],

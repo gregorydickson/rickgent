@@ -1488,9 +1488,14 @@ function exerciseFailureCleanup(preflight, runId, candidate) {
     fail("failure cleanup probe left an owned branch or pull request");
   }
   return {
-    branch_absent_on_independent_requery: branchAbsent,
-    pull_request_closed_on_independent_requery: pullClosed,
-    repository_preserved_on_independent_requery: true,
+    base_branch: preflight.remote.base_branch,
+    branch,
+    delivery_oid: expectedDelivery.delivery_oid,
+    owned_branch_absent_on_requery: branchAbsent,
+    owned_pull_request_closed: pullClosed,
+    pull_request_head_oid: expectedDelivery.delivery_oid,
+    pull_request_id: expectedDelivery.pull_request_id,
+    repository_preserved: true,
     run_id: runId,
   };
 }
@@ -1504,10 +1509,21 @@ export function completedFailureCleanupCase(observations) {
     || observations.length !== 2
     || observations.some((observation, index) => (
       observation?.run_id !== `protected-${index + 1}`
-      || observation?.branch_absent_on_independent_requery !== true
-      || observation?.pull_request_closed_on_independent_requery !== true
-      || observation?.repository_preserved_on_independent_requery !== true
+      || typeof observation?.base_branch !== "string"
+      || observation.base_branch === ""
+      || typeof observation?.branch !== "string"
+      || !observation.branch.endsWith(`/${observation.run_id}-failure-cleanup`)
+      || !OID.test(observation?.delivery_oid ?? "")
+      || observation?.pull_request_head_oid !== observation.delivery_oid
+      || typeof observation?.pull_request_id !== "string"
+      || !/^[1-9][0-9]*$/.test(observation.pull_request_id)
+      || observation?.owned_branch_absent_on_requery !== true
+      || observation?.owned_pull_request_closed !== true
+      || observation?.repository_preserved !== true
     ))
+    || observations[0].base_branch !== observations[1].base_branch
+    || observations[0].branch === observations[1].branch
+    || observations[0].pull_request_id === observations[1].pull_request_id
   ) {
     fail("two independently requeried failure cleanup observations are required");
   }
@@ -1929,6 +1945,10 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
     attempts,
     cleanup: {
       branch_compare_before_delete_oid: delivery.delivery_oid,
+      // Trap door: phase evidence retains only a digest in the receipt. Keep
+      // the exact failure-path PR identity in the schema-validated run too,
+      // or downstream validators cannot audit what the digest represents.
+      failure_path: failureCleanup,
       owned_branch_absent_on_requery: true,
       owned_pull_request_closed: true,
       repository_preserved: true,

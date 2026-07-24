@@ -23,9 +23,14 @@ const closedPull = {
 
 function observation(run: number) {
   return {
-    branch_absent_on_independent_requery: true,
-    pull_request_closed_on_independent_requery: true,
-    repository_preserved_on_independent_requery: true,
+    base_branch: "main",
+    branch: `rickgent/protected/protected-${run}-failure-cleanup`,
+    delivery_oid: "a".repeat(40),
+    owned_branch_absent_on_requery: true,
+    owned_pull_request_closed: true,
+    pull_request_head_oid: "a".repeat(40),
+    pull_request_id: String(20 + run),
+    repository_preserved: true,
     run_id: `protected-${run}`,
   };
 }
@@ -56,8 +61,13 @@ describe("protected release aggregate cleanup evidence", () => {
     });
 
     const incomplete = observation(2);
-    incomplete.pull_request_closed_on_independent_requery = false;
+    incomplete.owned_pull_request_closed = false;
     expect(() => completedFailureCleanupCase([observation(1), incomplete])).toThrow(
+      "two independently requeried failure cleanup observations are required",
+    );
+    const aliased = observation(2);
+    aliased.pull_request_id = observation(1).pull_request_id;
+    expect(() => completedFailureCleanupCase([observation(1), aliased])).toThrow(
       "two independently requeried failure cleanup observations are required",
     );
     expect(() => completedFailureCleanupCase([observation(2), observation(1)])).toThrow(
