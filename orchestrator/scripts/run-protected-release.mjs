@@ -908,6 +908,35 @@ function observeRemote(preflight) {
   return { repoPath, repository };
 }
 
+export function pullRequestCleanupCandidates(pulls, branch, deliveryOid) {
+  // Trap door: a successful POST may lose its response after GitHub creates
+  // the pull request. Cleanup ownership must then be recovered from both the
+  // controller-owned branch and its already-observed delivery commit.
+  if (!Array.isArray(pulls)) {
+    fail("partial pull request cleanup observation is invalid");
+  }
+  if (pulls.length === 0) return [];
+  if (!OID.test(deliveryOid ?? "")) {
+    fail("partial pull request cleanup has no bound delivery OID");
+  }
+  const candidates = pulls.map((pull) => {
+    if (
+      !Number.isInteger(pull?.number)
+      || pull.number <= 0
+      || pull.state !== "open"
+      || pull.head?.ref !== branch
+      || pull.head?.sha !== deliveryOid
+    ) {
+      fail("partial pull request cleanup observation changed ownership");
+    }
+    return String(pull.number);
+  });
+  if (new Set(candidates).size !== candidates.length) {
+    fail("partial pull request cleanup observation contains duplicate identities");
+  }
+  return candidates;
+}
+
 function createDelivery(preflight, runId, providerEvidence, { injectFailureAfterPullRequest = false } = {}) {
   const { repoPath } = observeRemote(preflight);
   const branch = `${preflight.remote.owned_namespace}/${runId}`;
@@ -991,6 +1020,25 @@ function createDelivery(preflight, runId, providerEvidence, { injectFailureAfter
             method: "PATCH",
             body: { state: "closed" },
           });
+        }
+      } else {
+        const pulls = ghApi(
+          `${repoPath}/pulls?state=open&head=${preflight.remote.owner}:${branch}`
+            + `&base=${preflight.remote.base_branch}`,
+        );
+        for (const pullRequestId of pullRequestCleanupCandidates(
+          pulls,
+          branch,
+          partial.deliveryOid,
+        )) {
+          ghApi(`${repoPath}/pulls/${pullRequestId}`, {
+            method: "PATCH",
+            body: { state: "closed" },
+          });
+          const closed = ghApi(`${repoPath}/pulls/${pullRequestId}`);
+          if (closed.state !== "closed") {
+            fail("response-loss pull request did not close");
+          }
         }
       }
       const branchObservation = ghApiMaybe(`${repoPath}/git/ref/heads/${branch}`);
