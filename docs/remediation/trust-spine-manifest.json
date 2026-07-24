@@ -1706,11 +1706,11 @@
         "The complete proof-corpus inventories are asserted; infrastructure errors/skips/mocks fail; the slice completes twice with distinct run IDs and teardown removes/closes branch/PR/repository resources according to the protected-job contract."
       ],
       "verification": [
-        "test -n \"$OMNIGENT_ROOT\" && test -n \"$RICKGENT_RELEASE_REMOTE\" && test -n \"$GH_TOKEN\" && test -n \"$RICKGENT_TEST_HARNESS\" && test -n \"$RICKGENT_TEST_MODEL\"",
-        "cd orchestrator && OMNIGENT_ROOT=\"$OMNIGENT_ROOT\" RICKGENT_RELEASE_REPEAT_COUNT=2 pnpm exec vitest run test/reliability/installed-vertical-slice.test.ts --no-file-parallelism",
-        "node -e \"const f=require('fs');const x=JSON.parse(f.readFileSync('artifacts/reliability/vertical-slice-receipt.json'));if(x.repeat_count!==2||x.mocked||x.skipped_required?.length||x.infrastructure_errors?.length||!x.pr_head_matches_delivery_oid||!x.remote_cleanup_verified)process.exit(1)\"",
-        "cd orchestrator && pnpm lint && pnpm typecheck && pnpm test",
-        "cd rickgent-policies && python3 -m pytest -q"
+        "node orchestrator/scripts/validate-protected-preflight.mjs artifacts/reliability/protected-release-preflight.json",
+        "node orchestrator/scripts/validate-vertical-slice-receipt.mjs artifacts/reliability/vertical-slice-receipt.json --packed-receipt artifacts/reliability/packed-install-summary.json --preflight artifacts/reliability/protected-release-preflight.json",
+        "node orchestrator/scripts/scan-release-evidence.mjs artifacts/reliability/vertical-slice-receipt.json artifacts/reliability/vertical-slice-failure-diagnostics.json",
+        "node orchestrator/scripts/verify-remote-cleanup.mjs --receipt artifacts/reliability/vertical-slice-receipt.json",
+        "git diff --check"
       ],
       "verification_env": {
         "mode": "merge",
@@ -1720,7 +1720,7 @@
             "format": "string"
           },
           {
-            "name": "RICKGENT_RELEASE_REMOTE",
+            "name": "OMNIGENT_PYTHON",
             "format": "string"
           },
           {
@@ -1734,6 +1734,14 @@
           {
             "name": "RICKGENT_TEST_MODEL",
             "format": "string"
+          },
+          {
+            "name": "RICKGENT_REVIEW_HARNESS",
+            "format": "string"
+          },
+          {
+            "name": "RICKGENT_REVIEW_MODEL",
+            "format": "string"
           }
         ],
         "vars": {
@@ -1744,9 +1752,12 @@
         }
       },
       "output_artifacts": [
-        "orchestrator/test/reliability/installed-vertical-slice.test.ts",
-        ".github/workflows/release-trust-spine.yml",
-        "artifacts/reliability/vertical-slice-receipt.json"
+        "artifacts/reliability/vertical-slice-receipt.json",
+        "artifacts/reliability/vertical-slice-receipt.sha256",
+        "artifacts/reliability/vertical-slice-failure-diagnostics.json",
+        "orchestrator/scripts/validate-vertical-slice-receipt.mjs",
+        "orchestrator/scripts/verify-remote-cleanup.mjs",
+        "docs/remediation/phase-9-t38-installed-vertical-slice-execution-report.md"
       ],
       "proof_corpus": [
         "rickgent-policies/test/fixtures/native-policy-corpus/manifest.json",
@@ -1756,7 +1767,8 @@
         "orchestrator/test/fixtures/gate-corpus/manifest.json",
         "orchestrator/test/fixtures/model-identity-corpus/manifest.json",
         "orchestrator/test/fixtures/delivery-corpus/manifest.json",
-        "orchestrator/test/fixtures/packaging-corpus/manifest.json"
+        "orchestrator/test/fixtures/packaging-corpus/manifest.json",
+        "orchestrator/test/fixtures/protected-release/manifest.json"
       ],
       "freeze_contract": {
         "artifact_path": "artifacts/reliability/omnigent-compatibility-contract.json",
@@ -1765,10 +1777,14 @@
         "sha_source": ""
       },
       "priority": "P0",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t37"
-      ]
+      ],
+      "completed_at": {
+        "commit": "11bc5e4",
+        "phase_report": "docs/remediation/phase-9-t38-installed-vertical-slice-execution-report.md"
+      }
     },
     {
       "id": "t39",
