@@ -22,7 +22,7 @@ Bounded, non-interactive status checks confirmed:
 - Codex authentication for the `gpt-5.6-sol` test role
 - Claude authentication for the `claude-opus-4-8[1m]` review role
 - the allowlisted GitHub owner and repository identity
-- the immutable base-branch Git OID
+- the immutable repository ID and configured base branch
 - the absence of the deterministic proof branch and matching open pull request
 
 Only digests and contract fields are retained. Raw authentication output, tokens, provider transcripts, prompts, and absolute user paths are excluded.
@@ -31,7 +31,9 @@ Only digests and contract fields are retained. Raw authentication output, tokens
 
 The preflight did not invoke either provider, create a branch or pull request, push a commit, delete a repository, or alter provider state. Provider state was independently snapshotted before and after the observations and remained unchanged.
 
-The deterministic protected namespace and compare-before-delete teardown plan are registered in the receipt for the subsequent protected exercise. Repository deletion is explicitly forbidden by the remote contract.
+Hosted branch and pull-request state was queried once by the preflight producer. That observation is retained as both the before and after hosted snapshot, so equality validates the receipt's no-mutation boundary but is not evidence of two independently timed hosted queries. The receipt also records an empty mutation list and `provider_dispatch_observed: false`; it does not claim a model invocation.
+
+The deterministic protected namespace and compare-before-delete teardown plan are registered in the receipt for the subsequent protected exercise. The preflight path validates the plan fields but does not execute teardown. Owned-resource-only cleanup and requery are required, while force deletion and repository deletion are explicitly forbidden.
 
 ## Verification
 

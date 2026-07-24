@@ -19,6 +19,24 @@ const EXPECTED_T37 = Object.freeze({
   omnigent_contract_sha256: "d1db539f7c602db8750a7187a3f74fee5ae46386d4f4a05df9c94fba13604b64",
   packed_receipt_sha256: "2dd3587120acf8f909fbbfb23607648225212ce7eb7ada28e8c219736a3db058",
 });
+const EXPECTED_INSTALLATION = Object.freeze({
+  build_id: EXPECTED_T37.build_id,
+  cli_sha256: "7ca98adfccafd4c2a296baa82b1a4c5061bb464ff5ea9275c896f3fc05f0e03a",
+  manager_sha256: "b97e32aa45ae0b3f740764ea48207b286092a4c0e31f7b73f736e06f9e3f7d2a",
+  omnigent_git_oid: "6e3c77855b08c9b612bf20763fe14f57a7ff9ad4",
+  omnigent_version: "unknown",
+  policy_sha256: "4205630cb6881f0f103f2157b2d5576a7ad5027b6ded5b1cb131027399250b48",
+  source: "exact_t37_persistent_handoff",
+  worker_sha256: "a7c8a1dc8bb4eec0a5e340dcc292d7ebfdc3b52dd9a5ea87fe0a3c3e93c499ca",
+});
+const EXPECTED_REMOTE = Object.freeze({
+  host: "github.com",
+  owner: "gregorydickson",
+  repository: "rickgent-release-proof-20260723",
+  repository_id: "1310051293",
+  authenticated_actor: "gregorydickson",
+  base_branch: "main",
+});
 
 function fail(message) {
   process.stderr.write(`validate-protected-preflight: ${message}\n`);
@@ -113,8 +131,9 @@ exactKeys(installation, [
   "build_id", "cli_sha256", "manager_sha256", "omnigent_git_oid", "omnigent_version",
   "policy_sha256", "source", "worker_sha256",
 ], "binding.installation");
-equal(installation.source, "exact_t37_persistent_handoff", "installation.source");
-equal(installation.build_id, EXPECTED_T37.build_id, "installation.build_id");
+for (const [key, expected] of Object.entries(EXPECTED_INSTALLATION)) {
+  equal(installation[key], expected, `installation.${key}`);
+}
 for (const key of ["cli_sha256", "manager_sha256", "policy_sha256", "worker_sha256"]) {
   if (!SHA256.test(installation[key])) fail(`installation.${key} must be lowercase SHA-256`);
 }
@@ -158,9 +177,12 @@ exactKeys(remote, [
 for (const key of ["host", "owner", "repository", "repository_id", "authenticated_actor", "base_branch"]) {
   nonempty(remote[key], `remote.${key}`);
 }
+for (const [key, expected] of Object.entries(EXPECTED_REMOTE)) {
+  equal(remote[key], expected, `remote.${key}`);
+}
 equal(remote.allowlist_match, true, "remote.allowlist_match");
 equal(remote.clean_baseline, true, "remote.clean_baseline");
-if (!remote.owned_namespace.startsWith("rickgent/protected/") || remote.owned_namespace.length < 32) {
+if (!/^rickgent\/protected\/[0-9a-f]{24}$/.test(remote.owned_namespace)) {
   fail("remote.owned_namespace must be unique and owned");
 }
 equal(remote.required_token_operations, [
@@ -201,7 +223,7 @@ for (const phase of ["before", "after"]) {
     fail(`no_mutation.${phase}.provider_lifecycle_count must be non-negative`);
   }
 }
-equal(receipt.no_mutation.after, receipt.no_mutation.before, "independent before/after observations");
+equal(receipt.no_mutation.after, receipt.no_mutation.before, "before/after observations");
 
 const expectedCriteria = [
   "Preflight binds the installed executable/build and exact npm, wheel, inventory, compatibility, and packed-receipt digests from t37.",

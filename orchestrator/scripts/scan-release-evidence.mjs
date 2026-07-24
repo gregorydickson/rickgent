@@ -26,6 +26,7 @@ const allowedKeys = new Set([
 const forbiddenKey = /(?:token|secret|password|credential|authorization|transcript|prompt|stdout|stderr|command_output|raw_output)/i;
 const secretValue = /(?:gh[opsu]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|authorization\s*[:=]\s*(?:bearer|token))/i;
 const credentialUrl = /\bhttps?:\/\/[^/\s:@]+:[^/\s@]+@/i;
+const credentialQuery = /\bhttps?:\/\/[^\s?#]+[?#][^\s]*(?:access_token|api_key|auth|credential|password|secret|signature|token)=/i;
 const absoluteUserPath = /(?:\/Users\/[^/\s]+\/|\/home\/[^/\s]+\/|[A-Za-z]:\\Users\\[^\\\s]+\\)/;
 const expiredProofPath = /rickgent-packed-proof-[A-Za-z0-9_-]+/;
 const providerTranscript = /(?:assistant|provider|conversation)[_-]?(?:message|response|transcript|body)/i;
@@ -52,6 +53,7 @@ function visit(value, path = "$") {
   if (typeof value !== "string") return;
   if (secretValue.test(value)) fail(`secret-like value at ${path}`);
   if (credentialUrl.test(value)) fail(`credential-bearing URL at ${path}`);
+  if (credentialQuery.test(value)) fail(`credential-bearing URL query at ${path}`);
   if (absoluteUserPath.test(value)) fail(`absolute user path at ${path}`);
   if (expiredProofPath.test(value)) fail(`expired t37 temporary path at ${path}`);
   if (providerTranscript.test(value)) fail(`provider transcript-like value at ${path}`);
