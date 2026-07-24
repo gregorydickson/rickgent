@@ -54,6 +54,14 @@ function sha256File(path) {
   return sha256(readFileSync(path));
 }
 
+function gitBlobOid(path) {
+  const bytes = readFileSync(path);
+  return createHash("sha1")
+    .update(`blob ${bytes.length}\0`)
+    .update(bytes)
+    .digest("hex");
+}
+
 function run(executable, args, {
   cwd = process.cwd(),
   env = process.env,
@@ -115,6 +123,53 @@ function directorySnapshot(root) {
     count: entries.length,
     sha256: sha256(canonical(entries)),
   };
+}
+
+function committedDirectoryInventory(repository, commitOid, directory) {
+  const output = run("git", [
+    "-C", repository, "ls-tree", "-r", "-z", "--full-tree", commitOid, "--", directory,
+  ]);
+  return output.split("\0").filter(Boolean).map((entry) => {
+    const separator = entry.indexOf("\t");
+    const metadata = entry.slice(0, separator).split(" ");
+    const path = entry.slice(separator + 1);
+    return [path.slice(`${directory}/`.length), metadata[2]];
+  }).sort((left, right) => left[0].localeCompare(right[0]));
+}
+
+function installedDirectoryInventory(root, relative = "") {
+  const entries = [];
+  for (const name of readdirSync(root).sort()) {
+    const absolute = join(root, name);
+    const child = relative ? `${relative}/${name}` : name;
+    const stats = statSync(absolute);
+    if (stats.isDirectory()) {
+      if (name !== "__pycache__") {
+        entries.push(...installedDirectoryInventory(absolute, child));
+      }
+    } else if (stats.isFile() && !name.endsWith(".pyc")) {
+      entries.push([child, gitBlobOid(absolute)]);
+    }
+  }
+  return entries;
+}
+
+export function requireExactOmnigentHandoff(
+  expectedGitOid,
+  observedGitOid,
+  committedInventory,
+  installedInventory,
+) {
+  // Trap door: omnigent-root is imported by every attempt worker. Its copied
+  // package bytes must resolve to the recorded Git commit, not merely coexist
+  // with an unchanged CLI, manager, worker, and policy handoff.
+  if (
+    !OID.test(expectedGitOid ?? "")
+    || observedGitOid !== expectedGitOid
+    || canonical(committedInventory) !== canonical(installedInventory)
+  ) {
+    fail("installed Omnigent package does not match its bound Git identity");
+  }
 }
 
 function exactArchiveBindings(packedReceiptPath) {
@@ -223,6 +278,12 @@ function installExactHandoff(packedReceiptPath, archives) {
     "import sys; sys.path.insert(0, sys.argv[1]); import omnigent; print(getattr(omnigent, '__version__', 'unknown'))",
     omnigentRoot,
   ]);
+  requireExactOmnigentHandoff(
+    omnigentGitOid,
+    run("git", ["-C", omnigentSourceRoot, "rev-parse", "HEAD"]),
+    committedDirectoryInventory(omnigentSourceRoot, omnigentGitOid, "omnigent"),
+    installedDirectoryInventory(join(omnigentRoot, "omnigent")),
+  );
 
   return {
     build_id: buildId,
@@ -514,6 +575,8 @@ function protectedRuntime(preflight) {
   const worker = realpathSync(join(packageRoot, "agents", "rickgent", "agents", "worker", "config.yaml"));
   const python = realpathSync(join(root, "python", "bin", "python"));
   const omnigentRoot = realpathSync(join(root, "omnigent-root"));
+  const omnigentSourceRoot = realpathSync(process.env.OMNIGENT_ROOT ?? "");
+  const omnigentGitOid = run("git", ["-C", omnigentSourceRoot, "rev-parse", "HEAD"]);
   if (run(cli, ["--build-commit"]) !== preflight.binding.build_id) {
     fail("installed executable build identity changed after preflight");
   }
@@ -526,6 +589,16 @@ function protectedRuntime(preflight) {
     policy_sha256: sha256File(policy),
     worker_sha256: sha256File(worker),
   });
+  requireExactOmnigentHandoff(
+    preflight.binding.installation.omnigent_git_oid,
+    omnigentGitOid,
+    committedDirectoryInventory(
+      omnigentSourceRoot,
+      preflight.binding.installation.omnigent_git_oid,
+      "omnigent",
+    ),
+    installedDirectoryInventory(join(omnigentRoot, "omnigent")),
+  );
   return { cli, omnigentRoot, python, root };
 }
 
