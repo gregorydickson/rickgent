@@ -8,11 +8,10 @@ machine-checkable manifest. It summarizes the current boundary, orders the
 remaining work, and points implementers and reviewers to the authoritative
 contracts, acceptance criteria, proof corpora, and execution reports.
 
-The remaining manifest range is `t22` through `t39`. Tickets `t00`-`t21` are
-`Done` (reconciled 2026-07-20); `t22` is partially implemented through the
-committed state-bridge and disposition-proof substrate, with `t22A` the active
-tranche and `t22B`-`t22D` plus `t23`-`t39` still `Todo`. Production attempt
-execution remains deliberately unavailable.
+The trust-spine range `t00` through `t39` is implemented. Final public claims
+are bound to `artifacts/reliability/release-proof-index.json` and
+`artifacts/reliability/claim-surface-inventory.json`; historical workstream
+sections below remain sequencing records, not current capability authority.
 
 ## Authority and document hierarchy
 
@@ -38,13 +37,19 @@ The remediation artifact map and execution rules are in the
 
 ## Current boundary
 
-**Manifest status (reconciled 2026-07-20):** Tickets `t00` through `t21` are
-`Done` in `docs/remediation/trust-spine-manifest.json`, each with a
-`completed_at` reference to its owning commit SHA and phase-report path. The
-manifest validator (`orchestrator/scripts/validate-trust-spine-manifest.mjs`)
-passes: 40 tickets, 22 Done, no missing dependencies, no cycles, no
-status/dependency contradictions. The active boundary is `t22A` (the next
-actionable tranche); `t22B`-`t22D` and `t23`-`t39` remain `Todo`.
+**Current retained boundary (2026-07-23):** Local dispatch is exactly
+sequential; reconciliation is the local t29 persisted-receipt/oracle profile.
+The installed profile restores `resume_retry`, `cross_vendor_review`, and
+`automatic_delivery` only through valid `installed_t38_retained_proof_v1`
+evidence. Parallel dispatch and raw shell remain unavailable. Help, version,
+and doctor remain read-only during stable proof contraction.
+
+The proved pair is Codex CLI/OpenAI/gpt-5.6-sol implementation plus Claude
+Code/Anthropic/claude-opus-4-8[1m] review. The hosted and platform scope is one
+allowlisted disposable GitHub repository and one reference-platform
+observation—not general hosted, provider, Darwin, Linux, or cross-platform
+readiness. `ready_for_delivery` is local oracle completion; delivered is remote
+OID verification; `Done` is a delivered-only alias.
 
 Tickets `t00` through `t21` established the frozen contracts and implemented the
 prerequisite ownership, state, policy, Git attribution, process supervision,

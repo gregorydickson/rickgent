@@ -39,12 +39,13 @@ public CLI contract; an em dash means there is no public process invocation.
 | rickgent <command> --help | public_read_only | none | — | claim observation only | 0 | RICKGENT_OK | — | Help text does not activate a mutating capability. |
 <!-- RICKGENT_CLAIMS_MATRIX_END -->
 
-## Public versus fixture behavior
+## Profile-scoped behavior
 
-Public `build` and `pipeline` cannot allocate a run worktree or spawn a worker.
-There is no public flag, command, environment switch, or configuration file
-that enables agent-backed source, Git, remediation, or lifecycle mutation in
-this release.
+The local profile permits exactly sequential AttemptRunner dispatch and limits
+reconciliation to the t29 persisted-receipt/oracle authority. The installed
+profile restores resume/retry, cross-vendor review, and automatic delivery only
+through a valid `installed_t38_retained_proof_v1` root. An environment label,
+fixture, or caller-shaped validation object is not proof.
 
 The public toolbelt deliberately retains two narrower filesystem writers:
 `prd --non-interactive [--output <path>]` creates a deterministic PRD template,
@@ -77,20 +78,22 @@ lifecycle claims.
 - `Done` is an alias only for delivered. A legacy registry string spelled
   `Done` is not evidence of those remote observations.
 
-The reliability-preview fixture seam cannot reach `ready_for_delivery`,
-delivered, or `Done`, and cannot write any of those terminal states.
+The fixture seam cannot reach `ready_for_delivery`, delivered, or `Done`, and
+cannot write any of those terminal states. The retained t38 runs reached
+delivered only after independently observed branch and PR-head OIDs equalled
+the delivery OID.
 
 ## Read-only and unavailable surfaces
 
-Help, `status`, and `doctor` are read-only observations. `status` does not
+Help, version, `status`, and `doctor` are read-only observations. They remain
+available when protected evidence is invalid and report stable capability
+contraction diagnostics. `status` does not
 reinterpret or terminalize stored state. Doctor performs real health checks
 and returns nonzero when one fails; its policy result proves configured
 attachment only, not native production enforcement.
 
-Public autonomous mutation, resume/retry, reconciliation, parallel dispatch,
-independently observed cross-vendor review, automatic delivery, and raw shell
-remain unavailable. In particular, `--max-concurrent 2` is rejected first as
-an input-contract error; it does not emit the separately registered
-`RICKGENT_PARALLEL_DISPATCH_UNAVAILABLE` detail. A capability transition
-requires a compiled registry change and its proof corpus, not documentation or
-a passing fixture.
+Parallel dispatch and raw shell remain unavailable in all profiles. The t38
+proof covers only Codex CLI/OpenAI/gpt-5.6-sol implementation plus Claude
+Code/Anthropic/claude-opus-4-8[1m] review, one allowlisted disposable GitHub
+repository, and one reference-platform observation. It makes no general
+hosted-service, provider, Darwin, Linux, or cross-platform support claim.

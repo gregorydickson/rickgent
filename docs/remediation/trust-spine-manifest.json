@@ -1324,6 +1324,11 @@
         "orchestrator/test/fixtures/crash-matrix/manifest.json",
         "orchestrator/test/fixtures/crash-matrix/fault-points.json"
       ],
+      "proof_input_discrepancy": {
+        "path": "artifacts/reliability/recovery-parity-summary.json",
+        "status": "missing_fail_closed",
+        "authority": "The named t29 crash-matrix corpus, recovery-parity test, and completion commit are used directly; the absent artifact is not invented or substituted."
+      },
       "priority": "P0",
       "status": "Done",
       "depends_on": [
@@ -1789,13 +1794,13 @@
     {
       "id": "t39",
       "title": "Restore only proven capabilities and release claims",
-      "description": "Milestone 6 final claim/activation ticket. Read the committed/CI-retained proof versions and set each capability to the exact supported state. Enable automatic delivery and resume only if `t38` proves the release profile; enable cross-vendor or parallel dispatch only if their complete proof and required installed-profile evidence exist. Keep reconciliation and raw shell unavailable unless separately proven. Align README, changelog, CLI help, doctor, version claims, and reliability contract with the actual registry.",
+      "description": "Milestone 6 retained-proof claim ticket. Bind the exact t37/t38 receipts through installed_t38_retained_proof_v1. Restore installed resume_retry, the exact Codex CLI/OpenAI/gpt-5.6-sol plus Claude Code/Anthropic/claude-opus-4-8[1m] cross_vendor_review pair, and automatic_delivery only with valid proof. Keep reconciliation local to t29, and keep parallel_dispatch and raw_shell unavailable.",
       "acceptance_criteria": [
         "Each enabled capability names the exact proof corpus/version and startup verifies that proof contract; implementation existence alone cannot enable it.",
-        "Automatic delivery and resume activation require the protected real vertical-slice receipt; cross-vendor/parallel activation additionally requires their dedicated complete corpora.",
-        "Raw shell remains unavailable, and reconciliation remains unavailable unless its structured oracle/persistence activation criteria are explicitly and completely met.",
-        "README/changelog/help/doctor/package metadata describe only the enabled contract and distinguish local ready state from delivered/`Done`.",
-        "Full TypeScript/Python/quality/package/claims suites pass and a claim mutation causes the contract test to fail."
+        "Automatic delivery, resume, and the exact proved cross-vendor pair require the protected real vertical-slice receipt; parallel dispatch remains unavailable.",
+        "Raw shell remains unavailable, and reconciliation is limited to its t29 local structured oracle/persistence profile.",
+        "README/changelog/help/version/doctor/package claims distinguish local, installed, hosted, provider-pair, and reference-platform scope and distinguish ready_for_delivery from delivered/`Done`.",
+        "Independent claim mutations fail with claim-specific diagnostics, and post-proof frozen runtime/package/archive paths remain unchanged."
       ],
       "verification": [
         "cd orchestrator && pnpm exec vitest run test/reliability/claims-contract.test.ts test/reliability/capability-restoration.test.ts",
@@ -1805,7 +1810,10 @@
         "node -e \"const f=require('fs');const x=JSON.parse(f.readFileSync('artifacts/reliability/vertical-slice-receipt.json'));if(!x.pr_head_matches_delivery_oid||x.infrastructure_errors?.length)process.exit(1)\""
       ],
       "output_artifacts": [
+        "artifacts/reliability/release-proof-index.json",
+        "artifacts/reliability/claim-surface-inventory.json",
         "orchestrator/test/reliability/capability-restoration.test.ts",
+        "orchestrator/test/reliability/claim-mutation.test.ts",
         "docs/reliability-contract.md",
         "README.md",
         "CHANGELOG.md"
@@ -1820,10 +1828,16 @@
         "orchestrator/test/fixtures/packaging-corpus/manifest.json"
       ],
       "priority": "P1",
-      "status": "Todo",
+      "status": "Done",
       "depends_on": [
         "t38"
-      ]
+      ],
+      "completed_at": {
+        "commit": "e1f768cd519bfd48c1e93d6473443fc8f5e98e03",
+        "phase_report": "docs/reliability-contract.md",
+        "proof_index": "artifacts/reliability/release-proof-index.json",
+        "claim_inventory": "artifacts/reliability/claim-surface-inventory.json"
+      }
     }
   ]
 }

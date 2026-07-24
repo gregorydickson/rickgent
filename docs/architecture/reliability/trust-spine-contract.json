@@ -137,6 +137,27 @@
       "minimum_profile": "none"
     }
   ],
+  "retained_claim_profile": {
+    "authority": "artifacts/reliability/release-proof-index.json",
+    "profile": "installed_t38_retained_proof_v1",
+    "local": {
+      "autonomous_dispatch": "enabled_sequential",
+      "reconciliation": "local_t29_persisted_receipt_oracle_only"
+    },
+    "installed_proof_gated": ["resume_retry", "cross_vendor_review", "automatic_delivery"],
+    "provider_pair": "Codex CLI/OpenAI/gpt-5.6-sol + Claude Code/Anthropic/claude-opus-4-8[1m]",
+    "unavailable": ["parallel_dispatch", "raw_shell"],
+    "contraction": {
+      "read_only_available": ["help", "version", "doctor"],
+      "protected_mutation": "fail_closed_before_state_or_side_effect"
+    },
+    "terminal_semantics": {
+      "ready_for_delivery": "local_oracle_complete",
+      "delivered": "remote_delivery_verified",
+      "Done": "delivered_only_alias"
+    },
+    "scope": "one allowlisted disposable hosted remote and one reference-platform observation; no general hosted-service, provider, Darwin, Linux, or cross-platform claim"
+  },
   "public_m1_mutation_matrix": [
     { "surface": "build", "mode": "public", "mutation": "denied", "result": "RICKGENT_AUTONOMOUS_FIXTURE_ONLY" },
     { "surface": "pipeline", "mode": "public", "mutation": "denied", "result": "RICKGENT_AUTONOMOUS_FIXTURE_ONLY" },
@@ -233,6 +254,7 @@
     "lockfile": "orchestrator/pnpm-lock.yaml",
     "lockfile_version": "9.0",
     "supported_platforms": ["darwin", "linux"],
+    "retained_proof_scope": "one t38 reference-platform observation; supported install targets are not equivalent to proved protected execution",
     "windows": {
       "support": "fail_fast",
       "error_code": "RICKGENT_PLATFORM_UNSUPPORTED",

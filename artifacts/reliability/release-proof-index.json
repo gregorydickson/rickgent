@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "proof_profile": "installed_t38_retained_proof_v1",
+  "status": "valid",
+  "authority_commits": {
+    "t37_completion": "1da9e3be24ec1297b81309e9d8a515804164ee90",
+    "t38_completion_marker": "11bc5e4365f1a0fe7e67974455aa991f32925170",
+    "final_retained_receipt_bytes": "e1f768cd519bfd48c1e93d6473443fc8f5e98e03"
+  },
+  "receipts": {
+    "packed": {
+      "path": "artifacts/reliability/packed-install-summary.json",
+      "file_sha256": "9c1c328f2e9d0b6482c9d3c6c53af1b26b5b3d827870d98753f07f5be7bb2c4e",
+      "digest": "2dd3587120acf8f909fbbfb23607648225212ce7eb7ada28e8c219736a3db058",
+      "proof_version": "packed-install-proof-v1"
+    },
+    "vertical": {
+      "path": "artifacts/reliability/vertical-slice-receipt.json",
+      "file_sha256": "5ca0727fd02feddaa09e42929f74c7622bb4223225e3540a3f20c410c7b209c9",
+      "digest": "22518237a9740d5d1fb2104a8317073e1785434f1cddc9077dfb710908cbf5ad",
+      "proof_version": "vertical-slice-proof-v1"
+    }
+  },
+  "bindings": {
+    "source_git_oid": "d83405ee20e2cb8c5a9418c8913d646e876269bc",
+    "release": {
+      "id": "rickgent-trust-spine-release-v1",
+      "sha256": "62a70c1eeaa21095a0bc57a01763a8b7ce5225e2a67a4aadacc841e0c0e4ff48"
+    },
+    "build": {
+      "id": "a6525b76631e880f852d358bdf8a03b61f135fe4",
+      "sha256": "644e358326f475ae8e06958e5c7169bbc2fa3ff7b9b2b926d42917c2581c1a9e"
+    },
+    "archives": [
+      {
+        "filename": "rickgent-0.1.0-alpha.tgz",
+        "inventory_sha256": "2d1833655724db6b665f8eb8c69c4c5d11acd5a1b61778096ab7489ae70036ea",
+        "kind": "npm_tarball",
+        "sha256": "642512459c175bf0f566d37676512b77ae6e9b88f928d9ef239a56bf37d9edf7"
+      },
+      {
+        "filename": "rickgent_policies-0.1.0a0-py3-none-any.whl",
+        "inventory_sha256": "abeac2ab3ca773840a59c9a5439dc8c3c7e52742a3081f2f0a3e7eb88c543b2a",
+        "kind": "python_wheel",
+        "sha256": "0eb851486e8966c5509d53172b3491e6daa1bc836b9255c267863fa3d82e72f0"
+      }
+    ],
+    "schemas": {
+      "packed": {
+        "path": "orchestrator/schemas/packed-install-receipt.schema.json",
+        "sha256": "772ce8915d06869a181c49c2c636038f9e3adeda816d17f7bd1e5ee455f1aecb"
+      },
+      "vertical": {
+        "path": "orchestrator/schemas/vertical-slice-receipt.schema.json",
+        "sha256": "4604fa7e8a6314c3998bb1d14a76f0c34eff9ad084d54802f0ef93265346b312"
+      }
+    },
+    "redaction_version": "rickgent-redaction-v1",
+    "canonicalization": "rickgent-canonical-json-v1",
+    "corpora": [
+      {
+        "id": "rickgent-policies/test/fixtures/native-policy-corpus/manifest.json",
+        "sha256": "f78f42e35ebe045bb4f1c8e9f4b56c0d4ca71c95603b57df24341e676ce42847"
+      },
+      {
+        "id": "orchestrator/test/fixtures/crash-matrix/manifest.json",
+        "sha256": "31aae107c9e898fcfc242e417cab2db3efdfde6976fb01463b945993f2c733f0"
+      },
+      {
+        "id": "orchestrator/test/fixtures/git-attribution/manifest.json",
+        "sha256": "5def140c4a3e37ba176e0c0a1518674b34c07e3797148f9e4bc11b26f9e9c1a0"
+      },
+      {
+        "id": "orchestrator/test/fixtures/process-supervisor/stubborn-tree.mjs",
+        "sha256": "aeb7d4924e98ee6c519c3c256e840aa4386f0041a0111a6e7c063605ec0ac873"
+      },
+      {
+        "id": "orchestrator/test/fixtures/gate-corpus/manifest.json",
+        "sha256": "1dce52f213bc81f20442059c11504b59b45309c13cd03ec38f5d5af64490df25"
+      },
+      {
+        "id": "orchestrator/test/fixtures/model-identity-corpus/manifest.json",
+        "sha256": "b3d0bdc59fa0c9deb26ad08e82845439e9a89539a8f77253d410037a7fae06d2"
+      },
+      {
+        "id": "orchestrator/test/fixtures/delivery-corpus/manifest.json",
+        "sha256": "4435c007475523850c2017d217eeb995d3ed7d975551c1721a416b852e937223"
+      },
+      {
+        "id": "orchestrator/test/fixtures/packaging-corpus/manifest.json",
+        "sha256": "fa8e1293ef53f30cde8d7e9136684262c0b01018faa48d9cff48cd16f27e10c5"
+      },
+      {
+        "id": "orchestrator/test/fixtures/protected-release/manifest.json",
+        "sha256": "38e32556d1679cc312eb66035300eb8d3ea672531e9d7c6efdc639acdea71993"
+      }
+    ],
+    "preflight": {
+      "path": "artifacts/reliability/protected-release-preflight.json",
+      "sha256": "586b09f425e7151e8e94240db5ae81b60b6217973bf0dfa0e2e722b1c66733b7",
+      "status": "accepted"
+    },
+    "diagnostics": {
+      "path": "artifacts/reliability/vertical-slice-failure-diagnostics.json",
+      "sha256": "2e9daa0a9286511e401ac169102267a78c5ec23ae116a891f7648cb36c58a12c",
+      "status": "clear"
+    }
+  },
+  "execution": {
+    "run_ids": [
+      "protected-1",
+      "protected-2"
+    ],
+    "persistent_state_ids": [
+      "state-protected-1",
+      "state-protected-2"
+    ],
+    "provider_pair": {
+      "implementation": {
+        "adapter": "codex-cli",
+        "provider": "openai",
+        "model": "gpt-5.6-sol"
+      },
+      "review": {
+        "adapter": "claude-code",
+        "provider": "anthropic",
+        "model": "claude-opus-4-8[1m]"
+      }
+    },
+    "lifecycle_terminal": "delivered",
+    "done_alias": "delivered_only",
+    "cleanup": {
+      "failure_path": {
+        "completed": true,
+        "independently_requeried": true,
+        "kind": "failure"
+      },
+      "repository_deleted": false,
+      "success_path": {
+        "completed": true,
+        "independently_requeried": true,
+        "kind": "success"
+      }
+    }
+  },
+  "capability_activation": [
+    "resume_retry",
+    "cross_vendor_review",
+    "automatic_delivery"
+  ]
+}

@@ -1,9 +1,11 @@
 # Rickgent reliability preview
 
-Rickgent currently publishes the `reliability_preview` lifecycle boundary.
-Public build and delivery remain unavailable; the preview exposes read-only
-claim and health inspection plus the explicitly listed legacy toolbelt
-surfaces, not an autonomous mutation or delivery service.
+Rickgent publishes the `reliability_preview` lifecycle boundary. The compiled
+local profile provides sequential autonomous dispatch and t29 reconciliation.
+An installed profile restores `resume_retry`, `cross_vendor_review`, and
+`automatic_delivery` only when the retained t38 proof root validates. Missing,
+stale, malformed, fixture, one-run, cleanup-failed, or tampered proof contracts
+those protected mutation capabilities before state or side effects.
 
 The compiled authority is
 [`orchestrator/src/capabilities/registry.ts`](orchestrator/src/capabilities/registry.ts).
@@ -13,13 +15,18 @@ from the compiled registry, the registry and observed CLI exits control.
 
 ## Current boundary
 
-Public `build` and `pipeline` stop before allocation or spawn with exit `3`,
-outer code `RICKGENT_CAPABILITY_UNAVAILABLE`, and detail
-`RICKGENT_AUTONOMOUS_FIXTURE_ONLY`. Parallel
-dispatch, independently observed cross-vendor review, automatic delivery, and
-raw shell are unavailable. Resume/retry and reconciliation are activated
-(t29): resume of explicit runs uses persisted receipts, and reconciliation
-rebuilds derived views from the durable SQLite state store.
+Local `build` and `pipeline` dispatch exactly one AttemptRunner. Reconciliation
+is limited to the t29 local persisted-receipt/oracle profile. In the installed
+profile, resume/retry, automatic delivery, and cross-vendor review are proof
+gated by the exact t38 Codex CLI/OpenAI/gpt-5.6-sol implementation plus Claude
+Code/Anthropic/claude-opus-4-8[1m] review evidence. Parallel dispatch and raw
+shell remain unavailable in every profile.
+
+The t38 evidence observed one allowlisted disposable GitHub repository and one
+reference-platform run. It is not a general hosted-service, provider, Darwin,
+Linux, or cross-platform support claim. Help, version, and doctor remain
+read-only and available when protected proof contracts, reporting
+`RICKGENT_CAPABILITY_CONTRACTED: installed proof root did not validate`.
 
 The only test seam admitted to produce reliability evidence from agent-backed
 source mutation is explicit build dependency injection. It is fixture-only,

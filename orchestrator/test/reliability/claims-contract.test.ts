@@ -67,6 +67,58 @@ afterAll(() => {
 });
 
 describe("reliability-preview claim contract", () => {
+  it("binds every named public surface to the retained profile matrix", () => {
+    const inventory = JSON.parse(readFileSync(
+      join(repoRoot, "artifacts/reliability/claim-surface-inventory.json"),
+      "utf-8",
+    ));
+    const proof = JSON.parse(readFileSync(
+      join(repoRoot, "artifacts/reliability/release-proof-index.json"),
+      "utf-8",
+    ));
+    expect(proof).toMatchObject({
+      proof_profile: "installed_t38_retained_proof_v1",
+      status: "valid",
+      capability_activation: ["resume_retry", "cross_vendor_review", "automatic_delivery"],
+      execution: {
+        lifecycle_terminal: "delivered",
+        done_alias: "delivered_only",
+      },
+    });
+    expect(inventory.capabilities).toMatchObject({
+      autonomous_dispatch: { state: "enabled", scope: "local_sequential_attempt_runner" },
+      resume_retry: { state: "proof_gated", scope: "installed_t38_retained_proof_v1" },
+      reconciliation: { state: "enabled", scope: "local_t29_persisted_receipt_oracle_only" },
+      cross_vendor_review: { state: "proof_gated", scope: "installed_t38_exact_provider_pair_only" },
+      automatic_delivery: { state: "proof_gated", scope: "installed_t38_allowlisted_disposable_remote_only" },
+      parallel_dispatch: { state: "unavailable", scope: "all_profiles" },
+      raw_shell: { state: "unavailable", scope: "all_profiles" },
+    });
+    expect(inventory.contraction).toEqual({
+      diagnostic: "RICKGENT_CAPABILITY_CONTRACTED: installed proof root did not validate",
+      read_only_available: ["help", "version", "doctor"],
+      protected_mutation: "fail_closed_before_state_or_side_effect",
+    });
+
+    const requiredClaims = [
+      "installed_t38_retained_proof_v1",
+      "local_t29_persisted_receipt_oracle_only",
+      "Codex CLI/OpenAI/gpt-5.6-sol",
+      "Claude Code/Anthropic/claude-opus-4-8[1m]",
+      "reference-platform",
+      "ready_for_delivery",
+      "delivered",
+      "Done",
+    ];
+    const namedFiles = inventory.surfaces.filter((path: string) =>
+      !path.startsWith("installed ") && path !== "orchestrator/package.json");
+    const combined = namedFiles.map((relative: string) =>
+      readFileSync(join(repoRoot, relative), "utf-8")).join("\n");
+    for (const claim of requiredClaims) {
+      expect(combined, claim).toContain(claim);
+    }
+  });
+
   it("keeps README and the public contract byte-aligned with the registry matrix", () => {
     const expectedBlock = formatPublicSurfaceMatrixBlock();
     const retiredClaims = [
@@ -179,6 +231,12 @@ describe("reliability-preview claim contract", () => {
       expect(result.stdout).toContain(getCapability("parallel_dispatch").error_code);
       expect(result.stdout).toContain(LEGACY_HELP_DISCLAIMER);
     }
+  });
+
+  it("keeps version read-only and available independently of protected proof selection", () => {
+    const result = cli(["--version"], { RICKGENT_PROOF_ROOT: "/missing-or-tampered-proof" });
+    expect(result.status, output(result)).toBe(0);
+    expect(result.stdout).toContain("0.1.0-alpha");
   });
 
   it("fails unavailable-capability flag combinations before spawn or state writes", () => {

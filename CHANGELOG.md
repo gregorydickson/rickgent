@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — retained reliability proof
+
+- Bound the installed `resume_retry`, exact-pair `cross_vendor_review`, and
+  `automatic_delivery` claims to `installed_t38_retained_proof_v1`.
+- Kept reconciliation limited to the local t29 persisted-receipt/oracle
+  profile; `parallel_dispatch` and `raw_shell` remain unavailable.
+- Preserved read-only help, version, and doctor during proof contraction, while
+  protected mutation fails before state or side effects.
+- Recorded that `ready_for_delivery` is local oracle readiness and `Done` is a
+  delivered-only alias. The t38 evidence covers Codex CLI/OpenAI/gpt-5.6-sol
+  plus Claude Code/Anthropic/claude-opus-4-8[1m], one allowlisted disposable
+  hosted remote, and one reference-platform observation—not general provider,
+  hosted-service, Darwin, Linux, or cross-platform readiness.
+
 ## v0.3.0 — 2026-07-15
 
 ### Added

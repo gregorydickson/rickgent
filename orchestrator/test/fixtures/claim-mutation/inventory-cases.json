@@ -1,0 +1,74 @@
+[
+  {
+    "name": "resume capability strength",
+    "path": "capabilities.resume_retry.state",
+    "value": "enabled",
+    "claim": "capability.resume_retry"
+  },
+  {
+    "name": "cross-vendor provider scope",
+    "path": "capabilities.cross_vendor_review.scope",
+    "value": "all_providers",
+    "claim": "capability.cross_vendor_review"
+  },
+  {
+    "name": "automatic delivery hosted scope",
+    "path": "capabilities.automatic_delivery.scope",
+    "value": "hosted_general",
+    "claim": "capability.automatic_delivery"
+  },
+  {
+    "name": "reconciliation installed scope",
+    "path": "capabilities.reconciliation.scope",
+    "value": "installed",
+    "claim": "capability.reconciliation"
+  },
+  {
+    "name": "parallel dispatch availability",
+    "path": "capabilities.parallel_dispatch.state",
+    "value": "enabled",
+    "claim": "capability.parallel_dispatch"
+  },
+  {
+    "name": "raw shell availability",
+    "path": "capabilities.raw_shell.state",
+    "value": "enabled",
+    "claim": "capability.raw_shell"
+  },
+  {
+    "name": "terminal Done strength",
+    "path": "terminal_semantics.Done",
+    "value": "ready_alias",
+    "claim": "terminal.Done"
+  },
+  {
+    "name": "readiness remote strength",
+    "path": "terminal_semantics.ready_for_delivery",
+    "value": "remote_delivery_verified",
+    "claim": "readiness.ready_for_delivery"
+  },
+  {
+    "name": "platform generalization",
+    "path": "profiles.reference_platform",
+    "value": "Darwin and Linux supported",
+    "claim": "platform.reference"
+  },
+  {
+    "name": "hosted generalization",
+    "path": "profiles.hosted",
+    "value": "Hosted service ready",
+    "claim": "readiness.hosted"
+  },
+  {
+    "name": "local installed collapse",
+    "path": "profiles.local",
+    "value": "Installed production ready",
+    "claim": "readiness.local"
+  },
+  {
+    "name": "provider identity generalization",
+    "path": "profiles.provider_pair",
+    "value": "Any cross-vendor pair",
+    "claim": "provider_pair.scope"
+  }
+]
