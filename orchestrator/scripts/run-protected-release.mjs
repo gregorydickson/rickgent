@@ -6,6 +6,7 @@ import {
   existsSync,
   cpSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   realpathSync,
   readdirSync,
@@ -155,6 +156,38 @@ function installedDirectoryInventory(root, relative = "") {
   return entries;
 }
 
+function wheelPackageInventory(wheelPath, packageName) {
+  const root = mkdtempSync(join(tmpdir(), "rickgent-wheel-inventory-"));
+  try {
+    const members = run("unzip", ["-Z1", wheelPath]).split("\n").filter(Boolean);
+    if (
+      members.some((member) => member.startsWith("/") || member.split("/").includes(".."))
+    ) {
+      fail("wheel contains an unsafe archive member");
+    }
+    run("unzip", ["-q", wheelPath, "-d", root]);
+    const packageRoot = join(root, packageName);
+    if (!existsSync(packageRoot)) fail(`wheel does not contain ${packageName}`);
+    return installedDirectoryInventory(packageRoot);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+export function requireExactInstalledPackage(expectedInventory, installedInventory) {
+  // Trap door: hashing a package's __init__.py does not bind the modules that
+  // execute imports. The complete installed package must match the exact
+  // archive at preflight and remain unchanged until its policy proof runs.
+  if (
+    !Array.isArray(expectedInventory)
+    || expectedInventory.length === 0
+    || !Array.isArray(installedInventory)
+    || canonical(expectedInventory) !== canonical(installedInventory)
+  ) {
+    fail("installed policy package does not match the bound wheel");
+  }
+}
+
 export function requireExactOmnigentHandoff(
   expectedGitOid,
   observedGitOid,
@@ -271,6 +304,11 @@ function installExactHandoff(packedReceiptPath, archives) {
   const policy = realpathSync(run(join(venv, "bin", "python"), [
     "-c", "import pathlib, rickgent_policies; print(pathlib.Path(rickgent_policies.__file__).resolve())",
   ]));
+  const policyInventory = installedDirectoryInventory(dirname(policy));
+  requireExactInstalledPackage(
+    wheelPackageInventory(wheelArchive, "rickgent_policies"),
+    policyInventory,
+  );
   const buildId = run(cli, ["--build-commit"], { timeout: 30_000 });
   if (buildId !== archives.binding.build_id) fail("installed CLI build identity does not match packed receipt");
 
@@ -292,6 +330,7 @@ function installExactHandoff(packedReceiptPath, archives) {
     manager_sha256: sha256File(manager),
     omnigent_git_oid: omnigentGitOid,
     omnigent_version: omnigentVersion,
+    policy_inventory_sha256: sha256(canonical(policyInventory)),
     policy_sha256: sha256File(policy),
     source: "exact_t37_persistent_handoff",
     worker_sha256: sha256File(worker),
@@ -655,6 +694,7 @@ export function requireUnchangedInstalledHandoff(expected, observed) {
   for (const key of [
     "cli_sha256",
     "manager_sha256",
+    "policy_inventory_sha256",
     "policy_sha256",
     "worker_sha256",
   ]) {
@@ -689,6 +729,7 @@ function protectedRuntime(preflight) {
   requireUnchangedInstalledHandoff(preflight.binding.installation, {
     cli_sha256: sha256File(cli),
     manager_sha256: sha256File(manager),
+    policy_inventory_sha256: sha256(canonical(installedDirectoryInventory(dirname(policy)))),
     policy_sha256: sha256File(policy),
     worker_sha256: sha256File(worker),
   });

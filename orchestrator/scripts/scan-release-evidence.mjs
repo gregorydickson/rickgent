@@ -14,7 +14,7 @@ const allowedKeys = new Set([
   "mutation_attempted", "no_mutation", "non_interactive", "npm_archive_sha256",
   "npm_inventory_sha256", "observation_sha256", "observed", "observed_mutations",
   "omnigent_contract_sha256", "omnigent_git_oid", "omnigent_version", "owned_namespace",
-  "owner", "packed_receipt_sha256", "policy_sha256", "prerequisites",
+  "owner", "packed_receipt_sha256", "policy_inventory_sha256", "policy_sha256", "prerequisites",
   "provider_dispatch_observed", "provider_lifecycle_count", "provider_lifecycle_sha256",
   "pull_requests_sha256", "reason", "redaction_version", "refusal", "registered_before_mutation",
   "remote", "repository", "repository_deletion", "repository_exists", "repository_id",

@@ -25,6 +25,7 @@ const EXPECTED_INSTALLATION = Object.freeze({
   manager_sha256: "b97e32aa45ae0b3f740764ea48207b286092a4c0e31f7b73f736e06f9e3f7d2a",
   omnigent_git_oid: "6e3c77855b08c9b612bf20763fe14f57a7ff9ad4",
   omnigent_version: "unknown",
+  policy_inventory_sha256: "282cead08510be147283fd801db0e17a30df9ce972722e473813805b53e2e67f",
   policy_sha256: "4205630cb6881f0f103f2157b2d5576a7ad5027b6ded5b1cb131027399250b48",
   source: "exact_t37_persistent_handoff",
   worker_sha256: "a7c8a1dc8bb4eec0a5e340dcc292d7ebfdc3b52dd9a5ea87fe0a3c3e93c499ca",
@@ -129,12 +130,14 @@ for (const [key, expected] of Object.entries(EXPECTED_T37)) equal(receipt.bindin
 const installation = record(receipt.binding.installation, "binding.installation");
 exactKeys(installation, [
   "build_id", "cli_sha256", "manager_sha256", "omnigent_git_oid", "omnigent_version",
-  "policy_sha256", "source", "worker_sha256",
+  "policy_inventory_sha256", "policy_sha256", "source", "worker_sha256",
 ], "binding.installation");
 for (const [key, expected] of Object.entries(EXPECTED_INSTALLATION)) {
   equal(installation[key], expected, `installation.${key}`);
 }
-for (const key of ["cli_sha256", "manager_sha256", "policy_sha256", "worker_sha256"]) {
+for (const key of [
+  "cli_sha256", "manager_sha256", "policy_inventory_sha256", "policy_sha256", "worker_sha256",
+]) {
   if (!SHA256.test(installation[key])) fail(`installation.${key} must be lowercase SHA-256`);
 }
 if (!OID.test(installation.omnigent_git_oid)) fail("installation.omnigent_git_oid must be a full OID");

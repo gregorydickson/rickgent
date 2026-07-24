@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   requireExactOmnigentHandoff,
+  requireExactInstalledPackage,
   requireUnchangedInstalledHandoff,
 } from "../../scripts/run-protected-release.mjs";
 
 const installed = {
   cli_sha256: "1".repeat(64),
   manager_sha256: "2".repeat(64),
+  policy_inventory_sha256: "5".repeat(64),
   policy_sha256: "3".repeat(64),
   worker_sha256: "4".repeat(64),
 };
@@ -54,5 +56,29 @@ describe("protected release installed handoff continuity", () => {
       inventory,
       inventory,
     )).toThrow("installed Omnigent package does not match its bound Git identity");
+  });
+
+  it("binds every installed policy module to the exact wheel inventory", () => {
+    const inventory = [
+      ["__init__.py", "a".repeat(40)],
+      ["policy_event.py", "b".repeat(40)],
+      ["scope.py", "c".repeat(40)],
+    ];
+    expect(() => requireExactInstalledPackage(
+      inventory,
+      inventory.map((entry) => [...entry]),
+    )).not.toThrow();
+
+    expect(() => requireExactInstalledPackage(
+      inventory,
+      inventory.map((entry) => (
+        entry[0] === "scope.py" ? [entry[0], "d".repeat(40)] : [...entry]
+      )),
+    )).toThrow("installed policy package does not match the bound wheel");
+
+    expect(() => requireExactInstalledPackage(
+      inventory,
+      inventory.slice(0, 2),
+    )).toThrow("installed policy package does not match the bound wheel");
   });
 });
