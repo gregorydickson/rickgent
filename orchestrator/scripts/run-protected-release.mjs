@@ -29,6 +29,13 @@ class ProtectedReleaseRefusal extends Error {
   }
 }
 
+class ExpectedFailureCleanupProbe extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ExpectedFailureCleanupProbe";
+  }
+}
+
 function fail(message) {
   throw new ProtectedReleaseRefusal(message);
 }
@@ -734,7 +741,7 @@ function observeRemote(preflight) {
   return { repoPath, repository };
 }
 
-function createDelivery(preflight, runId, providerEvidence) {
+function createDelivery(preflight, runId, providerEvidence, { injectFailureAfterPullRequest = false } = {}) {
   const { repoPath } = observeRemote(preflight);
   const branch = `${preflight.remote.owned_namespace}/${runId}`;
   if (ghApiMaybe(`${repoPath}/git/ref/heads/${branch}`) !== null) fail(`owned branch already exists: ${runId}`);
@@ -798,6 +805,9 @@ function createDelivery(preflight, runId, providerEvidence) {
     if (!Array.isArray(matching) || matching.length !== 1 || matching[0].number !== pull.number) {
       fail("pull request exactly-once observation failed");
     }
+    if (injectFailureAfterPullRequest) {
+      throw new ExpectedFailureCleanupProbe("intentional post-pull-request failure cleanup probe");
+    }
     return {
       branch,
       delivery_oid: commit.sha,
@@ -831,6 +841,62 @@ function createDelivery(preflight, runId, providerEvidence) {
     }
     throw error;
   }
+}
+
+function exerciseFailureCleanup(preflight, runId, providerEvidence) {
+  const failureRunId = `${runId}-failure-cleanup`;
+  const branch = `${preflight.remote.owned_namespace}/${failureRunId}`;
+  try {
+    createDelivery(preflight, failureRunId, providerEvidence, {
+      injectFailureAfterPullRequest: true,
+    });
+    fail("failure cleanup probe unexpectedly completed");
+  } catch (error) {
+    if (!(error instanceof ExpectedFailureCleanupProbe)) throw error;
+  }
+  const branchAbsent = ghApiMaybe(
+    `repos/${preflight.remote.owner}/${preflight.remote.repository}/git/ref/heads/${branch}`,
+  ) === null;
+  const pulls = ghApi(
+    `repos/${preflight.remote.owner}/${preflight.remote.repository}`
+      + `/pulls?state=all&head=${preflight.remote.owner}:${branch}`
+      + `&base=${preflight.remote.base_branch}`,
+  );
+  const pullClosed = (
+    Array.isArray(pulls)
+    && pulls.length === 1
+    && pulls[0].head?.ref === branch
+    && pulls[0].state === "closed"
+  );
+  observeRemote(preflight);
+  if (!branchAbsent || !pullClosed) {
+    fail("failure cleanup probe left an owned branch or pull request");
+  }
+  return {
+    branch_absent_on_independent_requery: branchAbsent,
+    pull_request_closed_on_independent_requery: pullClosed,
+    repository_preserved_on_independent_requery: true,
+    run_id: runId,
+  };
+}
+
+export function completedFailureCleanupCase(observations) {
+  // Trap door: success teardown and hermetic failure fixtures are not live
+  // failure-path evidence. Keep this aggregate claim bound to both forced
+  // hosted failure observations and their independent post-cleanup requeries.
+  if (
+    !Array.isArray(observations)
+    || observations.length !== 2
+    || observations.some((observation, index) => (
+      observation?.run_id !== `protected-${index + 1}`
+      || observation?.branch_absent_on_independent_requery !== true
+      || observation?.pull_request_closed_on_independent_requery !== true
+      || observation?.repository_preserved_on_independent_requery !== true
+    ))
+  ) {
+    fail("two independently requeried failure cleanup observations are required");
+  }
+  return { completed: true, independently_requeried: true, kind: "failure" };
 }
 
 function cleanupDelivery(preflight, delivery) {
@@ -1080,6 +1146,8 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
     pull_request_closed: true,
     repository_preserved: true,
   };
+  const failureCleanup = exerciseFailureCleanup(preflight, runId, providers);
+  phaseEvidence["failure-cleanup"] = failureCleanup;
   return {
     attempts,
     cleanup: {
@@ -1102,6 +1170,7 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
       provider: provider.role === "implementation" ? "openai" : "anthropic",
       sha256: provider.identity_sha256,
     })),
+    failure_cleanup: failureCleanup,
     lifecycle_complete: true,
     model_observations: providers.map(({ identity_sha256: _identity, ...provider }) => provider),
     phase_evidence: phaseEvidence,
@@ -1197,6 +1266,7 @@ async function runExecute() {
     })),
   ]);
   const receiptRuns = runs.map(({
+    failure_cleanup: _failureCleanup,
     identity_evidence: _identityEvidence,
     phase_evidence: _phaseEvidence,
     ...run
@@ -1228,7 +1298,7 @@ async function runExecute() {
       required: true,
     })),
     cleanup: {
-      failure_path: { completed: true, independently_requeried: true, kind: "failure" },
+      failure_path: completedFailureCleanupCase(runs.map((run) => run.failure_cleanup)),
       repository_deleted: false,
       success_path: { completed: true, independently_requeried: true, kind: "success" },
     },
