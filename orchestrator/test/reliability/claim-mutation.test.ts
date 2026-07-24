@@ -71,6 +71,12 @@ describe("retained proof claim mutations", () => {
     mutateVertical((v) => { v.runs[0].cleanup.owned_pull_request_closed = false; }, "cleanup.protected-1.pull_request");
     mutateVertical((v) => { v.runs[0].model_observations[0].adapter = "fixture"; }, "provider_pair.protected-1.implementation");
     mutateVertical((v) => { v.runs[0].model_observations[1].invoked_model = "other"; }, "provider_pair.protected-1.review");
+    mutateVertical((v) => {
+      v.evidence.items.find((item: any) => item.evidence_id === "run:1:identity:openai").authenticated = false;
+    }, "provider_pair.protected-1.openai_identity");
+    mutateVertical((v) => {
+      v.evidence.items.find((item: any) => item.evidence_id === "run:1:identity:anthropic").authenticated = false;
+    }, "provider_pair.protected-1.anthropic_identity");
     mutateVertical((v) => { v.runs[0].delivery.pull_request_head_oid = "0".repeat(40); }, "delivery.protected-1.pr_oid");
     mutateVertical((v) => { v.evidence.items[0].authenticated = false; }, "vertical_receipt.evidence.classification");
     mutateVertical((v) => { v.cleanup.failure_path.completed = false; }, "cleanup.aggregate.failure_path");

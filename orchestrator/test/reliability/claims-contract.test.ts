@@ -1,5 +1,5 @@
 import { spawnSync } from "child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -26,6 +26,20 @@ const orchestratorRoot = join(import.meta.dirname, "../..");
 const repoRoot = join(orchestratorRoot, "..");
 const cliPath = join(orchestratorRoot, "dist", "cli.js");
 const stateRoot = mkdtempSync(join(tmpdir(), "rickgent-claims-"));
+const installedRoot = join(stateRoot, "installed");
+mkdirSync(installedRoot);
+const extracted = spawnSync("tar", [
+  "-xzf",
+  join(repoRoot, "artifacts/reliability/npm-dist/rickgent-0.1.0-alpha.tgz"),
+  "-C",
+  installedRoot,
+], { encoding: "utf-8" });
+if (extracted.status !== 0) {
+  throw new Error(`cannot extract retained npm archive: ${extracted.stderr}`);
+}
+const installedPackageRoot = join(installedRoot, "package");
+const installedCliPath = join(installedPackageRoot, "dist", "cli.js");
+symlinkSync(join(orchestratorRoot, "node_modules"), join(installedPackageRoot, "node_modules"), "dir");
 
 function cleanEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env = { ...process.env, ...extra, RICKGENT_DIR: stateRoot };
@@ -38,6 +52,18 @@ function cli(args: string[], extraEnv: NodeJS.ProcessEnv = {}) {
     cwd: repoRoot,
     encoding: "utf-8",
     env: cleanEnv(extraEnv),
+    timeout: 30_000,
+  });
+}
+
+function installedCli(args: string[], extraEnv: NodeJS.ProcessEnv = {}) {
+  return spawnSync(process.execPath, [installedCliPath, ...args], {
+    cwd: repoRoot,
+    encoding: "utf-8",
+    env: cleanEnv({
+      ...extraEnv,
+      RICKGENT_PROOF_ROOT: join(stateRoot, "missing-proof-root"),
+    }),
     timeout: 30_000,
   });
 }
@@ -252,6 +278,20 @@ describe("reliability-preview claim contract", () => {
     const result = cli(["--version"], { RICKGENT_PROOF_ROOT: "/missing-or-tampered-proof" });
     expect(result.status, output(result)).toBe(0);
     expect(result.stdout).toContain("0.1.0-alpha");
+  });
+
+  it("keeps installed help, version, and doctor available with stable contraction diagnostics", () => {
+    for (const args of [["--help"], ["--version"], ["doctor"], ["doctor", "--json"]]) {
+      const result = installedCli(args);
+      expect(result.status, `${args.join(" ")}\n${output(result)}`).toBe(0);
+      expect(output(result)).toContain(
+        "RICKGENT_CAPABILITY_CONTRACTED: installed proof root did not validate",
+      );
+    }
+    const doctor = JSON.parse(installedCli(["doctor", "--json"]).stdout);
+    expect(doctor.capability_contraction).toMatchObject({
+      code: "RICKGENT_CAPABILITY_CONTRACTED",
+    });
   });
 
   it("fails unavailable-capability flag combinations before spawn or state writes", () => {

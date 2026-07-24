@@ -14,6 +14,9 @@ const ARCHIVES = {
   "artifacts/reliability/npm-dist/rickgent-0.1.0-alpha.tgz": "1eceecb2c55f2f13f521c5464a26b27e8cce5fff44661321e344a47410577a34",
   "artifacts/reliability/python-dist/rickgent_policies-0.1.0a0-py3-none-any.whl": "0eb851486e8966c5509d53172b3491e6daa1bc836b9255c267863fa3d82e72f0",
 };
+const INVENTORIES = {
+  "artifacts/reliability/npm-pack-inventory.json": "c33f36cbd2e6dad6bd4f61b4c75e9dd36d99dfcc2169bf9b596c65a0a21bb80c",
+};
 const T39_ALLOWED = new Set([
   "artifacts/reliability/release-proof-index.json",
   "artifacts/reliability/claim-surface-inventory.json",
@@ -71,6 +74,13 @@ assertCommit(T37, "t37 completion");
 assertCommit(T38_MARKER, "t38 marker");
 assertCommit(RETAINED, "final retained receipt");
 for (const [path, expected] of Object.entries(ARCHIVES)) {
+  const current = readFileSync(resolve(root, path));
+  const retained = git(["show", `${T37}:${path}`], null);
+  if (sha256(current) !== expected || sha256(retained) !== expected) {
+    fail(`${path} changed after t37`);
+  }
+}
+for (const [path, expected] of Object.entries(INVENTORIES)) {
   const current = readFileSync(resolve(root, path));
   const retained = git(["show", `${T37}:${path}`], null);
   if (sha256(current) !== expected || sha256(retained) !== expected) {

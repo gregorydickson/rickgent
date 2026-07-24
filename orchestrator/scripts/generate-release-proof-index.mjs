@@ -125,6 +125,18 @@ export function validateProofAuthorities({
   same(vertical.binding?.wheel_archive_sha256, packed.binding?.archives?.find((x) => x.kind === "python_wheel")?.sha256, "binding.wheel_archive");
   same(packed.binding?.release?.sha256, expected.release_sha256, "binding.release");
 
+  const verticalEvidence = new Map(
+    (vertical.evidence?.items ?? []).map((item) => [item.evidence_id, item]),
+  );
+  for (const run of vertical.runs ?? []) {
+    const runNumber = run.run_id?.replace("protected-", "");
+    for (const provider of ["openai", "anthropic"]) {
+      const identity = verticalEvidence.get(`run:${runNumber}:identity:${provider}`);
+      claim(identity?.authenticated === true && identity?.classification === "live",
+        `provider_pair.${run.run_id}.${provider}_identity`, "authenticated provider identity evidence is missing");
+    }
+  }
+
   for (const receipt of [packed, vertical]) {
     const prefix = receipt === packed ? "packed_receipt" : "vertical_receipt";
     claim(Array.isArray(receipt.checks) && receipt.checks.length > 0, `${prefix}.checks`, "required checks are missing");
@@ -170,13 +182,6 @@ export function validateProofAuthorities({
       ["claude-code", "claude-opus-4-8[1m]"],
       `provider_pair.${run.run_id}.review`,
     );
-    const runNumber = run.run_id.replace("protected-", "");
-    const evidence = new Map(vertical.evidence.items.map((item) => [item.evidence_id, item]));
-    for (const provider of ["openai", "anthropic"]) {
-      const identity = evidence.get(`run:${runNumber}:identity:${provider}`);
-      claim(identity?.authenticated === true && identity?.classification === "live",
-        `provider_pair.${run.run_id}.${provider}_identity`, "authenticated provider identity evidence is missing");
-    }
   }
   for (const path of ["success_path", "failure_path"]) {
     claim(vertical.cleanup?.[path]?.completed === true, `cleanup.aggregate.${path}`, "cleanup did not complete");
