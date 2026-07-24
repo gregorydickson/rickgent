@@ -1136,6 +1136,42 @@ export function pullRequestCleanupCandidates(pulls, branch, deliveryOid) {
   return candidates;
 }
 
+export function pullRequestCleanupAction(
+  pull,
+  {
+    baseBranch,
+    branch,
+    deliveryOid,
+    pullRequestId,
+  },
+  closeAttempted,
+) {
+  // Trap door: a pull number is only an address. Cleanup authority remains
+  // the exact PR identity observed at delivery: number, owned head branch,
+  // reviewed head OID, and protected base. A pre-closed PR is idempotent
+  // cleanup evidence only after this invocation attempted its owned close.
+  if (
+    typeof baseBranch !== "string"
+    || baseBranch === ""
+    || typeof branch !== "string"
+    || branch === ""
+    || !OID.test(deliveryOid ?? "")
+    || typeof pullRequestId !== "string"
+    || !/^[1-9][0-9]*$/.test(pullRequestId)
+    || typeof closeAttempted !== "boolean"
+    || String(pull?.number ?? "") !== pullRequestId
+    || pull?.head?.ref !== branch
+    || pull?.head?.sha !== deliveryOid
+    || pull?.base?.ref !== baseBranch
+  ) {
+    fail("pull request cleanup authority changed");
+  }
+  if (pull.state === "open") return "close";
+  if (pull.state === "closed" && closeAttempted) return "already-closed";
+  if (pull.state === "closed") fail("owned pull request closed before cleanup");
+  fail("owned pull request has an invalid cleanup state");
+}
+
 export function requireReviewedDelivery(candidateOid, branchObservation, pullObservation) {
   // Trap door: a candidate-bound review approves one immutable Git commit.
   // The hosted branch and pull request must expose that exact commit, not a
@@ -1382,21 +1418,41 @@ export function completedFailureCleanupCase(observations) {
 function cleanupDelivery(preflight, delivery, cleanupState) {
   observeRemote(preflight);
   const pull = ghApi(`${delivery.repoPath}/pulls/${delivery.pull_request_id}`);
-  if (pull.state === "open") {
+  const expectedPull = {
+    baseBranch: preflight.remote.base_branch,
+    branch: delivery.branch,
+    deliveryOid: delivery.delivery_oid,
+    pullRequestId: delivery.pull_request_id,
+  };
+  const action = pullRequestCleanupAction(
+    pull,
+    expectedPull,
+    cleanupState.pullRequestCloseAttempted,
+  );
+  if (action === "close") {
+    // Set before the network call so a successfully applied PATCH with a lost
+    // response can be reconciled by the outer cleanup retry.
+    cleanupState.pullRequestCloseAttempted = true;
     ghApi(`${delivery.repoPath}/pulls/${delivery.pull_request_id}`, {
       method: "PATCH",
       body: { state: "closed" },
     });
   }
   const closed = ghApi(`${delivery.repoPath}/pulls/${delivery.pull_request_id}`);
-  if (closed.state !== "closed") fail("owned pull request did not close");
+  if (
+    pullRequestCleanupAction(
+      closed,
+      expectedPull,
+      cleanupState.pullRequestCloseAttempted,
+    ) !== "already-closed"
+  ) fail("owned pull request did not close");
   const before = ghApiMaybe(`${delivery.repoPath}/git/ref/heads/${delivery.branch}`);
-  const action = branchCleanupAction(
+  const branchAction = branchCleanupAction(
     before,
     delivery.delivery_oid,
     cleanupState.branchDeletionLeaseAttempted,
   );
-  if (action === "delete-with-lease") {
+  if (branchAction === "delete-with-lease") {
     // Set this before the network call: a successful receive-pack mutation can
     // lose its response, and the retry must then recognize hosted absence.
     cleanupState.branchDeletionLeaseAttempted = true;
@@ -1747,7 +1803,10 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
     ),
     duplicate_side_effects: false,
   };
-  const cleanupState = { branchDeletionLeaseAttempted: false };
+  const cleanupState = {
+    branchDeletionLeaseAttempted: false,
+    pullRequestCloseAttempted: false,
+  };
   try {
     cleanupDelivery(preflight, delivery, cleanupState);
   } catch (error) {
