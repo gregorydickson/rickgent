@@ -516,6 +516,12 @@ function ghApi(endpoint, { body, method = "GET", fields = {} } = {}) {
   }
 }
 
+export function isGitHubHttpNotFound(stderr) {
+  // Trap door: absence is a hosted observation, not a string-matching
+  // fallback. Only an explicit HTTP 404 may become a null resource.
+  return /\(HTTP 404\)(?:\s|$)/.test(stderr);
+}
+
 function ghApiMaybe(endpoint) {
   const result = spawnSync("gh", ["api", "--method", "GET", endpoint], {
     encoding: "utf8",
@@ -531,7 +537,7 @@ function ghApiMaybe(endpoint) {
       fail(`GitHub GET ${endpoint} returned invalid JSON`);
     }
   }
-  if (/\b404\b|not found/i.test(result.stderr)) return null;
+  if (isGitHubHttpNotFound(result.stderr ?? "")) return null;
   fail(`GitHub GET ${endpoint} could not be independently observed`);
 }
 
