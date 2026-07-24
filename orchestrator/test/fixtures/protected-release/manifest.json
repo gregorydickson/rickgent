@@ -1,0 +1,54 @@
+{
+  "schema_version": "rickgent-protected-release-hermetic-fixture/v1",
+  "t37": {
+    "source_git_oid": "d83405ee20e2cb8c5a9418c8913d646e876269bc",
+    "release_id": "rickgent-trust-spine-release-v1",
+    "release_sha256": "62a70c1eeaa21095a0bc57a01763a8b7ce5225e2a67a4aadacc841e0c0e4ff48",
+    "build_id": "a6525b76631e880f852d358bdf8a03b61f135fe4",
+    "build_sha256": "644e358326f475ae8e06958e5c7169bbc2fa3ff7b9b2b926d42917c2581c1a9e",
+    "packed_install_receipt_sha256": "2dd3587120acf8f909fbbfb23607648225212ce7eb7ada28e8c219736a3db058",
+    "npm_archive_sha256": "642512459c175bf0f566d37676512b77ae6e9b88f928d9ef239a56bf37d9edf7",
+    "wheel_archive_sha256": "0eb851486e8966c5509d53172b3491e6daa1bc836b9255c267863fa3d82e72f0"
+  },
+  "remote": {
+    "host": "example.invalid",
+    "owner": "fixture-owner",
+    "name": "disposable-proof-fixture",
+    "repository_id": "fixture-repository-id-7f51",
+    "base_branch": "main",
+    "owned_branch_prefix": "rickgent/protected/hermetic-"
+  },
+  "fault_points": [
+    "allocation",
+    "provider",
+    "gate",
+    "push",
+    "pull_request_creation",
+    "push_response_loss",
+    "pull_request_response_loss",
+    "crash",
+    "teardown_interruption"
+  ],
+  "corpora": [
+    {
+      "id": "orchestrator/test/fixtures/crash-matrix/manifest.json",
+      "sha256": "31aae107c9e898fcfc242e417cab2db3efdfde6976fb01463b945993f2c733f0"
+    },
+    {
+      "id": "orchestrator/test/fixtures/git-attribution/manifest.json",
+      "sha256": "5def140c4a3e37ba176e0c0a1518674b34c07e3797148f9e4bc11b26f9e9c1a0"
+    },
+    {
+      "id": "orchestrator/test/fixtures/gate-corpus/manifest.json",
+      "sha256": "1dce52f213bc81f20442059c11504b59b45309c13cd03ec38f5d5af64490df25"
+    },
+    {
+      "id": "orchestrator/test/fixtures/model-identity-corpus/manifest.json",
+      "sha256": "b3d0bdc59fa0c9deb26ad08e82845439e9a89539a8f77253d410037a7fae06d2"
+    },
+    {
+      "id": "orchestrator/test/fixtures/delivery-corpus/manifest.json",
+      "sha256": "4435c007475523850c2017d217eeb995d3ed7d975551c1721a416b852e937223"
+    }
+  ]
+}
