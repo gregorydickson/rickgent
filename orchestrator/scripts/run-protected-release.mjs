@@ -30,9 +30,10 @@ class ProtectedReleaseRefusal extends Error {
 }
 
 class ExpectedFailureCleanupProbe extends Error {
-  constructor(message) {
+  constructor(message, delivery) {
     super(message);
     this.name = "ExpectedFailureCleanupProbe";
+    this.delivery = delivery;
   }
 }
 
@@ -1351,7 +1352,14 @@ function createDelivery(preflight, runId, candidate, { injectFailureAfterPullReq
       fail("pull request exactly-once observation failed");
     }
     if (injectFailureAfterPullRequest) {
-      throw new ExpectedFailureCleanupProbe("intentional post-pull-request failure cleanup probe");
+      throw new ExpectedFailureCleanupProbe(
+        "intentional post-pull-request failure cleanup probe",
+        {
+          branch,
+          delivery_oid: candidateOid,
+          pull_request_id: String(pull.number),
+        },
+      );
     }
     return {
       branch,
@@ -1417,9 +1425,41 @@ function createDelivery(preflight, runId, candidate, { injectFailureAfterPullReq
   }
 }
 
+export function requireFailureCleanupPullObservation(pulls, expected) {
+  // Trap door: the head/base query narrows discovery but does not bind the
+  // evidence. Preserve the created pull number and reviewed delivery OID
+  // through cleanup, then revalidate the complete immutable identity before
+  // converting the hosted response into signed failure-cleanup evidence.
+  if (
+    !Array.isArray(pulls)
+    || pulls.length !== 1
+    || typeof expected?.baseBranch !== "string"
+    || expected.baseBranch === ""
+    || typeof expected?.branch !== "string"
+    || expected.branch === ""
+    || !OID.test(expected?.deliveryOid ?? "")
+    || typeof expected?.pullRequestId !== "string"
+    || !/^[1-9][0-9]*$/.test(expected.pullRequestId)
+  ) {
+    fail("failure cleanup pull request observation is invalid");
+  }
+  const [pull] = pulls;
+  if (
+    String(pull?.number ?? "") !== expected.pullRequestId
+    || pull?.state !== "closed"
+    || pull?.head?.ref !== expected.branch
+    || pull?.head?.sha !== expected.deliveryOid
+    || pull?.base?.ref !== expected.baseBranch
+  ) {
+    fail("failure cleanup pull request identity changed");
+  }
+  return true;
+}
+
 function exerciseFailureCleanup(preflight, runId, candidate) {
   const failureRunId = `${runId}-failure-cleanup`;
   const branch = `${preflight.remote.owned_namespace}/${failureRunId}`;
+  let expectedDelivery;
   try {
     createDelivery(preflight, failureRunId, candidate, {
       injectFailureAfterPullRequest: true,
@@ -1427,6 +1467,7 @@ function exerciseFailureCleanup(preflight, runId, candidate) {
     fail("failure cleanup probe unexpectedly completed");
   } catch (error) {
     if (!(error instanceof ExpectedFailureCleanupProbe)) throw error;
+    expectedDelivery = error.delivery;
   }
   const branchAbsent = ghApiMaybe(
     `repos/${preflight.remote.owner}/${preflight.remote.repository}/git/ref/heads/${branch}`,
@@ -1436,12 +1477,12 @@ function exerciseFailureCleanup(preflight, runId, candidate) {
       + `/pulls?state=all&head=${preflight.remote.owner}:${branch}`
       + `&base=${preflight.remote.base_branch}`,
   );
-  const pullClosed = (
-    Array.isArray(pulls)
-    && pulls.length === 1
-    && pulls[0].head?.ref === branch
-    && pulls[0].state === "closed"
-  );
+  const pullClosed = requireFailureCleanupPullObservation(pulls, {
+    baseBranch: preflight.remote.base_branch,
+    branch,
+    deliveryOid: expectedDelivery?.delivery_oid,
+    pullRequestId: expectedDelivery?.pull_request_id,
+  });
   observeRemote(preflight);
   if (!branchAbsent || !pullClosed) {
     fail("failure cleanup probe left an owned branch or pull request");
