@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "mission": "mission-3",
+  "status": "prepared",
+  "ticket_range": {
+    "from": "t00",
+    "through": "t39",
+    "count": 40
+  },
+  "milestone_commits": {
+    "t37": "d9cd83b58f0748bffb918efdd29efd811604a4ae",
+    "t38": "7bba54e2d1510475ed828e97c0d67320f90c9727",
+    "t39": "c0b17e19b495721771c0c69ee4dabed8fbd9772a"
+  },
+  "prepared_commit": "c0b17e19b495721771c0c69ee4dabed8fbd9772a",
+  "release_proof_profile": "installed_t38_retained_proof_v1",
+  "archive_sha256": {
+    "npm_tarball": "66c2be883fab72c203ca3666409b022d7e273b8bcccf30e5f8f8ad457b0d44ed",
+    "python_wheel": "0eb851486e8966c5509d53172b3491e6daa1bc836b9255c267863fa3d82e72f0"
+  },
+  "quality_thresholds_passed": true,
+  "citadel_decision": "pending",
+  "blocking_findings": []
+}

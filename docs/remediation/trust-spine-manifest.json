@@ -1833,10 +1833,11 @@
         "t38"
       ],
       "completed_at": {
-        "commit": "e1f768cd519bfd48c1e93d6473443fc8f5e98e03",
-        "phase_report": "docs/reliability-contract.md",
+        "commit": "c0b17e19b495721771c0c69ee4dabed8fbd9772a",
+        "phase_report": "docs/remediation/phase-9-t39-release-closure-execution-report.md",
         "proof_index": "artifacts/reliability/release-proof-index.json",
-        "claim_inventory": "artifacts/reliability/claim-surface-inventory.json"
+        "claim_inventory": "artifacts/reliability/claim-surface-inventory.json",
+        "completion_convention": "t39a_prepared_proof_commit_with_t39b_retained_closure_evidence"
       }
     }
   ]

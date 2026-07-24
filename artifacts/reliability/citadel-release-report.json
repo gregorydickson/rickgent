@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "decision": "pending",
+  "read_only": true,
+  "prepared_commit": "c0b17e19b495721771c0c69ee4dabed8fbd9772a",
+  "promise": null,
+  "blocking_findings": [],
+  "acceptance_criteria": [
+    {
+      "id": 1,
+      "status": "pass"
+    },
+    {
+      "id": 2,
+      "status": "pass"
+    },
+    {
+      "id": 3,
+      "status": "pass"
+    },
+    {
+      "id": 4,
+      "status": "pass"
+    },
+    {
+      "id": 5,
+      "status": "pass"
+    },
+    {
+      "id": 6,
+      "status": "pass"
+    },
+    {
+      "id": 7,
+      "status": "pending"
+    }
+  ],
+  "source": {
+    "kind": "citadel-prepared-checkpoint",
+    "session": "2026-07-23-a34da084-citadel-direct",
+    "prior_review_generated_at": "2026-07-24T07:43:52Z",
+    "prior_findings_resolved_in_prepared_closure": [
+      "Recorded t39 completion predates the t37 and t38 milestone commits",
+      "Mandatory t39b mission-completion and commit-bound Citadel evidence are not implemented"
+    ]
+  }
+}
