@@ -1,5 +1,5 @@
 import { spawnSync } from "child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -28,18 +28,42 @@ const cliPath = join(orchestratorRoot, "dist", "cli.js");
 const stateRoot = mkdtempSync(join(tmpdir(), "rickgent-claims-"));
 const installedRoot = join(stateRoot, "installed");
 mkdirSync(installedRoot);
-const extracted = spawnSync("tar", [
-  "-xzf",
-  join(repoRoot, "artifacts/reliability/npm-dist/rickgent-0.1.0-alpha.tgz"),
-  "-C",
+const installed = spawnSync("npm", [
+  "install",
+  "--prefix",
   installedRoot,
+  "--ignore-scripts",
+  "--omit=dev",
+  "--no-audit",
+  "--no-fund",
+  join(repoRoot, "artifacts/reliability/npm-dist/rickgent-0.1.0-alpha.tgz"),
 ], { encoding: "utf-8" });
-if (extracted.status !== 0) {
-  throw new Error(`cannot extract retained npm archive: ${extracted.stderr}`);
+if (installed.status !== 0) {
+  throw new Error(`cannot install retained npm archive: ${installed.stderr}`);
 }
-const installedPackageRoot = join(installedRoot, "package");
+const installedPackageRoot = join(installedRoot, "node_modules", "rickgent");
 const installedCliPath = join(installedPackageRoot, "dist", "cli.js");
-symlinkSync(join(orchestratorRoot, "node_modules"), join(installedPackageRoot, "node_modules"), "dir");
+const testPythonRoot = join(stateRoot, "python");
+const selectedPython = process.env.OMNIGENT_PYTHON;
+if (selectedPython === undefined || selectedPython === "") {
+  throw new Error("OMNIGENT_PYTHON is required for installed claim snapshots");
+}
+const pythonVenv = spawnSync(selectedPython, [
+  "-m", "venv", "--copies", "--system-site-packages", testPythonRoot,
+], { encoding: "utf-8" });
+if (pythonVenv.status !== 0) {
+  throw new Error(`cannot create installed snapshot Python: ${pythonVenv.stderr}`);
+}
+const selectedOmnigentRoot = process.env.OMNIGENT_ROOT;
+if (selectedOmnigentRoot === undefined || selectedOmnigentRoot === "") {
+  throw new Error("OMNIGENT_ROOT is required for installed claim snapshots");
+}
+const testOmnigentRoot = join(stateRoot, "omnigent-root");
+mkdirSync(join(testOmnigentRoot, "omnigent"), { recursive: true });
+cpSync(
+  join(selectedOmnigentRoot, "omnigent", "__init__.py"),
+  join(testOmnigentRoot, "omnigent", "__init__.py"),
+);
 
 function cleanEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env = { ...process.env, ...extra, RICKGENT_DIR: stateRoot };
@@ -62,6 +86,8 @@ function installedCli(args: string[], extraEnv: NodeJS.ProcessEnv = {}) {
     encoding: "utf-8",
     env: cleanEnv({
       ...extraEnv,
+      OMNIGENT_ROOT: testOmnigentRoot,
+      OMNIGENT_PYTHON: join(testPythonRoot, "bin", "python"),
       RICKGENT_PROOF_ROOT: join(stateRoot, "missing-proof-root"),
     }),
     timeout: 30_000,
