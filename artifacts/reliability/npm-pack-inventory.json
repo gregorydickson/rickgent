@@ -3,10 +3,10 @@
     "id": "rickgent@0.1.0-alpha",
     "name": "rickgent",
     "version": "0.1.0-alpha",
-    "size": 1538210,
-    "unpackedSize": 7440229,
-    "shasum": "45bebb2443d4a61d64c2bb106a9b1b0863ffcf58",
-    "integrity": "sha512-f8V6+Jvzk9L5RDezNnVjoWCkK7++YU/iswuR2MX+jFHUmn5Vs88I5oAO8DtkqD1dnvhUsLhbgcvCx2ib+BBKIw==",
+    "size": 1539653,
+    "unpackedSize": 7446188,
+    "shasum": "a82d8627fdd618a9926eb348f2341b89b4832549",
+    "integrity": "sha512-AzJF2zYV7GsZRiCcFYaa5Z2gahwEs6FyVH1mf9XH6YumzA8y3aUlDJ5u4TWJIgLFnctu3ijRexrW4P9eKZrKsw==",
     "filename": "rickgent-0.1.0-alpha.tgz",
     "files": [
       {
@@ -111,22 +111,22 @@
       },
       {
         "path": "dist/capabilities/runtime-gate.d.ts",
-        "size": 966,
+        "size": 1298,
         "mode": 420
       },
       {
         "path": "dist/capabilities/runtime-gate.d.ts.map",
-        "size": 453,
+        "size": 692,
         "mode": 420
       },
       {
         "path": "dist/capabilities/runtime-gate.js",
-        "size": 2746,
+        "size": 3586,
         "mode": 420
       },
       {
         "path": "dist/capabilities/runtime-gate.js.map",
-        "size": 4862,
+        "size": 6601,
         "mode": 420
       },
       {
@@ -141,32 +141,32 @@
       },
       {
         "path": "dist/cli.js",
-        "size": 26219,
+        "size": 26630,
         "mode": 493
       },
       {
         "path": "dist/cli.js.map",
-        "size": 50166,
+        "size": 50944,
         "mode": 420
       },
       {
         "path": "dist/commands/doctor.d.ts",
-        "size": 1870,
+        "size": 2069,
         "mode": 420
       },
       {
         "path": "dist/commands/doctor.d.ts.map",
-        "size": 1608,
+        "size": 1751,
         "mode": 420
       },
       {
         "path": "dist/commands/doctor.js",
-        "size": 6854,
+        "size": 7292,
         "mode": 420
       },
       {
         "path": "dist/commands/doctor.js.map",
-        "size": 14414,
+        "size": 15254,
         "mode": 420
       },
       {
