@@ -31,6 +31,7 @@ const npmDist = join(artifactsRoot, "npm-dist");
 const pythonDist = join(artifactsRoot, "python-dist");
 const summaryPath = join(artifactsRoot, "packed-install-summary.json");
 const checksumPath = join(artifactsRoot, "packed-install-summary.sha256");
+const updateReceipt = process.env["RICKGENT_UPDATE_PACKED_RECEIPT"] === "1";
 const trustSpinePath = join(repositoryRoot, "docs", "remediation", "trust-spine-manifest.json");
 const compatibilityPath = join(artifactsRoot, "omnigent-compatibility-contract.json");
 const releasePath = join(repositoryRoot, "release-manifest.json");
@@ -452,18 +453,20 @@ describe("final packed installation", () => {
     expect(run("git", ["merge-base", "--is-ancestor", packedOutputOid!, "HEAD"], {
       cwd: repositoryRoot,
     })).toBe("");
-    for (const retainedPath of [
-      relative(repositoryRoot, npmArchive),
-      relative(repositoryRoot, wheelArchive),
-      relative(repositoryRoot, join(artifactsRoot, "npm-pack-inventory.json")),
-      relative(repositoryRoot, summaryPath),
-      relative(repositoryRoot, checksumPath),
-    ]) {
-      const committed = execFileSync("git", ["show", `${packedOutputOid}:${retainedPath}`], {
-        cwd: repositoryRoot,
-        maxBuffer: 32 * 1024 * 1024,
-      });
-      expect(readFileSync(join(repositoryRoot, retainedPath)).equals(committed), retainedPath).toBe(true);
+    if (!updateReceipt) {
+      for (const retainedPath of [
+        relative(repositoryRoot, npmArchive),
+        relative(repositoryRoot, wheelArchive),
+        relative(repositoryRoot, join(artifactsRoot, "npm-pack-inventory.json")),
+        relative(repositoryRoot, summaryPath),
+        relative(repositoryRoot, checksumPath),
+      ]) {
+        const committed = execFileSync("git", ["show", `${packedOutputOid}:${retainedPath}`], {
+          cwd: repositoryRoot,
+          maxBuffer: 32 * 1024 * 1024,
+        });
+        expect(readFileSync(join(repositoryRoot, retainedPath)).equals(committed), retainedPath).toBe(true);
+      }
     }
     const buildCommit = run(launcher, ["--build-commit"], { cwd: unrelatedCwd, env: installedEnv });
     const release = JSON.parse(readFileSync(releasePath, "utf8")) as { release_id: string };
@@ -528,5 +531,9 @@ describe("final packed installation", () => {
     expect(readFileSync(ephemeralSummaryPath, "utf8")).toBe(`${canonical({ ...unsigned, digest } as Json)}\n`);
     expect(readFileSync(ephemeralChecksumPath, "utf8")).toBe(`${digest}  packed-install-summary.json\n`);
     expect(digest).toMatch(/^[0-9a-f]{64}$/);
+    if (updateReceipt) {
+      writeFileSync(summaryPath, readFileSync(ephemeralSummaryPath));
+      writeFileSync(checksumPath, readFileSync(ephemeralChecksumPath));
+    }
   }, 300_000);
 });

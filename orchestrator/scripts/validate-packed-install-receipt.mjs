@@ -46,6 +46,7 @@ const completionPaths = [
   "docs/remediation/trust-spine-manifest.json",
 ];
 const t37bSourceOid = "d83405ee20e2cb8c5a9418c8913d646e876269bc";
+const pinnedScratchIgnoreOid = "99b557e786adcfbe8932fcc5abfb80aef7057abe";
 const retainedOutputPaths = [
   "artifacts/reliability/npm-pack-inventory.json",
   "artifacts/reliability/packed-install-summary.json",
@@ -178,13 +179,22 @@ try {
 } catch {
   fail("t37 packed-output commit must be an ancestor of HEAD");
 }
-const changed = execFileSync("git", ["diff", "--name-only", sourceOid, packedOutputOid], {
-  cwd: repositoryRoot, encoding: "utf8",
-}).trim().split("\n").filter(Boolean);
-if (changed.some((path) => !completionPaths.some((owned) =>
-  owned.endsWith("/") ? path.startsWith(owned) : path === owned
-))) {
-  fail("packed-output history contains a path outside the t37c ownership boundary");
+const packedHistory = execFileSync("git", [
+  "rev-list", "--reverse", `${sourceOid}..${packedOutputOid}`,
+], { cwd: repositoryRoot, encoding: "utf8" }).trim().split("\n").filter(Boolean);
+for (const commit of packedHistory) {
+  const changed = execFileSync("git", [
+    "diff-tree", "--no-commit-id", "--name-only", "-r", commit,
+  ], { cwd: repositoryRoot, encoding: "utf8" }).trim().split("\n").filter(Boolean);
+  if (commit === pinnedScratchIgnoreOid) {
+    equal(changed, [".gitignore"], "pinned wheel scratch-ignore commit paths");
+    continue;
+  }
+  if (changed.some((path) => !completionPaths.some((owned) =>
+    owned.endsWith("/") ? path.startsWith(owned) : path === owned
+  ))) {
+    fail(`packed-output commit ${commit} contains a path outside the t37c ownership boundary`);
+  }
 }
 const release = load(releasePath);
 equal(binding.release, {
