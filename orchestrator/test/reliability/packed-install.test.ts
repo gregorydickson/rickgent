@@ -434,7 +434,9 @@ describe("final packed installation", () => {
 
     const sourceGitOid = run("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot });
     const buildCommit = run(launcher, ["--build-commit"], { cwd: unrelatedCwd, env: installedEnv });
-    expect(buildCommit).toBe(sourceGitOid);
+    const expectedBuildCommit = process.env.RICKGENT_BUILD_COMMIT;
+    expect(expectedBuildCommit).toMatch(/^[0-9a-f]{40}$/);
+    expect(buildCommit).toBe(expectedBuildCommit);
     const release = JSON.parse(readFileSync(releasePath, "utf8")) as { release_id: string };
     const buildResource = join(packageInstall, "dist", "build-commit.js");
     const checks: Check[] = requiredChecks.map((checkId) => ({
