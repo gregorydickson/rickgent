@@ -25,6 +25,13 @@ export const PROOF_GATED_CAPABILITIES = Object.freeze([
 ] as const satisfies readonly CapabilityName[]);
 
 export const CAPABILITY_PROOF_REQUIRED_CODE = "RICKGENT_INSTALLED_PROOF_REQUIRED" as const;
+export const CAPABILITY_CONTRACTED_CODE = "RICKGENT_CAPABILITY_CONTRACTED" as const;
+
+export interface RuntimeProofStatus {
+  readonly profile: "source_compiled" | "installed_t38_retained_proof_v1";
+  readonly valid: boolean;
+  readonly diagnostic: string | null;
+}
 
 function unavailable(name: CapabilityName, diagnostics: readonly string[]) {
   const compiled = getCapability(name);
@@ -66,6 +73,25 @@ export function createProofGatedCapabilityGate(
  * all validate before any protected capability widens.
  */
 const sourceFixtureRuntime = existsSync(fileURLToPath(new URL("../../src", import.meta.url)));
+const selectedProofRoot = process.env["RICKGENT_PROOF_ROOT"] ?? null;
+const installedValidation = !sourceFixtureRuntime && selectedProofRoot
+  ? validateProofRoot(selectedProofRoot)
+  : null;
+const installedDiagnostics = installedValidation?.diagnostics
+  ?? Object.freeze(["proof root not selected"]);
+export const RUNTIME_PROOF_STATUS: RuntimeProofStatus = Object.freeze(sourceFixtureRuntime
+  ? {
+      profile: "source_compiled" as const,
+      valid: true,
+      diagnostic: null,
+    }
+  : {
+      profile: "installed_t38_retained_proof_v1" as const,
+      valid: installedValidation?.ok === true,
+      diagnostic: installedValidation?.ok === true
+        ? null
+        : `${CAPABILITY_CONTRACTED_CODE}: installed proof root did not validate: ${installedDiagnostics.join(" | ")}`,
+    });
 export const RUNTIME_CAPABILITY_GATE: CapabilityGate = sourceFixtureRuntime
   ? PRODUCTION_CAPABILITY_GATE
-  : createProofGatedCapabilityGate(process.env["RICKGENT_PROOF_ROOT"] ?? null);
+  : createProofGatedCapabilityGate(selectedProofRoot);

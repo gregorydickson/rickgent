@@ -17,7 +17,10 @@ import {
   formatReliabilityPreviewBanner,
   formatTerminalSummary,
 } from "./capabilities/registry.js";
-import { RUNTIME_CAPABILITY_GATE } from "./capabilities/runtime-gate.js";
+import {
+  RUNTIME_CAPABILITY_GATE,
+  RUNTIME_PROOF_STATUS,
+} from "./capabilities/runtime-gate.js";
 import { runVerdict } from "./core/verdict-cli.js";
 import type { BuildOptions, InternalBuildDependencies } from "./lifecycle/build.js";
 import type { RunOutcome, RunOutcomeClass } from "./lifecycle/run-outcome.js";
@@ -35,6 +38,12 @@ const RUN_EXIT_CODES: Readonly<Record<RunOutcomeClass, 0 | 2 | 3 | 4 | 5 | 6 | 7
   verification: 6,
   cleanup: 7,
 });
+
+function withRuntimeProofDiagnostic(text: string): string {
+  return RUNTIME_PROOF_STATUS.diagnostic === null
+    ? text
+    : `${text}\n${RUNTIME_PROOF_STATUS.diagnostic}`;
+}
 
 /** Numeric exit selection belongs only to the CLI boundary. */
 export function exitCodeForRunOutcome(outcome: RunOutcome): 0 | 2 | 3 | 4 | 5 | 6 | 7 {
@@ -478,9 +487,12 @@ async function executeMain(
 
   if (["--version", "-v", "--build-commit", "--help", "-h", ""].includes(command)) {
     if (rest.length > 0) throw new InputContractError(`unexpected argument after ${command || "default help"}: ${rest[0]}`);
-    if (command === "--version" || command === "-v") console.log(`rickgent 0.1.0-alpha (build ${BUILD_COMMIT.slice(0, 12)})`);
+    if (command === "--version" || command === "-v") {
+      console.log(`rickgent 0.1.0-alpha (build ${BUILD_COMMIT.slice(0, 12)})`);
+      if (RUNTIME_PROOF_STATUS.diagnostic !== null) console.error(RUNTIME_PROOF_STATUS.diagnostic);
+    }
     else if (command === "--build-commit") console.log(BUILD_COMMIT);
-    else console.log(USAGE);
+    else console.log(withRuntimeProofDiagnostic(USAGE));
     return;
   }
 
@@ -495,12 +507,16 @@ async function executeMain(
   const helpOnly = rest.length === 1 && (rest[0] === "--help" || rest[0] === "-h");
 
   if (helpOnly && SIMPLE_COMMAND_USAGE[command] !== undefined) {
-    console.log(`${formatReliabilityPreviewBanner()}\n\n${SIMPLE_COMMAND_USAGE[command]}`);
+    console.log(withRuntimeProofDiagnostic(
+      `${formatReliabilityPreviewBanner()}\n\n${SIMPLE_COMMAND_USAGE[command]}`,
+    ));
     return;
   }
 
   if (helpOnly) {
-    console.log(`${formatReliabilityPreviewBanner()}\n\n${LEGACY_HELP_DISCLAIMER}\n`);
+    console.log(withRuntimeProofDiagnostic(
+      `${formatReliabilityPreviewBanner()}\n\n${LEGACY_HELP_DISCLAIMER}\n`,
+    ));
   }
 
   if (!helpOnly && rest.includes("--resume")) RUNTIME_CAPABILITY_GATE.require("resume_retry");

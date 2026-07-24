@@ -13,6 +13,10 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { runBehavioralDoctor, type BehavioralDoctorResult } from "../lifecycle/behavioral-doctor.js";
 import { resolveInstalledRuntimeFromEnvironment } from "../install/installed-runtime.js";
+import {
+  CAPABILITY_CONTRACTED_CODE,
+  RUNTIME_PROOF_STATUS,
+} from "../capabilities/runtime-gate.js";
 
 type CheckStatus = "pass" | "fail";
 
@@ -23,6 +27,10 @@ export interface DoctorJson {
   terminal_semantics: typeof TERMINAL_SEMANTICS;
   public_surfaces: ReturnType<typeof publicSurfaceRegistry>;
   attachment_semantics: "configured_attachment_audit_only";
+  capability_contraction: {
+    code: typeof CAPABILITY_CONTRACTED_CODE;
+    diagnostic: string;
+  } | null;
   toolchain: {
     node: { status: CheckStatus; version: string };
     python: { status: CheckStatus; version: string };
@@ -126,6 +134,12 @@ export function doctorJson(
     terminal_semantics: TERMINAL_SEMANTICS,
     public_surfaces: publicSurfaceRegistry(),
     attachment_semantics: "configured_attachment_audit_only",
+    capability_contraction: RUNTIME_PROOF_STATUS.diagnostic === null
+      ? null
+      : {
+          code: CAPABILITY_CONTRACTED_CODE,
+          diagnostic: RUNTIME_PROOF_STATUS.diagnostic,
+        },
     toolchain: {
       node: { status: nodePass ? "pass" : "fail", version: runtime.nodeVersion },
       python: { status: pythonPass ? "pass" : "fail", version: runtime.pythonVersion },
@@ -197,6 +211,7 @@ export async function runDoctorCommand(asJson: boolean, behavioral = false): Pro
     console.log(
       `${result.report}\n${formatToolchain(payload)}\n` +
       "Policy attachment is a configured attachment audit only; it is not proof of native production enforcement.\n" +
+      (RUNTIME_PROOF_STATUS.diagnostic === null ? "" : `${RUNTIME_PROOF_STATUS.diagnostic}\n`) +
       `${formatCapabilityReport()}\n${formatPublicSurfaceMatrixText()}`,
     );
   }
