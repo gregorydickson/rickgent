@@ -7,15 +7,15 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const T37 = "c69e2fb2965753a15f8f50e11291e6ca14c4c42a";
-const T38_MARKER = "722f508c363cc4544eda3cf2e9c81ad555355c45";
-const RETAINED = "53ac73b822b00b0ce9e073c07982fec523a2849e";
+const T37 = "d9cd83b58f0748bffb918efdd29efd811604a4ae";
+const T38_MARKER = "7bba54e2d1510475ed828e97c0d67320f90c9727";
+const RETAINED = "ca6dcdf29ce25ab7bd53080fdedf9fae97349268";
 const ARCHIVES = {
-  "artifacts/reliability/npm-dist/rickgent-0.1.0-alpha.tgz": "1eceecb2c55f2f13f521c5464a26b27e8cce5fff44661321e344a47410577a34",
+  "artifacts/reliability/npm-dist/rickgent-0.1.0-alpha.tgz": "66c2be883fab72c203ca3666409b022d7e273b8bcccf30e5f8f8ad457b0d44ed",
   "artifacts/reliability/python-dist/rickgent_policies-0.1.0a0-py3-none-any.whl": "0eb851486e8966c5509d53172b3491e6daa1bc836b9255c267863fa3d82e72f0",
 };
 const INVENTORIES = {
-  "artifacts/reliability/npm-pack-inventory.json": "c33f36cbd2e6dad6bd4f61b4c75e9dd36d99dfcc2169bf9b596c65a0a21bb80c",
+  "artifacts/reliability/npm-pack-inventory.json": "9804e3cfa9200eb56c8ed0f693c3207e8467fd6333876b244d0f2344686391e6",
 };
 const T39_ALLOWED = new Set([
   "artifacts/reliability/release-proof-index.json",
@@ -66,7 +66,7 @@ try {
 } catch {
   fail("packed baseline is malformed");
 }
-if (packed.digest !== "d650760e0c89b437bace6b27e17eceed45d4b71eb2cad163b9606faaf5b11215") {
+if (packed.digest !== "54545fe6df196ab824bb6e23ae9c57c031ff6c1ceaf1b0bff1c1dabd0a7f1369") {
   fail("packed baseline digest is not the retained t37 authority");
 }
 
