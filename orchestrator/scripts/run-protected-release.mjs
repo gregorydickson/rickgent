@@ -502,6 +502,35 @@ function ghApiMaybe(endpoint) {
   fail(`GitHub GET ${endpoint} could not be independently observed`);
 }
 
+export function codexProbeReply(response) {
+  const messages = [];
+  for (const line of response.split("\n").filter(Boolean)) {
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      fail("Codex provider identity probe returned invalid JSONL");
+    }
+    if (
+      event?.type === "item.completed"
+      && event.item?.type === "agent_message"
+      && typeof event.item.text === "string"
+    ) {
+      messages.push(event.item.text);
+    }
+  }
+  if (messages.length !== 1) {
+    fail("Codex provider identity probe did not return exactly one assistant message");
+  }
+  return messages[0];
+}
+
+export function requireExactProbeReply(reply, expected, role) {
+  if (typeof reply !== "string" || reply.trim() !== expected) {
+    fail(`${role} provider identity probe did not return its bound marker`);
+  }
+}
+
 function providerProbe(role, runId) {
   const safeEnv = { ...process.env, CI: "1", CODEX_NO_UPDATE_CHECK: "1" };
   delete safeEnv.GH_TOKEN;
@@ -516,6 +545,7 @@ function providerProbe(role, runId) {
   ].join(" ");
   let response;
   let adapter;
+  let assistantReply;
   let identity;
   let model;
   if (role === "implementation") {
@@ -532,6 +562,7 @@ function providerProbe(role, runId) {
       "--json",
       prompt,
     ], { env: safeEnv, timeout: 5 * 60_000 });
+    assistantReply = codexProbeReply(response);
     const catalog = run("codex", ["debug", "models"], {
       env: safeEnv,
       json: true,
@@ -563,6 +594,7 @@ function providerProbe(role, runId) {
     } catch {
       fail("Claude provider identity probe returned invalid JSON");
     }
+    assistantReply = payload?.result;
     const observed = payload?.modelUsage?.[model];
     if (observed?.provider !== "firstParty" || observed?.canonicalModel !== "claude-opus-4-8") {
       fail("Anthropic model identity is absent from the authenticated response");
@@ -574,7 +606,7 @@ function providerProbe(role, runId) {
       requested_key: model,
     };
   }
-  if (!response.includes(expected)) fail(`${role} provider identity probe did not return its bound marker`);
+  requireExactProbeReply(assistantReply, expected, role);
   const responseSha = sha256(response);
   return {
     adapter,
@@ -1258,13 +1290,17 @@ async function runMutation() {
   console.log(JSON.stringify(result));
 }
 
-try {
-  if (process.argv[2] === "preflight") await runPreflight();
-  else if (process.argv[2] === "execute") await runExecute();
-  else if (process.argv[2] === "_attempt") await runAttemptWorker();
-  else await runMutation();
-} catch (error) {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(`PROTECTED_RELEASE_REFUSED: ${message}`);
-  process.exitCode = 2;
+async function main() {
+  try {
+    if (process.argv[2] === "preflight") await runPreflight();
+    else if (process.argv[2] === "execute") await runExecute();
+    else if (process.argv[2] === "_attempt") await runAttemptWorker();
+    else await runMutation();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`PROTECTED_RELEASE_REFUSED: ${message}`);
+    process.exitCode = 2;
+  }
 }
+
+if (process.argv[1] && resolve(process.argv[1]) === SCRIPT_PATH) await main();
