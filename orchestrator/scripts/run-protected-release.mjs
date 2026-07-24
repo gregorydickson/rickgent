@@ -599,6 +599,25 @@ export function requireExactProbeReply(reply, expected, role) {
   }
 }
 
+export function parseImplementationArtifact(reply, runId) {
+  let artifact;
+  try {
+    artifact = JSON.parse(reply);
+  } catch {
+    fail("implementation provider did not return a structured artifact");
+  }
+  if (
+    typeof runId !== "string"
+    || runId === ""
+    || canonical(Object.keys(artifact ?? {}).sort()) !== canonical(["content", "run_id"])
+    || artifact.run_id !== runId
+    || artifact.content !== `${runId}\n`
+  ) {
+    fail("implementation provider artifact is not bound to the protected run");
+  }
+  return artifact;
+}
+
 export function parseReviewDisposition(reply, candidateOid) {
   let disposition;
   try {
@@ -628,14 +647,14 @@ function providerProbe(role, runId, reviewCandidate) {
   const safeEnv = { ...process.env, CI: "1", CODEX_NO_UPDATE_CHECK: "1" };
   delete safeEnv.GH_TOKEN;
   delete safeEnv.GITHUB_TOKEN;
-  const expected = "RICKGENT_IMPLEMENTATION_PROBE_OK";
   let prompt;
   if (role === "implementation") {
     prompt = [
-      `Protected release identity probe for ${runId}.`,
+      `Produce the deterministic implementation artifact for protected release run ${runId}.`,
       "Do not inspect files, invoke tools, or make changes.",
-      `Reply with exactly ${expected}.`,
-    ].join(" ");
+      "Reply with exactly one JSON object and no markdown.",
+      `The object must be {"content":"${runId}\\n","run_id":"${runId}"}.`,
+    ].join("\n");
   } else {
     if (
       !OID.test(reviewCandidate?.candidate_oid ?? "")
@@ -671,6 +690,7 @@ function providerProbe(role, runId, reviewCandidate) {
   let adapter;
   let assistantReply;
   let identity;
+  let implementation;
   let model;
   let review;
   if (role === "implementation") {
@@ -732,7 +752,12 @@ function providerProbe(role, runId, reviewCandidate) {
     };
   }
   if (role === "implementation") {
-    requireExactProbeReply(assistantReply, expected, role);
+    const artifact = parseImplementationArtifact(assistantReply, runId);
+    implementation = {
+      content: artifact.content,
+      content_sha256: sha256(artifact.content),
+      run_id: artifact.run_id,
+    };
   } else {
     review = parseReviewDisposition(assistantReply, reviewCandidate.candidate_oid);
   }
@@ -749,6 +774,7 @@ function providerProbe(role, runId, reviewCandidate) {
     dispatch_id: sha256(`dispatch:${runId}:${role}:${responseSha}`).slice(0, 32),
     evidence_id: `run:${runId.split("-").at(-1)}:model:${role}`,
     identity_sha256: sha256(canonical(identity)),
+    ...(implementation === undefined ? {} : { implementation }),
     invoked_model: model,
     observed_model: model,
     process_id: process.pid,
@@ -860,6 +886,10 @@ async function runAttemptWorker() {
   });
   if (buildId !== config.build_id) fail("attempt did not execute the exact installed CLI");
   config.provider = providerProbe(config.role, config.run_id, config.review_candidate);
+  if (config.phase === "crash") {
+    const candidate = finalizeLocalLifecycleCandidate(config.workspace, config.provider);
+    writeFileSync(config.candidate_file, `${canonical(candidate)}\n`);
+  }
   writeFileSync(config.provider_file, `${canonical(config.provider)}\n`);
   let checkpointObservation;
   if (config.phase === "resume") {
@@ -1260,13 +1290,14 @@ export function receiptModelObservation(provider) {
   // evidence across that schema boundary.
   const {
     identity_sha256: _identity,
+    implementation: _implementation,
     review: _review,
     ...observation
   } = provider;
   return observation;
 }
 
-function prepareLocalLifecycleCandidate(runtime, runRoot, runId) {
+function prepareLocalLifecycleWorkspace(runtime, runRoot, runId) {
   const policyRoot = realpathSync(runRoot);
   const policy = run(runtime.python, [
     "-c",
@@ -1318,13 +1349,47 @@ print(json.dumps({
   run("git", ["-C", repository, "commit", "-q", "-m", "proof: baseline"]);
   const baselineOid = run("git", ["-C", repository, "rev-parse", "HEAD"]);
   run("git", ["-C", repository, "worktree", "add", "-q", "-b", `attempt/${runId}`, worktree, baselineOid]);
-  writeFileSync(join(worktree, "proof.txt"), `${runId}\n`);
-  run("git", ["-C", worktree, "add", "proof.txt"]);
-  const indexTree = run("git", ["-C", worktree, "write-tree"]);
-  run("git", ["-C", worktree, "commit", "-q", "-m", `proof: ${runId}`]);
-  const candidateOid = run("git", ["-C", worktree, "rev-parse", "HEAD"]);
   const deliveryRef = `refs/rickgent/runs/${runId}/delivery`;
   run("git", ["-C", repository, "update-ref", deliveryRef, baselineOid]);
+  const commonDir = realpathSync(join(repository, run("git", ["-C", repository, "rev-parse", "--git-common-dir"])));
+  return {
+    baselineOid,
+    deliveryRef,
+    policy,
+    records: {
+      "native-policy": policy,
+      ownership: {
+        common_dir_sha256: sha256(commonDir),
+        repository_root_sha256: sha256(realpathSync(repository)),
+        run_id: runId,
+      },
+    },
+    repository,
+    runId,
+    worktree,
+  };
+}
+
+function finalizeLocalLifecycleCandidate(workspace, provider) {
+  const implementation = provider?.implementation;
+  if (
+    provider?.role !== "implementation"
+    || implementation?.run_id !== workspace.runId
+    || typeof implementation?.content !== "string"
+    || sha256(implementation.content) !== implementation.content_sha256
+    || !SHA256.test(provider?.bundle_sha256 ?? "")
+  ) {
+    fail("candidate has no bound implementation provider artifact");
+  }
+  writeFileSync(join(workspace.worktree, "proof.txt"), implementation.content);
+  run("git", ["-C", workspace.worktree, "add", "proof.txt"]);
+  const indexTree = run("git", ["-C", workspace.worktree, "write-tree"]);
+  run("git", ["-C", workspace.worktree, "commit", "-q", "-m", `proof: ${workspace.runId}`]);
+  const { baselineOid, deliveryRef, repository, worktree } = workspace;
+  const candidateOid = run("git", ["-C", worktree, "rev-parse", "HEAD"]);
+  if (sha256File(join(worktree, "proof.txt")) !== implementation.content_sha256) {
+    fail("committed candidate content changed after implementation dispatch");
+  }
   run("git", ["-C", repository, "update-ref", deliveryRef, candidateOid, baselineOid]);
   const deliveryRefOid = run("git", ["-C", repository, "rev-parse", deliveryRef]);
   const changedPaths = run("git", [
@@ -1337,14 +1402,8 @@ print(json.dumps({
     canonical(changedPaths) !== canonical(["proof.txt"]) ||
     !clean
   ) fail(`${runId} local ownership and scope-clean commit proof failed`);
-  const commonDir = realpathSync(join(repository, run("git", ["-C", repository, "rev-parse", "--git-common-dir"])));
   const records = {
-    "native-policy": policy,
-    ownership: {
-      common_dir_sha256: sha256(commonDir),
-      repository_root_sha256: sha256(realpathSync(repository)),
-      run_id: runId,
-    },
+    ...workspace.records,
     worktree: {
       candidate_oid: candidateOid,
       realpath_sha256: sha256(realpathSync(worktree)),
@@ -1352,12 +1411,27 @@ print(json.dumps({
     ref: { delivery_ref_sha256: sha256(deliveryRef), observed_oid: deliveryRefOid },
     index: { tree_oid: indexTree },
     lease: { after_oid: candidateOid, before_oid: baselineOid, compare_and_swap: true },
-    "scope-clean-commit": { changed_paths: changedPaths, commit_oid: candidateOid },
+    "scope-clean-commit": {
+      changed_paths: changedPaths,
+      commit_oid: candidateOid,
+      implementation_bundle_sha256: provider.bundle_sha256,
+      implemented_content_sha256: implementation.content_sha256,
+    },
   };
   return { candidateOid, clean, records, repository };
 }
 
 function deriveLocalLifecycle(candidate, attempts, providers) {
+  const implementationProvider = providers.find((item) => item.role === "implementation");
+  const implementation = implementationProvider?.implementation;
+  if (
+    implementation?.content_sha256
+      !== candidate.records["scope-clean-commit"].implemented_content_sha256
+    || implementationProvider?.bundle_sha256
+      !== candidate.records["scope-clean-commit"].implementation_bundle_sha256
+  ) {
+    fail("candidate commit is not bound to the implementation dispatch");
+  }
   const reviewProvider = providers.find((item) => item.role === "review");
   const review = requireIndependentReviewObservation(reviewProvider, candidate.candidateOid);
   return {
@@ -1395,11 +1469,11 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
   const attempts = [];
   const providers = [];
 
-  // Trap door: the review attempt cannot review a candidate constructed after
-  // it exits. Prepare the immutable commit before the crash/resume lifecycle,
-  // then give the resume process only its repository and full OID; that process
-  // independently reads the exact Git payload used in the review prompt.
-  const lifecycleCandidate = prepareLocalLifecycleCandidate(runtime, runRoot, runId);
+  // Trap door: the implementer must produce the committed artifact, and the
+  // reviewer must receive that immutable result. Prepare only the owned
+  // workspace in the parent; the crash worker materializes and commits its
+  // authenticated Codex artifact before exposing the durable checkpoint.
+  const lifecycleWorkspace = prepareLocalLifecycleWorkspace(runtime, runRoot, runId);
   const crashStarted = new Date().toISOString();
   const crashConfigPath = join(runRoot, "crash.json");
   const checkpoint = join(runRoot, "checkpoint.json");
@@ -1407,6 +1481,7 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
   writeFileSync(crashConfigPath, `${canonical({
     attempt_id: `${runId}:crash`,
     build_id: preflight.binding.build_id,
+    candidate_file: join(runRoot, "candidate.json"),
     checkpoint_file: checkpoint,
     cli: runtime.cli,
     nonce,
@@ -1420,6 +1495,7 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
     run_id: runId,
     sqlite,
     state_root: runRoot,
+    workspace: lifecycleWorkspace,
   })}\n`);
   const crashChild = spawnAttempt(crashConfigPath, nonce);
   await waitForChild(crashChild, 5 * 60_000, checkpoint);
@@ -1428,6 +1504,7 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
   await killProcessGroupAndObserve(crashChild, crashPid);
   const crashEnded = new Date().toISOString();
   providers.push(JSON.parse(readFileSync(crashProviderPath, "utf8")));
+  const lifecycleCandidate = JSON.parse(readFileSync(join(runRoot, "candidate.json"), "utf8"));
   attempts.push({
     attempt_id: `${runId}:crash`,
     death_observed: true,
