@@ -7,11 +7,11 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const T37 = "78a49b0e9fb0a8fee4be42a8ffcd2f425b6acca5";
-const T38_MARKER = "d56e7fb33cff9f484f260e0b21f34301d726912f";
-const RETAINED = "0d46527df44a8d8ae4c2727c6f9f520b2b4984ca";
+const T37 = "c69e2fb2965753a15f8f50e11291e6ca14c4c42a";
+const T38_MARKER = "722f508c363cc4544eda3cf2e9c81ad555355c45";
+const RETAINED = "53ac73b822b00b0ce9e073c07982fec523a2849e";
 const ARCHIVES = {
-  "artifacts/reliability/npm-dist/rickgent-0.1.0-alpha.tgz": "73aed4b2a5286cfd28b101ace94c74311d0d960fc82ffe8eeecf3c9f116d7654",
+  "artifacts/reliability/npm-dist/rickgent-0.1.0-alpha.tgz": "1eceecb2c55f2f13f521c5464a26b27e8cce5fff44661321e344a47410577a34",
   "artifacts/reliability/python-dist/rickgent_policies-0.1.0a0-py3-none-any.whl": "0eb851486e8966c5509d53172b3491e6daa1bc836b9255c267863fa3d82e72f0",
 };
 const T39_ALLOWED = new Set([
@@ -63,7 +63,7 @@ try {
 } catch {
   fail("packed baseline is malformed");
 }
-if (packed.digest !== "d251ea75c3824199f2d23a8f777ddc9c71101b09de059cb991651aaf0f463248") {
+if (packed.digest !== "d650760e0c89b437bace6b27e17eceed45d4b71eb2cad163b9606faaf5b11215") {
   fail("packed baseline digest is not the retained t37 authority");
 }
 
