@@ -15,7 +15,7 @@ protected proof corpus.
 | Run | Crash PID | Resume PID | Persistent state | Delivery OID | PR |
 | --- | ---: | ---: | --- | --- | ---: |
 | `protected-1` | `89919` | `90180` | `state-protected-1` | `847719e05aec92807aacf887b1722b496a775d2b` | `8` |
-| `protected-2` | `91187` | `91401` | `state-protected-2` | `d4f567119368f0cb2cd0c205d151c16bc78f4759` | `9` |
+| `protected-2` | `91187` | `91469` | `state-protected-2` | `d4f567119368f0cb2cd0c205d151c16bc78f4759` | `9` |
 
 Each crash worker invoked the exact installed CLI and authenticated Codex
 `gpt-5.6-sol`, persisted its implementation bundle in SQLite, exposed a durable
