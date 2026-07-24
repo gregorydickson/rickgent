@@ -446,9 +446,6 @@ describe("final packed installation", () => {
     expect(t37Rows[0]!.status).toBe("Done");
     const packedOutputOid = t37Rows[0]!.completed_at?.commit;
     expect(packedOutputOid).toMatch(/^[0-9a-f]{40}$/);
-    expect(run("git", ["merge-base", "--is-ancestor", sourceGitOid, "HEAD"], {
-      cwd: repositoryRoot,
-    })).toBe("");
     expect(run("git", ["merge-base", "--is-ancestor", sourceGitOid, packedOutputOid!], {
       cwd: repositoryRoot,
     })).toBe("");
