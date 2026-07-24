@@ -3,7 +3,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const receiptPath = resolve(process.argv[2] ?? "artifacts/reliability/protected-release-preflight.json");
 const allowedKeys = new Set([
   "acceptance_criteria", "after", "allowlist_match", "authenticated", "authenticated_actor",
   "authentication", "available", "base_branch", "before", "binding", "branches_sha256",
@@ -22,6 +21,21 @@ const allowedKeys = new Set([
   "required_token_operations", "requery_after_action", "role", "schema_version", "source",
   "source_git_oid", "status", "teardown", "timeout_ms", "verification_environment",
   "wheel_archive_sha256", "wheel_inventory_sha256", "worker_sha256",
+  "adapter", "allowlisted_disposable", "attempt_id", "attempts", "branch",
+  "branch_compare_before_delete_oid", "build", "bundle_sha256", "check_id",
+  "classification", "cleanup", "completed", "contains_raw_secrets",
+  "containment_passed", "conversation_id", "corpora", "death_observed", "delivery",
+  "delivery_oid", "dispatch_id", "duplicate_side_effects", "ended_at", "evidence",
+  "evidence_id", "evidence_ids", "failure_path", "fixture_substitution", "id",
+  "independently_requeried", "infrastructure_errors", "installed_executable_realpath",
+  "invoked_model", "items", "kind", "lifecycle_complete", "model_observations", "name",
+  "npm_archive_sha256", "observed_branch_oid", "observed_model", "outcome",
+  "owned_branch_absent_on_requery", "owned_branch_prefix", "owned_pull_request_closed",
+  "packed_install_receipt_sha256", "packed_install_schema_id", "persistent_state_id",
+  "phase", "pre_existing", "process_group_id", "process_id", "proof_version",
+  "pull_request_head_oid", "pull_request_id", "redaction", "release", "repository_preserved",
+  "requested_model", "required", "run_id", "runs", "sha256", "skipped_required",
+  "started_at", "success_path", "repository_deleted",
 ]);
 const forbiddenKey = /(?:token|secret|password|credential|authorization|transcript|prompt|stdout|stderr|command_output|raw_output)/i;
 const secretValue = /(?:gh[opsu]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|authorization\s*[:=]\s*(?:bearer|token))/i;
@@ -43,7 +57,11 @@ function visit(value, path = "$") {
   if (value !== null && typeof value === "object") {
     for (const [key, child] of Object.entries(value)) {
       if (!allowedKeys.has(key)) fail(`unexpected key at ${path}.${key}`);
-      if (forbiddenKey.test(key) && key !== "required_token_operations") {
+      if (
+        forbiddenKey.test(key) &&
+        key !== "required_token_operations" &&
+        key !== "contains_raw_secrets"
+      ) {
         fail(`forbidden evidence key at ${path}.${key}`);
       }
       visit(child, `${path}.${key}`);
@@ -59,11 +77,17 @@ function visit(value, path = "$") {
   if (providerTranscript.test(value)) fail(`provider transcript-like value at ${path}`);
 }
 
-let receipt;
-try {
-  receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
-} catch (error) {
-  fail(`cannot parse receipt: ${error.message}`);
+const receiptPaths = process.argv.slice(2);
+if (receiptPaths.length === 0) {
+  receiptPaths.push("artifacts/reliability/protected-release-preflight.json");
 }
-visit(receipt);
+for (const inputPath of receiptPaths) {
+  let receipt;
+  try {
+    receipt = JSON.parse(readFileSync(resolve(inputPath), "utf8"));
+  } catch (error) {
+    fail(`cannot parse ${inputPath}: ${error.message}`);
+  }
+  visit(receipt);
+}
 process.stdout.write("scan-release-evidence: redaction and key allowlist passed\n");
