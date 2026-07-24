@@ -484,19 +484,48 @@ function parseCanonicalReceipt(path, schemaVersion) {
   return receipt;
 }
 
+export function requireUnchangedInstalledHandoff(expected, observed) {
+  // Trap door: the persistent handoff survives between preflight and execute.
+  // Rechecking only the CLI leaves the installed manager, worker, or policy
+  // free to change while execution continues to cite their preflight hashes.
+  for (const key of [
+    "cli_sha256",
+    "manager_sha256",
+    "policy_sha256",
+    "worker_sha256",
+  ]) {
+    if (
+      !SHA256.test(expected?.[key] ?? "")
+      || !SHA256.test(observed?.[key] ?? "")
+      || observed[key] !== expected[key]
+    ) {
+      fail(`installed handoff ${key} changed after preflight`);
+    }
+  }
+}
+
 function protectedRuntime(preflight) {
   const root = join(tmpdir(), "rickgent-protected-install", preflight.binding.npm_archive_sha256.slice(0, 16));
   const marker = join(root, "handoff.json");
   if (!existsSync(marker)) fail("exact t37 persistent handoff is unavailable");
+  const packageRoot = realpathSync(join(root, "npm", "node_modules", "rickgent"));
   const cli = realpathSync(join(root, "npm", "node_modules", ".bin", "rickgent"));
+  const manager = realpathSync(join(packageRoot, "agents", "rickgent", "config.yaml"));
+  const worker = realpathSync(join(packageRoot, "agents", "rickgent", "agents", "worker", "config.yaml"));
   const python = realpathSync(join(root, "python", "bin", "python"));
   const omnigentRoot = realpathSync(join(root, "omnigent-root"));
   if (run(cli, ["--build-commit"]) !== preflight.binding.build_id) {
     fail("installed executable build identity changed after preflight");
   }
-  if (sha256File(cli) !== preflight.binding.installation.cli_sha256) {
-    fail("installed executable bytes changed after preflight");
-  }
+  const policy = realpathSync(run(python, [
+    "-c", "import pathlib, rickgent_policies; print(pathlib.Path(rickgent_policies.__file__).resolve())",
+  ]));
+  requireUnchangedInstalledHandoff(preflight.binding.installation, {
+    cli_sha256: sha256File(cli),
+    manager_sha256: sha256File(manager),
+    policy_sha256: sha256File(policy),
+    worker_sha256: sha256File(worker),
+  });
   return { cli, omnigentRoot, python, root };
 }
 
