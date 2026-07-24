@@ -3,7 +3,7 @@
 ## Result
 
 Two protected installed crash-resume logical runs completed and passed the strict
-vertical-slice validator. Evidence commit `95757d3` retains the canonical receipt and
+vertical-slice validator. Evidence commit `e3c5847` retains the canonical receipt and
 exact-byte checksum. The failure diagnostics remain clear.
 
 The receipt is bound to the accepted t38b preflight, exact t37 npm and wheel archives,
@@ -14,8 +14,8 @@ protected proof corpus.
 
 | Run | Crash PID | Resume PID | Persistent state | Delivery OID | PR |
 | --- | ---: | ---: | --- | --- | ---: |
-| `protected-1` | `16979` | `17227` | `state-protected-1` | `361998b27a64ef24287113ea0d4263cfb647fc65` | `4` |
-| `protected-2` | `18159` | `18407` | `state-protected-2` | `057e06c4c3d35ee51a506ab1933110bfd880924e` | `5` |
+| `protected-1` | `89919` | `90180` | `state-protected-1` | `847719e05aec92807aacf887b1722b496a775d2b` | `8` |
+| `protected-2` | `91187` | `91401` | `state-protected-2` | `d4f567119368f0cb2cd0c205d151c16bc78f4759` | `9` |
 
 Each crash worker invoked the exact installed CLI and authenticated Codex
 `gpt-5.6-sol`, persisted its implementation bundle in SQLite, exposed a durable
