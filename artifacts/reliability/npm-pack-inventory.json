@@ -3,10 +3,10 @@
     "id": "rickgent@0.1.0-alpha",
     "name": "rickgent",
     "version": "0.1.0-alpha",
-    "size": 1538209,
+    "size": 1538210,
     "unpackedSize": 7440229,
-    "shasum": "6ca1e2625ad7e02645b40f652517fa5289ae6ea0",
-    "integrity": "sha512-n5OehzqleqgEqMni22X7SIphJyInLAt6tH2j14FVYiN+bxUO6Bkjtf45Yubw1nYqFDY+03pIpFOAL2XGpRgjrw==",
+    "shasum": "45bebb2443d4a61d64c2bb106a9b1b0863ffcf58",
+    "integrity": "sha512-f8V6+Jvzk9L5RDezNnVjoWCkK7++YU/iswuR2MX+jFHUmn5Vs88I5oAO8DtkqD1dnvhUsLhbgcvCx2ib+BBKIw==",
     "filename": "rickgent-0.1.0-alpha.tgz",
     "files": [
       {

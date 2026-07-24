@@ -46,7 +46,7 @@ const completionPaths = [
   "docs/remediation/phase-9-t37-packed-install-execution-report.md",
   "docs/remediation/trust-spine-manifest.json",
 ];
-const t37bSourceOid = "fbb745de5767baa5f5cfbb3559cb360ba79dcf16";
+const t37bSourceOid = "fdfa6f4fd61f0fc21583d6106535b4d198981fcd";
 const pinnedScratchIgnoreOid = "99b557e786adcfbe8932fcc5abfb80aef7057abe";
 const retainedOutputPaths = [
   "artifacts/reliability/npm-pack-inventory.json",
@@ -162,7 +162,7 @@ if (typeof completion.commit !== "string" || !/^[0-9a-f]{40}$/.test(completion.c
 const packedOutputOid = completion.commit;
 const sourceHandoffs = execFileSync("git", [
   "log", "--format=%H", "--perl-regexp",
-  "--grep=^feat\\(runtime\\): activate capabilities from retained proof index$",
+  "--grep=^feat\\(reliability\\): bind installed proof activation contract$",
 ], { cwd: repositoryRoot, encoding: "utf8" }).trim().split("\n").filter(Boolean);
 equal(sourceHandoffs, [t37bSourceOid], "unique committed t37b source handoff");
 equal(sourceOid, t37bSourceOid, "non-self-referential source Git OID");
