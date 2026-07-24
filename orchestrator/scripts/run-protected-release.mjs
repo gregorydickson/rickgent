@@ -1172,6 +1172,61 @@ export function pullRequestCleanupAction(
   fail("owned pull request has an invalid cleanup state");
 }
 
+export function closeOwnedPullRequestWithRetry(
+  expectedPull,
+  observePull,
+  closePull,
+) {
+  // Trap door: partial createDelivery cleanup has no outer teardown retry.
+  // Preserve close-attempt state across the bounded retry so a lost PATCH
+  // response can be reconciled only against the same immutable PR identity.
+  if (typeof observePull !== "function" || typeof closePull !== "function") {
+    fail("pull request cleanup operations are invalid");
+  }
+  let closeAttempted = false;
+  let lastError;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let observed;
+    try {
+      observed = observePull();
+    } catch (error) {
+      lastError = error;
+      continue;
+    }
+    const action = pullRequestCleanupAction(
+      observed,
+      expectedPull,
+      closeAttempted,
+    );
+    if (action === "close") {
+      closeAttempted = true;
+      try {
+        closePull();
+      } catch (error) {
+        lastError = error;
+        continue;
+      }
+    }
+    try {
+      observed = observePull();
+    } catch (error) {
+      lastError = error;
+      continue;
+    }
+    if (
+      pullRequestCleanupAction(
+        observed,
+        expectedPull,
+        closeAttempted,
+      ) !== "already-closed"
+    ) {
+      fail("owned pull request did not close");
+    }
+    return;
+  }
+  throw lastError;
+}
+
 export function requireReviewedDelivery(candidateOid, branchObservation, pullObservation) {
   // Trap door: a candidate-bound review approves one immutable Git commit.
   // The hosted branch and pull request must expose that exact commit, not a
@@ -1308,14 +1363,24 @@ function createDelivery(preflight, runId, candidate, { injectFailureAfterPullReq
     };
   } catch (error) {
     try {
-      if (partial.pullRequestId !== null) {
-        const pull = ghApiMaybe(`${repoPath}/pulls/${partial.pullRequestId}`);
-        if (pull?.state === "open") {
-          ghApi(`${repoPath}/pulls/${partial.pullRequestId}`, {
+      const closePartialPullRequest = (pullRequestId) => {
+        const expectedPull = {
+          baseBranch: preflight.remote.base_branch,
+          branch,
+          deliveryOid: partial.deliveryOid,
+          pullRequestId,
+        };
+        closeOwnedPullRequestWithRetry(
+          expectedPull,
+          () => ghApi(`${repoPath}/pulls/${pullRequestId}`),
+          () => ghApi(`${repoPath}/pulls/${pullRequestId}`, {
             method: "PATCH",
             body: { state: "closed" },
-          });
-        }
+          }),
+        );
+      };
+      if (partial.pullRequestId !== null) {
+        closePartialPullRequest(partial.pullRequestId);
       } else {
         const pulls = ghApi(
           `${repoPath}/pulls?state=open&head=${preflight.remote.owner}:${branch}`
@@ -1326,14 +1391,7 @@ function createDelivery(preflight, runId, candidate, { injectFailureAfterPullReq
           branch,
           partial.deliveryOid,
         )) {
-          ghApi(`${repoPath}/pulls/${pullRequestId}`, {
-            method: "PATCH",
-            body: { state: "closed" },
-          });
-          const closed = ghApi(`${repoPath}/pulls/${pullRequestId}`);
-          if (closed.state !== "closed") {
-            fail("response-loss pull request did not close");
-          }
+          closePartialPullRequest(pullRequestId);
         }
       }
       const branchObservation = ghApiMaybe(`${repoPath}/git/ref/heads/${branch}`);
