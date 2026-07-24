@@ -31,7 +31,7 @@ const npmDist = join(artifactsRoot, "npm-dist");
 const pythonDist = join(artifactsRoot, "python-dist");
 const summaryPath = join(artifactsRoot, "packed-install-summary.json");
 const checksumPath = join(artifactsRoot, "packed-install-summary.sha256");
-const reportPath = join(repositoryRoot, "docs", "remediation", "phase-9-t37-packed-install-execution-report.md");
+const trustSpinePath = join(repositoryRoot, "docs", "remediation", "trust-spine-manifest.json");
 const compatibilityPath = join(artifactsRoot, "omnigent-compatibility-contract.json");
 const releasePath = join(repositoryRoot, "release-manifest.json");
 const corpusPaths = [
@@ -438,9 +438,36 @@ describe("final packed installation", () => {
     ], { cwd: repositoryRoot }).split("\n").filter(Boolean);
     expect(sourceHandoffs).toEqual(["d83405ee20e2cb8c5a9418c8913d646e876269bc"]);
     const sourceGitOid = sourceHandoffs[0]!;
+    const trustSpine = JSON.parse(readFileSync(trustSpinePath, "utf8")) as {
+      tickets: Array<{ id: string; status: string; completed_at?: { commit?: string } }>;
+    };
+    const t37Rows = trustSpine.tickets.filter((ticket) => ticket.id === "t37");
+    expect(t37Rows).toHaveLength(1);
+    expect(t37Rows[0]!.status).toBe("Done");
+    const packedOutputOid = t37Rows[0]!.completed_at?.commit;
+    expect(packedOutputOid).toMatch(/^[0-9a-f]{40}$/);
     expect(run("git", ["merge-base", "--is-ancestor", sourceGitOid, "HEAD"], {
       cwd: repositoryRoot,
     })).toBe("");
+    expect(run("git", ["merge-base", "--is-ancestor", sourceGitOid, packedOutputOid!], {
+      cwd: repositoryRoot,
+    })).toBe("");
+    expect(run("git", ["merge-base", "--is-ancestor", packedOutputOid!, "HEAD"], {
+      cwd: repositoryRoot,
+    })).toBe("");
+    for (const retainedPath of [
+      relative(repositoryRoot, npmArchive),
+      relative(repositoryRoot, wheelArchive),
+      relative(repositoryRoot, join(artifactsRoot, "npm-pack-inventory.json")),
+      relative(repositoryRoot, summaryPath),
+      relative(repositoryRoot, checksumPath),
+    ]) {
+      const committed = execFileSync("git", ["show", `${packedOutputOid}:${retainedPath}`], {
+        cwd: repositoryRoot,
+        maxBuffer: 32 * 1024 * 1024,
+      });
+      expect(readFileSync(join(repositoryRoot, retainedPath)).equals(committed), retainedPath).toBe(true);
+    }
     const buildCommit = run(launcher, ["--build-commit"], { cwd: unrelatedCwd, env: installedEnv });
     const release = JSON.parse(readFileSync(releasePath, "utf8")) as { release_id: string };
     const buildResource = join(packageInstall, "dist", "build-commit.js");
@@ -497,23 +524,12 @@ describe("final packed installation", () => {
       },
     };
     const digest = sha256Bytes(canonical(unsigned as Json));
-    writeFileSync(summaryPath, `${canonical({ ...unsigned, digest } as Json)}\n`);
-    writeFileSync(checksumPath, `${digest}  packed-install-summary.json\n`);
-    writeFileSync(reportPath, [
-      "# Phase 9 t37 packed-install execution report", "",
-      `Source handoff: \`${sourceGitOid}\``, "",
-      "The runner built and installed exactly the committed npm tarball and non-editable policy wheel. Retained production-entrypoint failures exposed baseline assumptions: pip records a non-editable local wheel in `direct_url.json`; macOS may spell the temporary root through `/var` while Python reports `/private/var`; a fresh venv cannot import the explicitly selected Omnigent dependency set unless it inherits that interpreter's site packages; a symlinked venv interpreter canonicalizes outside the venv and is correctly rejected as ambient; the mounted Omnigent source contains symlinks; and the compiled doctor expected legacy denial code `SCOPE_DENIED` while the packed policy returns `RICKGENT_SCOPE_DENIED`. The bounded proof-harness repair permits only archive-origin direct-url metadata, canonicalizes the proof root, creates the venv with `--copies --system-site-packages`, mounts a dereferenced minimal Omnigent package, and updates the installed doctor expectation to the policy's retained production code. The staged installed-runtime check still parses and rejects `dir_info`/editable direct-url metadata, and the independent negative controls prove rejection and Rickgent-owned realpath containment.", "",
-      `- npm: \`${basename(npmArchive)}\` — \`${sha256File(npmArchive)}\`; inventory \`${npmInventory.sha256}\` (${npmInventory.entries.length} members)`,
-      `- wheel: \`${basename(wheelArchive)}\` — \`${sha256File(wheelArchive)}\`; inventory \`${wheelInventory.sha256}\` (${wheelInventory.entries.length} members)`,
-      `- receipt: \`${digest}\``,
-      `- installed CLI root: \`${realpathSync(packageInstall)}\``,
-      `- installed policy origin: \`${pyObservation.policy}\``,
-      `- Omnigent origin/version: \`${pyObservation.omnigent}\` / \`${pyObservation.version}\``, "",
-      "All required checks passed with zero skips and zero infrastructure errors. The behavioral doctor proved native allow/deny, compatible Omnigent observation, SQLite close/reopen durability, disposable Git containment, typed failure handling, and owned cleanup. It explicitly reported `authenticated_hosted_evidence=false`.", "",
-      "Independent controls rejected source sentinel access, checkout CWD, NODE_PATH/PYTHONPATH poisoning, source node_modules, resource overrides, editable direct_url/.pth/egg-link metadata, escaping symlinks, missing resources, and implicit/wrong Python. The checkout, Omnigent sibling, and unrelated sentinel were preserved.", "",
-      "Verification is runner-owned and follows the ticket's declared sequential command list. The receipt validator, trust-spine validator, and diff check are the final fail-closed gates.", "",
-      "Completion convention: the manifest binds the stable t37b input handoff; the dependent ticket observes the non-self-referential t37c output commit.", "",
-    ].join("\n"));
+    const ephemeralSummaryPath = join(root, "packed-install-summary.json");
+    const ephemeralChecksumPath = join(root, "packed-install-summary.sha256");
+    writeFileSync(ephemeralSummaryPath, `${canonical({ ...unsigned, digest } as Json)}\n`);
+    writeFileSync(ephemeralChecksumPath, `${digest}  packed-install-summary.json\n`);
+    expect(readFileSync(ephemeralSummaryPath, "utf8")).toBe(`${canonical({ ...unsigned, digest } as Json)}\n`);
+    expect(readFileSync(ephemeralChecksumPath, "utf8")).toBe(`${digest}  packed-install-summary.json\n`);
     expect(digest).toMatch(/^[0-9a-f]{64}$/);
   }, 300_000);
 });

@@ -17,4 +17,4 @@ Independent controls rejected source sentinel access, checkout CWD, NODE_PATH/PY
 
 Verification is runner-owned and follows the ticket's declared sequential command list. The receipt validator, trust-spine validator, and diff check are the final fail-closed gates.
 
-Completion convention: the manifest binds the stable t37b input handoff; the dependent ticket observes the non-self-referential t37c output commit.
+Completion convention: the retained npm archive, policy wheel, npm inventory, canonical receipt, and checksum were finalized first in packed-output commit `796af83be6340b8d766918020d59bf2fe3375154`. The t37 manifest row is updated only in a descendant commit and binds that full output OID, avoiding self-reference. The packed receipt validator requires the pinned t37b handoff to be an ancestor of the output commit, the output commit to be an ancestor of HEAD, t37c ownership through that output boundary, and byte-for-byte equality between the retained outputs and the output commit. Later unrelated repository state cannot masquerade as, or invalidate, the packed evidence.

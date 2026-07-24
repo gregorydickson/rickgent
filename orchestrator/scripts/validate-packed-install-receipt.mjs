@@ -20,6 +20,7 @@ const checksumPath = join(dirname(receiptPath), "packed-install-summary.sha256")
 const schemaPath = join(repositoryRoot, "orchestrator", "schemas", "packed-install-receipt.schema.json");
 const releasePath = join(repositoryRoot, "release-manifest.json");
 const contractPath = join(artifactsRoot, "omnigent-compatibility-contract.json");
+const trustSpinePath = join(repositoryRoot, "docs", "remediation", "trust-spine-manifest.json");
 const corpusPaths = [
   "orchestrator/test/fixtures/packaging-corpus/manifest.json",
   "rickgent-policies/test/fixtures/native-policy-corpus/manifest.json",
@@ -45,6 +46,11 @@ const completionPaths = [
   "docs/remediation/trust-spine-manifest.json",
 ];
 const t37bSourceOid = "d83405ee20e2cb8c5a9418c8913d646e876269bc";
+const retainedOutputPaths = [
+  "artifacts/reliability/npm-pack-inventory.json",
+  "artifacts/reliability/packed-install-summary.json",
+  "artifacts/reliability/packed-install-summary.sha256",
+];
 
 function fail(message) {
   process.stderr.write(`validate-packed-install-receipt: ${message}\n`);
@@ -141,6 +147,17 @@ if (typeof binding.source_git_oid !== "string" || !/^[0-9a-f]{40}$/.test(binding
   fail("source Git OID must be a full lowercase commit OID");
 }
 const sourceOid = binding.source_git_oid;
+const trustSpine = record(load(trustSpinePath), "trust-spine manifest");
+if (!Array.isArray(trustSpine.tickets)) fail("trust-spine tickets must be an array");
+const t37Rows = trustSpine.tickets.filter((ticket) => ticket?.id === "t37");
+if (t37Rows.length !== 1) fail("trust-spine must contain exactly one t37 row");
+const t37 = record(t37Rows[0], "trust-spine t37 row");
+equal(t37.status, "Done", "trust-spine t37 status");
+const completion = record(t37.completed_at, "trust-spine t37 completion");
+if (typeof completion.commit !== "string" || !/^[0-9a-f]{40}$/.test(completion.commit)) {
+  fail("t37 packed-output commit must be a full lowercase commit OID");
+}
+const packedOutputOid = completion.commit;
 const sourceHandoffs = execFileSync("git", [
   "log", "--format=%H", "--perl-regexp",
   "--grep=^fix\\(build\\): honor pinned release identity$",
@@ -148,19 +165,26 @@ const sourceHandoffs = execFileSync("git", [
 equal(sourceHandoffs, [t37bSourceOid], "unique committed t37b source handoff");
 equal(sourceOid, t37bSourceOid, "non-self-referential source Git OID");
 try {
-  execFileSync("git", ["merge-base", "--is-ancestor", sourceOid, headOid], {
+  execFileSync("git", ["merge-base", "--is-ancestor", sourceOid, packedOutputOid], {
     cwd: repositoryRoot, stdio: "ignore",
   });
 } catch {
-  fail("t37b source handoff must be an ancestor of HEAD");
+  fail("t37b source handoff must be an ancestor of the packed-output commit");
 }
-const changed = execFileSync("git", ["diff", "--name-only", sourceOid, headOid], {
+try {
+  execFileSync("git", ["merge-base", "--is-ancestor", packedOutputOid, headOid], {
+    cwd: repositoryRoot, stdio: "ignore",
+  });
+} catch {
+  fail("t37 packed-output commit must be an ancestor of HEAD");
+}
+const changed = execFileSync("git", ["diff", "--name-only", sourceOid, packedOutputOid], {
   cwd: repositoryRoot, encoding: "utf8",
 }).trim().split("\n").filter(Boolean);
 if (changed.some((path) => !completionPaths.some((owned) =>
   owned.endsWith("/") ? path.startsWith(owned) : path === owned
 ))) {
-  fail("completion history contains a path outside the t37c ownership boundary");
+  fail("packed-output history contains a path outside the t37c ownership boundary");
 }
 const release = load(releasePath);
 equal(binding.release, {
@@ -185,6 +209,21 @@ for (const kind of ["npm_tarball", "python_wheel"]) {
   const path = join(directory, archive.filename);
   equal(archive.sha256, sha256File(path), `${kind} archive digest`);
   equal(archive.inventory_sha256, archiveInventory(path, kind), `${kind} inventory digest`);
+  retainedOutputPaths.push(relative(repositoryRoot, path).split(sep).join("/"));
+}
+for (const path of retainedOutputPaths) {
+  let committed;
+  try {
+    committed = execFileSync("git", ["show", `${packedOutputOid}:${path}`], {
+      cwd: repositoryRoot,
+      maxBuffer: 32 * 1024 * 1024,
+    });
+  } catch {
+    fail(`packed-output commit does not retain ${path}`);
+  }
+  if (!readFileSync(join(repositoryRoot, path)).equals(committed)) {
+    fail(`retained output differs from packed-output commit: ${path}`);
+  }
 }
 if (!Array.isArray(binding.corpora)) fail("corpora must be an array");
 equal(binding.corpora, corpusPaths.map((path) => ({
