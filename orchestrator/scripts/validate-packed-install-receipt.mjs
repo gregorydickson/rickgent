@@ -184,17 +184,22 @@ equal(binding.corpora, corpusPaths.map((path) => ({
   sha256: sha256File(join(repositoryRoot, path)),
 })), "corpus bindings");
 const build = record(binding.build, "build");
-equal(build.id, sourceOid, "build identity");
 const npmArchive = binding.archives.find((entry) => entry.kind === "npm_tarball");
 const wheelArchive = binding.archives.find((entry) => entry.kind === "python_wheel");
 const extractRoot = mkdtempSync(join(process.env.TMPDIR ?? "/tmp", "rickgent-build-binding-"));
+let archiveBuildId;
 try {
   execFileSync("tar", [
     "-xzf", join(artifactsRoot, "npm-dist", npmArchive.filename), "-C", extractRoot,
   ]);
-  equal(build.sha256, sha256File(join(
-    extractRoot, "package", "dist", "build-commit.js",
-  )), "build resource digest");
+  const buildResourcePath = join(extractRoot, "package", "dist", "build-commit.js");
+  equal(build.sha256, sha256File(buildResourcePath), "build resource digest");
+  const match = readFileSync(buildResourcePath, "utf8").match(
+    /export const BUILD_COMMIT = "([0-9a-f]{40})";/,
+  );
+  if (match === null) fail("npm archive build resource does not contain a full lowercase build OID");
+  archiveBuildId = match[1];
+  equal(build.id, archiveBuildId, "build identity");
 } finally {
   rmSync(extractRoot, { recursive: true, force: true });
 }
@@ -240,7 +245,7 @@ const sharedResult = shared.validatePackedInstallReceipt(receipt, load(schemaPat
   sourceGitOid: sourceOid,
   releaseId: release.release_id,
   releaseSha256: sha256File(releasePath),
-  buildId: sourceOid,
+  buildId: archiveBuildId,
   buildSha256: build.sha256,
   npmArchiveSha256: npmArchive.sha256,
   wheelArchiveSha256: wheelArchive.sha256,
