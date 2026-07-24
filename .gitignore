@@ -5,6 +5,7 @@ orchestrator/dist-fixture/
 .rickgent/
 __pycache__/
 *.egg-info/
+rickgent-policies/build/
 *.pyc
 .env
 .DS_Store
