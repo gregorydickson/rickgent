@@ -16,6 +16,7 @@ const allowedKeys = new Set([
   "omnigent_contract_sha256", "omnigent_git_oid", "omnigent_version", "owned_namespace",
   "owner", "packed_receipt_sha256", "policy_inventory_sha256", "policy_sha256", "prerequisites",
   "provider_dispatch_observed", "provider_lifecycle_count", "provider_lifecycle_sha256",
+  "python_sha256",
   "pull_requests_sha256", "reason", "redaction_version", "refusal", "registered_before_mutation",
   "remote", "repository", "repository_deletion", "repository_exists", "repository_id",
   "required_token_operations", "requery_after_action", "role", "schema_version", "source",

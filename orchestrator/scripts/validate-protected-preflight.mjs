@@ -130,13 +130,14 @@ for (const [key, expected] of Object.entries(EXPECTED_T37)) equal(receipt.bindin
 const installation = record(receipt.binding.installation, "binding.installation");
 exactKeys(installation, [
   "build_id", "cli_sha256", "manager_sha256", "omnigent_git_oid", "omnigent_version",
-  "policy_inventory_sha256", "policy_sha256", "source", "worker_sha256",
+  "policy_inventory_sha256", "policy_sha256", "python_sha256", "source", "worker_sha256",
 ], "binding.installation");
 for (const [key, expected] of Object.entries(EXPECTED_INSTALLATION)) {
   equal(installation[key], expected, `installation.${key}`);
 }
 for (const key of [
-  "cli_sha256", "manager_sha256", "policy_inventory_sha256", "policy_sha256", "worker_sha256",
+  "cli_sha256", "manager_sha256", "policy_inventory_sha256", "policy_sha256", "python_sha256",
+  "worker_sha256",
 ]) {
   if (!SHA256.test(installation[key])) fail(`installation.${key} must be lowercase SHA-256`);
 }

@@ -10,6 +10,7 @@ const installed = {
   manager_sha256: "2".repeat(64),
   policy_inventory_sha256: "5".repeat(64),
   policy_sha256: "3".repeat(64),
+  python_sha256: "6".repeat(64),
   worker_sha256: "4".repeat(64),
 };
 
@@ -28,6 +29,11 @@ describe("protected release installed handoff continuity", () => {
       ...installed,
       policy_sha256: undefined,
     })).toThrow("installed handoff policy_sha256 changed after preflight");
+
+    expect(() => requireUnchangedInstalledHandoff(installed, {
+      ...installed,
+      python_sha256: undefined,
+    })).toThrow("installed handoff python_sha256 changed after preflight");
   });
 
   it("binds the copied Omnigent package bytes to the recorded Git tree", () => {

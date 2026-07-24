@@ -332,6 +332,7 @@ function installExactHandoff(packedReceiptPath, archives) {
     omnigent_version: omnigentVersion,
     policy_inventory_sha256: sha256(canonical(policyInventory)),
     policy_sha256: sha256File(policy),
+    python_sha256: sha256File(realpathSync(join(venv, "bin", "python"))),
     source: "exact_t37_persistent_handoff",
     worker_sha256: sha256File(worker),
   };
@@ -696,6 +697,7 @@ export function requireUnchangedInstalledHandoff(expected, observed) {
     "manager_sha256",
     "policy_inventory_sha256",
     "policy_sha256",
+    "python_sha256",
     "worker_sha256",
   ]) {
     if (
@@ -731,6 +733,10 @@ function protectedRuntime(preflight) {
     manager_sha256: sha256File(manager),
     policy_inventory_sha256: sha256(canonical(installedDirectoryInventory(dirname(policy)))),
     policy_sha256: sha256File(policy),
+    // Trap door: exact package bytes do not bind the interpreter that imports
+    // them. This copied executable also runs the persistent SQLite probes, so
+    // its bytes must retain the identity accepted during preflight.
+    python_sha256: sha256File(python),
     worker_sha256: sha256File(worker),
   });
   requireExactOmnigentHandoff(
