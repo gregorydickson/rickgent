@@ -372,6 +372,29 @@ export function completeGitHubCollection(pages, label) {
   return pages.flat();
 }
 
+export function requireExecuteRemoteAuthority(remote, contract, namespaceSeed) {
+  // Trap door: a canonical digest proves only that a preflight is internally
+  // consistent. Before execute mutates GitHub, bind its self-described remote
+  // back to the independently supplied allowlist contract and namespace seed.
+  if (
+    contract?.schema_version !== "rickgent.release-remote-contract/v1"
+    || contract.host !== "github.com"
+    || contract.delete_repository !== false
+    || /\bhttps?:\/\/[^/\s:@]+:[^/\s@]+@/.test(contract.remote_url ?? "")
+    || remote?.allowlist_match !== true
+    || remote.host !== contract.host
+    || remote.owner !== contract.owner
+    || remote.repository !== contract.repository
+    || remote.base_branch !== contract.base_branch
+    || !/^[1-9][0-9]*$/.test(remote?.repository_id ?? "")
+    || !SHA256.test(namespaceSeed ?? "")
+    || remote.owned_namespace
+      !== `rickgent/protected/${sha256(`${namespaceSeed}\0${remote.repository_id}`).slice(0, 24)}`
+  ) {
+    fail("execute preflight does not match the approved remote contract");
+  }
+}
+
 function remoteObservation(contractPath, namespaceSeed) {
   let contract;
   try {
@@ -2031,6 +2054,7 @@ function writeDiagnostics(outputPath, status, codes = []) {
 
 async function runExecute() {
   const preflightPath = realpathSync(resolve(option("--preflight")));
+  const remoteContractPath = realpathSync(resolve(option("--remote-contract")));
   const outputPath = resolve(option("--output"));
   const repeatCount = Number(option("--repeat-count"));
   if (repeatCount !== 2 || process.env.RICKGENT_RELEASE_REPEAT_COUNT !== "2") {
@@ -2040,6 +2064,17 @@ async function runExecute() {
   if (preflight.status !== "accepted" || preflight.mode !== "preflight_only") {
     fail("accepted protected preflight authority is required");
   }
+  let remoteContract;
+  try {
+    remoteContract = JSON.parse(readFileSync(remoteContractPath, "utf8"));
+  } catch {
+    fail("execute remote contract is invalid JSON");
+  }
+  requireExecuteRemoteAuthority(
+    preflight.remote,
+    remoteContract,
+    preflight.binding.packed_receipt_sha256,
+  );
   const runtime = protectedRuntime(preflight);
   const packedPath = realpathSync(join(dirname(preflightPath), "packed-install-summary.json"));
   const packed = parseCanonicalReceipt(packedPath, "1.0.0");

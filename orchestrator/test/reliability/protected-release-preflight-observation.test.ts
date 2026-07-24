@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   completeGitHubCollection,
+  requireExecuteRemoteAuthority,
   requireUnchangedRemoteObservation,
 } from "../../scripts/run-protected-release.mjs";
 
@@ -21,6 +22,42 @@ function observation() {
 }
 
 describe("protected release preflight remote observation", () => {
+  const namespaceSeed = "a".repeat(64);
+  const contract = {
+    base_branch: "main",
+    delete_repository: false,
+    host: "github.com",
+    owner: "owner",
+    remote_url: "https://github.com/owner/repository.git",
+    repository: "repository",
+    schema_version: "rickgent.release-remote-contract/v1",
+  };
+  const remote = {
+    allowlist_match: true,
+    base_branch: "main",
+    host: "github.com",
+    owned_namespace: "rickgent/protected/d19726c525997862746f2066",
+    owner: "owner",
+    repository: "repository",
+    repository_id: "123",
+  };
+
+  it("binds execute mutations to the independently supplied remote contract", () => {
+    expect(() => requireExecuteRemoteAuthority(remote, contract, namespaceSeed)).not.toThrow();
+
+    for (const forged of [
+      { ...remote, owner: "other" },
+      { ...remote, repository: "other" },
+      { ...remote, base_branch: "release" },
+      { ...remote, repository_id: "456" },
+      { ...remote, owned_namespace: "rickgent/protected/d19726c525997862746f2067" },
+    ]) {
+      expect(() => requireExecuteRemoteAuthority(forged, contract, namespaceSeed)).toThrow(
+        "execute preflight does not match the approved remote contract",
+      );
+    }
+  });
+
   it("retains records from every GitHub response page", () => {
     const pages = [
       Array.from({ length: 100 }, (_, index) => ({ name: `branch-${index}` })),
