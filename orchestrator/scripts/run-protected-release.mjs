@@ -1252,6 +1252,20 @@ export function requireIndependentReviewObservation(provider, candidateOid) {
   return review;
 }
 
+export function receiptModelObservation(provider) {
+  // Trap door: provider records contain internal evidence (including the
+  // candidate-bound review disposition) that is consumed by phase evidence.
+  // The signed receipt's modelObservation schema is a narrower dispatch
+  // projection with additionalProperties=false; do not spread internal
+  // evidence across that schema boundary.
+  const {
+    identity_sha256: _identity,
+    review: _review,
+    ...observation
+  } = provider;
+  return observation;
+}
+
 function prepareLocalLifecycleCandidate(runtime, runRoot, runId) {
   const policyRoot = realpathSync(runRoot);
   const policy = run(runtime.python, [
@@ -1539,7 +1553,7 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
     })),
     failure_cleanup: failureCleanup,
     lifecycle_complete: true,
-    model_observations: providers.map(({ identity_sha256: _identity, ...provider }) => provider),
+    model_observations: providers.map(receiptModelObservation),
     phase_evidence: phaseEvidence,
     persistent_state_id: persistentStateId,
     run_id: runId,
