@@ -244,10 +244,13 @@ function validateArchiveContinuity(index, packed, vertical) {
     if (!path) fail(`unsupported archive kind in proof index: ${archive.kind}`);
     const actual = sha256(path);
     if (archive.sha256 !== actual) fail(`${archive.kind} archive digest changed`);
-    const packedDigest =
-      archive.kind === "npm_tarball"
-        ? packed.binding?.npm_archive_sha256
-        : packed.binding?.wheel_archive_sha256;
+    const packedArchive = packed.binding?.archives?.find(
+      (candidate) => candidate.kind === archive.kind,
+    );
+    if (!packedArchive) {
+      fail(`packed receipt has no ${archive.kind} archive binding`);
+    }
+    const packedDigest = packedArchive.sha256;
     const verticalDigest =
       archive.kind === "npm_tarball"
         ? vertical.binding?.npm_archive_sha256
