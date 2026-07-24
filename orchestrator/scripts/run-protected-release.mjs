@@ -1136,52 +1136,59 @@ export function pullRequestCleanupCandidates(pulls, branch, deliveryOid) {
   return candidates;
 }
 
-function createDelivery(preflight, runId, providerEvidence, { injectFailureAfterPullRequest = false } = {}) {
+export function requireReviewedDelivery(candidateOid, branchObservation, pullObservation) {
+  // Trap door: a candidate-bound review approves one immutable Git commit.
+  // The hosted branch and pull request must expose that exact commit, not a
+  // separately constructed proof commit that merely cites provider bundles.
+  if (
+    !OID.test(candidateOid ?? "")
+    || branchObservation?.object?.sha !== candidateOid
+    || pullObservation?.head?.sha !== candidateOid
+  ) {
+    fail("hosted delivery does not match the reviewed candidate");
+  }
+}
+
+function gitHubRepositoryUrl(preflight) {
+  return `https://github.com/${preflight.remote.owner}/${preflight.remote.repository}.git`;
+}
+
+function gitHubCredentialArgs() {
+  return [
+    "-c", "credential.helper=",
+    "-c", "credential.helper=!gh auth git-credential",
+  ];
+}
+
+function createDelivery(preflight, runId, candidate, { injectFailureAfterPullRequest = false } = {}) {
   const { repoPath } = observeRemote(preflight);
   const branch = `${preflight.remote.owned_namespace}/${runId}`;
   if (ghApiMaybe(`${repoPath}/git/ref/heads/${branch}`) !== null) fail(`owned branch already exists: ${runId}`);
-  const partial = { branch, deliveryOid: null, pullRequestId: null, repoPath };
+  const repository = realpathSync(candidate?.repository ?? "");
+  const candidateOid = candidate?.candidateOid;
+  const observedCandidateOid = run("git", [
+    "-C", repository, "rev-parse", `${candidateOid}^{commit}`,
+  ]);
+  const candidateBaseOid = run("git", [
+    "-C", repository, "rev-parse", `${candidateOid}^`,
+  ]);
+  const baseRef = ghApi(`${repoPath}/git/ref/heads/${preflight.remote.base_branch}`);
+  if (
+    !OID.test(candidateOid ?? "")
+    || observedCandidateOid !== candidateOid
+    || candidateBaseOid !== baseRef.object.sha
+  ) {
+    fail("reviewed candidate is not based on the current protected base");
+  }
+  const partial = { branch, deliveryOid: candidateOid, pullRequestId: null, repoPath };
   try {
-    const baseRef = ghApi(`${repoPath}/git/ref/heads/${preflight.remote.base_branch}`);
-    const baseOid = baseRef.object.sha;
-    const baseCommit = ghApi(`${repoPath}/git/commits/${baseOid}`);
-    const proof = canonical({
-      implementation_sha256: providerEvidence[0].bundle_sha256,
-      review_sha256: providerEvidence[1].bundle_sha256,
-      run_id: runId,
-    });
-    const blob = ghApi(`${repoPath}/git/blobs`, {
-      method: "POST",
-      body: { content: `${proof}\n`, encoding: "utf-8" },
-    });
-    const tree = ghApi(`${repoPath}/git/trees`, {
-      method: "POST",
-      body: {
-        base_tree: baseCommit.tree.sha,
-        tree: [{
-          mode: "100644",
-          path: `proofs/${runId}.json`,
-          sha: blob.sha,
-          type: "blob",
-        }],
-      },
-    });
-    const commit = ghApi(`${repoPath}/git/commits`, {
-      method: "POST",
-      body: {
-        message: `proof: ${runId}`,
-        parents: [baseOid],
-        tree: tree.sha,
-      },
-    });
-    if (!OID.test(commit.sha)) fail("GitHub did not return a delivery commit OID");
-    partial.deliveryOid = commit.sha;
-    ghApi(`${repoPath}/git/refs`, {
-      method: "POST",
-      body: { ref: `refs/heads/${branch}`, sha: commit.sha },
-    });
+    run("git", [
+      "-C", repository,
+      ...gitHubCredentialArgs(),
+      "push", "--porcelain", gitHubRepositoryUrl(preflight),
+      `${candidateOid}:refs/heads/${branch}`,
+    ], { timeout: 120_000 });
     const observedBranch = ghApi(`${repoPath}/git/ref/heads/${branch}`);
-    if (observedBranch.object.sha !== commit.sha) fail("created branch does not match delivery OID");
     const pull = ghApi(`${repoPath}/pulls`, {
       method: "POST",
       body: {
@@ -1193,7 +1200,8 @@ function createDelivery(preflight, runId, providerEvidence, { injectFailureAfter
     });
     partial.pullRequestId = String(pull.number);
     const observedPull = ghApi(`${repoPath}/pulls/${pull.number}`);
-    if (observedPull.head.sha !== commit.sha || observedPull.head.ref !== branch) {
+    requireReviewedDelivery(candidateOid, observedBranch, observedPull);
+    if (observedPull.head.ref !== branch) {
       fail("pull request head does not match the delivery OID");
     }
     const matching = ghApi(`${repoPath}/pulls?state=open&head=${preflight.remote.owner}:${branch}&base=${preflight.remote.base_branch}`);
@@ -1205,7 +1213,7 @@ function createDelivery(preflight, runId, providerEvidence, { injectFailureAfter
     }
     return {
       branch,
-      delivery_oid: commit.sha,
+      delivery_oid: candidateOid,
       pull_request_head_oid: observedPull.head.sha,
       pull_request_id: String(pull.number),
       repoPath,
@@ -1257,11 +1265,11 @@ function createDelivery(preflight, runId, providerEvidence, { injectFailureAfter
   }
 }
 
-function exerciseFailureCleanup(preflight, runId, providerEvidence) {
+function exerciseFailureCleanup(preflight, runId, candidate) {
   const failureRunId = `${runId}-failure-cleanup`;
   const branch = `${preflight.remote.owned_namespace}/${failureRunId}`;
   try {
-    createDelivery(preflight, failureRunId, providerEvidence, {
+    createDelivery(preflight, failureRunId, candidate, {
       injectFailureAfterPullRequest: true,
     });
     fail("failure cleanup probe unexpectedly completed");
@@ -1370,7 +1378,7 @@ export function receiptModelObservation(provider) {
   return observation;
 }
 
-function prepareLocalLifecycleWorkspace(runtime, runRoot, runId) {
+function prepareLocalLifecycleWorkspace(runtime, preflight, runRoot, runId) {
   const policyRoot = realpathSync(runRoot);
   const policy = run(runtime.python, [
     "-c",
@@ -1417,10 +1425,18 @@ print(json.dumps({
   run("git", ["init", "-q", repository]);
   run("git", ["-C", repository, "config", "user.name", "Rickgent Protected Proof"]);
   run("git", ["-C", repository, "config", "user.email", "proof@rickgent.invalid"]);
-  writeFileSync(join(repository, "baseline.txt"), "protected release baseline\n");
-  run("git", ["-C", repository, "add", "baseline.txt"]);
-  run("git", ["-C", repository, "commit", "-q", "-m", "proof: baseline"]);
-  const baselineOid = run("git", ["-C", repository, "rev-parse", "HEAD"]);
+  const { repoPath } = observeRemote(preflight);
+  const baseRef = ghApi(`${repoPath}/git/ref/heads/${preflight.remote.base_branch}`);
+  run("git", [
+    "-C", repository,
+    ...gitHubCredentialArgs(),
+    "fetch", "--no-tags", gitHubRepositoryUrl(preflight),
+    `refs/heads/${preflight.remote.base_branch}`,
+  ], { timeout: 120_000 });
+  const baselineOid = run("git", ["-C", repository, "rev-parse", "FETCH_HEAD"]);
+  if (!OID.test(baselineOid) || baselineOid !== baseRef.object.sha) {
+    fail("local candidate base does not match the protected remote base");
+  }
   run("git", ["-C", repository, "worktree", "add", "-q", "-b", `attempt/${runId}`, worktree, baselineOid]);
   const deliveryRef = `refs/rickgent/runs/${runId}/delivery`;
   run("git", ["-C", repository, "update-ref", deliveryRef, baselineOid]);
@@ -1546,7 +1562,7 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
   // reviewer must receive that immutable result. Prepare only the owned
   // workspace in the parent; the crash worker materializes and commits its
   // authenticated Codex artifact before exposing the durable checkpoint.
-  const lifecycleWorkspace = prepareLocalLifecycleWorkspace(runtime, runRoot, runId);
+  const lifecycleWorkspace = prepareLocalLifecycleWorkspace(runtime, preflight, runRoot, runId);
   const crashStarted = new Date().toISOString();
   const crashConfigPath = join(runRoot, "crash.json");
   const checkpoint = join(runRoot, "checkpoint.json");
@@ -1640,7 +1656,7 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
   });
   const phaseEvidence = deriveLocalLifecycle(lifecycleCandidate, attempts, providers);
   phaseEvidence.persistence = lifecycleObservation;
-  const delivery = createDelivery(preflight, runId, providers);
+  const delivery = createDelivery(preflight, runId, lifecycleCandidate);
   phaseEvidence.push = {
     branch: delivery.branch,
     observed_oid: delivery.delivery_oid,
@@ -1677,7 +1693,7 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
     pull_request_closed: true,
     repository_preserved: true,
   };
-  const failureCleanup = exerciseFailureCleanup(preflight, runId, providers);
+  const failureCleanup = exerciseFailureCleanup(preflight, runId, lifecycleCandidate);
   phaseEvidence["failure-cleanup"] = failureCleanup;
   return {
     attempts,

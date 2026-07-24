@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   parseReviewDisposition,
+  requireReviewedDelivery,
   requireIndependentReviewObservation,
 } from "../../scripts/run-protected-release.mjs";
 
@@ -8,6 +9,26 @@ const candidateOid = "a".repeat(40);
 const bundleSha256 = "b".repeat(64);
 
 describe("protected release independent review observation", () => {
+  it("requires the hosted branch and pull request to expose the reviewed commit", () => {
+    const candidateOid = "a".repeat(40);
+    expect(() => requireReviewedDelivery(
+      candidateOid,
+      { object: { sha: candidateOid } },
+      { head: { sha: candidateOid } },
+    )).not.toThrow();
+
+    for (const [branchOid, pullOid] of [
+      ["b".repeat(40), candidateOid],
+      [candidateOid, "b".repeat(40)],
+    ]) {
+      expect(() => requireReviewedDelivery(
+        candidateOid,
+        { object: { sha: branchOid } },
+        { head: { sha: pullOid } },
+      )).toThrow(/hosted delivery/);
+    }
+  });
+
   it("parses only an exact disposition bound to the candidate", () => {
     expect(parseReviewDisposition(JSON.stringify({
       findings: [],
