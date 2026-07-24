@@ -1165,6 +1165,26 @@ function cleanupDelivery(preflight, delivery) {
   observeRemote(preflight);
 }
 
+export function requireIndependentReviewObservation(provider, candidateOid) {
+  // Trap door: an authenticated provider identity probe proves which model
+  // answered, not that the model reviewed the candidate. A clean review must
+  // bind its disposition to the immutable candidate commit and the exact
+  // transcript bundle before remediation or release gates can consume it.
+  const review = provider?.review;
+  if (
+    provider?.role !== "review"
+    || !OID.test(candidateOid ?? "")
+    || review?.reviewed_commit_oid !== candidateOid
+    || review?.verdict !== "accept"
+    || canonical(review?.findings) !== canonical([])
+    || review?.bundle_sha256 !== provider?.bundle_sha256
+    || !SHA256.test(review?.bundle_sha256 ?? "")
+  ) {
+    fail("independent review did not accept the immutable candidate");
+  }
+  return review;
+}
+
 function deriveLocalLifecycle(runtime, runRoot, runId, attempts, providers) {
   const policyRoot = realpathSync(runRoot);
   const policy = run(runtime.python, [
@@ -1236,6 +1256,8 @@ print(json.dumps({
     canonical(changedPaths) !== canonical(["proof.txt"]) ||
     !clean
   ) fail(`${runId} local ownership and scope-clean commit proof failed`);
+  const reviewProvider = providers.find((item) => item.role === "review");
+  const review = requireIndependentReviewObservation(reviewProvider, candidateOid);
   const commonDir = realpathSync(join(repository, run("git", ["-C", repository, "rev-parse", "--git-common-dir"])));
   const records = {
     "native-policy": policy,
@@ -1253,10 +1275,15 @@ print(json.dumps({
     lease: { after_oid: candidateOid, before_oid: baselineOid, compare_and_swap: true },
     process: attempts,
     "scope-clean-commit": { changed_paths: changedPaths, commit_oid: candidateOid },
-    review: providers.find((item) => item.role === "review"),
+    review: {
+      bundle_sha256: review.bundle_sha256,
+      findings: review.findings,
+      reviewed_commit_oid: review.reviewed_commit_oid,
+      verdict: review.verdict,
+    },
     remediation: {
       required: false,
-      review_bundle_sha256: providers.find((item) => item.role === "review")?.bundle_sha256,
+      review_bundle_sha256: review.bundle_sha256,
       status: "review_clean",
     },
     gate: {
