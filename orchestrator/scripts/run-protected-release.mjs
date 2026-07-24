@@ -599,23 +599,80 @@ export function requireExactProbeReply(reply, expected, role) {
   }
 }
 
-function providerProbe(role, runId) {
+export function parseReviewDisposition(reply, candidateOid) {
+  let disposition;
+  try {
+    disposition = JSON.parse(reply);
+  } catch {
+    fail("review provider did not return a structured candidate disposition");
+  }
+  if (
+    !OID.test(candidateOid ?? "")
+    || canonical(Object.keys(disposition ?? {}).sort())
+      !== canonical(["findings", "reviewed_commit_oid", "verdict"])
+    || disposition.reviewed_commit_oid !== candidateOid
+    || !["accept", "reject"].includes(disposition.verdict)
+    || !Array.isArray(disposition.findings)
+    || disposition.findings.some((finding) => (
+      typeof finding !== "string" || finding.trim() === ""
+    ))
+    || (disposition.verdict === "accept" && disposition.findings.length !== 0)
+    || (disposition.verdict === "reject" && disposition.findings.length === 0)
+  ) {
+    fail("review provider disposition is not bound to the immutable candidate");
+  }
+  return disposition;
+}
+
+function providerProbe(role, runId, reviewCandidate) {
   const safeEnv = { ...process.env, CI: "1", CODEX_NO_UPDATE_CHECK: "1" };
   delete safeEnv.GH_TOKEN;
   delete safeEnv.GITHUB_TOKEN;
-  const expected = role === "implementation"
-    ? "RICKGENT_IMPLEMENTATION_PROBE_OK"
-    : "RICKGENT_REVIEW_PROBE_OK";
-  const prompt = [
-    `Protected release identity probe for ${runId}.`,
-    "Do not inspect files, invoke tools, or make changes.",
-    `Reply with exactly ${expected}.`,
-  ].join(" ");
+  const expected = "RICKGENT_IMPLEMENTATION_PROBE_OK";
+  let prompt;
+  if (role === "implementation") {
+    prompt = [
+      `Protected release identity probe for ${runId}.`,
+      "Do not inspect files, invoke tools, or make changes.",
+      `Reply with exactly ${expected}.`,
+    ].join(" ");
+  } else {
+    if (
+      !OID.test(reviewCandidate?.candidate_oid ?? "")
+      || typeof reviewCandidate?.repository !== "string"
+    ) fail("review candidate authority is absent");
+    const repository = realpathSync(reviewCandidate.repository);
+    const observedOid = run("git", [
+      "-C", repository, "rev-parse", `${reviewCandidate.candidate_oid}^{commit}`,
+    ]);
+    if (observedOid !== reviewCandidate.candidate_oid) {
+      fail("review candidate identity changed before dispatch");
+    }
+    const patch = run("git", [
+      "-C", repository,
+      "show", "--format=fuller", "--no-ext-diff", "--binary",
+      reviewCandidate.candidate_oid,
+    ]);
+    prompt = [
+      `Independently review immutable candidate commit ${reviewCandidate.candidate_oid}`,
+      `for protected release run ${runId}.`,
+      "Review the exact Git show payload below for correctness and release-blocking defects.",
+      "Do not invoke tools or make changes.",
+      "Reply with exactly one JSON object and no markdown.",
+      `The object must be {"findings":[],"reviewed_commit_oid":"${reviewCandidate.candidate_oid}","verdict":"accept"} when clean.`,
+      "When defects exist, verdict must be reject and findings must contain concise non-empty strings.",
+      `Git show SHA-256: ${sha256(patch)}.`,
+      "BEGIN IMMUTABLE GIT SHOW",
+      patch,
+      "END IMMUTABLE GIT SHOW",
+    ].join("\n");
+  }
   let response;
   let adapter;
   let assistantReply;
   let identity;
   let model;
+  let review;
   if (role === "implementation") {
     model = "gpt-5.6-sol";
     adapter = "codex-cli";
@@ -674,8 +731,17 @@ function providerProbe(role, runId) {
       requested_key: model,
     };
   }
-  requireExactProbeReply(assistantReply, expected, role);
-  const responseSha = sha256(response);
+  if (role === "implementation") {
+    requireExactProbeReply(assistantReply, expected, role);
+  } else {
+    review = parseReviewDisposition(assistantReply, reviewCandidate.candidate_oid);
+  }
+  // The bundle binds both the assistant response and the exact prompt. For a
+  // review, that prompt contains the immutable candidate OID and Git payload.
+  const responseSha = sha256(canonical({ prompt, response }));
+  if (review !== undefined) {
+    review = { ...review, bundle_sha256: responseSha };
+  }
   return {
     adapter,
     bundle_sha256: responseSha,
@@ -687,6 +753,7 @@ function providerProbe(role, runId) {
     observed_model: model,
     process_id: process.pid,
     requested_model: model,
+    ...(review === undefined ? {} : { review }),
     role,
   };
 }
@@ -792,7 +859,7 @@ async function runAttemptWorker() {
     },
   });
   if (buildId !== config.build_id) fail("attempt did not execute the exact installed CLI");
-  config.provider = providerProbe(config.role, config.run_id);
+  config.provider = providerProbe(config.role, config.run_id, config.review_candidate);
   writeFileSync(config.provider_file, `${canonical(config.provider)}\n`);
   let checkpointObservation;
   if (config.phase === "resume") {
@@ -1185,7 +1252,7 @@ export function requireIndependentReviewObservation(provider, candidateOid) {
   return review;
 }
 
-function deriveLocalLifecycle(runtime, runRoot, runId, attempts, providers) {
+function prepareLocalLifecycleCandidate(runtime, runRoot, runId) {
   const policyRoot = realpathSync(runRoot);
   const policy = run(runtime.python, [
     "-c",
@@ -1256,8 +1323,6 @@ print(json.dumps({
     canonical(changedPaths) !== canonical(["proof.txt"]) ||
     !clean
   ) fail(`${runId} local ownership and scope-clean commit proof failed`);
-  const reviewProvider = providers.find((item) => item.role === "review");
-  const review = requireIndependentReviewObservation(reviewProvider, candidateOid);
   const commonDir = realpathSync(join(repository, run("git", ["-C", repository, "rev-parse", "--git-common-dir"])));
   const records = {
     "native-policy": policy,
@@ -1273,8 +1338,17 @@ print(json.dumps({
     ref: { delivery_ref_sha256: sha256(deliveryRef), observed_oid: deliveryRefOid },
     index: { tree_oid: indexTree },
     lease: { after_oid: candidateOid, before_oid: baselineOid, compare_and_swap: true },
-    process: attempts,
     "scope-clean-commit": { changed_paths: changedPaths, commit_oid: candidateOid },
+  };
+  return { candidateOid, clean, records, repository };
+}
+
+function deriveLocalLifecycle(candidate, attempts, providers) {
+  const reviewProvider = providers.find((item) => item.role === "review");
+  const review = requireIndependentReviewObservation(reviewProvider, candidate.candidateOid);
+  return {
+    ...candidate.records,
+    process: attempts,
     review: {
       bundle_sha256: review.bundle_sha256,
       findings: review.findings,
@@ -1287,12 +1361,11 @@ print(json.dumps({
       status: "review_clean",
     },
     gate: {
-      clean_worktree: clean,
+      clean_worktree: candidate.clean,
       native_policy_allow_deny: true,
       provider_identity_count: providers.filter((item) => SHA256.test(item.identity_sha256)).length,
     },
   };
-  return records;
 }
 
 async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
@@ -1308,6 +1381,11 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
   const attempts = [];
   const providers = [];
 
+  // Trap door: the review attempt cannot review a candidate constructed after
+  // it exits. Prepare the immutable commit before the crash/resume lifecycle,
+  // then give the resume process only its repository and full OID; that process
+  // independently reads the exact Git payload used in the review prompt.
+  const lifecycleCandidate = prepareLocalLifecycleCandidate(runtime, runRoot, runId);
   const crashStarted = new Date().toISOString();
   const crashConfigPath = join(runRoot, "crash.json");
   const checkpoint = join(runRoot, "checkpoint.json");
@@ -1363,6 +1441,10 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
     phase: "resume",
     provider_file: reviewProviderPath,
     python: runtime.python,
+    review_candidate: {
+      candidate_oid: lifecycleCandidate.candidateOid,
+      repository: lifecycleCandidate.repository,
+    },
     role: "review",
     run_id: runId,
     sqlite,
@@ -1392,7 +1474,7 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
     process_id: resumePid,
     started_at: resumeStarted,
   });
-  const phaseEvidence = deriveLocalLifecycle(runtime, runRoot, runId, attempts, providers);
+  const phaseEvidence = deriveLocalLifecycle(lifecycleCandidate, attempts, providers);
   phaseEvidence.persistence = lifecycleObservation;
   const delivery = createDelivery(preflight, runId, providers);
   phaseEvidence.push = {

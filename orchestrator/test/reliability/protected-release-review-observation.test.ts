@@ -1,10 +1,56 @@
 import { describe, expect, it } from "vitest";
-import { requireIndependentReviewObservation } from "../../scripts/run-protected-release.mjs";
+import {
+  parseReviewDisposition,
+  requireIndependentReviewObservation,
+} from "../../scripts/run-protected-release.mjs";
 
 const candidateOid = "a".repeat(40);
 const bundleSha256 = "b".repeat(64);
 
 describe("protected release independent review observation", () => {
+  it("parses only an exact disposition bound to the candidate", () => {
+    expect(parseReviewDisposition(JSON.stringify({
+      findings: [],
+      reviewed_commit_oid: candidateOid,
+      verdict: "accept",
+    }), candidateOid)).toEqual({
+      findings: [],
+      reviewed_commit_oid: candidateOid,
+      verdict: "accept",
+    });
+  });
+
+  it.each([
+    ["prose around JSON", `clean\n${JSON.stringify({
+      findings: [],
+      reviewed_commit_oid: candidateOid,
+      verdict: "accept",
+    })}`],
+    ["another commit", JSON.stringify({
+      findings: [],
+      reviewed_commit_oid: "c".repeat(40),
+      verdict: "accept",
+    })],
+    ["accepted findings", JSON.stringify({
+      findings: ["not actually clean"],
+      reviewed_commit_oid: candidateOid,
+      verdict: "accept",
+    })],
+    ["empty rejection", JSON.stringify({
+      findings: [],
+      reviewed_commit_oid: candidateOid,
+      verdict: "reject",
+    })],
+    ["extra fields", JSON.stringify({
+      findings: [],
+      reviewed_commit_oid: candidateOid,
+      summary: "clean",
+      verdict: "accept",
+    })],
+  ])("rejects %s", (_label, reply) => {
+    expect(() => parseReviewDisposition(reply, candidateOid)).toThrow();
+  });
+
   it("rejects an authenticated identity probe with no candidate disposition", () => {
     expect(() => requireIndependentReviewObservation({
       bundle_sha256: bundleSha256,
