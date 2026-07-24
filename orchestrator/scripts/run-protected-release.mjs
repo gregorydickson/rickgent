@@ -1160,6 +1160,39 @@ function gitHubCredentialArgs() {
   ];
 }
 
+export function deleteBranchWithLease(
+  repository,
+  remoteUrl,
+  branch,
+  expectedOid,
+  credentialArgs = [],
+) {
+  // Trap door: observe-then-DELETE is not compare-before-delete. Only a
+  // server-side ref update whose lease names the exact owned OID closes the
+  // race where another actor advances the branch after our observation.
+  if (
+    !OID.test(expectedOid ?? "")
+    || typeof remoteUrl !== "string"
+    || remoteUrl === ""
+    || typeof branch !== "string"
+    || branch === ""
+    || !Array.isArray(credentialArgs)
+    || credentialArgs.some((argument) => typeof argument !== "string")
+  ) {
+    fail("branch deletion lease authority is invalid");
+  }
+  const resolvedRepository = realpathSync(repository);
+  run("git", ["check-ref-format", `refs/heads/${branch}`]);
+  run("git", [
+    "-C", resolvedRepository,
+    ...credentialArgs,
+    "push", "--porcelain",
+    `--force-with-lease=refs/heads/${branch}:${expectedOid}`,
+    remoteUrl,
+    `:refs/heads/${branch}`,
+  ], { timeout: 120_000 });
+}
+
 function createDelivery(preflight, runId, candidate, { injectFailureAfterPullRequest = false } = {}) {
   const { repoPath } = observeRemote(preflight);
   const branch = `${preflight.remote.owned_namespace}/${runId}`;
@@ -1217,6 +1250,7 @@ function createDelivery(preflight, runId, candidate, { injectFailureAfterPullReq
       pull_request_head_oid: observedPull.head.sha,
       pull_request_id: String(pull.number),
       repoPath,
+      repository,
     };
   } catch (error) {
     try {
@@ -1254,7 +1288,13 @@ function createDelivery(preflight, runId, candidate, { injectFailureAfterPullReq
           partial.deliveryOid === null ||
           branchObservation.object?.sha !== partial.deliveryOid
         ) fail("partial branch changed before failure cleanup");
-        ghApi(`${repoPath}/git/refs/heads/${branch}`, { method: "DELETE" });
+        deleteBranchWithLease(
+          repository,
+          gitHubRepositoryUrl(preflight),
+          branch,
+          partial.deliveryOid,
+          gitHubCredentialArgs(),
+        );
       }
     } catch (cleanupError) {
       const original = error instanceof Error ? error.message : String(error);
@@ -1334,9 +1374,13 @@ function cleanupDelivery(preflight, delivery) {
   if (closed.state !== "closed") fail("owned pull request did not close");
   const before = ghApi(`${delivery.repoPath}/git/ref/heads/${delivery.branch}`);
   if (before.object.sha !== delivery.delivery_oid) fail("branch changed before compare-and-delete");
-  const compare = ghApi(`${delivery.repoPath}/git/ref/heads/${delivery.branch}`);
-  if (compare.object.sha !== before.object.sha) fail("branch changed during compare-and-delete");
-  ghApi(`${delivery.repoPath}/git/refs/heads/${delivery.branch}`, { method: "DELETE" });
+  deleteBranchWithLease(
+    delivery.repository,
+    gitHubRepositoryUrl(preflight),
+    delivery.branch,
+    delivery.delivery_oid,
+    gitHubCredentialArgs(),
+  );
   if (ghApiMaybe(`${delivery.repoPath}/git/ref/heads/${delivery.branch}`) !== null) {
     fail("owned branch remains after cleanup");
   }
