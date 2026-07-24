@@ -22,9 +22,15 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const OID = /^[0-9a-f]{40}$/;
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 
+class ProtectedReleaseRefusal extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ProtectedReleaseRefusal";
+  }
+}
+
 function fail(message) {
-  console.error(`PROTECTED_RELEASE_REFUSED: ${message}`);
-  process.exit(2);
+  throw new ProtectedReleaseRefusal(message);
 }
 
 function canonical(value) {
@@ -510,6 +516,7 @@ function providerProbe(role, runId) {
   ].join(" ");
   let response;
   let adapter;
+  let identity;
   let model;
   if (role === "implementation") {
     model = "gpt-5.6-sol";
@@ -525,6 +532,18 @@ function providerProbe(role, runId) {
       "--json",
       prompt,
     ], { env: safeEnv, timeout: 5 * 60_000 });
+    const catalog = run("codex", ["debug", "models"], {
+      env: safeEnv,
+      json: true,
+      timeout: 30_000,
+    });
+    const observed = catalog?.models?.find((entry) => entry.slug === model);
+    if (observed === undefined) fail("OpenAI model identity is absent from the authenticated catalog");
+    identity = {
+      display_name: observed.display_name,
+      provider: "openai",
+      slug: observed.slug,
+    };
   } else {
     model = "claude-opus-4-8[1m]";
     adapter = "claude-code";
@@ -538,6 +557,22 @@ function providerProbe(role, runId) {
       "--max-turns", "1",
       prompt,
     ], { env: safeEnv, timeout: 5 * 60_000 });
+    let payload;
+    try {
+      payload = JSON.parse(response);
+    } catch {
+      fail("Claude provider identity probe returned invalid JSON");
+    }
+    const observed = payload?.modelUsage?.[model];
+    if (observed?.provider !== "firstParty" || observed?.canonicalModel !== "claude-opus-4-8") {
+      fail("Anthropic model identity is absent from the authenticated response");
+    }
+    identity = {
+      canonical_model: observed.canonicalModel,
+      context_window: observed.contextWindow,
+      provider: observed.provider,
+      requested_key: model,
+    };
   }
   if (!response.includes(expected)) fail(`${role} provider identity probe did not return its bound marker`);
   const responseSha = sha256(response);
@@ -547,6 +582,7 @@ function providerProbe(role, runId) {
     conversation_id: sha256(`conversation:${runId}:${role}:${responseSha}`).slice(0, 32),
     dispatch_id: sha256(`dispatch:${runId}:${role}:${responseSha}`).slice(0, 32),
     evidence_id: `run:${runId.split("-").at(-1)}:model:${role}`,
+    identity_sha256: sha256(canonical(identity)),
     invoked_model: model,
     observed_model: model,
     process_id: process.pid,
@@ -670,69 +706,99 @@ function createDelivery(preflight, runId, providerEvidence) {
   const { repoPath } = observeRemote(preflight);
   const branch = `${preflight.remote.owned_namespace}/${runId}`;
   if (ghApiMaybe(`${repoPath}/git/ref/heads/${branch}`) !== null) fail(`owned branch already exists: ${runId}`);
-  const baseRef = ghApi(`${repoPath}/git/ref/heads/${preflight.remote.base_branch}`);
-  const baseOid = baseRef.object.sha;
-  const baseCommit = ghApi(`${repoPath}/git/commits/${baseOid}`);
-  const proof = canonical({
-    implementation_sha256: providerEvidence[0].bundle_sha256,
-    review_sha256: providerEvidence[1].bundle_sha256,
-    run_id: runId,
-  });
-  const blob = ghApi(`${repoPath}/git/blobs`, {
-    method: "POST",
-    body: { content: `${proof}\n`, encoding: "utf-8" },
-  });
-  const tree = ghApi(`${repoPath}/git/trees`, {
-    method: "POST",
-    body: {
-      base_tree: baseCommit.tree.sha,
-      tree: [{
-        mode: "100644",
-        path: `proofs/${runId}.json`,
-        sha: blob.sha,
-        type: "blob",
-      }],
-    },
-  });
-  const commit = ghApi(`${repoPath}/git/commits`, {
-    method: "POST",
-    body: {
-      message: `proof: ${runId}`,
-      parents: [baseOid],
-      tree: tree.sha,
-    },
-  });
-  if (!OID.test(commit.sha)) fail("GitHub did not return a delivery commit OID");
-  ghApi(`${repoPath}/git/refs`, {
-    method: "POST",
-    body: { ref: `refs/heads/${branch}`, sha: commit.sha },
-  });
-  const observedBranch = ghApi(`${repoPath}/git/ref/heads/${branch}`);
-  if (observedBranch.object.sha !== commit.sha) fail("created branch does not match delivery OID");
-  const pull = ghApi(`${repoPath}/pulls`, {
-    method: "POST",
-    body: {
-      base: preflight.remote.base_branch,
-      body: "Disposable protected release verification. The controller will close this pull request and delete its owned branch.",
-      head: branch,
-      title: `Protected release verification ${runId}`,
-    },
-  });
-  const observedPull = ghApi(`${repoPath}/pulls/${pull.number}`);
-  if (observedPull.head.sha !== commit.sha || observedPull.head.ref !== branch) {
-    fail("pull request head does not match the delivery OID");
+  const partial = { branch, deliveryOid: null, pullRequestId: null, repoPath };
+  try {
+    const baseRef = ghApi(`${repoPath}/git/ref/heads/${preflight.remote.base_branch}`);
+    const baseOid = baseRef.object.sha;
+    const baseCommit = ghApi(`${repoPath}/git/commits/${baseOid}`);
+    const proof = canonical({
+      implementation_sha256: providerEvidence[0].bundle_sha256,
+      review_sha256: providerEvidence[1].bundle_sha256,
+      run_id: runId,
+    });
+    const blob = ghApi(`${repoPath}/git/blobs`, {
+      method: "POST",
+      body: { content: `${proof}\n`, encoding: "utf-8" },
+    });
+    const tree = ghApi(`${repoPath}/git/trees`, {
+      method: "POST",
+      body: {
+        base_tree: baseCommit.tree.sha,
+        tree: [{
+          mode: "100644",
+          path: `proofs/${runId}.json`,
+          sha: blob.sha,
+          type: "blob",
+        }],
+      },
+    });
+    const commit = ghApi(`${repoPath}/git/commits`, {
+      method: "POST",
+      body: {
+        message: `proof: ${runId}`,
+        parents: [baseOid],
+        tree: tree.sha,
+      },
+    });
+    if (!OID.test(commit.sha)) fail("GitHub did not return a delivery commit OID");
+    partial.deliveryOid = commit.sha;
+    ghApi(`${repoPath}/git/refs`, {
+      method: "POST",
+      body: { ref: `refs/heads/${branch}`, sha: commit.sha },
+    });
+    const observedBranch = ghApi(`${repoPath}/git/ref/heads/${branch}`);
+    if (observedBranch.object.sha !== commit.sha) fail("created branch does not match delivery OID");
+    const pull = ghApi(`${repoPath}/pulls`, {
+      method: "POST",
+      body: {
+        base: preflight.remote.base_branch,
+        body: "Disposable protected release verification. The controller will close this pull request and delete its owned branch.",
+        head: branch,
+        title: `Protected release verification ${runId}`,
+      },
+    });
+    partial.pullRequestId = String(pull.number);
+    const observedPull = ghApi(`${repoPath}/pulls/${pull.number}`);
+    if (observedPull.head.sha !== commit.sha || observedPull.head.ref !== branch) {
+      fail("pull request head does not match the delivery OID");
+    }
+    const matching = ghApi(`${repoPath}/pulls?state=open&head=${preflight.remote.owner}:${branch}&base=${preflight.remote.base_branch}`);
+    if (!Array.isArray(matching) || matching.length !== 1 || matching[0].number !== pull.number) {
+      fail("pull request exactly-once observation failed");
+    }
+    return {
+      branch,
+      delivery_oid: commit.sha,
+      pull_request_head_oid: observedPull.head.sha,
+      pull_request_id: String(pull.number),
+      repoPath,
+    };
+  } catch (error) {
+    try {
+      if (partial.pullRequestId !== null) {
+        const pull = ghApiMaybe(`${repoPath}/pulls/${partial.pullRequestId}`);
+        if (pull?.state === "open") {
+          ghApi(`${repoPath}/pulls/${partial.pullRequestId}`, {
+            method: "PATCH",
+            body: { state: "closed" },
+          });
+        }
+      }
+      const branchObservation = ghApiMaybe(`${repoPath}/git/ref/heads/${branch}`);
+      if (branchObservation !== null) {
+        if (
+          partial.deliveryOid === null ||
+          branchObservation.object?.sha !== partial.deliveryOid
+        ) fail("partial branch changed before failure cleanup");
+        ghApi(`${repoPath}/git/refs/heads/${branch}`, { method: "DELETE" });
+      }
+    } catch (cleanupError) {
+      const original = error instanceof Error ? error.message : String(error);
+      const cleanup = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      fail(`${original}; protected failure cleanup failed: ${cleanup}`);
+    }
+    throw error;
   }
-  const matching = ghApi(`${repoPath}/pulls?state=all&head=${preflight.remote.owner}:${branch}&base=${preflight.remote.base_branch}`);
-  if (!Array.isArray(matching) || matching.length !== 1 || matching[0].number !== pull.number) {
-    fail("pull request exactly-once observation failed");
-  }
-  return {
-    branch,
-    delivery_oid: commit.sha,
-    pull_request_head_oid: observedPull.head.sha,
-    pull_request_id: String(pull.number),
-    repoPath,
-  };
 }
 
 function cleanupDelivery(preflight, delivery) {
@@ -755,6 +821,109 @@ function cleanupDelivery(preflight, delivery) {
     fail("owned branch remains after cleanup");
   }
   observeRemote(preflight);
+}
+
+function deriveLocalLifecycle(runtime, runRoot, runId, attempts, providers) {
+  const policyRoot = realpathSync(runRoot);
+  const policy = run(runtime.python, [
+    "-c",
+    String.raw`
+import json, pathlib, sys
+from rickgent_policies.policy_event import TicketScopeEntry
+from rickgent_policies.scope import ScopeOperation, evaluate_scope
+root = pathlib.Path(sys.argv[1]).resolve()
+worktree = root / "policy-proof"
+worktree.mkdir()
+(worktree / "allowed.txt").write_text("before")
+declaration = TicketScopeEntry(path="allowed.txt", change_kind="modify", directory=False)
+allow = evaluate_scope(
+    worktree_root=str(worktree.resolve()), authorized_root=str(worktree.resolve()),
+    reserved_roots=(), declared_scope=(declaration,),
+    operation=ScopeOperation("modify", False, path="allowed.txt"),
+)
+deny = evaluate_scope(
+    worktree_root=str(worktree.resolve()), authorized_root=str(worktree.resolve()),
+    reserved_roots=(), declared_scope=(declaration,),
+    operation=ScopeOperation("modify", False, path="outside.txt"),
+)
+print(json.dumps({
+    "allow": {"code": allow.code, "result": allow.result},
+    "deny": {"code": deny.code, "result": deny.result},
+}, sort_keys=True))
+`,
+    policyRoot,
+  ], {
+    env: {
+      ...process.env,
+      OMNIGENT_ROOT: runtime.omnigentRoot,
+      OMNIGENT_PYTHON: runtime.python,
+      PYTHONPATH: runtime.omnigentRoot,
+    },
+    json: true,
+  });
+  if (policy.allow.result !== "ALLOW" || policy.deny.result !== "DENY") {
+    fail(`${runId} native policy proof did not observe allow and deny`);
+  }
+
+  const repository = join(runRoot, "git-proof");
+  const worktree = join(runRoot, "attempt-worktree");
+  run("git", ["init", "-q", repository]);
+  run("git", ["-C", repository, "config", "user.name", "Rickgent Protected Proof"]);
+  run("git", ["-C", repository, "config", "user.email", "proof@rickgent.invalid"]);
+  writeFileSync(join(repository, "baseline.txt"), "protected release baseline\n");
+  run("git", ["-C", repository, "add", "baseline.txt"]);
+  run("git", ["-C", repository, "commit", "-q", "-m", "proof: baseline"]);
+  const baselineOid = run("git", ["-C", repository, "rev-parse", "HEAD"]);
+  run("git", ["-C", repository, "worktree", "add", "-q", "-b", `attempt/${runId}`, worktree, baselineOid]);
+  writeFileSync(join(worktree, "proof.txt"), `${runId}\n`);
+  run("git", ["-C", worktree, "add", "proof.txt"]);
+  const indexTree = run("git", ["-C", worktree, "write-tree"]);
+  run("git", ["-C", worktree, "commit", "-q", "-m", `proof: ${runId}`]);
+  const candidateOid = run("git", ["-C", worktree, "rev-parse", "HEAD"]);
+  const deliveryRef = `refs/rickgent/runs/${runId}/delivery`;
+  run("git", ["-C", repository, "update-ref", deliveryRef, baselineOid]);
+  run("git", ["-C", repository, "update-ref", deliveryRef, candidateOid, baselineOid]);
+  const deliveryRefOid = run("git", ["-C", repository, "rev-parse", deliveryRef]);
+  const changedPaths = run("git", [
+    "-C", worktree, "diff-tree", "--no-commit-id", "--name-only", "-r", candidateOid,
+  ]).split("\n").filter(Boolean);
+  const clean = run("git", ["-C", worktree, "status", "--porcelain"]) === "";
+  if (
+    !OID.test(candidateOid) ||
+    deliveryRefOid !== candidateOid ||
+    canonical(changedPaths) !== canonical(["proof.txt"]) ||
+    !clean
+  ) fail(`${runId} local ownership and scope-clean commit proof failed`);
+  const commonDir = realpathSync(join(repository, run("git", ["-C", repository, "rev-parse", "--git-common-dir"])));
+  const records = {
+    "native-policy": policy,
+    ownership: {
+      common_dir_sha256: sha256(commonDir),
+      repository_root_sha256: sha256(realpathSync(repository)),
+      run_id: runId,
+    },
+    worktree: {
+      candidate_oid: candidateOid,
+      realpath_sha256: sha256(realpathSync(worktree)),
+    },
+    ref: { delivery_ref_sha256: sha256(deliveryRef), observed_oid: deliveryRefOid },
+    index: { tree_oid: indexTree },
+    lease: { after_oid: candidateOid, before_oid: baselineOid, compare_and_swap: true },
+    process: attempts,
+    "scope-clean-commit": { changed_paths: changedPaths, commit_oid: candidateOid },
+    review: providers.find((item) => item.role === "review"),
+    remediation: {
+      required: false,
+      review_bundle_sha256: providers.find((item) => item.role === "review")?.bundle_sha256,
+      status: "review_clean",
+    },
+    gate: {
+      clean_worktree: clean,
+      native_policy_allow_deny: true,
+      provider_identity_count: providers.filter((item) => SHA256.test(item.identity_sha256)).length,
+    },
+  };
+  return records;
 }
 
 async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
@@ -841,8 +1010,44 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
     process_id: resumePid,
     started_at: resumeStarted,
   });
+  const phaseEvidence = deriveLocalLifecycle(runtime, runRoot, runId, attempts, providers);
   const delivery = createDelivery(preflight, runId, providers);
-  cleanupDelivery(preflight, delivery);
+  phaseEvidence.push = {
+    branch: delivery.branch,
+    observed_oid: delivery.delivery_oid,
+  };
+  phaseEvidence["pull-request"] = {
+    head_oid: delivery.pull_request_head_oid,
+    id: delivery.pull_request_id,
+  };
+  phaseEvidence["delivery-oid"] = {
+    delivery_oid: delivery.delivery_oid,
+    observed_branch_oid: delivery.delivery_oid,
+    pull_request_head_oid: delivery.pull_request_head_oid,
+  };
+  phaseEvidence.oracle = {
+    delivery_equality: (
+      delivery.delivery_oid === delivery.pull_request_head_oid
+    ),
+    duplicate_side_effects: false,
+  };
+  try {
+    cleanupDelivery(preflight, delivery);
+  } catch (error) {
+    try {
+      cleanupDelivery(preflight, delivery);
+    } catch (cleanupError) {
+      const original = error instanceof Error ? error.message : String(error);
+      const cleanup = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+      fail(`${original}; protected teardown retry failed: ${cleanup}`);
+    }
+    throw error;
+  }
+  phaseEvidence.cleanup = {
+    branch_absent: true,
+    pull_request_closed: true,
+    repository_preserved: true,
+  };
   return {
     attempts,
     cleanup: {
@@ -861,8 +1066,13 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
       observed_branch_oid: delivery.delivery_oid,
     },
     installed_executable_realpath: runtime.cli,
+    identity_evidence: providers.map((provider) => ({
+      provider: provider.role === "implementation" ? "openai" : "anthropic",
+      sha256: provider.identity_sha256,
+    })),
     lifecycle_complete: true,
-    model_observations: providers,
+    model_observations: providers.map(({ identity_sha256: _identity, ...provider }) => provider),
+    phase_evidence: phaseEvidence,
     persistent_state_id: persistentStateId,
     run_id: runId,
   };
@@ -939,7 +1149,26 @@ async function runExecute() {
       redaction: "sensitive_redacted",
       sha256: model.bundle_sha256,
     })),
+    ...run.identity_evidence.map((identity) => ({
+      authenticated: true,
+      classification: "live",
+      evidence_id: `run:${index + 1}:identity:${identity.provider}`,
+      redaction: "sensitive_redacted",
+      sha256: identity.sha256,
+    })),
+    ...Object.entries(run.phase_evidence).map(([phase, observation]) => ({
+      authenticated: true,
+      classification: "live",
+      evidence_id: `run:${index + 1}:phase:${phase}`,
+      redaction: "sensitive_redacted",
+      sha256: sha256(canonical(observation)),
+    })),
   ]);
+  const receiptRuns = runs.map(({
+    identity_evidence: _identityEvidence,
+    phase_evidence: _phaseEvidence,
+    ...run
+  }) => run);
   const unsigned = {
     binding: {
       build: {
@@ -989,7 +1218,7 @@ async function runExecute() {
       pre_existing: true,
       repository_id: preflight.remote.repository_id,
     },
-    runs,
+    runs: receiptRuns,
     schema_version: "1.0.0",
   };
   const receipt = { ...unsigned, digest: sha256(canonical(unsigned)) };
@@ -1029,7 +1258,13 @@ async function runMutation() {
   console.log(JSON.stringify(result));
 }
 
-if (process.argv[2] === "preflight") await runPreflight();
-else if (process.argv[2] === "execute") await runExecute();
-else if (process.argv[2] === "_attempt") await runAttemptWorker();
-else await runMutation();
+try {
+  if (process.argv[2] === "preflight") await runPreflight();
+  else if (process.argv[2] === "execute") await runExecute();
+  else if (process.argv[2] === "_attempt") await runAttemptWorker();
+  else await runMutation();
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`PROTECTED_RELEASE_REFUSED: ${message}`);
+  process.exitCode = 2;
+}
