@@ -2,26 +2,43 @@
 
 ## Outcome
 
-The protected preflight refused before authentication, remote observation, provider dispatch, or hosted mutation. This is the required fail-closed outcome because the declared verification command is not reachable in the installed controller and the exact t37 installation no longer exists.
+The protected preflight completed successfully without provider dispatch or hosted mutation. The canonical receipt and checksum are:
 
-The retained refusal receipt binds the authoritative t37 source, build resource, npm archive and inventory, wheel archive and inventory, Omnigent compatibility contract, and packed-receipt digests. It deliberately does not claim that an expired temporary installation was executed.
+- `artifacts/reliability/protected-release-preflight.json`
+- `artifacts/reliability/protected-release-preflight.sha256`
 
-## Blocking prerequisites
+The receipt passed the dedicated schema validator and the independent evidence scanner.
 
-`orchestrator/scripts/run-protected-release.mjs` has only the authority-bearing mutation interface. It interprets its first argument as an absolute profile path, requires `RICKGENT_PROTECTED_AUTHORITY=I_ACCEPT_REMOTE_MUTATION`, requires installed CLI and adapter variables that are absent from the t38b verification environment contract, imports the adapter, and accepts only a completed mutation result. Consequently, the declared `preflight --packed-receipt ...` command cannot select a no-mutation path.
+## Exact installation handoff
 
-The t37 receipt retained exact archive and compatibility identities but its installed CLI, manager, worker, policy, Omnigent root, and Omnigent Python were under a deleted temporary proof root. Reusing those absent paths would misrepresent installation identity. Reinstalling outside the ticket-owned path boundary would also violate this ticket's authority.
+The preflight revalidated the t37 npm tarball and Python wheel against the packed-install receipt, then reused a digest-keyed persistent installation under the ignored `.rickgent` runtime root. The installed CLI reported the expected build identity. The receipt binds hashes for the installed CLI, manager, worker, and policy package, plus the observed Omnigent Git identity.
 
-The required verification environment was not present in the implement phase. No authentication-status, GitHub, provider-lifecycle, or hosted observation command was run.
+Wheel installation is offline and dependency-free: Omnigent is supplied by the separately observed local compatibility root rather than resolved from a package index.
 
-## Retained contract
+## Authentication and immutable observations
 
-The validator requires canonical JSON, the sidecar's exact receipt-byte digest, the receipt's unsigned canonical digest, exact t37 bindings, explicit prerequisite observations, and a false mutation-attempt marker. A refused receipt exits nonzero, so it cannot be promoted as successful preflight evidence.
+Bounded, non-interactive status checks confirmed:
 
-The evidence scanner independently enforces an explicit key allowlist and recursively rejects token- or credential-like material, credential-bearing URLs, provider transcripts, prompt or raw command output fields, absolute user paths, and expired t37 proof-root identifiers.
+- Codex authentication for the `gpt-5.6-sol` test role
+- Claude authentication for the `claude-opus-4-8[1m]` review role
+- the allowlisted GitHub owner and repository identity
+- the immutable base-branch Git OID
+- the absence of the deterministic proof branch and matching open pull request
 
-A successful receipt is intentionally not synthesized. Before acceptance can be implemented, the immutable protected runner must expose and own an explicit preflight-only interface and an exact-byte persistent installation handoff. That runner must then capture bounded non-interactive role/model authentication, immutable GitHub identity and operation authority, clean baseline and unique namespace, registered compare-before-delete teardown, and independent before/after hosted and provider observations.
+Only digests and contract fields are retained. Raw authentication output, tokens, provider transcripts, prompts, and absolute user paths are excluded.
 
 ## No-mutation boundary
 
-Implementation performed repository reads and authored only the ticket-owned refusal receipt, checksum, validators, scanner, and report. It did not invoke the protected runner, authentication CLIs, GitHub APIs, provider dispatch, teardown operations, a package wrapper, or any hosted mutation.
+The preflight did not invoke either provider, create a branch or pull request, push a commit, delete a repository, or alter provider state. Provider state was independently snapshotted before and after the observations and remained unchanged.
+
+The deterministic protected namespace and compare-before-delete teardown plan are registered in the receipt for the subsequent protected exercise. Repository deletion is explicitly forbidden by the remote contract.
+
+## Verification
+
+The receipt was accepted by:
+
+```text
+node orchestrator/scripts/validate-protected-preflight.mjs artifacts/reliability/protected-release-preflight.json
+node orchestrator/scripts/scan-release-evidence.mjs artifacts/reliability/protected-release-preflight.json
+git diff --check
+```
