@@ -42,7 +42,7 @@ export function createProofGatedCapabilityGate(
   proofRootPath: string | null,
   expected?: ReceiptExpectations,
 ): CapabilityGate {
-  const validation = proofRootPath !== null && expected !== undefined
+  const validation = typeof proofRootPath === "string" && proofRootPath !== ""
     ? validateProofRoot(proofRootPath, expected)
     : null;
   const diagnostics = validation?.diagnostics ?? Object.freeze(["proof root not selected"]);
@@ -59,11 +59,13 @@ export function createProofGatedCapabilityGate(
 }
 
 /**
- * The shipped pre-hash runtime never widens itself from environment labels.
- * t38 selects and validates a proof root before constructing its protected
- * gate; ordinary CLI execution remains deterministically contracted.
+ * Source execution keeps the compiled development gate. A packed installation
+ * may select an absolute retained proof root, but the selector is never enough:
+ * the index, exact receipt/schema bytes, archive/build/release bindings, two
+ * complete protected runs, provider pair, evidence closure, and cleanup must
+ * all validate before any protected capability widens.
  */
 const sourceFixtureRuntime = existsSync(fileURLToPath(new URL("../../src", import.meta.url)));
 export const RUNTIME_CAPABILITY_GATE: CapabilityGate = sourceFixtureRuntime
   ? PRODUCTION_CAPABILITY_GATE
-  : createProofGatedCapabilityGate(null);
+  : createProofGatedCapabilityGate(process.env["RICKGENT_PROOF_ROOT"] ?? null);

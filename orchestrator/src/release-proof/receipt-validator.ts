@@ -37,6 +37,10 @@ export interface ReceiptExpectations {
   readonly requiredCheckIds: readonly string[];
   readonly requiredCorpusIds?: readonly string[];
   readonly packedInstallReceiptSha256?: string;
+  readonly requiredProviderPair?: {
+    readonly implementation: { readonly adapter: string; readonly model: string };
+    readonly review: { readonly adapter: string; readonly model: string };
+  };
   readonly now?: Date;
   readonly maxAgeMs?: number;
 }
@@ -155,6 +159,13 @@ export function validateVerticalSliceReceipt(
     binding["packed_install_receipt_sha256"] !== expected.packedInstallReceiptSha256
   ) diagnostics.push({ code: "PROOF_BINDING_MISMATCH", detail: "archive or packed-receipt linkage mismatch" });
   const runs = array(receipt["runs"]).map(record);
+  const evidence = record(receipt["evidence"]);
+  const evidenceItems = array(evidence["items"]).map(record);
+  const evidenceIds = new Set(evidenceItems.map((item) => item["evidence_id"]));
+  if (
+    evidenceItems.some((item) => item["authenticated"] !== true || item["classification"] !== "live") ||
+    evidenceIds.size !== evidenceItems.length
+  ) diagnostics.push({ code: "PROOF_EVIDENCE_INCOMPLETE", detail: "vertical evidence must be unique authenticated live evidence" });
   if (
     runs.length !== 2 ||
     new Set(runs.map((run) => run["run_id"])).size !== 2 ||
@@ -173,7 +184,11 @@ export function validateVerticalSliceReceipt(
       attempts[0]?.["process_group_id"] === attempts[1]?.["process_group_id"]
     ) diagnostics.push({ code: "PROOF_RUN_INCOMPLETE", detail: `crash/resume topology incomplete: ${String(run["run_id"])}` });
     const observations = array(run["model_observations"]).map(record);
+    const byRole = new Map(observations.map((item) => [item["role"], item]));
+    const pair = expected.requiredProviderPair;
     if (
+      run["lifecycle_complete"] !== true ||
+      run["containment_passed"] !== true ||
       observations.length !== 2 ||
       !observations.some((item) => item["role"] === "implementation") ||
       !observations.some((item) => item["role"] === "review") ||
@@ -182,16 +197,64 @@ export function validateVerticalSliceReceipt(
         item["requested_model"] !== item["observed_model"] ||
         typeof item["conversation_id"] !== "string" ||
         item["conversation_id"] === ""
-      )
+      ) ||
+      (pair !== undefined && (
+        byRole.get("implementation")?.["adapter"] !== pair.implementation.adapter ||
+        byRole.get("implementation")?.["observed_model"] !== pair.implementation.model ||
+        byRole.get("review")?.["adapter"] !== pair.review.adapter ||
+        byRole.get("review")?.["observed_model"] !== pair.review.model
+      ))
     ) diagnostics.push({ code: "PROOF_RUN_INCOMPLETE", detail: `production identity evidence incomplete: ${String(run["run_id"])}` });
     const delivery = record(run["delivery"]);
+    const cleanup = record(run["cleanup"]);
     if (
       delivery["observed_branch_oid"] !== delivery["pull_request_head_oid"] ||
       delivery["observed_branch_oid"] !== delivery["delivery_oid"] ||
-      delivery["duplicate_side_effects"] !== false
+      delivery["duplicate_side_effects"] !== false ||
+      cleanup["owned_pull_request_closed"] !== true ||
+      cleanup["owned_branch_absent_on_requery"] !== true ||
+      cleanup["repository_preserved"] !== true ||
+      cleanup["branch_compare_before_delete_oid"] !== delivery["delivery_oid"]
     ) diagnostics.push({ code: "PROOF_RUN_INCOMPLETE", detail: `delivery identity incomplete: ${String(run["run_id"])}` });
+    const runNumber = String(run["run_id"]).replace(/^protected-/, "");
+    if (pair !== undefined) {
+      for (const id of [
+        `run:${runNumber}:identity:openai`,
+        `run:${runNumber}:identity:anthropic`,
+        ...[
+          "native-policy", "ownership", "worktree", "ref", "index", "lease", "process",
+          "scope-clean-commit", "review", "remediation", "gate", "oracle", "cleanup",
+          "push", "pull-request", "delivery-oid",
+        ].map((phase) => `run:${runNumber}:phase:${phase}`),
+      ]) {
+        if (!evidenceIds.has(id)) {
+          diagnostics.push({ code: "PROOF_EVIDENCE_INCOMPLETE", detail: `required protected evidence missing: ${id}` });
+        }
+      }
+    }
+    const check = array(receipt["checks"]).map(record)
+      .find((item) => item["check_id"] === `protected-run-${runNumber}`);
+    const referenced = new Set(array(check?.["evidence_ids"]));
+    for (const item of evidenceItems.filter((entry) =>
+      typeof entry["evidence_id"] === "string" &&
+      entry["evidence_id"].startsWith(`run:${runNumber}:`)
+    )) {
+      if (!referenced.has(item["evidence_id"])) {
+        diagnostics.push({ code: "PROOF_EVIDENCE_INCOMPLETE", detail: `run evidence is not closed by its check: ${String(item["evidence_id"])}` });
+      }
+    }
     const started = attempts[0]?.["started_at"];
     if (typeof started !== "string" || Date.parse(started) < cutoff) diagnostics.push({ code: "PROOF_STALE", detail: `run is stale: ${String(run["run_id"])}` });
+  }
+  const aggregateCleanup = record(receipt["cleanup"]);
+  for (const kind of ["success_path", "failure_path"]) {
+    const item = record(aggregateCleanup[kind]);
+    if (item["completed"] !== true || item["independently_requeried"] !== true) {
+      diagnostics.push({ code: "PROOF_RUN_INCOMPLETE", detail: `${kind} cleanup is incomplete` });
+    }
+  }
+  if (aggregateCleanup["repository_deleted"] !== false) {
+    diagnostics.push({ code: "PROOF_RUN_INCOMPLETE", detail: "protected repository preservation is incomplete" });
   }
   return finish(receipt, diagnostics);
 }

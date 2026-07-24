@@ -30,6 +30,13 @@ afterAll(() => rmSync(proofRoot, { recursive: true, force: true }));
 
 describe("proof-root capability restoration", () => {
   it.each(["resume_retry", "cross_vendor_review", "automatic_delivery"] as const)(
+    "restores %s from the retained index without caller-shaped expectations",
+    (name) => {
+      expect(() => createProofGatedCapabilityGate(repoRoot).require(name)).not.toThrow();
+    },
+  );
+
+  it.each(["resume_retry", "cross_vendor_review", "automatic_delivery"] as const)(
     "restores %s only through the valid retained t38 proof",
     (name) => {
       expect(() => createProofGatedCapabilityGate(proofRoot, expected).require(name)).not.toThrow();
