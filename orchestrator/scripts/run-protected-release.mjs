@@ -756,6 +756,62 @@ function spawnAttempt(configPath, nonce) {
   });
 }
 
+export function requireProcessGroupDeathObservation(observation) {
+  // Trap door: a child "exit" event proves only that the group leader was
+  // reaped. The receipt's death_observed field means SIGKILL was observed on
+  // that leader and an independent process-group lookup reached ESRCH.
+  if (
+    observation?.code !== null
+    || observation?.signal !== "SIGKILL"
+    || observation?.group_absent !== true
+  ) {
+    fail("crash attempt process-group death was not independently observed");
+  }
+}
+
+export async function killProcessGroupAndObserve(child, processGroupId, timeoutMs = 10_000) {
+  const exit = new Promise((resolvePromise, reject) => {
+    let timer;
+    const cleanup = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      child.off("error", onError);
+      child.off("exit", onExit);
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+    const onExit = (code, signal) => {
+      cleanup();
+      resolvePromise({ code, signal });
+    };
+    child.once("error", onError);
+    child.once("exit", onExit);
+    timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("crash attempt did not exit after SIGKILL"));
+    }, timeoutMs);
+  });
+
+  process.kill(-processGroupId, "SIGKILL");
+  const observation = { ...await exit, group_absent: false };
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    try {
+      process.kill(-processGroupId, 0);
+    } catch (error) {
+      if (error?.code === "ESRCH") {
+        observation.group_absent = true;
+        break;
+      }
+      if (error?.code !== "EPERM") throw error;
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+  }
+  requireProcessGroupDeathObservation(observation);
+  return observation;
+}
+
 function observeRemote(preflight) {
   const repoPath = `repos/${preflight.remote.owner}/${preflight.remote.repository}`;
   const repository = ghApi(repoPath);
@@ -1088,20 +1144,20 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
   await waitForChild(crashChild, 5 * 60_000, checkpoint);
   const crashPid = crashChild.pid;
   if (crashPid === undefined) fail("crash attempt has no process identity");
-  process.kill(-crashPid, "SIGKILL");
-  await new Promise((resolvePromise) => crashChild.once("exit", resolvePromise));
+  await killProcessGroupAndObserve(crashChild, crashPid);
+  const crashEnded = new Date().toISOString();
   providers.push(JSON.parse(readFileSync(crashProviderPath, "utf8")));
   attempts.push({
     attempt_id: `${runId}:crash`,
     death_observed: true,
-    ended_at: new Date().toISOString(),
+    ended_at: crashEnded,
     phase: "crash",
     process_group_id: crashPid,
     process_id: crashPid,
     started_at: crashStarted,
   });
 
-  const resumeStarted = new Date().toISOString();
+  const resumeStarted = crashEnded;
   const resumeConfigPath = join(runRoot, "resume.json");
   const reviewProviderPath = join(runRoot, "review.json");
   writeFileSync(resumeConfigPath, `${canonical({
