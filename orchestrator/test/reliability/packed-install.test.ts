@@ -432,7 +432,13 @@ describe("final packed installation", () => {
     expect(wheelInventory.entries.some((entry) => entry.path.startsWith("rickgent_policies/"))).toBe(true);
     expect(wheelInventory.entries.some((entry) => /(?:direct_url\.json|\.pth|\.egg-link)$/.test(entry.path))).toBe(false);
 
-    const sourceGitOid = run("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot });
+    const sourceGitOid = process.env.RICKGENT_SOURCE_GIT_OID;
+    if (!sourceGitOid || !/^[0-9a-f]{40}$/.test(sourceGitOid)) {
+      throw new Error("RICKGENT_SOURCE_GIT_OID must be a lowercase 40-character Git OID");
+    }
+    expect(run("git", ["merge-base", "--is-ancestor", sourceGitOid, "HEAD"], {
+      cwd: repositoryRoot,
+    })).toBe("");
     const buildCommit = run(launcher, ["--build-commit"], { cwd: unrelatedCwd, env: installedEnv });
     const expectedBuildCommit = process.env.RICKGENT_BUILD_COMMIT;
     expect(expectedBuildCommit).toMatch(/^[0-9a-f]{40}$/);
