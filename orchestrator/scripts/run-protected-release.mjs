@@ -1193,6 +1193,24 @@ export function deleteBranchWithLease(
   ], { timeout: 120_000 });
 }
 
+export function branchCleanupAction(branchObservation, expectedOid, leaseAttempted) {
+  if (!OID.test(expectedOid ?? "") || typeof leaseAttempted !== "boolean") {
+    fail("branch cleanup retry authority is invalid");
+  }
+  if (branchObservation === null) {
+    // Trap door: absence is an idempotent success only after this cleanup
+    // invocation has attempted the exact-OID lease. Otherwise an unrelated
+    // actor could remove the branch before the first owned mutation and the
+    // controller would falsely claim compare-before-delete evidence.
+    if (!leaseAttempted) fail("owned branch disappeared before compare-and-delete");
+    return "already-absent";
+  }
+  if (branchObservation?.object?.sha !== expectedOid) {
+    fail("branch changed before compare-and-delete");
+  }
+  return "delete-with-lease";
+}
+
 function createDelivery(preflight, runId, candidate, { injectFailureAfterPullRequest = false } = {}) {
   const { repoPath } = observeRemote(preflight);
   const branch = `${preflight.remote.owned_namespace}/${runId}`;
@@ -1361,7 +1379,7 @@ export function completedFailureCleanupCase(observations) {
   return { completed: true, independently_requeried: true, kind: "failure" };
 }
 
-function cleanupDelivery(preflight, delivery) {
+function cleanupDelivery(preflight, delivery, cleanupState) {
   observeRemote(preflight);
   const pull = ghApi(`${delivery.repoPath}/pulls/${delivery.pull_request_id}`);
   if (pull.state === "open") {
@@ -1372,15 +1390,24 @@ function cleanupDelivery(preflight, delivery) {
   }
   const closed = ghApi(`${delivery.repoPath}/pulls/${delivery.pull_request_id}`);
   if (closed.state !== "closed") fail("owned pull request did not close");
-  const before = ghApi(`${delivery.repoPath}/git/ref/heads/${delivery.branch}`);
-  if (before.object.sha !== delivery.delivery_oid) fail("branch changed before compare-and-delete");
-  deleteBranchWithLease(
-    delivery.repository,
-    gitHubRepositoryUrl(preflight),
-    delivery.branch,
+  const before = ghApiMaybe(`${delivery.repoPath}/git/ref/heads/${delivery.branch}`);
+  const action = branchCleanupAction(
+    before,
     delivery.delivery_oid,
-    gitHubCredentialArgs(),
+    cleanupState.branchDeletionLeaseAttempted,
   );
+  if (action === "delete-with-lease") {
+    // Set this before the network call: a successful receive-pack mutation can
+    // lose its response, and the retry must then recognize hosted absence.
+    cleanupState.branchDeletionLeaseAttempted = true;
+    deleteBranchWithLease(
+      delivery.repository,
+      gitHubRepositoryUrl(preflight),
+      delivery.branch,
+      delivery.delivery_oid,
+      gitHubCredentialArgs(),
+    );
+  }
   if (ghApiMaybe(`${delivery.repoPath}/git/ref/heads/${delivery.branch}`) !== null) {
     fail("owned branch remains after cleanup");
   }
@@ -1720,11 +1747,12 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
     ),
     duplicate_side_effects: false,
   };
+  const cleanupState = { branchDeletionLeaseAttempted: false };
   try {
-    cleanupDelivery(preflight, delivery);
+    cleanupDelivery(preflight, delivery, cleanupState);
   } catch (error) {
     try {
-      cleanupDelivery(preflight, delivery);
+      cleanupDelivery(preflight, delivery, cleanupState);
     } catch (cleanupError) {
       const original = error instanceof Error ? error.message : String(error);
       const cleanup = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
