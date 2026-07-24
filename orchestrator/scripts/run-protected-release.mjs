@@ -363,6 +363,18 @@ function remoteObservation(contractPath, namespaceSeed) {
   return { remote, snapshot };
 }
 
+export function requireUnchangedRemoteObservation(before, after) {
+  // Trap door: duplicating one observation into receipt before/after fields
+  // does not prove non-mutation. Both values must come from separate hosted
+  // queries surrounding every preflight operation under review.
+  if (
+    canonical(before?.remote) !== canonical(after?.remote)
+    || canonical(before?.snapshot) !== canonical(after?.snapshot)
+  ) {
+    fail("remote lifecycle state changed during preflight");
+  }
+}
+
 async function runPreflight() {
   const packedReceiptPath = realpathSync(resolve(option("--packed-receipt")));
   const remoteContractPath = realpathSync(resolve(option("--remote-contract")));
@@ -370,18 +382,32 @@ async function runPreflight() {
   const archives = exactArchiveBindings(packedReceiptPath);
   const providerRoot = resolve(process.env.OMNIGENT_DATA_DIR ?? ".rickgent/omnigent-review-data");
   const providerBefore = directorySnapshot(providerRoot);
+  const remoteBefore = remoteObservation(
+    remoteContractPath,
+    archives.binding.packed_receipt_sha256,
+  );
   const installation = installExactHandoff(packedReceiptPath, archives);
   const authentication = authenticationChecks();
-  const { remote, snapshot } = remoteObservation(remoteContractPath, archives.binding.packed_receipt_sha256);
+  const remoteAfter = remoteObservation(
+    remoteContractPath,
+    archives.binding.packed_receipt_sha256,
+  );
   const providerAfter = directorySnapshot(providerRoot);
+  requireUnchangedRemoteObservation(remoteBefore, remoteAfter);
   if (canonical(providerAfter) !== canonical(providerBefore)) {
     fail("provider lifecycle state changed during preflight");
   }
-  const noMutationSnapshot = {
-    ...snapshot,
+  const noMutationBefore = {
+    ...remoteBefore.snapshot,
     provider_lifecycle_count: providerBefore.count,
     provider_lifecycle_sha256: providerBefore.sha256,
   };
+  const noMutationAfter = {
+    ...remoteAfter.snapshot,
+    provider_lifecycle_count: providerAfter.count,
+    provider_lifecycle_sha256: providerAfter.sha256,
+  };
+  const { remote } = remoteAfter;
   const teardown = {
     close_owned_prs_only: true,
     compare_before_delete: true,
@@ -410,8 +436,8 @@ async function runPreflight() {
     digest_algorithm: "sha256_over_utf8_canonical_bytes_excluding_top_level_digest",
     mode: "preflight_only",
     no_mutation: {
-      after: noMutationSnapshot,
-      before: noMutationSnapshot,
+      after: noMutationAfter,
+      before: noMutationBefore,
       observed_mutations: [],
     },
     prerequisites: {
