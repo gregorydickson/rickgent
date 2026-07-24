@@ -44,6 +44,7 @@ const completionPaths = [
   "docs/remediation/phase-9-t37-packed-install-execution-report.md",
   "docs/remediation/trust-spine-manifest.json",
 ];
+const t37bSourceOid = "d83405ee20e2cb8c5a9418c8913d646e876269bc";
 
 function fail(message) {
   process.stderr.write(`validate-packed-install-receipt: ${message}\n`);
@@ -140,19 +141,26 @@ if (typeof binding.source_git_oid !== "string" || !/^[0-9a-f]{40}$/.test(binding
   fail("source Git OID must be a full lowercase commit OID");
 }
 const sourceOid = binding.source_git_oid;
-if (sourceOid !== headOid) {
-  const parentOid = execFileSync("git", ["rev-parse", "HEAD^"], {
-    cwd: repositoryRoot, encoding: "utf8",
-  }).trim();
-  equal(sourceOid, parentOid, "non-self-referential source Git OID");
-  const changed = execFileSync("git", ["diff", "--name-only", sourceOid, headOid], {
-    cwd: repositoryRoot, encoding: "utf8",
-  }).trim().split("\n").filter(Boolean);
-  if (changed.some((path) => !completionPaths.some((owned) =>
-    owned.endsWith("/") ? path.startsWith(owned) : path === owned
-  ))) {
-    fail("completion commit contains a path outside the t37c ownership boundary");
-  }
+const sourceHandoffs = execFileSync("git", [
+  "log", "--format=%H", "--perl-regexp",
+  "--grep=^fix\\(build\\): honor pinned release identity$",
+], { cwd: repositoryRoot, encoding: "utf8" }).trim().split("\n").filter(Boolean);
+equal(sourceHandoffs, [t37bSourceOid], "unique committed t37b source handoff");
+equal(sourceOid, t37bSourceOid, "non-self-referential source Git OID");
+try {
+  execFileSync("git", ["merge-base", "--is-ancestor", sourceOid, headOid], {
+    cwd: repositoryRoot, stdio: "ignore",
+  });
+} catch {
+  fail("t37b source handoff must be an ancestor of HEAD");
+}
+const changed = execFileSync("git", ["diff", "--name-only", sourceOid, headOid], {
+  cwd: repositoryRoot, encoding: "utf8",
+}).trim().split("\n").filter(Boolean);
+if (changed.some((path) => !completionPaths.some((owned) =>
+  owned.endsWith("/") ? path.startsWith(owned) : path === owned
+))) {
+  fail("completion history contains a path outside the t37c ownership boundary");
 }
 const release = load(releasePath);
 equal(binding.release, {

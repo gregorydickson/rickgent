@@ -432,19 +432,23 @@ describe("final packed installation", () => {
     expect(wheelInventory.entries.some((entry) => entry.path.startsWith("rickgent_policies/"))).toBe(true);
     expect(wheelInventory.entries.some((entry) => /(?:direct_url\.json|\.pth|\.egg-link)$/.test(entry.path))).toBe(false);
 
-    const sourceGitOid = process.env.RICKGENT_SOURCE_GIT_OID;
-    if (!sourceGitOid || !/^[0-9a-f]{40}$/.test(sourceGitOid)) {
-      throw new Error("RICKGENT_SOURCE_GIT_OID must be a lowercase 40-character Git OID");
-    }
+    const sourceHandoffs = run("git", [
+      "log", "--format=%H", "--perl-regexp",
+      "--grep=^fix\\(build\\): honor pinned release identity$",
+    ], { cwd: repositoryRoot }).split("\n").filter(Boolean);
+    expect(sourceHandoffs).toEqual(["d83405ee20e2cb8c5a9418c8913d646e876269bc"]);
+    const sourceGitOid = sourceHandoffs[0]!;
     expect(run("git", ["merge-base", "--is-ancestor", sourceGitOid, "HEAD"], {
       cwd: repositoryRoot,
     })).toBe("");
     const buildCommit = run(launcher, ["--build-commit"], { cwd: unrelatedCwd, env: installedEnv });
-    const expectedBuildCommit = process.env.RICKGENT_BUILD_COMMIT;
-    expect(expectedBuildCommit).toMatch(/^[0-9a-f]{40}$/);
-    expect(buildCommit).toBe(expectedBuildCommit);
     const release = JSON.parse(readFileSync(releasePath, "utf8")) as { release_id: string };
     const buildResource = join(packageInstall, "dist", "build-commit.js");
+    const packedBuildMatch = readFileSync(buildResource, "utf8").match(
+      /export const BUILD_COMMIT = "([0-9a-f]{40})";/,
+    );
+    expect(packedBuildMatch).not.toBeNull();
+    expect(buildCommit).toBe(packedBuildMatch![1]);
     const checks: Check[] = requiredChecks.map((checkId) => ({
       check_id: checkId, outcome: "pass", required: true, evidence_ids: [`evidence:${checkId}`],
     }));
