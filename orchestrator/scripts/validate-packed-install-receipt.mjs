@@ -42,10 +42,11 @@ const completionPaths = [
   "artifacts/reliability/packed-install-summary.sha256",
   "orchestrator/test/reliability/packed-install.test.ts",
   "orchestrator/scripts/validate-packed-install-receipt.mjs",
+  "orchestrator/src/build-commit.ts",
   "docs/remediation/phase-9-t37-packed-install-execution-report.md",
   "docs/remediation/trust-spine-manifest.json",
 ];
-const t37bSourceOid = "d83405ee20e2cb8c5a9418c8913d646e876269bc";
+const t37bSourceOid = "fbb745de5767baa5f5cfbb3559cb360ba79dcf16";
 const pinnedScratchIgnoreOid = "99b557e786adcfbe8932fcc5abfb80aef7057abe";
 const retainedOutputPaths = [
   "artifacts/reliability/npm-pack-inventory.json",
@@ -161,7 +162,7 @@ if (typeof completion.commit !== "string" || !/^[0-9a-f]{40}$/.test(completion.c
 const packedOutputOid = completion.commit;
 const sourceHandoffs = execFileSync("git", [
   "log", "--format=%H", "--perl-regexp",
-  "--grep=^fix\\(build\\): honor pinned release identity$",
+  "--grep=^feat\\(runtime\\): activate capabilities from retained proof index$",
 ], { cwd: repositoryRoot, encoding: "utf8" }).trim().split("\n").filter(Boolean);
 equal(sourceHandoffs, [t37bSourceOid], "unique committed t37b source handoff");
 equal(sourceOid, t37bSourceOid, "non-self-referential source Git OID");

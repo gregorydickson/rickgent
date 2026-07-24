@@ -3,10 +3,10 @@
     "id": "rickgent@0.1.0-alpha",
     "name": "rickgent",
     "version": "0.1.0-alpha",
-    "size": 1531969,
-    "unpackedSize": 7414120,
-    "shasum": "a85883223e227362fea2331d1dc81bddbad4f6f1",
-    "integrity": "sha512-RVDmjHuNR0j3IBAHVjMcljJKzrr6HIFB+pEztIukIr7tTlOJGNAQ3MhPX1of3PoWn2gkW6tvO/XaLN2LBvm2yw==",
+    "size": 1538209,
+    "unpackedSize": 7440229,
+    "shasum": "6ca1e2625ad7e02645b40f652517fa5289ae6ea0",
+    "integrity": "sha512-n5OehzqleqgEqMni22X7SIphJyInLAt6tH2j14FVYiN+bxUO6Bkjtf45Yubw1nYqFDY+03pIpFOAL2XGpRgjrw==",
     "filename": "rickgent-0.1.0-alpha.tgz",
     "files": [
       {
@@ -116,17 +116,17 @@
       },
       {
         "path": "dist/capabilities/runtime-gate.d.ts.map",
-        "size": 452,
+        "size": 453,
         "mode": 420
       },
       {
         "path": "dist/capabilities/runtime-gate.js",
-        "size": 2550,
+        "size": 2746,
         "mode": 420
       },
       {
         "path": "dist/capabilities/runtime-gate.js.map",
-        "size": 4614,
+        "size": 4862,
         "mode": 420
       },
       {
@@ -1996,42 +1996,42 @@
       },
       {
         "path": "dist/release-proof/proof-root.d.ts",
-        "size": 456,
-        "mode": 420
-      },
-      {
-        "path": "dist/release-proof/proof-root.d.ts.map",
         "size": 465,
         "mode": 420
       },
       {
+        "path": "dist/release-proof/proof-root.d.ts.map",
+        "size": 473,
+        "mode": 420
+      },
+      {
         "path": "dist/release-proof/proof-root.js",
-        "size": 2778,
+        "size": 7544,
         "mode": 420
       },
       {
         "path": "dist/release-proof/proof-root.js.map",
-        "size": 6094,
+        "size": 16220,
         "mode": 420
       },
       {
         "path": "dist/release-proof/receipt-validator.d.ts",
-        "size": 1495,
+        "size": 1772,
         "mode": 420
       },
       {
         "path": "dist/release-proof/receipt-validator.d.ts.map",
-        "size": 1388,
+        "size": 1643,
         "mode": 420
       },
       {
         "path": "dist/release-proof/receipt-validator.js",
-        "size": 8234,
+        "size": 11655,
         "mode": 420
       },
       {
         "path": "dist/release-proof/receipt-validator.js.map",
-        "size": 18577,
+        "size": 25379,
         "mode": 420
       },
       {
