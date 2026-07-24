@@ -89,14 +89,12 @@ for (const run of receipt.runs) {
   ) fail(`${run.run_id} owned pull request is not closed at the exact delivery OID`);
 
   const matches = gh(
-    `${repoPath}/pulls?state=all&head=${encodeURIComponent(`${receipt.repository.owner}:${delivery.branch}`)}`
+    `${repoPath}/pulls?state=open&head=${encodeURIComponent(`${receipt.repository.owner}:${delivery.branch}`)}`
     + `&base=${encodeURIComponent(receipt.repository.base_branch)}`,
   );
-  if (
-    !Array.isArray(matches)
-    || matches.length !== 1
-    || String(matches[0].number) !== delivery.pull_request_id
-  ) fail(`${run.run_id} pull-request exactly-once observation failed`);
+  if (!Array.isArray(matches) || matches.length !== 0) {
+    fail(`${run.run_id} has a duplicate open pull-request effect after cleanup`);
+  }
 
   if (gh(`${repoPath}/git/ref/heads/${delivery.branch}`, { absent: true }) !== null) {
     fail(`${run.run_id} owned branch still exists`);

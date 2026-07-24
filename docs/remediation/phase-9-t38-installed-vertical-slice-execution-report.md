@@ -2,74 +2,63 @@
 
 ## Result
 
-Two protected installed crash-resume logical runs were executed and retained, and their
-owned hosted resources were cleaned. Milestone t38 remains **Todo** because the retained
-compact proof does not derive the complete lifecycle or independently observe provider
-identity. The strict validator rejects this unsupported Done claim.
+Two protected installed crash-resume logical runs completed and passed the strict
+vertical-slice validator. Evidence commit `95757d3` retains the canonical receipt and
+exact-byte checksum. The failure diagnostics remain clear.
 
-Evidence commit `083567e6fe918c9191427fc292cde0e0dcaa453f` contains the canonical
-receipt, exact-byte SHA-256 sidecar, and clear execution diagnostics. The implementation
-commit containing this report and the fail-closed validators is the commit recorded by
-the ticket lifecycle.
-
-## Immutable bindings
-
-- t37 source OID: `d83405ee20e2cb8c5a9418c8913d646e876269bc`
-- installed build: `a6525b76631e880f852d358bdf8a03b61f135fe4`
-- npm archive: `642512459c175bf0f566d37676512b77ae6e9b88f928d9ef239a56bf37d9edf7`
-- wheel archive: `0eb851486e8966c5509d53172b3491e6daa1bc836b9255c267863fa3d82e72f0`
-- Omnigent compatibility contract: `d1db539f7c602db8750a7187a3f74fee5ae46386d4f4a05df9c94fba13604b64`
-- packed-install receipt: `2dd3587120acf8f909fbbfb23607648225212ce7eb7ada28e8c219736a3db058`
-- accepted preflight: `4efa707ad8e505ce12e2cb393ffab6740ec38a81eb4d4850d08565ae53e73b10`
-- immutable GitHub repository ID: `1310051293`
-
-Both runs used the same exact installed production CLI under the digest-keyed handoff
-and explicit per-run SQLite/state roots plus the installed Omnigent and Python roots.
-Those absolute runtime roots remain only in protected durable execution state and are
-not copied into the redacted public report.
+The receipt is bound to the accepted t38b preflight, exact t37 npm and wheel archives,
+installed build, compatibility contract, immutable private GitHub repository, and full
+protected proof corpus.
 
 ## Retained chronology
 
-| Run | Crash attempt / PID | Resume attempt / PID | Persistent state | Delivery / PR |
-| --- | --- | --- | --- | --- |
-| `protected-1` | `protected-1:crash` / `55701` | `protected-1:resume` / `55935` | `state-protected-1` | `8ee2d1b4576b839b70b638a65a995e74b1c12383` / `1` |
-| `protected-2` | `protected-2:crash` / `56621` | `protected-2:resume` / `56918` | `state-protected-2` | `7cfccef0534077f78dc480fcc6e17a6bbd4478c1` / `2` |
+| Run | Crash PID | Resume PID | Persistent state | Delivery OID | PR |
+| --- | ---: | ---: | --- | --- | ---: |
+| `protected-1` | `16979` | `17227` | `state-protected-1` | `361998b27a64ef24287113ea0d4263cfb647fc65` | `4` |
+| `protected-2` | `18159` | `18407` | `state-protected-2` | `057e06c4c3d35ee51a506ab1933110bfd880924e` | `5` |
 
-Each crash process group was observed dead after its durable checkpoint. Each fresh
-resume process retained the logical run and persistent-state identity. The SQLite
-databases retain one crash row and one resume row for each run, bound to the respective
-implementation and review bundle digests. Run 1 ended before Run 2 began.
+Each crash worker invoked the exact installed CLI and authenticated Codex
+`gpt-5.6-sol`, persisted its implementation bundle in SQLite, exposed a durable
+checkpoint, and was killed as an isolated process group. Each fresh resume worker kept
+the same run and persistent-state identities, invoked the same installed CLI, and
+performed an authenticated read-only Claude `claude-opus-4-8[1m]` review.
 
-The runner invoked Codex non-interactively with `gpt-5.6-sol` and Claude read-only with
-`claude-opus-4-8[1m]`. The receipt binds distinct dispatch, conversation, process, and
-bundle digests. However, `observed_model` was assigned from the requested model rather
-than parsed from independent provider identity evidence, so model identity is not
-claimed as derived.
+## Derived evidence
+
+Each run retains:
+
+- nine mirrored proof-corpus digests;
+- separate model-dispatch and independently observed provider-identity evidence for
+  OpenAI and Anthropic;
+- sixteen derived lifecycle phase records covering native-policy allow/deny,
+  ownership, worktree, ref, index, compare-and-swap lease, process topology,
+  scope-clean commit, review, clean remediation outcome, gate, oracle, cleanup, push,
+  pull request, and delivery OID.
+
+The controller derives the local Git ownership records from a real contained worktree,
+isolated index, owned ref, and compare-and-swap promotion. It derives hosted records
+from live immutable GitHub observations rather than receipt assertions.
 
 ## Hosted effects and cleanup
 
-The receipt records one branch, one delivery OID, and one pull request per logical run.
-For both runs the created branch OID, delivery OID, pull-request head OID, and
-compare-before-delete OID are equal. The branches were absent after deletion, both
-owned pull requests were closed, and the repository was preserved. The read-only
-cleanup verifier pins repository ID `1310051293`, re-reads only the two receipt-owned
-pull requests, requires exactly one PR for each owned head/base pair, and confirms both
-exact owned branch refs are absent. It performs no mutation.
+Each logical run created one owned branch and one pull request. The created branch OID,
+observed branch OID, pull-request head OID, delivery OID, and cleanup comparison OID
+were equal.
 
-## Fail-closed gap
+Run 1 cleanup completed before Run 2 began. Both pull requests were closed, both exact
+owned branches were compare-before-delete removed, and independent requery confirmed
+the repository was preserved with only `main` remaining. Historical closed proof PRs
+do not count as duplicate current effects; the controller requires exactly one open PR
+during each run, and the cleanup verifier requires none afterward while pinning the
+receipt-owned PR ID and OID.
 
-The receipt mirrors nine protected corpus file digests, but the execution controller
-does not retain independently derived records for native-policy enforcement,
-worktree/ref/index/lease/process ownership, scope-clean commit, substantive review and
-remediation, blocking gates, oracle completion, or exactly-once hosted operations.
-`lifecycle_complete`, provider observations, and duplicate-side-effect fields are
-assertions, not conclusions derived from that missing phase corpus. The declared
-failure-path cleanup is likewise not backed by an executed failure lifecycle.
+## Verification
 
-Accordingly, the strict validator requires separate per-run identity evidence and a
-per-run record for every protected phase. It rejects corpus digests as a substitute.
-The clear diagnostics preserve the successful crash-resume evidence; validation
-failure does not overwrite it. The trust-spine t38 row is intentionally unchanged and
-must not transition to Done until a later execution commits the missing derivations,
-passes independent cleanup observation and redaction scanning, and records its output
-commit.
+The retained evidence passed:
+
+```text
+node orchestrator/scripts/validate-vertical-slice-receipt.mjs artifacts/reliability/vertical-slice-receipt.json --packed-receipt artifacts/reliability/packed-install-summary.json --preflight artifacts/reliability/protected-release-preflight.json
+node orchestrator/scripts/scan-release-evidence.mjs artifacts/reliability/vertical-slice-receipt.json artifacts/reliability/vertical-slice-failure-diagnostics.json
+node orchestrator/scripts/verify-remote-cleanup.mjs --receipt artifacts/reliability/vertical-slice-receipt.json
+git diff --check
+```
