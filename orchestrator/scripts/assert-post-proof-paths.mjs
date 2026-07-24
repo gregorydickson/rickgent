@@ -26,13 +26,25 @@ const T39_ALLOWED = new Set([
   "orchestrator/test/reliability/claims-contract.test.ts",
   "orchestrator/test/reliability/claim-mutation.test.ts",
   "orchestrator/test/reliability/capability-restoration.test.ts",
+  "orchestrator/test/reliability/release-manifest.test.ts",
+  "orchestrator/test/fixtures/runtime-gate.mjs",
   "orchestrator/scripts/generate-release-proof-index.mjs",
   "orchestrator/scripts/assert-post-proof-paths.mjs",
+  "orchestrator/scripts/quality-gates-summary.mjs",
+  "orchestrator/scripts/validate-mission-completion.mjs",
+  "artifacts/reliability/quality-gates-summary.json",
+  "artifacts/reliability/citadel-release-report.json",
+  "artifacts/reliability/mission-3-completion-summary.json",
+  "docs/remediation/phase-9-t39-release-closure-execution-report.md",
 ]);
-const T39_PREFIXES = ["orchestrator/test/fixtures/claim-mutation/"];
+const T39_PREFIXES = [
+  "orchestrator/test/fixtures/claim-mutation/",
+  "rickgent-policies/test/",
+];
 const FROZEN_PREFIXES = [
   "orchestrator/dist/", "orchestrator/src/", "orchestrator/package.json", "orchestrator/pnpm-lock.yaml",
-  "orchestrator/resources/", "rickgent-policies/", "agents/", "skills/", ".codex/", "package.json", "install.sh",
+  "orchestrator/resources/", "rickgent-policies/rickgent_policies/", "rickgent-policies/pyproject.toml",
+  "agents/", "skills/", ".codex/", "package.json", "install.sh",
   "artifacts/reliability/npm-dist/", "artifacts/reliability/python-dist/",
 ];
 

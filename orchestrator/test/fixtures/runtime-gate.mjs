@@ -19,6 +19,12 @@ const FIXTURE_ENABLED = new Set([
   "resume_retry",
   "reconciliation",
 ]);
+export const CAPABILITY_CONTRACTED_CODE = "RICKGENT_CAPABILITY_CONTRACTED";
+export const RUNTIME_PROOF_STATUS = Object.freeze({
+  profile: "source_compiled",
+  valid: true,
+  diagnostic: null,
+});
 export const RUNTIME_CAPABILITY_GATE = Object.freeze({
   require(name) {
     if (!FIXTURE_ENABLED.has(name)) {

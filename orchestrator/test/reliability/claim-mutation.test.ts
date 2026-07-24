@@ -84,6 +84,7 @@ describe("retained proof claim mutations", () => {
 });
 
 const inventory = load("artifacts/reliability/claim-surface-inventory.json");
+const manifest = load("orchestrator/test/fixtures/claim-mutation/manifest.json");
 const cases = load("orchestrator/test/fixtures/claim-mutation/inventory-cases.json");
 const EXPECTED_CLAIMS: Record<string, unknown> = {
   "capability.autonomous_dispatch": "local_sequential_attempt_runner",
@@ -104,6 +105,22 @@ const EXPECTED_CLAIMS: Record<string, unknown> = {
   "provider_pair.scope": "Only Codex CLI/OpenAI/gpt-5.6-sol implementation plus Claude Code/Anthropic/claude-opus-4-8[1m] review is proved.",
 };
 const CLAIM_PATHS: Record<string, string> = Object.fromEntries(cases.map((item: any) => [item.claim, item.path]));
+
+describe("claim mutation corpus contract", () => {
+  it("binds the complete unique inventory and exact claim set", () => {
+    expect(manifest.schema_version).toBe("rickgent-claim-mutation-corpus/v1");
+    expect(manifest.complete).toBe(true);
+    expect(manifest.inventory.path).toBe("orchestrator/test/fixtures/claim-mutation/inventory-cases.json");
+    expect(manifest.inventory.sha256).toBe(sha256(bytes(manifest.inventory.path)));
+    expect(manifest.inventory.case_count).toBe(cases.length);
+    expect(new Set(cases.map((item: any) => item.name)).size).toBe(cases.length);
+    expect(new Set(cases.map((item: any) => item.claim)).size).toBe(cases.length);
+    expect([...manifest.required_claims].sort()).toEqual(Object.keys(EXPECTED_CLAIMS).sort());
+    expect([...new Set(cases.map((item: any) => item.claim))].sort()).toEqual(
+      [...manifest.required_claims].sort(),
+    );
+  });
+});
 
 function at(value: any, path: string): unknown {
   return path.split(".").reduce((cursor, key) => cursor[key], value);

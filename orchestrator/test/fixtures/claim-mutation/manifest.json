@@ -1,0 +1,30 @@
+{
+  "schema_version": "rickgent-claim-mutation-corpus/v1",
+  "complete": true,
+  "description": "Fail-closed public-claim mutation inventory for retained t39 proof. Every row strengthens or weakens one exact supported claim and must be rejected with that claim's stable diagnostic.",
+  "inventory": {
+    "path": "orchestrator/test/fixtures/claim-mutation/inventory-cases.json",
+    "sha256": "d29472d69b0517066bcaa18f41fad191595215c7a6ff1fcd67d53897d263d14b",
+    "case_count": 16
+  },
+  "required_claims": [
+    "capability.automatic_delivery",
+    "capability.autonomous_dispatch",
+    "capability.cross_vendor_review",
+    "capability.parallel_dispatch",
+    "capability.raw_shell",
+    "capability.reconciliation",
+    "capability.resume_retry",
+    "package.boundary",
+    "platform.reference",
+    "provider_pair.scope",
+    "readiness.hosted",
+    "readiness.installed",
+    "readiness.local",
+    "readiness.ready_for_delivery",
+    "terminal.Done",
+    "terminal.delivered"
+  ],
+  "proof_test": "orchestrator/test/reliability/claim-mutation.test.ts",
+  "failure_contract": "Each mutated claim must fail with ProofClaimError whose message begins with the exact claim identifier; an unclassified exception or accepted mutation is a test failure."
+}

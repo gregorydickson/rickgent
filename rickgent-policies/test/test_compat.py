@@ -80,12 +80,24 @@ def test_headless_subagent_purpose_guard_exists():
 
 def test_build_commit_matches():
     """Python wheel and TS package expose the same build_commit."""
+    import os
+    import shutil
     import subprocess
+    from pathlib import Path
 
     import rickgent_policies
     try:
+        cli = os.environ.get("RICKGENT_CLI_REALPATH")
+        node = os.environ.get("RICKGENT_NODE_REALPATH")
+        if not cli or not node:
+            source_cli = Path(__file__).parents[2] / "orchestrator" / "dist" / "cli.js"
+            fallback_node = shutil.which("node")
+            if not source_cli.is_file() or fallback_node is None:
+                raise FileNotFoundError("bound Rickgent CLI is unavailable")
+            cli = str(source_cli.resolve())
+            node = str(Path(fallback_node).resolve())
         ts_commit = subprocess.run(
-            ["rickgent", "--build-commit"],
+            [node, cli, "--build-commit"],
             capture_output=True, text=True, timeout=10,
         ).stdout.strip()
         assert rickgent_policies.BUILD_COMMIT == ts_commit, \

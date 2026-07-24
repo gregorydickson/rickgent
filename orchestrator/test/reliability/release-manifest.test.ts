@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const repoRoot = resolve(import.meta.dirname, "../../..");
@@ -147,7 +147,10 @@ describe("unified release manifest (t35)", () => {
   });
 
   it("npm pack inventory excludes tests/source/secrets and includes the executable", () => {
-    // Generate the npm pack inventory into the canonical artifact path.
+    // Generate into an isolated path. The canonical retained inventory is
+    // release evidence and must never be rewritten by an ordinary test.
+    const scratch = tmpRoot("inventory");
+    const generatedInventory = join(scratch, "npm-pack-inventory.json");
     const packOut = execFileSync(
       "npm",
       ["pack", "--dry-run", "--json"],
@@ -159,12 +162,7 @@ describe("unified release manifest (t35)", () => {
         env: { ...process.env },
       },
     );
-    const npmDir = dirname(NPM_INVENTORY);
-    if (!existsSync(npmDir)) {
-      // artifacts/reliability exists already, but be defensive.
-      execFileSync("mkdir", ["-p", npmDir], { cwd: repoRoot, shell: false });
-    }
-    writeFileSync(NPM_INVENTORY, packOut, { encoding: "utf8" });
+    writeFileSync(generatedInventory, packOut, { encoding: "utf8" });
 
     // Build the python dist if not already present.
     if (!existsSync(PYTHON_DIST)) {
@@ -175,7 +173,7 @@ describe("unified release manifest (t35)", () => {
       );
     }
 
-    const result = runNode(inventoryScript, [relative(repoRoot, NPM_INVENTORY), relative(repoRoot, PYTHON_DIST)]);
+    const result = runNode(inventoryScript, [generatedInventory, relative(repoRoot, PYTHON_DIST)]);
     expect(result.status, `inventory stderr: ${result.stderr}`).toBe(0);
     expect(result.stdout).toContain("package inventory aligned");
   }, 240_000);

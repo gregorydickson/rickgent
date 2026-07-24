@@ -2,9 +2,24 @@
 
 These test the concepts that will be fully exercised in Phase 7.
 """
+import os
+import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
+
+
+def _cli_argv(*arguments: str) -> list[str]:
+    cli = os.environ.get("RICKGENT_CLI_REALPATH")
+    node = os.environ.get("RICKGENT_NODE_REALPATH")
+    if cli and node:
+        return [node, cli, *arguments]
+    source_cli = Path(__file__).parents[2] / "orchestrator" / "dist" / "cli.js"
+    fallback_node = shutil.which("node")
+    if source_cli.is_file() and fallback_node:
+        return [str(Path(fallback_node).resolve()), str(source_cli.resolve()), *arguments]
+    raise FileNotFoundError("bound Rickgent CLI is unavailable")
 
 
 class TestBuildCommitSameCommit:
@@ -13,7 +28,7 @@ class TestBuildCommitSameCommit:
         import rickgent_policies
         try:
             ts_commit = subprocess.run(
-                ["rickgent", "--build-commit"],
+                _cli_argv("--build-commit"),
                 capture_output=True, text=True, timeout=10,
             ).stdout.strip()
             assert rickgent_policies.BUILD_COMMIT == ts_commit
@@ -36,7 +51,7 @@ class TestStatusDeep:
     def test_doctor_passes_clean(self):
         try:
             result = subprocess.run(
-                ["rickgent", "doctor"],
+                _cli_argv("doctor"),
                 capture_output=True, text=True, timeout=30,
             )
             assert result.returncode == 0

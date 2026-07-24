@@ -14,6 +14,7 @@
  *   node quality-gates-summary.mjs check <summary.json>     — verify a summary
  */
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -113,7 +114,20 @@ export function runAllGates(outputPath) {
   if (typecheck.status === "infrastructure_error") { infrastructureErrors.push({ gate: "typecheck", error: typecheck.detail }); }
 
   // 2. TypeScript build
-  const build = runGate("build", "node", ["scripts/generate-build-commit.cjs"], { cwd: ORCH_DIR, timeout: 30_000 });
+  const retainedBuildCommit = readFileSync(
+    join(ORCH_DIR, "src", "build-commit.ts"),
+    "utf8",
+  ).match(/BUILD_COMMIT = "([0-9a-f]{40})"/)?.[1];
+  const build = runGate("build", "node", ["scripts/generate-build-commit.cjs"], {
+    cwd: ORCH_DIR,
+    timeout: 30_000,
+    env: {
+      ...PATH_ENV(),
+      ...(retainedBuildCommit === undefined
+        ? {}
+        : { RICKGENT_BUILD_COMMIT: retainedBuildCommit }),
+    },
+  });
   build.name = "build";
   gates.push(build);
   if (build.status === "infrastructure_error") { infrastructureErrors.push({ gate: "build", error: build.detail }); }
@@ -146,6 +160,12 @@ export function runAllGates(outputPath) {
   if (mypy.status === "infrastructure_error") { infrastructureErrors.push({ gate: "mypy_typecheck", error: mypy.detail }); }
 
   // 6. Python test with coverage
+  const pythonCli = join(ORCH_DIR, "dist", "cli.js");
+  const generatedBuildCommit = readFileSync(
+    join(ORCH_DIR, "src", "build-commit.ts"),
+    "utf8",
+  ).match(/BUILD_COMMIT = "([0-9a-f]{40})"/)?.[1];
+  const digest = (path) => createHash("sha256").update(readFileSync(path)).digest("hex");
   const pyTest = runGate(
     "py_test_coverage",
     "python3",
@@ -155,8 +175,13 @@ export function runAllGates(outputPath) {
       timeout: 120_000,
       env: {
         ...PATH_ENV(),
-        RICKGENT_CLI_REALPATH: join(ORCH_DIR, "dist", "cli.js"),
+        RICKGENT_CLI_REALPATH: pythonCli,
+        RICKGENT_CLI_SHA256: digest(pythonCli),
         RICKGENT_NODE_REALPATH: process.execPath,
+        RICKGENT_NODE_SHA256: digest(process.execPath),
+        ...(generatedBuildCommit === undefined
+          ? {}
+          : { RICKGENT_BUILD_COMMIT: generatedBuildCommit }),
       },
     },
   );

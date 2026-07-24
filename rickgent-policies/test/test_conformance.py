@@ -83,15 +83,25 @@ def _compare_verdict(actual: dict, expected: dict) -> bool:
     return json.dumps(actual, sort_keys=True) == json.dumps(expected, sort_keys=True)
 
 
-@pytest.mark.parametrize("fixture", _load_fixtures(), ids=lambda f: f.get("id", "unknown"))
+@pytest.mark.parametrize(
+    "fixture",
+    [fixture for fixture in _load_fixtures() if fixture["check"] in CLI_CHECKS],
+    ids=lambda f: f.get("id", "unknown"),
+)
 def test_python_subprocess_conformance(fixture):
     """Each fixture's expected verdict matches the Python subprocess path."""
-    if fixture["check"] not in CLI_CHECKS:
-        pytest.skip(f"No CLI surface for check: {fixture['check']}")
-
     result = _run_rickgent_verdict(fixture["check"], fixture["input"])
     assert _compare_verdict(result, fixture["expected"]), \
         f"Fixture {fixture['id']}: expected {fixture['expected']}, got {result}"
+
+
+def test_non_cli_fixture_checks_are_explicitly_outside_the_subprocess_surface():
+    unsupported = {
+        fixture["check"]
+        for fixture in _load_fixtures()
+        if fixture["check"] not in CLI_CHECKS
+    }
+    assert unsupported == {"breaker"}
 
 
 def test_all_three_surfaces_agree_on_committed():
