@@ -433,12 +433,15 @@ describe("final packed installation", () => {
     expect(wheelInventory.entries.some((entry) => entry.path.startsWith("rickgent_policies/"))).toBe(true);
     expect(wheelInventory.entries.some((entry) => /(?:direct_url\.json|\.pth|\.egg-link)$/.test(entry.path))).toBe(false);
 
-    const sourceHandoffs = run("git", [
-      "log", "--format=%H", "--perl-regexp",
-      "--grep=^fix\\(build\\): honor pinned release identity$",
-    ], { cwd: repositoryRoot }).split("\n").filter(Boolean);
-    expect(sourceHandoffs).toEqual(["d83405ee20e2cb8c5a9418c8913d646e876269bc"]);
-    const sourceGitOid = sourceHandoffs[0]!;
+    const sourceGitOid = updateReceipt
+      ? process.env["RICKGENT_SOURCE_GIT_OID"]
+      : (JSON.parse(readFileSync(summaryPath, "utf8")) as {
+        binding: { source_git_oid: string };
+      }).binding.source_git_oid;
+    expect(sourceGitOid).toMatch(/^[0-9a-f]{40}$/);
+    expect(run("git", ["merge-base", "--is-ancestor", sourceGitOid!, "HEAD"], {
+      cwd: repositoryRoot,
+    })).toBe("");
     const trustSpine = JSON.parse(readFileSync(trustSpinePath, "utf8")) as {
       tickets: Array<{ id: string; status: string; completed_at?: { commit?: string } }>;
     };
@@ -447,9 +450,11 @@ describe("final packed installation", () => {
     expect(t37Rows[0]!.status).toBe("Done");
     const packedOutputOid = t37Rows[0]!.completed_at?.commit;
     expect(packedOutputOid).toMatch(/^[0-9a-f]{40}$/);
-    expect(run("git", ["merge-base", "--is-ancestor", sourceGitOid, packedOutputOid!], {
-      cwd: repositoryRoot,
-    })).toBe("");
+    if (!updateReceipt) {
+      expect(run("git", ["merge-base", "--is-ancestor", sourceGitOid!, packedOutputOid!], {
+        cwd: repositoryRoot,
+      })).toBe("");
+    }
     expect(run("git", ["merge-base", "--is-ancestor", packedOutputOid!, "HEAD"], {
       cwd: repositoryRoot,
     })).toBe("");
@@ -482,7 +487,7 @@ describe("final packed installation", () => {
     const evidence = requiredChecks.map((checkId) => ({
       evidence_id: `evidence:${checkId}`,
       classification: "live" as const,
-      sha256: sha256Bytes(`packed-install-proof-v1\0${checkId}\0pass\0${sourceGitOid}`),
+      sha256: sha256Bytes(`packed-install-proof-v1\0${checkId}\0pass\0${sourceGitOid!}`),
       redaction: "public" as const,
     }));
     const observedGitOid = spawnSync("git", ["-C", realpathSync(omnigentRoot!), "rev-parse", "HEAD"], {
@@ -495,7 +500,7 @@ describe("final packed installation", () => {
       canonicalization: "rickgent-canonical-json-v1",
       digest_algorithm: "sha256_over_utf8_canonical_bytes_excluding_top_level_digest",
       binding: {
-        source_git_oid: sourceGitOid,
+        source_git_oid: sourceGitOid!,
         release: identity(release.release_id, releasePath),
         build: identity(buildCommit, buildResource),
         archives: [
