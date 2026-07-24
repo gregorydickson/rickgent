@@ -80,6 +80,7 @@ describe("retained proof claim mutations", () => {
 const inventory = load("artifacts/reliability/claim-surface-inventory.json");
 const cases = load("orchestrator/test/fixtures/claim-mutation/inventory-cases.json");
 const EXPECTED_CLAIMS: Record<string, unknown> = {
+  "capability.autonomous_dispatch": "local_sequential_attempt_runner",
   "capability.resume_retry": "proof_gated",
   "capability.cross_vendor_review": "installed_t38_exact_provider_pair_only",
   "capability.automatic_delivery": "installed_t38_allowlisted_disposable_remote_only",
@@ -87,7 +88,10 @@ const EXPECTED_CLAIMS: Record<string, unknown> = {
   "capability.parallel_dispatch": "unavailable",
   "capability.raw_shell": "unavailable",
   "terminal.Done": "delivered_only_alias",
+  "terminal.delivered": "remote_delivery_verified",
   "readiness.ready_for_delivery": "local_oracle_complete",
+  "readiness.installed": "resume_retry, cross_vendor_review, and automatic_delivery require the valid installed_t38_retained_proof_v1 root; invalid evidence contracts all three.",
+  "package.boundary": "immutable_after_retained_t38_proof",
   "platform.reference": "One t38 reference-platform observation; this is not a general Darwin, Linux, or cross-platform execution proof.",
   "readiness.hosted": "One allowlisted disposable GitHub repository was observed by t38; no general hosted-service claim is made.",
   "readiness.local": "Compiled local behavior; autonomous_dispatch is sequential and reconciliation is limited to the t29 persisted-receipt/oracle profile.",

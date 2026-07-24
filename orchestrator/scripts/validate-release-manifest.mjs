@@ -124,6 +124,7 @@ function main() {
     "installer",
     "runtime_paths",
     "assembly_plan",
+    "installed_proof_contract",
     "validators",
   ];
   for (const field of requiredTop) {
@@ -289,6 +290,27 @@ function main() {
   const policiesSourceRel = requireField(runtimePaths, "policies_source", "runtime_paths");
   if (!existsSync(resolve(repoRoot, policiesSourceRel))) {
     fail(`runtime_paths.policies_source does not exist: ${policiesSourceRel}`);
+  }
+
+  // --- Installed proof activation checks ---
+  const installedProof = requireObject(manifest.installed_proof_contract, "installed_proof_contract");
+  if (installedProof.profile !== "installed_t38_retained_proof_v1") {
+    fail("installed_proof_contract.profile must select the retained t38 proof profile");
+  }
+  if (installedProof.authority !== "artifacts/reliability/release-proof-index.json") {
+    fail("installed_proof_contract.authority must select the release proof index");
+  }
+  const activated = requireField(installedProof, "activates", "installed_proof_contract");
+  if (JSON.stringify(activated) !== JSON.stringify([
+    "resume_retry", "cross_vendor_review", "automatic_delivery",
+  ])) {
+    fail("installed_proof_contract.activates must contain the exact proof-gated capability set");
+  }
+  if (!Array.isArray(installedProof.requires) || installedProof.requires.length < 5) {
+    fail("installed_proof_contract.requires must retain all installed proof boundaries");
+  }
+  for (const field of ["invalid_proof_behavior", "package_boundary"]) {
+    requireString(requireField(installedProof, field, "installed_proof_contract"), `installed_proof_contract.${field}`);
   }
 
   // --- Validators checks ---

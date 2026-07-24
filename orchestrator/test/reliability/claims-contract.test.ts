@@ -99,6 +99,21 @@ describe("reliability-preview claim contract", () => {
       read_only_available: ["help", "version", "doctor"],
       protected_mutation: "fail_closed_before_state_or_side_effect",
     });
+    expect(inventory.package_boundaries).toEqual({
+      authority: "artifacts/reliability/release-proof-index.json#bindings.archives",
+      state: "immutable_after_retained_t38_proof",
+      substitution: "invalidates_installed_capability_activation",
+    });
+    expect(proof.bindings.archives).toEqual(
+      JSON.parse(readFileSync(join(repoRoot, "artifacts/reliability/packed-install-summary.json"), "utf-8"))
+        .binding.archives,
+    );
+    expect(JSON.parse(readFileSync(join(repoRoot, "release-manifest.json"), "utf-8"))
+      .installed_proof_contract).toMatchObject({
+        profile: "installed_t38_retained_proof_v1",
+        authority: "artifacts/reliability/release-proof-index.json",
+        activates: ["resume_retry", "cross_vendor_review", "automatic_delivery"],
+      });
 
     const requiredClaims = [
       "installed_t38_retained_proof_v1",

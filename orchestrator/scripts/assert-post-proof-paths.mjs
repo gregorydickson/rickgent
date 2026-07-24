@@ -7,11 +7,11 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const T37 = "1da9e3be24ec1297b81309e9d8a515804164ee90";
-const T38_MARKER = "11bc5e4365f1a0fe7e67974455aa991f32925170";
-const RETAINED = "e1f768cd519bfd48c1e93d6473443fc8f5e98e03";
+const T37 = "78a49b0e9fb0a8fee4be42a8ffcd2f425b6acca5";
+const T38_MARKER = "d56e7fb33cff9f484f260e0b21f34301d726912f";
+const RETAINED = "0d46527df44a8d8ae4c2727c6f9f520b2b4984ca";
 const ARCHIVES = {
-  "artifacts/reliability/npm-dist/rickgent-0.1.0-alpha.tgz": "642512459c175bf0f566d37676512b77ae6e9b88f928d9ef239a56bf37d9edf7",
+  "artifacts/reliability/npm-dist/rickgent-0.1.0-alpha.tgz": "73aed4b2a5286cfd28b101ace94c74311d0d960fc82ffe8eeecf3c9f116d7654",
   "artifacts/reliability/python-dist/rickgent_policies-0.1.0a0-py3-none-any.whl": "0eb851486e8966c5509d53172b3491e6daa1bc836b9255c267863fa3d82e72f0",
 };
 const T39_ALLOWED = new Set([
@@ -29,7 +29,7 @@ const T39_ALLOWED = new Set([
 const T39_PREFIXES = ["orchestrator/test/fixtures/claim-mutation/"];
 const FROZEN_PREFIXES = [
   "orchestrator/dist/", "orchestrator/src/", "orchestrator/package.json", "orchestrator/pnpm-lock.yaml",
-  "orchestrator/resources/", "rickgent-policies/", "skills/", ".codex/", "install.sh",
+  "orchestrator/resources/", "rickgent-policies/", "agents/", "skills/", ".codex/", "package.json", "install.sh",
   "artifacts/reliability/npm-dist/", "artifacts/reliability/python-dist/",
 ];
 
@@ -63,7 +63,7 @@ try {
 } catch {
   fail("packed baseline is malformed");
 }
-if (packed.digest !== "2dd3587120acf8f909fbbfb23607648225212ce7eb7ada28e8c219736a3db058") {
+if (packed.digest !== "d251ea75c3824199f2d23a8f777ddc9c71101b09de059cb991651aaf0f463248") {
   fail("packed baseline digest is not the retained t37 authority");
 }
 
@@ -89,6 +89,7 @@ const postRetained = new Set([
   ...git(["diff", "--name-only", `${RETAINED}..HEAD`]).trim().split("\n").filter(Boolean),
   ...git(["diff", "--name-only"]).trim().split("\n").filter(Boolean),
   ...git(["diff", "--name-only", "--cached"]).trim().split("\n").filter(Boolean),
+  ...git(["ls-files", "--others", "--exclude-standard"]).trim().split("\n").filter(Boolean),
 ]);
 for (const path of postRetained) {
   if (!T39_ALLOWED.has(path) && !T39_PREFIXES.some((prefix) => path.startsWith(prefix))) {

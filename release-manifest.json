@@ -160,6 +160,24 @@
     "source_build_allowed": false,
     "clean_packed_install_requirement": "The compiled CLI, agent bundles, runtime metadata, LICENSE, proof metadata, validators, and rickgent_policies resolve only from installed archive roots. Omnigent is the sole mounted external dependency; any checkout, editable, or source-tree fallback invalidates the install."
   },
+  "installed_proof_contract": {
+    "profile": "installed_t38_retained_proof_v1",
+    "authority": "artifacts/reliability/release-proof-index.json",
+    "activates": [
+      "resume_retry",
+      "cross_vendor_review",
+      "automatic_delivery"
+    ],
+    "requires": [
+      "exact retained npm and wheel archive hashes",
+      "two complete authenticated protected lifecycles",
+      "Codex CLI/OpenAI/gpt-5.6-sol implementation",
+      "Claude Code/Anthropic/claude-opus-4-8[1m] review",
+      "allowlisted disposable GitHub delivery and independently requeried cleanup"
+    ],
+    "invalid_proof_behavior": "contract all protected capabilities before mutation while preserving help, version, and doctor",
+    "package_boundary": "archive hashes and installed realpaths are immutable proof inputs; checkout, editable, source-tree, or post-proof package substitution invalidates activation"
+  },
   "validators": {
     "manifest": "orchestrator/scripts/validate-release-manifest.mjs",
     "package_inventory": "orchestrator/scripts/assert-package-inventory.mjs",

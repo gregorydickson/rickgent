@@ -1,5 +1,11 @@
 [
   {
+    "name": "autonomous dispatch scope",
+    "path": "capabilities.autonomous_dispatch.scope",
+    "value": "general_autonomy",
+    "claim": "capability.autonomous_dispatch"
+  },
+  {
     "name": "resume capability strength",
     "path": "capabilities.resume_retry.state",
     "value": "enabled",
@@ -42,6 +48,12 @@
     "claim": "terminal.Done"
   },
   {
+    "name": "delivered terminal weakening",
+    "path": "terminal_semantics.delivered",
+    "value": "local_oracle_complete",
+    "claim": "terminal.delivered"
+  },
+  {
     "name": "readiness remote strength",
     "path": "terminal_semantics.ready_for_delivery",
     "value": "remote_delivery_verified",
@@ -52,6 +64,18 @@
     "path": "profiles.reference_platform",
     "value": "Darwin and Linux supported",
     "claim": "platform.reference"
+  },
+  {
+    "name": "installed profile generalization",
+    "path": "profiles.installed",
+    "value": "Installed production ready",
+    "claim": "readiness.installed"
+  },
+  {
+    "name": "immutable package boundary",
+    "path": "package_boundaries.state",
+    "value": "mutable",
+    "claim": "package.boundary"
   },
   {
     "name": "hosted generalization",

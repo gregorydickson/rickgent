@@ -53,6 +53,11 @@
     "delivered": "remote_delivery_verified",
     "Done": "delivered_only_alias"
   },
+  "package_boundaries": {
+    "authority": "artifacts/reliability/release-proof-index.json#bindings.archives",
+    "state": "immutable_after_retained_t38_proof",
+    "substitution": "invalidates_installed_capability_activation"
+  },
   "input_discrepancies": {
     "artifacts/reliability/recovery-parity-summary.json": {
       "status": "missing_fail_closed",
