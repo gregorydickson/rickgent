@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   completeGitHubCollection,
   requireExecuteRemoteAuthority,
+  requireTeardownDryRun,
   requireUnchangedRemoteObservation,
 } from "../../scripts/run-protected-release.mjs";
 
@@ -40,6 +41,17 @@ describe("protected release preflight remote observation", () => {
     owner: "owner",
     repository: "repository",
     repository_id: "123",
+  };
+  const teardown = {
+    close_owned_prs_only: true,
+    compare_before_delete: true,
+    delete_owned_branches_only: true,
+    force_delete: false,
+    owned_namespace: remote.owned_namespace,
+    registered_before_mutation: true,
+    repository_deletion: false,
+    repository_id: remote.repository_id,
+    requery_after_action: true,
   };
 
   it("binds execute mutations to the independently supplied remote contract", () => {
@@ -91,5 +103,20 @@ describe("protected release preflight remote observation", () => {
     expect(() => requireUnchangedRemoteObservation(before, changedIdentity)).toThrow(
       "remote lifecycle state changed during preflight",
     );
+  });
+
+  it("earns teardown dry-run evidence from exact cleanup state transitions", () => {
+    expect(requireTeardownDryRun(remote, teardown)).toBe(true);
+
+    for (const changed of [
+      { ...teardown, compare_before_delete: false },
+      { ...teardown, owned_namespace: "rickgent/protected/other" },
+      { ...teardown, repository_id: "456" },
+      { ...teardown, requery_after_action: false },
+    ]) {
+      expect(() => requireTeardownDryRun(remote, changed)).toThrow(
+        "protected teardown dry run is not bound to the observed remote",
+      );
+    }
   });
 });

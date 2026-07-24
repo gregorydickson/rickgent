@@ -486,6 +486,56 @@ export function requireUnchangedRemoteObservation(before, after) {
   }
 }
 
+export function requireTeardownDryRun(remote, teardown) {
+  // Trap door: declaring dry_run_validated in a receipt is not a dry run.
+  // Exercise the exact cleanup state transitions without issuing a hosted
+  // mutation, and bind the plan to the observed repository and namespace.
+  if (
+    !/^[1-9][0-9]*$/.test(remote?.repository_id ?? "")
+    || typeof remote?.base_branch !== "string"
+    || remote.base_branch === ""
+    || typeof remote?.owned_namespace !== "string"
+    || remote.owned_namespace === ""
+    || teardown?.close_owned_prs_only !== true
+    || teardown?.compare_before_delete !== true
+    || teardown?.delete_owned_branches_only !== true
+    || teardown?.force_delete !== false
+    || teardown?.owned_namespace !== remote.owned_namespace
+    || teardown?.registered_before_mutation !== true
+    || teardown?.repository_deletion !== false
+    || teardown?.repository_id !== remote.repository_id
+    || teardown?.requery_after_action !== true
+  ) {
+    fail("protected teardown dry run is not bound to the observed remote");
+  }
+  const branch = `${remote.owned_namespace}/dry-run`;
+  run("git", ["check-ref-format", `refs/heads/${branch}`]);
+  const deliveryOid = "0".repeat(40);
+  const expectedPull = {
+    baseBranch: remote.base_branch,
+    branch,
+    deliveryOid,
+    pullRequestId: "1",
+  };
+  const openPull = {
+    base: { ref: remote.base_branch },
+    head: { ref: branch, sha: deliveryOid },
+    number: 1,
+    state: "open",
+  };
+  if (
+    pullRequestCleanupAction(openPull, expectedPull, false) !== "close"
+    || pullRequestCleanupAction({ ...openPull, state: "closed" }, expectedPull, true)
+      !== "already-closed"
+    || branchCleanupAction({ object: { sha: deliveryOid } }, deliveryOid, false)
+      !== "delete-with-lease"
+    || branchCleanupAction(null, deliveryOid, true) !== "already-absent"
+  ) {
+    fail("protected teardown dry run did not reach cleanup completion");
+  }
+  return true;
+}
+
 async function runPreflight() {
   const packedReceiptPath = realpathSync(resolve(option("--packed-receipt")));
   const remoteContractPath = realpathSync(resolve(option("--remote-contract")));
@@ -519,17 +569,20 @@ async function runPreflight() {
     provider_lifecycle_sha256: providerAfter.sha256,
   };
   const { remote } = remoteAfter;
-  const teardown = {
+  const teardownPlan = {
     close_owned_prs_only: true,
     compare_before_delete: true,
     delete_owned_branches_only: true,
-    dry_run_validated: true,
     force_delete: false,
     owned_namespace: remote.owned_namespace,
     registered_before_mutation: true,
     repository_deletion: false,
     repository_id: remote.repository_id,
     requery_after_action: true,
+  };
+  const teardown = {
+    ...teardownPlan,
+    dry_run_validated: requireTeardownDryRun(remote, teardownPlan),
   };
   const acceptanceCriteria = [
     "Preflight binds the installed executable/build and exact npm, wheel, inventory, compatibility, and packed-receipt digests from t37.",
