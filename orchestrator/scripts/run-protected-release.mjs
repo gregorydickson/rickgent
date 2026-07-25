@@ -162,7 +162,7 @@ export function committedDirectoryInventory(repository, commitOid, directory) {
   return entries;
 }
 
-function installedDirectoryInventory(root, relative = "") {
+export function installedDirectoryInventory(root, relative = "") {
   const entries = [];
   for (const name of readdirSync(root).sort()) {
     const absolute = join(root, name);
@@ -288,6 +288,7 @@ function installExactHandoff(packedReceiptPath, archives) {
   const handoffRoot = join(tmpdir(), "rickgent-protected-install", archives.npm.sha256.slice(0, 16));
   const markerPath = join(handoffRoot, "handoff.json");
   const marker = canonical({
+    materialization: "git-archive-v1",
     npm: archives.npm.sha256,
     omnigent_git_oid: omnigentGitOid,
     wheel: archives.wheel.sha256,
@@ -309,11 +310,26 @@ function installExactHandoff(packedReceiptPath, archives) {
       "--no-deps", "--force-reinstall", wheelArchive,
     ], { timeout: 120_000 });
     mkdirSync(omnigentRoot, { recursive: true });
-    cpSync(join(omnigentSourceRoot, "omnigent"), join(omnigentRoot, "omnigent"), {
-      dereference: true,
-      filter: (source) => !source.split("/").includes("__pycache__") && !source.endsWith(".pyc"),
-      recursive: true,
-    });
+    const omnigentArchive = join(handoffRoot, "omnigent-source.tar");
+    const omnigentStaging = join(handoffRoot, "omnigent-source");
+    mkdirSync(omnigentStaging, { recursive: true });
+    try {
+      // Materialize from the pinned Git tree, never from the potentially
+      // dirty worktree. Include examples/ so package-relative symlink targets
+      // can be dereferenced inside the owned staging root.
+      run("git", [
+        "-C", omnigentSourceRoot, "archive", "--format=tar", "-o", omnigentArchive,
+        omnigentGitOid, "--", "omnigent", "examples",
+      ], { timeout: 120_000 });
+      run("tar", ["-xf", omnigentArchive, "-C", omnigentStaging], { timeout: 120_000 });
+      cpSync(join(omnigentStaging, "omnigent"), join(omnigentRoot, "omnigent"), {
+        dereference: true,
+        recursive: true,
+      });
+    } finally {
+      rmSync(omnigentArchive, { force: true });
+      rmSync(omnigentStaging, { recursive: true, force: true });
+    }
     const omnigentMetadata = join(omnigentRoot, "omnigent-0.6.0.dev0.dist-info");
     mkdirSync(omnigentMetadata, { recursive: true });
     writeFileSync(join(omnigentMetadata, "METADATA"), "Metadata-Version: 2.1\nName: omnigent\nVersion: 0.6.0.dev0\n");
