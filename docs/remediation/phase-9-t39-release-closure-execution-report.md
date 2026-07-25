@@ -12,17 +12,17 @@ or infrastructure errors.
 ## Immutable release inputs
 
 - npm archive SHA-256:
-  `66c2be883fab72c203ca3666409b022d7e273b8bcccf30e5f8f8ad457b0d44ed`
+  `7f4b11563366c1335507fdd8d26269b7f5f7318c6b7f86c98de6bcbacb0125c0`
 - Python wheel SHA-256:
-  `0eb851486e8966c5509d53172b3491e6daa1bc836b9255c267863fa3d82e72f0`
+  `bcca92b31a0c6d962179d757c571139c41a143ea319ffa11b94fc3d636f977ef`
 - packed receipt file SHA-256:
-  `117237afc39a53d4e0be1b183af73701f134e4f0eb9c6399bfa8d96f0f7f7b36`
+  `102696db7012d97c21410d4deebdeaa8b4ac4c388c21d615a5c5dcce76d75b14`
 - vertical receipt file SHA-256:
-  `6a8e8c085629ade0c7740baa8b26cedaebf3e109cc11f2d96d8e7569e24b846a`
+  `39d5b2eafd04fd71dfb9b15e6fe16f6b83d10e2dfcf63b2e2675db3e6125a0cd`
 
 The milestone completion convention binds t37 and t38 to their documented
 completion-marker commits and binds t39 to the clean prerequisite-repair
-commit `c0b17e19b495721771c0c69ee4dabed8fbd9772a`. The closure commit contains
+commit `7408f0010aca726e15955c83acce05d95316c517`. The closure commit contains
 only t39b-owned validation and retained evidence; it does not redefine the
 release archives or packaged runtime.
 
@@ -33,7 +33,7 @@ and the absence of retained closure artifacts. This prepared closure updates
 the t39 binding to an ordered descendant, adds the fail-closed Mission 3
 validator, and retains the prepared report and summary. The earlier Python
 coverage, claim-corpus, and post-proof-allowlist blockers were resolved in
-`c0b17e19b495721771c0c69ee4dabed8fbd9772a`.
+`7408f0010aca726e15955c83acce05d95316c517`.
 
 ## Citadel
 

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "decision": "pending",
   "read_only": true,
-  "prepared_commit": "c0b17e19b495721771c0c69ee4dabed8fbd9772a",
+  "prepared_commit": "79004843e6e44c5d03911e20891a474ead5835c1",
   "promise": null,
   "blocking_findings": [],
   "acceptance_criteria": [
@@ -38,10 +38,11 @@
   "source": {
     "kind": "citadel-prepared-checkpoint",
     "session": "2026-07-23-a34da084-citadel-direct",
-    "prior_review_generated_at": "2026-07-24T07:43:52Z",
+    "prior_review_generated_at": "2026-07-25T23:23:48Z",
     "prior_findings_resolved_in_prepared_closure": [
       "Recorded t39 completion predates the t37 and t38 milestone commits",
-      "Mandatory t39b mission-completion and commit-bound Citadel evidence are not implemented"
+      "Mandatory t39b mission-completion and commit-bound Citadel evidence are not implemented",
+      "The t39 completion evidence is stale after the t37/t38 reseal"
     ]
   }
 }
