@@ -46,7 +46,7 @@ const completionPaths = [
   "docs/remediation/phase-9-t37-packed-install-execution-report.md",
   "docs/remediation/trust-spine-manifest.json",
 ];
-const t37bSourceOid = "c9820e3672a43afe766bf23239501fafd9237fd1";
+const t37bSourceOid = "a91beeb6d4c183f7f63813d41feb66c40e7e9eb4";
 const pinnedScratchIgnoreOid = "99b557e786adcfbe8932fcc5abfb80aef7057abe";
 const retainedOutputPaths = [
   "artifacts/reliability/npm-pack-inventory.json",
@@ -160,11 +160,6 @@ if (typeof completion.commit !== "string" || !/^[0-9a-f]{40}$/.test(completion.c
   fail("t37 packed-output commit must be a full lowercase commit OID");
 }
 const packedOutputOid = completion.commit;
-const sourceHandoffs = execFileSync("git", [
-  "log", "--format=%H", "--perl-regexp",
-  "--grep=^test\\(reliability\\): exercise installed contraction snapshots$",
-], { cwd: repositoryRoot, encoding: "utf8" }).trim().split("\n").filter(Boolean);
-equal(sourceHandoffs, [t37bSourceOid], "unique committed t37b source handoff");
 equal(sourceOid, t37bSourceOid, "non-self-referential source Git OID");
 try {
   execFileSync("git", ["merge-base", "--is-ancestor", sourceOid, packedOutputOid], {

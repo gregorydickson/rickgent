@@ -7,18 +7,18 @@ import { fileURLToPath } from "node:url";
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const EXPECTED = Object.freeze({
-  packed_file_sha256: "117237afc39a53d4e0be1b183af73701f134e4f0eb9c6399bfa8d96f0f7f7b36",
-  packed_digest: "54545fe6df196ab824bb6e23ae9c57c031ff6c1ceaf1b0bff1c1dabd0a7f1369",
-  vertical_file_sha256: "6a8e8c085629ade0c7740baa8b26cedaebf3e109cc11f2d96d8e7569e24b846a",
-  vertical_digest: "2d0460781b92a4f79be240cbf8a413ea83e180e4d43819cb0e604f81f98faf92",
+  packed_file_sha256: "102696db7012d97c21410d4deebdeaa8b4ac4c388c21d615a5c5dcce76d75b14",
+  packed_digest: "63b5de57689f592676f7df03feead8e6838674dd287531acfc50c6838f947fbb",
+  vertical_file_sha256: "39d5b2eafd04fd71dfb9b15e6fe16f6b83d10e2dfcf63b2e2675db3e6125a0cd",
+  vertical_digest: "4d4db4cbfc7bceaba66951d4c426ed550ea56cdfb12c69164d340f8c22c515a3",
   packed_schema_sha256: "772ce8915d06869a181c49c2c636038f9e3adeda816d17f7bd1e5ee455f1aecb",
-  vertical_schema_sha256: "4604fa7e8a6314c3998bb1d14a76f0c34eff9ad084d54802f0ef93265346b312",
-  preflight_sha256: "9d11595aa7c3923947b0d5899eb41fcb4f2c80c87fb5bd841a98c97d24406c86",
+  vertical_schema_sha256: "9f822e56e7d05bf7905fac27076a1644bd9200810b9d61f9eea8d3a9855ce6e7",
+  preflight_sha256: "8b9e2163549db6c3011449da14a70060ecbf857ec2662d76475113cff00dd055",
   diagnostics_sha256: "2e9daa0a9286511e401ac169102267a78c5ec23ae116a891f7648cb36c58a12c",
   release_sha256: "d0a97bd72502ea7af9554efa99be571424ad8be631ecb74dd2b22371c33a44e0",
-  t37_completion_commit: "d9cd83b58f0748bffb918efdd29efd811604a4ae",
-  t38_completion_marker: "7bba54e2d1510475ed828e97c0d67320f90c9727",
-  retained_receipt_commit: "ca6dcdf29ce25ab7bd53080fdedf9fae97349268",
+  t37_completion_commit: "7bc1112ab592ef281e04adde3841a6d64ad51966",
+  t38_completion_marker: "8ff527224bda1cc0560ff128331166676223db08",
+  retained_receipt_commit: "8ff527224bda1cc0560ff128331166676223db08",
 });
 
 const PATHS = Object.freeze({
@@ -180,7 +180,7 @@ export function validateProofAuthorities({
       same(failureCleanup.base_branch, vertical.repository?.base_branch, `cleanup.${run.run_id}.failure_base`);
       same(
         failureCleanup.branch,
-        `${vertical.repository?.owned_branch_prefix}${run.run_id}-failure-cleanup`,
+        `${vertical.repository?.owned_branch_prefix}/${run.run_id}-failure-cleanup`,
         `cleanup.${run.run_id}.failure_branch`,
       );
       same(failureCleanup.delivery_oid, run.delivery?.delivery_oid, `cleanup.${run.run_id}.failure_oid`);

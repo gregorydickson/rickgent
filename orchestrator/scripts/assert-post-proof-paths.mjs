@@ -7,12 +7,12 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const T37 = "d9cd83b58f0748bffb918efdd29efd811604a4ae";
-const T38_MARKER = "7bba54e2d1510475ed828e97c0d67320f90c9727";
-const RETAINED = "ca6dcdf29ce25ab7bd53080fdedf9fae97349268";
+const T37 = "7bc1112ab592ef281e04adde3841a6d64ad51966";
+const T38_MARKER = "8ff527224bda1cc0560ff128331166676223db08";
+const RETAINED = "8ff527224bda1cc0560ff128331166676223db08";
 const ARCHIVES = {
-  "artifacts/reliability/npm-dist/rickgent-0.1.0-alpha.tgz": "66c2be883fab72c203ca3666409b022d7e273b8bcccf30e5f8f8ad457b0d44ed",
-  "artifacts/reliability/python-dist/rickgent_policies-0.1.0a0-py3-none-any.whl": "0eb851486e8966c5509d53172b3491e6daa1bc836b9255c267863fa3d82e72f0",
+  "artifacts/reliability/npm-dist/rickgent-0.1.0-alpha.tgz": "7f4b11563366c1335507fdd8d26269b7f5f7318c6b7f86c98de6bcbacb0125c0",
+  "artifacts/reliability/python-dist/rickgent_policies-0.1.0a0-py3-none-any.whl": "bcca92b31a0c6d962179d757c571139c41a143ea319ffa11b94fc3d636f977ef",
 };
 const INVENTORIES = {
   "artifacts/reliability/npm-pack-inventory.json": "9804e3cfa9200eb56c8ed0f693c3207e8467fd6333876b244d0f2344686391e6",
@@ -32,6 +32,8 @@ const T39_ALLOWED = new Set([
   "orchestrator/scripts/assert-post-proof-paths.mjs",
   "orchestrator/scripts/quality-gates-summary.mjs",
   "orchestrator/scripts/validate-mission-completion.mjs",
+  "orchestrator/scripts/validate-packed-install-receipt.mjs",
+  "orchestrator/scripts/validate-protected-preflight.mjs",
   "artifacts/reliability/quality-gates-summary.json",
   "artifacts/reliability/citadel-release-report.json",
   "artifacts/reliability/mission-3-completion-summary.json",
@@ -78,7 +80,7 @@ try {
 } catch {
   fail("packed baseline is malformed");
 }
-if (packed.digest !== "54545fe6df196ab824bb6e23ae9c57c031ff6c1ceaf1b0bff1c1dabd0a7f1369") {
+if (packed.digest !== "63b5de57689f592676f7df03feead8e6838674dd287531acfc50c6838f947fbb") {
   fail("packed baseline digest is not the retained t37 authority");
 }
 
