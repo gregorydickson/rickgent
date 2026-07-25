@@ -129,12 +129,13 @@ function directorySnapshot(root) {
 }
 
 function materializeContainedSymlinks(root, directory = root) {
+  const canonicalRoot = realpathSync(root);
   for (const name of readdirSync(directory).sort()) {
     const absolute = join(directory, name);
     const stats = lstatSync(absolute);
     if (stats.isSymbolicLink()) {
       const target = realpathSync(absolute);
-      const containment = relative(root, target);
+      const containment = relative(canonicalRoot, target);
       if (containment === ".." || containment.startsWith(`..${sep}`)) {
         fail("committed package symlink escapes the archived Git tree");
       }
