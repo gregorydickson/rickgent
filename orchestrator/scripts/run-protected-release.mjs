@@ -127,16 +127,39 @@ function directorySnapshot(root) {
   };
 }
 
-function committedDirectoryInventory(repository, commitOid, directory) {
+export function committedDirectoryInventory(repository, commitOid, directory) {
   const output = run("git", [
     "-C", repository, "ls-tree", "-r", "-z", "--full-tree", commitOid, "--", directory,
   ]);
-  return output.split("\0").filter(Boolean).map((entry) => {
+  const entries = output.split("\0").filter(Boolean).flatMap((entry) => {
     const separator = entry.indexOf("\t");
     const metadata = entry.slice(0, separator).split(" ");
     const path = entry.slice(separator + 1);
-    return [path.slice(`${directory}/`.length), metadata[2]];
+    const relativePath = path.slice(`${directory}/`.length);
+    if (metadata[0] !== "120000") return [[relativePath, metadata[2]]];
+
+    // cpSync intentionally dereferences package symlinks so the isolated
+    // handoff cannot escape through a relative link. Bind those materialized
+    // bytes to the symlink target at the same pinned commit, not to the
+    // symlink blob itself.
+    const target = run("git", ["-C", repository, "show", `${commitOid}:${path}`]);
+    const targetPath = resolve("/", dirname(path), target).slice(1);
+    if (targetPath === "" || targetPath.startsWith("../")) {
+      fail("committed package symlink escapes the repository");
+    }
+    const targetOutput = run("git", [
+      "-C", repository, "ls-tree", "-r", "-z", "--full-tree", commitOid, "--", targetPath,
+    ]);
+    const targetEntries = targetOutput.split("\0").filter(Boolean);
+    if (targetEntries.length === 0) fail("committed package symlink target is unavailable");
+    return targetEntries.map((targetEntry) => {
+      const targetSeparator = targetEntry.indexOf("\t");
+      const targetMetadata = targetEntry.slice(0, targetSeparator).split(" ");
+      const targetFile = targetEntry.slice(targetSeparator + 1);
+      return [`${relativePath}/${targetFile.slice(`${targetPath}/`.length)}`, targetMetadata[2]];
+    });
   }).sort((left, right) => left[0].localeCompare(right[0]));
+  return entries;
 }
 
 function installedDirectoryInventory(root, relative = "") {

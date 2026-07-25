@@ -1,5 +1,10 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  committedDirectoryInventory,
   requireExactOmnigentHandoff,
   requireExactInstalledPackage,
   requireUnchangedInstalledHandoff,
@@ -15,6 +20,33 @@ const installed = {
 };
 
 describe("protected release installed handoff continuity", () => {
+  it("binds dereferenced package symlinks to their target tree at the pinned commit", () => {
+    const repository = mkdtempSync(join(tmpdir(), "rickgent-omnigent-inventory-"));
+    const git = (args: string[]): string => execFileSync("git", ["-C", repository, ...args], {
+      encoding: "utf8",
+    }).trim();
+    try {
+      git(["init", "-q"]);
+      mkdirSync(join(repository, "package", "resources"), { recursive: true });
+      mkdirSync(join(repository, "examples", "demo"), { recursive: true });
+      writeFileSync(join(repository, "package", "__init__.py"), "package\n");
+      writeFileSync(join(repository, "examples", "demo", "value.txt"), "bound target\n");
+      symlinkSync("../../examples/demo", join(repository, "package", "resources", "demo"));
+      git(["add", "."]);
+      git(["-c", "user.name=Rickgent Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture"]);
+      const commit = git(["rev-parse", "HEAD"]);
+      const packageOid = git(["rev-parse", `${commit}:package/__init__.py`]);
+      const targetOid = git(["rev-parse", `${commit}:examples/demo/value.txt`]);
+
+      expect(committedDirectoryInventory(repository, commit, "package")).toEqual([
+        ["__init__.py", packageOid],
+        ["resources/demo/value.txt", targetOid],
+      ]);
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  });
+
   it("requires every preflight-hashed runtime resource to remain unchanged", () => {
     expect(() => requireUnchangedInstalledHandoff(installed, { ...installed })).not.toThrow();
 
