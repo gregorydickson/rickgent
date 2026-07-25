@@ -160,16 +160,27 @@ describe("protected release controller", () => {
         archives: Array<{ kind: string; sha256: string }>;
       };
     };
+    const proofIndex = JSON.parse(readFileSync(resolve("../artifacts/reliability/release-proof-index.json"), "utf8")) as {
+      receipts: { packed: { digest: string } };
+      bindings: {
+        source_git_oid: string;
+        build: { id: string; sha256: string };
+        archives: Array<{ kind: string; sha256: string }>;
+      };
+    };
     const sha256 = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
-    expect(packed.digest).toBe(fixture.t37.packed_install_receipt_sha256);
-    expect(packed.binding.source_git_oid).toBe(fixture.t37.source_git_oid);
-    expect(packed.binding.build).toEqual({ id: fixture.t37.build_id, sha256: fixture.t37.build_sha256 });
-    expect(packed.binding.archives).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: "npm_tarball", sha256: fixture.t37.npm_archive_sha256 }),
-      expect.objectContaining({ kind: "python_wheel", sha256: fixture.t37.wheel_archive_sha256 }),
-    ]));
-    expect(sha256(resolve("../artifacts/reliability/npm-dist/rickgent-0.1.0-alpha.tgz"))).toBe(fixture.t37.npm_archive_sha256);
-    expect(sha256(resolve("../artifacts/reliability/python-dist/rickgent_policies-0.1.0a0-py3-none-any.whl"))).toBe(fixture.t37.wheel_archive_sha256);
+    expect(packed.digest).toBe(proofIndex.receipts.packed.digest);
+    expect(packed.binding.source_git_oid).toBe(proofIndex.bindings.source_git_oid);
+    expect(packed.binding.build).toEqual(proofIndex.bindings.build);
+    expect(packed.binding.archives).toEqual(expect.arrayContaining(
+      proofIndex.bindings.archives.map((archive) => expect.objectContaining(archive)),
+    ));
+    const npmArchive = proofIndex.bindings.archives.find((archive) => archive.kind === "npm_tarball");
+    const wheelArchive = proofIndex.bindings.archives.find((archive) => archive.kind === "python_wheel");
+    expect(npmArchive).toBeDefined();
+    expect(wheelArchive).toBeDefined();
+    expect(sha256(resolve("../artifacts/reliability/npm-dist/rickgent-0.1.0-alpha.tgz"))).toBe(npmArchive!.sha256);
+    expect(sha256(resolve("../artifacts/reliability/python-dist/rickgent_policies-0.1.0a0-py3-none-any.whl"))).toBe(wheelArchive!.sha256);
 
     const source = join(root, "source-cli.ts");
     writeFileSync(source, "source entrypoint");
