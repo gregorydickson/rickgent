@@ -280,7 +280,7 @@ describe("VAL-T22B-001: authority-owned containment interface", () => {
     expect(typeof assertContainmentMembershipForLaunch).toBe("function");
   });
 
-  it("probeContainmentBackend selects Docker when the probe passes, else fail-closed unavailable", () => {
+  it("probeContainmentBackend selects Docker when the probe passes, else fail-closed unavailable", async () => {
     // On this macOS host with Docker Desktop 29.2.1, the Docker probe should
     // pass; on a host without Docker the factory falls back to Linux native
     // then to UnavailableContainmentBackend.  Either way the returned
@@ -298,7 +298,7 @@ describe("VAL-T22B-001: authority-owned containment interface", () => {
       // Fail-closed: an unavailable backend reports a reason and refuses to
       // create a boundary.
       expect(probe.reason).not.toBeNull();
-      expect(() => backend.createBoundary({
+      await expect(backend.createBoundary({
         runId: "r", ticketId: "t", attemptId: "a", ownershipId: "o", ownerGeneration: 1,
         ownershipContextDigest: digest("x"), phaseExecutionId: "p", contextId: "c",
         executionContextDigest: digest("y"),

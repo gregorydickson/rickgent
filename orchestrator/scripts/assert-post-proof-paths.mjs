@@ -26,6 +26,7 @@ const T39_ALLOWED = new Set([
   "orchestrator/test/reliability/claims-contract.test.ts",
   "orchestrator/test/reliability/claim-mutation.test.ts",
   "orchestrator/test/reliability/capability-restoration.test.ts",
+  "orchestrator/test/reliability/containment-authority.test.ts",
   "orchestrator/test/reliability/release-manifest.test.ts",
   "orchestrator/test/fixtures/runtime-gate.mjs",
   "orchestrator/test/fixtures/protected-release/manifest.json",
