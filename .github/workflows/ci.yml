@@ -23,7 +23,7 @@ env:
 jobs:
   # ── TypeScript quality gates ──────────────────────────────────────────────
   ts-quality:
-    name: TypeScript typecheck + build + coverage
+    name: TypeScript lint + typecheck + build + coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,9 +36,9 @@ jobs:
       - name: Install dependencies
         working-directory: orchestrator
         run: pnpm install --frozen-lockfile
-      - name: Install coverage provider
+      - name: ESLint
         working-directory: orchestrator
-        run: pnpm add -D @vitest/coverage-v8@^3.0.0
+        run: pnpm lint
       - name: Typecheck
         working-directory: orchestrator
         run: pnpm typecheck

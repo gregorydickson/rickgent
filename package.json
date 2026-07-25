@@ -4,7 +4,7 @@
   "packageManager": "pnpm@10.22.0",
   "scripts": {
     "typecheck": "pnpm --dir orchestrator typecheck",
-    "lint": "ruff check rickgent-policies",
+    "lint": "pnpm --dir orchestrator lint && ruff check rickgent-policies",
     "test": "pnpm --dir orchestrator exec vitest run test/core/completion.test.ts"
   }
 }

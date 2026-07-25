@@ -87,7 +87,7 @@ function runGate(name, command, args, options = {}) {
     return {
       name,
       status: result.status === 0 ? "pass" : "fail",
-      detail: detail || `exit ${result.status}`,
+      detail: result.status === 0 ? "exit 0" : (detail || `exit ${result.status}`),
       exitCode: result.status,
     };
   } catch (e) {
@@ -108,12 +108,21 @@ export function runAllGates(outputPath) {
   const infrastructureErrors = [];
   const skippedRequired = [];
 
-  // 1. TypeScript typecheck
+  // 1. TypeScript lint. This is deliberately distinct from compilation:
+  // release authority must prove both static style/bug rules and type safety.
+  const tsLint = runGate("ts_lint", "pnpm", ["exec", "eslint", "src", "--max-warnings=0"], {
+    cwd: ORCH_DIR,
+    timeout: 120_000,
+  });
+  gates.push(tsLint);
+  if (tsLint.status === "infrastructure_error") { infrastructureErrors.push({ gate: "ts_lint", error: tsLint.detail }); }
+
+  // 2. TypeScript typecheck
   const typecheck = runGate("typecheck", "npx", ["tsc", "--noEmit"], { cwd: ORCH_DIR, timeout: 60_000 });
   gates.push(typecheck);
   if (typecheck.status === "infrastructure_error") { infrastructureErrors.push({ gate: "typecheck", error: typecheck.detail }); }
 
-  // 2. TypeScript build
+  // 3. TypeScript build
   const retainedBuildCommit = readFileSync(
     join(ORCH_DIR, "src", "build-commit.ts"),
     "utf8",
@@ -132,7 +141,7 @@ export function runAllGates(outputPath) {
   gates.push(build);
   if (build.status === "infrastructure_error") { infrastructureErrors.push({ gate: "build", error: build.detail }); }
 
-  // 3. Full TypeScript regression with coverage. The global thresholds cover
+  // 4. Full TypeScript regression with coverage. The global thresholds cover
   // the production tree, so a tiny meta-test subset cannot honestly satisfy
   // them.
   const tsTest = runGate(
@@ -149,17 +158,17 @@ export function runAllGates(outputPath) {
   gates.push(tsTest);
   if (tsTest.status === "infrastructure_error") { infrastructureErrors.push({ gate: "ts_test_coverage", error: tsTest.detail }); }
 
-  // 4. Python lint (ruff)
+  // 5. Python lint (ruff)
   const ruff = runGate("ruff_lint", "ruff", ["check", "."], { cwd: POLICIES_DIR, timeout: 30_000 });
   gates.push(ruff);
   if (ruff.status === "infrastructure_error") { infrastructureErrors.push({ gate: "ruff_lint", error: ruff.detail }); }
 
-  // 5. Python typecheck (mypy)
+  // 6. Python typecheck (mypy)
   const mypy = runGate("mypy_typecheck", "mypy", ["rickgent_policies"], { cwd: POLICIES_DIR, timeout: 60_000 });
   gates.push(mypy);
   if (mypy.status === "infrastructure_error") { infrastructureErrors.push({ gate: "mypy_typecheck", error: mypy.detail }); }
 
-  // 6. Python test with coverage
+  // 7. Python test with coverage
   const pythonCli = join(ORCH_DIR, "dist", "cli.js");
   const generatedBuildCommit = readFileSync(
     join(ORCH_DIR, "src", "build-commit.ts"),
@@ -227,7 +236,6 @@ export function runAllGates(outputPath) {
     skipped_required: skippedRequired,
     infrastructure_errors: infrastructureErrors,
     gates: gates.map((g) => ({ name: g.name, status: g.status, detail: g.detail })),
-    generated_at: new Date().toISOString(),
   };
 
   // Write summary to output path

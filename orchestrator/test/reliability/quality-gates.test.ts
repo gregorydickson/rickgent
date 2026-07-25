@@ -169,10 +169,11 @@ describe("VAL-REL-002 — real lint/typecheck/coverage/mutation/CI gates", () =>
       expect(content).toContain("pnpm");
     });
 
-    it("CI workflow runs typecheck, coverage, lint (Python), and package checks", () => {
+    it("CI workflow runs distinct TypeScript and Python lint, typecheck, coverage, and package checks", () => {
       expect(existsSync(CI_WORKFLOW)).toBe(true);
       const content = readFileSync(CI_WORKFLOW, "utf-8");
       expect(content).toContain("typecheck");
+      expect(content).toContain("pnpm lint");
       expect(content).toContain("coverage");
       expect(content).toContain("ruff");
       expect(content).toContain("mypy");
@@ -191,6 +192,19 @@ describe("VAL-REL-002 — real lint/typecheck/coverage/mutation/CI gates", () =>
       const content = readFileSync(CI_WORKFLOW, "utf-8");
       // CI must not use continue-on-error for required gates
       expect(content).not.toContain("continue-on-error: true");
+    });
+  });
+
+  describe("TypeScript lint configuration", () => {
+    it("uses committed ESLint configuration instead of aliasing lint to typecheck", () => {
+      const config = join(ORCH_DIR, "eslint.config.js");
+      const pkg = JSON.parse(readFileSync(join(ORCH_DIR, "package.json"), "utf8"));
+      const quality = readFileSync(QUALITY_GATES_SCRIPT, "utf8");
+      expect(existsSync(config)).toBe(true);
+      expect(pkg.scripts.lint).toContain("eslint");
+      expect(pkg.scripts.lint).not.toContain("tsc");
+      expect(quality).toContain('runGate("ts_lint"');
+      expect(quality).not.toContain("new Date().toISOString()");
     });
   });
 

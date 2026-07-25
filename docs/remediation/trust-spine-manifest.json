@@ -1812,6 +1812,9 @@
       "output_artifacts": [
         "artifacts/reliability/release-proof-index.json",
         "artifacts/reliability/claim-surface-inventory.json",
+        "artifacts/reliability/closure-preservation-evidence.json",
+        "orchestrator/scripts/closure-preservation-evidence.mjs",
+        "orchestrator/scripts/validate-mission-completion.mjs",
         "orchestrator/test/reliability/capability-restoration.test.ts",
         "orchestrator/test/reliability/claim-mutation.test.ts",
         "docs/reliability-contract.md",

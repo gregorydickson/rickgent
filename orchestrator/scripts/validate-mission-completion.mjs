@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
@@ -130,6 +131,25 @@ function requireCurrentCommittedPath(path, label) {
   git(["cat-file", "-e", `HEAD:${path}`]);
 }
 
+function validateDeclaredEvidence(ticket) {
+  for (const field of ["output_artifacts", "proof_corpus"]) {
+    const paths = ticket[field] ?? [];
+    if (!Array.isArray(paths) || (field === "output_artifacts" && paths.length === 0)) {
+      fail(`${ticket.id} has no declared ${field}`);
+    }
+    if (new Set(paths).size !== paths.length) {
+      fail(`${ticket.id} has duplicate ${field} entries`);
+    }
+    for (const path of paths) {
+      if (typeof path !== "string" || path.length === 0) {
+        fail(`${ticket.id} has an invalid ${field} path`);
+      }
+      requireCurrentCommittedPath(path, `${ticket.id} ${field}`);
+      if (path.endsWith(".json")) loadJson(path, `${ticket.id} ${field}`);
+    }
+  }
+}
+
 function validateTickets(manifest, from, through) {
   if (!Array.isArray(manifest.tickets)) fail("manifest tickets must be an array");
   const first = Number.parseInt(from.slice(1), 10);
@@ -159,6 +179,7 @@ function validateTickets(manifest, from, through) {
       fail(`${ticket.id} has no phase report`);
     }
     requireCurrentCommittedPath(completion.phase_report, `${ticket.id} phase report`);
+    validateDeclaredEvidence(ticket);
     completions.set(ticket.id, commit);
   }
 
@@ -175,12 +196,46 @@ function validateTickets(manifest, from, through) {
   return { selected, completions };
 }
 
+function validateSessionMilestones(completions, citadelPath) {
+  const report = loadJson(citadelPath, "Citadel report");
+  const session = report.source?.session;
+  if (typeof session !== "string" || !/^[0-9A-Za-z._-]+$/u.test(session)) {
+    fail("Citadel report has no safe prepared session identity");
+  }
+  const dataRoot = process.env.PICKLE_DATA_ROOT
+    ? resolve(process.env.PICKLE_DATA_ROOT)
+    : resolve(homedir(), ".codex", "pickle-rick");
+  const sessionRoot = resolve(dataRoot, "sessions", session);
+  const expected = new Map([
+    ["t37c", completions.get("t37")],
+    ["t38c", completions.get("t38")],
+    ["t39b", completions.get("t39")],
+  ]);
+  for (const [ticket, commit] of expected) {
+    const path = resolve(sessionRoot, ticket, `linear_ticket_${ticket}.md`);
+    if (!path.startsWith(`${sessionRoot}${sep}`) || !existsSync(path)) {
+      fail(`prepared session ticket is missing: ${ticket}`);
+    }
+    const text = readFileSync(path, "utf8");
+    if (!/^status: "Done"$/mu.test(text)) {
+      fail(`prepared session ticket is not Done: ${ticket}`);
+    }
+    const recorded = text.match(/^completion_commit: "([0-9a-f]{7,40})"$/mu)?.[1];
+    if (!recorded || resolveCommit(recorded, `${ticket} session completion`) !== commit) {
+      fail(`${ticket} session completion disagrees with the trust-spine manifest`);
+    }
+  }
+}
+
 function validateQualitySummary() {
   const quality = loadJson(
     "artifacts/reliability/quality-gates-summary.json",
     "quality summary",
   );
   if (quality.thresholds_passed !== true) fail("quality thresholds did not pass");
+  if (Object.hasOwn(quality, "generated_at")) {
+    fail("quality summary contains volatile generated_at evidence");
+  }
   if (!Array.isArray(quality.skipped_required) || quality.skipped_required.length) {
     fail("quality summary contains skipped required gates");
   }
@@ -192,6 +247,7 @@ function validateQualitySummary() {
   }
   const gates = new Map((quality.gates ?? []).map((gate) => [gate.name, gate.status]));
   for (const name of [
+    "ts_lint",
     "typecheck",
     "build",
     "ts_test_coverage",
@@ -205,6 +261,19 @@ function validateQualitySummary() {
     if (gates.get(name) !== "pass") fail(`required quality gate did not pass: ${name}`);
   }
   return quality;
+}
+
+function validatePreservationEvidence() {
+  const path = "artifacts/reliability/closure-preservation-evidence.json";
+  requireCurrentCommittedPath(path, "closure preservation evidence");
+  try {
+    execFileSync(process.execPath, [
+      resolve(repositoryRoot, "orchestrator/scripts/closure-preservation-evidence.mjs"),
+      "check",
+    ], { cwd: repositoryRoot, stdio: ["ignore", "pipe", "pipe"] });
+  } catch (error) {
+    fail(`closure preservation evidence failed: ${String(error.stderr ?? error.message).trim()}`);
+  }
 }
 
 function validateCorpora(vertical) {
@@ -303,7 +372,9 @@ function main() {
     options.from,
     options.through,
   );
+  validateSessionMilestones(completions, options.citadel);
   validateQualitySummary();
+  validatePreservationEvidence();
   const index = loadJson("artifacts/reliability/release-proof-index.json", "proof index");
   const packed = loadJson(
     "artifacts/reliability/packed-install-summary.json",

@@ -10,9 +10,9 @@
 
 Pin and enforce real lint, typecheck, coverage, mutation, and CI thresholds.
 Mutation runs must use disposable worktrees. Infrastructure failures must not
-be reported as successful quality results. The orchestrator's eslint is
-intentionally unconfigured per CLAUDE.md — the lint threshold applies where
-linting is configured (Python policies via ruff).
+be reported as successful quality results. The release closure repair restores
+a committed ESLint flat configuration and a distinct blocking TypeScript lint
+gate; TypeScript lint is not an alias for compilation.
 
 ## Outcome
 
@@ -22,6 +22,10 @@ Done. All quality gates are pinned, configured, and enforced:
   with `select = ["E", "F", "W", "I"]`, `line-length = 120`, and
   `per-file-ignores` for `__init__.py` re-exports. Ruff passes clean on all
   13 source files.
+- **TypeScript lint (ESLint):** `orchestrator/eslint.config.js` defines a
+  fail-on-warning production-source ruleset, `pnpm lint` invokes ESLint, and
+  CI plus the canonical quality summary record `ts_lint` independently from
+  `typecheck`.
 - **Python typecheck (mypy):** configured in `rickgent-policies/pyproject.toml`
   with `ignore_missing_imports = true` for omnigent (no type stubs) and
   `python_version = "3.12"`. Mypy passes clean on all 13 source files.
@@ -60,7 +64,7 @@ Done. All quality gates are pinned, configured, and enforced:
   summary script and verifies no skipped required or infrastructure errors.
 - **`orchestrator/scripts/quality-gates-summary.mjs`** — quality-gates
   summary script with `run` and `check` modes. The `run` mode executes all
-  gates (typecheck, build, TS test+coverage, ruff, mypy, Python test+coverage,
+  gates (TypeScript lint, typecheck, build, TS test+coverage, ruff, mypy, Python test+coverage,
   coverage-manifest verify, release manifest, package inventory) and produces
   `artifacts/reliability/quality-gates-summary.json`. The `check` mode
   evaluates a summary file and exits nonzero if any infrastructure errors or
