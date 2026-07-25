@@ -201,7 +201,7 @@ export function installedDirectoryInventory(root, relative = "") {
       entries.push([child, gitBlobOid(absolute)]);
     }
   }
-  return entries;
+  return entries.sort((left, right) => left[0].localeCompare(right[0]));
 }
 
 function wheelPackageInventory(wheelPath, packageName) {
