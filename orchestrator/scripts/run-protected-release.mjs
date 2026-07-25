@@ -5,6 +5,7 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   existsSync,
   cpSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -14,7 +15,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
@@ -125,6 +126,29 @@ function directorySnapshot(root) {
     count: entries.length,
     sha256: sha256(canonical(entries)),
   };
+}
+
+function materializeContainedSymlinks(root, directory = root) {
+  for (const name of readdirSync(directory).sort()) {
+    const absolute = join(directory, name);
+    const stats = lstatSync(absolute);
+    if (stats.isSymbolicLink()) {
+      const target = realpathSync(absolute);
+      const containment = relative(root, target);
+      if (containment === ".." || containment.startsWith(`..${sep}`)) {
+        fail("committed package symlink escapes the archived Git tree");
+      }
+      const targetStats = statSync(target);
+      rmSync(absolute, { force: true });
+      cpSync(target, absolute, {
+        dereference: true,
+        recursive: targetStats.isDirectory(),
+      });
+      if (targetStats.isDirectory()) materializeContainedSymlinks(root, absolute);
+    } else if (stats.isDirectory()) {
+      materializeContainedSymlinks(root, absolute);
+    }
+  }
 }
 
 export function committedDirectoryInventory(repository, commitOid, directory) {
@@ -288,7 +312,7 @@ function installExactHandoff(packedReceiptPath, archives) {
   const handoffRoot = join(tmpdir(), "rickgent-protected-install", archives.npm.sha256.slice(0, 16));
   const markerPath = join(handoffRoot, "handoff.json");
   const marker = canonical({
-    materialization: "git-archive-v1",
+    materialization: "git-archive-dereferenced-v2",
     npm: archives.npm.sha256,
     omnigent_git_oid: omnigentGitOid,
     wheel: archives.wheel.sha256,
@@ -322,8 +346,8 @@ function installExactHandoff(packedReceiptPath, archives) {
         omnigentGitOid, "--", "omnigent", "examples",
       ], { timeout: 120_000 });
       run("tar", ["-xf", omnigentArchive, "-C", omnigentStaging], { timeout: 120_000 });
+      materializeContainedSymlinks(omnigentStaging);
       cpSync(join(omnigentStaging, "omnigent"), join(omnigentRoot, "omnigent"), {
-        dereference: true,
         recursive: true,
       });
     } finally {
