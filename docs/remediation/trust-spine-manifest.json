@@ -1833,7 +1833,7 @@
         "t38"
       ],
       "completed_at": {
-        "commit": "c0b17e19b495721771c0c69ee4dabed8fbd9772a",
+        "commit": "90a87b8b0e7da0486c9b838b4f79dd4763f4dc85",
         "phase_report": "docs/remediation/phase-9-t39-release-closure-execution-report.md",
         "proof_index": "artifacts/reliability/release-proof-index.json",
         "claim_inventory": "artifacts/reliability/claim-surface-inventory.json",
