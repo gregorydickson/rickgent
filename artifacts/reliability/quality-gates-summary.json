@@ -31,7 +31,7 @@
     {
       "name": "py_test_coverage",
       "status": "pass",
-      "detail": "TOTAL                                  1904    189    90% | Required test coverage of 90% reached. Total coverage: 90.07% | 410 passed in 27.97s"
+      "detail": "TOTAL                                  1904    189    90% | Required test coverage of 90% reached. Total coverage: 90.07% | 410 passed in 27.72s"
     },
     {
       "name": "coverage_manifest_verify",
@@ -49,5 +49,5 @@
       "detail": "package inventory aligned: npm 450 files (7 required present, 10 exclusions enforced), python 1 wheel(s) + 0 sdist(s) inspected"
     }
   ],
-  "generated_at": "2026-07-25T23:10:45.518Z"
+  "generated_at": "2026-07-25T23:20:04.817Z"
 }
