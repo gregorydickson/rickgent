@@ -28,6 +28,7 @@ const T39_ALLOWED = new Set([
   "orchestrator/test/reliability/capability-restoration.test.ts",
   "orchestrator/test/reliability/release-manifest.test.ts",
   "orchestrator/test/fixtures/runtime-gate.mjs",
+  "orchestrator/test/fixtures/protected-release/manifest.json",
   "orchestrator/scripts/generate-release-proof-index.mjs",
   "orchestrator/scripts/assert-post-proof-paths.mjs",
   "orchestrator/scripts/quality-gates-summary.mjs",
