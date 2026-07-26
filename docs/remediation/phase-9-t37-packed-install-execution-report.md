@@ -1,15 +1,14 @@
 # Phase 9 t37 packed-install execution report
 
-Source handoff: `c9820e3672a43afe766bf23239501fafd9237fd1`
+Source handoff: `dcf5d46ebbe7e6ce09495944eef1fcd355b54647`
 
 The runner built and installed exactly the committed npm tarball and non-editable policy wheel. Retained production-entrypoint failures exposed baseline assumptions: pip records a non-editable local wheel in `direct_url.json`; macOS may spell the temporary root through `/var` while Python reports `/private/var`; a fresh venv cannot import the explicitly selected Omnigent dependency set unless it inherits that interpreter's site packages; a symlinked venv interpreter canonicalizes outside the venv and is correctly rejected as ambient; the mounted Omnigent source contains symlinks; and the compiled doctor expected legacy denial code `SCOPE_DENIED` while the packed policy returns `RICKGENT_SCOPE_DENIED`. The bounded proof-harness repair permits only archive-origin direct-url metadata, canonicalizes the proof root, creates the venv with `--copies --system-site-packages`, mounts a dereferenced minimal Omnigent package, and updates the installed doctor expectation to the policy's retained production code. The staged installed-runtime check still parses and rejects `dir_info`/editable direct-url metadata, and the independent negative controls prove rejection and Rickgent-owned realpath containment.
 
-- npm: `rickgent-0.1.0-alpha.tgz` — `66c2be883fab72c203ca3666409b022d7e273b8bcccf30e5f8f8ad457b0d44ed`; inventory `61858bb95a05a6e5beeb0b9d7aa5e442af823db404384392819cab9da1d3782d` (450 members)
-- wheel: `rickgent_policies-0.1.0a0-py3-none-any.whl` — `0eb851486e8966c5509d53172b3491e6daa1bc836b9255c267863fa3d82e72f0`; inventory `abeac2ab3ca773840a59c9a5439dc8c3c7e52742a3081f2f0a3e7eb88c543b2a` (17 members)
-- receipt: `54545fe6df196ab824bb6e23ae9c57c031ff6c1ceaf1b0bff1c1dabd0a7f1369`
-- installed CLI root: `/private/var/folders/2w/j4nf5k_17ys16yzvmhcx0brh0000gn/T/rickgent-packed-proof-gu14x6/prefix/npm/node_modules/rickgent`
-- installed policy origin: `/private/var/folders/2w/j4nf5k_17ys16yzvmhcx0brh0000gn/T/rickgent-packed-proof-gu14x6/prefix/python/lib/python3.14/site-packages/rickgent_policies/__init__.py`
-- Omnigent origin/version: `/private/var/folders/2w/j4nf5k_17ys16yzvmhcx0brh0000gn/T/rickgent-packed-proof-gu14x6/omnigent-root/omnigent/__init__.py` / `0.6.0.dev0`
+- npm: `rickgent-0.1.0-alpha.tgz` — `e891c35e9ebefc3fb2d9a0e668d7c48c126c7e44445269ea555f172e93512109`; inventory `b059c480ff107a4f086272881fb4454de2c27c523b9d795efafcf5ea7b3a3983` (450 members)
+- wheel: `rickgent_policies-0.1.0a0-py3-none-any.whl` — `b45febac86418cdb5ecde5b2188b100ce7f77d0e249f7cd791db8fd30e17e981`; inventory `abeac2ab3ca773840a59c9a5439dc8c3c7e52742a3081f2f0a3e7eb88c543b2a` (17 members)
+- receipt canonical digest: `364a2575ffe4754c6e2b66320ffcdf6b82add56e4561d1cfe8ea86550ca09bdc`
+- installed CLI and policy origins: contained below the isolated proof-owned npm prefix and Python virtual environment recorded in the retained receipt
+- Omnigent origin/version: contained below the proof-owned dereferenced mount / `0.6.0.dev0`
 
 All required checks passed with zero skips and zero infrastructure errors. The behavioral doctor proved native allow/deny, compatible Omnigent observation, SQLite close/reopen durability, disposable Git containment, typed failure handling, and owned cleanup. It explicitly reported `authenticated_hosted_evidence=false`.
 
@@ -17,4 +16,4 @@ Independent controls rejected source sentinel access, checkout CWD, NODE_PATH/PY
 
 Verification is runner-owned and follows the ticket's declared sequential command list. The receipt validator, trust-spine validator, and diff check are the final fail-closed gates.
 
-Completion convention: the retained npm archive, policy wheel, npm inventory, canonical receipt, checksum, generated build identity, proof authoring mode, and strict validator were finalized first in packed-output commit `d9cd83b58f0748bffb918efdd29efd811604a4ae`. The t37 manifest row is updated only in a descendant commit and binds that full output OID, avoiding self-reference. The packed receipt validator requires the pinned t37b handoff to be an ancestor of the output commit, the output commit to be an ancestor of HEAD, t37c ownership through that output boundary, and byte-for-byte equality between the retained outputs and the output commit. It separately pins the pre-existing `99b557e786adcfbe8932fcc5abfb80aef7057abe` scratch-ignore commit to its sole `.gitignore` change while requiring every other commit through the packed boundary to touch only t37c-owned paths. Later unrelated repository state cannot masquerade as, or invalidate, the packed evidence.
+Completion convention: the retained npm archive, policy wheel, npm inventory, canonical receipt, checksum, generated build identity, proof authoring mode, and strict validator are finalized first in a packed-output commit. The t37 manifest row is updated only in a descendant commit and binds that full output OID, avoiding self-reference. The packed receipt validator requires the current descendant source handoff to follow the original t37b handoff, the source handoff to be an ancestor of the output commit, the output commit to be an ancestor of HEAD, t37c ownership through that output boundary, and byte-for-byte equality between the retained outputs and the output commit. Later unrelated repository state cannot masquerade as, or invalidate, the packed evidence.

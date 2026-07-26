@@ -3,10 +3,10 @@
     "id": "rickgent@0.1.0-alpha",
     "name": "rickgent",
     "version": "0.1.0-alpha",
-    "size": 1539653,
-    "unpackedSize": 7446188,
-    "shasum": "a82d8627fdd618a9926eb348f2341b89b4832549",
-    "integrity": "sha512-AzJF2zYV7GsZRiCcFYaa5Z2gahwEs6FyVH1mf9XH6YumzA8y3aUlDJ5u4TWJIgLFnctu3ijRexrW4P9eKZrKsw==",
+    "size": 1547373,
+    "unpackedSize": 7469489,
+    "shasum": "03585357f1a6231421407a1c60a24b3b11bd5010",
+    "integrity": "sha512-pCl2uhnt1VsIdZCxqiL7iEHRGN5yEZoDep97oGzCm6yvVWZiK36U6JP5yQw5lYCnrxS1GG8C0NyGAuPMyyv7GA==",
     "filename": "rickgent-0.1.0-alpha.tgz",
     "files": [
       {
@@ -1791,7 +1791,7 @@
       },
       {
         "path": "dist/pnpm-lock.yaml",
-        "size": 47700,
+        "size": 69901,
         "mode": 420
       },
       {
@@ -2236,7 +2236,7 @@
       },
       {
         "path": "package.json",
-        "size": 1960,
+        "size": 2036,
         "mode": 420
       },
       {
@@ -2256,7 +2256,7 @@
       },
       {
         "path": "validators/vertical-slice-receipt.schema.json",
-        "size": 10270,
+        "size": 11294,
         "mode": 420
       }
     ],
