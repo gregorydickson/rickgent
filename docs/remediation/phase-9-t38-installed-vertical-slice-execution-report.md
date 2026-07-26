@@ -12,10 +12,10 @@ protected proof corpus.
 
 ## Retained chronology
 
-| Run | Crash PID | Resume PID | Persistent state | Delivery OID | PR |
-| --- | ---: | ---: | --- | --- | ---: |
-| `protected-1` | `72991` | `76212` | `state-protected-1` | `87bfeb79f89abc65baa7acaa5e3d88d0da68cfb2` | `19` |
-| `protected-2` | `92026` | `94849` | `state-protected-2` | `aeb411b131adfeedcb1a8ba7dcc36373d9baa860` | `21` |
+| Run | Crash PID | Resume PID | Persistent state | Delivery OID | Success PR | Failure-cleanup PR |
+| --- | ---: | ---: | --- | --- | ---: | ---: |
+| `protected-1` | `39028` | `39357` | `state-protected-1` | `2388ab987201c3bcaf7707b2f39ff8ff6defd619` | `31` | `32` |
+| `protected-2` | `44465` | `47905` | `state-protected-2` | `f663ec19f733ee621a0f2f5a506316a7017b07dd` | `33` | `34` |
 
 Each crash worker invoked the exact installed CLI and authenticated Codex
 `gpt-5.6-sol`, persisted its implementation bundle in SQLite, exposed a durable
@@ -41,13 +41,14 @@ from live immutable GitHub observations rather than receipt assertions.
 
 ## Hosted effects and cleanup
 
-Each logical run created one owned branch and one pull request. The created branch OID,
-observed branch OID, pull-request head OID, delivery OID, and cleanup comparison OID
-were equal.
+Each logical run created one success-path branch and pull request plus one deliberate
+post-PR failure probe with its own branch and pull request. Within each run, all created
+branch OIDs, observed branch OIDs, pull-request head OIDs, delivery OIDs, and cleanup
+comparison OIDs were equal.
 
-Run 1 cleanup completed before Run 2 began. Both pull requests were closed, both exact
-owned branches were compare-before-delete removed, and independent requery confirmed
-the repository was preserved with only `main` remaining. Historical closed proof PRs
+Run 1 cleanup completed before Run 2 began. All four pull requests were closed, all four
+exact owned branches were compare-before-delete removed, and independent requery
+confirmed the repository was preserved and the owned namespace was empty. Historical closed proof PRs
 do not count as duplicate current effects; the controller requires exactly one open PR
 during each run, and the cleanup verifier requires none afterward while pinning the
 receipt-owned PR ID and OID.
