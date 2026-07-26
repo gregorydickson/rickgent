@@ -50,9 +50,9 @@ worker after repeated two-worker runs passed all assertions but lost Vitest's
 final `onTaskUpdate` coordinator RPC; the serialized canonical rerun passed
 without reducing the corpus or thresholds.
 
-The retained quality receipt at `a94c6b7633ac9ace5d2907090437a1ea440cf25e`
+The retained quality receipt at `51457e91b02fe076fc017983e56076647078585a`
 binds the corrected implementation and tests at
-`462eddca1f331ac673f97ff44eee1e1153ae8872`.
+`2acb043b16209397e5f6b72a9a5f451d975a24b0`.
 
 ## Citadel
 
