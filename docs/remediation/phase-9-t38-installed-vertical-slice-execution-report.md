@@ -2,7 +2,7 @@
 
 ## Result
 
-Two protected installed crash-resume logical runs completed and passed the strict
+Two protected packed-CLI crash-resume logical runs completed and passed the strict
 vertical-slice validator. The canonical receipt, exact-byte checksum, and clear failure
 diagnostics are retained together in the t38 evidence commit.
 
@@ -14,11 +14,14 @@ protected proof corpus.
 
 | Run | Crash PID | Resume PID | Persistent state | Delivery OID | Success PR | Failure-cleanup PR |
 | --- | ---: | ---: | --- | --- | ---: | ---: |
-| `protected-1` | `49190` | `51069` | `state-protected-1` | `948082d0a4096fd05775ab2c1008fc423ac600ab` | `39` | `40` |
-| `protected-2` | `66625` | `68774` | `state-protected-2` | `c79f2b88a360ce47edc5905687ce80bd4fe16425` | `41` | `42` |
+| `protected-1` | `56464` | `56721` | `state-protected-1` | `bff24b0984c365a473213b001a774bd162c0fc95` | `43` | `44` |
+| `protected-2` | `58007` | `58319` | `state-protected-2` | `26d2c3f1ce89d8a8a2cbbb73c16052d058ce04be` | `45` | `46` |
 
-Each crash worker invoked the exact installed CLI and authenticated Codex
-`gpt-5.6-sol`, persisted its implementation bundle in SQLite, exposed a durable
+The source-side wrapper delegated the controller to the exact installed CLI. That
+packed entrypoint owned persistence, provider dispatch, lifecycle evidence, hosted
+delivery, and cleanup, and spawned both crash and resume attempts back through the
+same packed CLI. Each crash attempt authenticated Codex `gpt-5.6-sol`, persisted its
+implementation bundle in SQLite, exposed a durable
 checkpoint, and was killed as an isolated process group. Each fresh resume worker kept
 the same run and persistent-state identities, invoked the same installed CLI, and
 performed an authenticated read-only Claude `claude-opus-4-8[1m]` review.

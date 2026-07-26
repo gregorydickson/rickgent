@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import packedSchema from "../../schemas/packed-install-receipt.schema.json";
 import verticalSchema from "../../schemas/vertical-slice-receipt.schema.json";
@@ -61,5 +62,31 @@ describe("strict receipt validation", () => {
     expect(result.ok).toBe(false);
     expect(result.diagnostics.map((entry) => entry.code)).toContain("PROOF_RUN_INCOMPLETE");
     expect(result.diagnostics.map((entry) => entry.code)).toContain("PROOF_BINDING_MISMATCH");
+  });
+
+  it("rejects a build-identity-only vertical receipt without packed lifecycle invocation", () => {
+    const receipt = JSON.parse(readFileSync(resolve("../artifacts/reliability/vertical-slice-receipt.json"), "utf8"));
+    delete receipt.runs[0].installed_lifecycle;
+    const binding = receipt.binding;
+    const actualExpected: ReceiptExpectations = {
+      sourceGitOid: binding.source_git_oid,
+      releaseId: binding.release.id,
+      releaseSha256: binding.release.sha256,
+      buildId: binding.build.id,
+      buildSha256: binding.build.sha256,
+      npmArchiveSha256: binding.npm_archive_sha256,
+      wheelArchiveSha256: binding.wheel_archive_sha256,
+      packedInstallReceiptSha256: binding.packed_install_receipt_sha256,
+      requiredCheckIds: ["protected-run-1", "protected-run-2"],
+    };
+    const result = validateVerticalSliceReceipt(
+      receipt,
+      verticalSchema as Record<string, unknown>,
+      actualExpected,
+    );
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.map((entry) => entry.code)).toEqual(expect.arrayContaining([
+      "PROOF_SCHEMA_INVALID", "PROOF_RUN_INCOMPLETE",
+    ]));
   });
 });
