@@ -54,6 +54,12 @@ function makeReceipt(): Json {
       run_id: `protected-${run}`,
       persistent_state_id: `state-protected-${run}`,
       installed_executable_realpath: `/opt/rickgent-t37-${fixture.t37.build_id}/bin/rickgent`,
+      installed_lifecycle: {
+        entrypoint: "rickgent __protected-release",
+        executable_sha256: "9".repeat(64),
+        controller_process_id: 50 + run,
+        attempt_process_ids: [100 + run * 10, 101 + run * 10],
+      },
       attempts: [
         {
           attempt_id: `protected-${run}:crash`,
