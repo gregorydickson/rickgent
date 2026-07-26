@@ -52,7 +52,7 @@
       "depends_on": [],
       "completed_at": {
           "commit": "9c0d47f3a5f9b2bb863bfd84e5edb887d71f7ea0",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-0-baseline-manifest-reconcile-execution-report-2026-07-20.md"
       }
     },
@@ -93,7 +93,7 @@
       ],
       "completed_at": {
           "commit": "8738fa02f2b2403c5e63f20b6baf8aab2c31a8ba",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-0-baseline-manifest-reconcile-execution-report-2026-07-20.md"
       }
     },
@@ -160,7 +160,7 @@
       ],
       "completed_at": {
           "commit": "7f55ac1d3ee5505b60846d021df0bc9356f12fba",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-0-baseline-manifest-reconcile-execution-report-2026-07-20.md"
       }
     },
@@ -202,7 +202,7 @@
       ],
       "completed_at": {
           "commit": "e1499f3cf5a2cf322b9367a38e3008f67684de5a",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-1-containment-execution-report-2026-07-15.md"
       }
     },
@@ -241,7 +241,7 @@
       ],
       "completed_at": {
           "commit": "092f4f3909f09dafa1cae976e6cc6d67f8fdb82f",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-1-containment-execution-report-2026-07-15.md"
       }
     },
@@ -288,7 +288,7 @@
       ],
       "completed_at": {
           "commit": "8b3f28c4c9b67f894e3b88076d3e91a9b76aa2e9",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-1-containment-execution-report-2026-07-15.md"
       }
     },
@@ -330,7 +330,7 @@
       ],
       "completed_at": {
           "commit": "3690f8c638aa0c733d0dd6d7cd61b6ad4b2d6bd9",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-1-containment-execution-report-2026-07-15.md"
       }
     },
@@ -370,7 +370,7 @@
       ],
       "completed_at": {
           "commit": "4b1bb22c7eba09fe7e9af364a036cc56ede60d1e",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-1-containment-execution-report-2026-07-15.md"
       }
     },
@@ -426,7 +426,7 @@
       ],
       "completed_at": {
           "commit": "827eec9eedc0999357d8c4d3e5f58f388e27d98b",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-2-native-policy-execution-report-2026-07-16.md"
       }
     },
@@ -483,7 +483,7 @@
       ],
       "completed_at": {
           "commit": "a1cc3cecb15d89e9f4de78c96c33e81a8cb9df00",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-2-native-policy-execution-report-2026-07-16.md"
       }
     },
@@ -537,7 +537,7 @@
       ],
       "completed_at": {
           "commit": "dd6ee0d65a10bf22be88c12464f8f5897131ca2c",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-2-native-policy-execution-report-2026-07-16.md"
       }
     },
@@ -593,7 +593,7 @@
       ],
       "completed_at": {
           "commit": "1e97d9b3fc0249aa76bf7dca8f0b967e01c4d6ec",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-2-native-policy-execution-report-2026-07-16.md"
       }
     },
@@ -629,7 +629,7 @@
       ],
       "completed_at": {
           "commit": "92b2c4fa9f5da73371ee74e97b5d0153224dc4d0",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-0-baseline-manifest-reconcile-execution-report-2026-07-20.md"
       }
     },
@@ -662,7 +662,7 @@
       ],
       "completed_at": {
           "commit": "5649db56d165a902495dc3ed6876f26e3929e616",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-0-baseline-manifest-reconcile-execution-report-2026-07-20.md"
       }
     },
@@ -695,7 +695,7 @@
       ],
       "completed_at": {
           "commit": "b7d11cf644b28b1f77bea41573478d04ba4bb476",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-0-baseline-manifest-reconcile-execution-report-2026-07-20.md"
       }
     },
@@ -727,7 +727,7 @@
       ],
       "completed_at": {
           "commit": "cf9073c8f6a21e38bad7a7a70053162713f45f13",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-0-baseline-manifest-reconcile-execution-report-2026-07-20.md"
       }
     },
@@ -759,7 +759,7 @@
       ],
       "completed_at": {
           "commit": "7a402bbd8f6b59a0ff00e1ea335b043ca0b42bbe",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-0-baseline-manifest-reconcile-execution-report-2026-07-20.md"
       }
     },
@@ -800,7 +800,7 @@
       ],
       "completed_at": {
           "commit": "1cecbfe74c9ef25285a4783c8b5f7270971301b0",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-0-baseline-manifest-reconcile-execution-report-2026-07-20.md"
       }
     },
@@ -843,7 +843,7 @@
       ],
       "completed_at": {
           "commit": "5590ca2579f1ecb82c13de8b269a8abde84d1009",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-4-attempt-runner-state-bridge-report-2026-07-18.md"
       }
     },
@@ -902,7 +902,7 @@
       ],
       "completed_at": {
           "commit": "35ab3f78b5d114ac457452d91c7ff0ce9d5ffe6f",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-4-process-supervisor-execution-report-2026-07-17.md"
       }
     },
@@ -961,7 +961,7 @@
       ],
       "completed_at": {
           "commit": "78420f03e352759338b0016578edfc4e4f5e522d",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-4-commit-attribution-execution-report-2026-07-17.md"
       }
     },
@@ -1007,7 +1007,7 @@
       ],
       "completed_at": {
           "commit": "efcf32c5dc5fda6e8a45550d0050bb9e11a6d2c0",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-4-salvage-cleanup-execution-report-2026-07-18.md"
       }
     },
@@ -1084,7 +1084,7 @@
       ],
       "completed_at": {
           "commit": "c9e9a3af461c0007bf3daff511368ad8fc158e6c",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-4-t22D-production-cutover-execution-report-2026-07-20.md"
       }
     },
@@ -1132,7 +1132,7 @@
       ],
       "completed_at": {
           "commit": "dfbd5a8",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-5-t23-bounded-output-fail-closed-validation-execution-report-2026-07-21.md"
       }
     },
@@ -1165,7 +1165,7 @@
       ],
       "completed_at": {
           "commit": "ffdb0912857b0d244866e0b95e7d984b0f772aec",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-6-t24-lifecycle-transition-table-execution-report-2026-07-21.md"
       }
     },
@@ -1197,7 +1197,7 @@
       ],
       "completed_at": {
           "commit": "591d1faba7610ed616bb95899b81f6bbe247c974",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-6-t25-ticket-contract-propagation-execution-report-2026-07-21.md"
       }
     },
@@ -1228,7 +1228,7 @@
       "status": "Done",
       "completed_at": {
           "commit": "fb220c7",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-6-t26-structured-gate-runner-execution-report-2026-07-21.md"
       },
       "depends_on": [
@@ -1264,7 +1264,7 @@
       ],
       "completed_at": {
           "commit": "e6b45cad4ce36d32d507dc4b012ddcfb152b4b32",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-7-t27-independent-review-execution-report-2026-07-22.md",
         "scrutiny_round_2_fix": "docs/remediation/phase-7-m7-scrutiny-round-2-production-wiring-fix-execution-report-2026-07-22.md",
         "scrutiny_round_3_fix": "docs/remediation/phase-7-m7-scrutiny-round-3-production-paths-execution-report-2026-07-22.md",
@@ -1316,7 +1316,7 @@
       ],
       "completed_at": {
           "commit": "f47f84e043624bb821ce9bb064f0c0154a18d568",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-7-t28-completion-oracle-integration-execution-report-2026-07-22.md",
         "scrutiny_round_2_fix": "docs/remediation/phase-7-m7-scrutiny-round-2-production-wiring-fix-execution-report-2026-07-22.md",
         "scrutiny_round_4_fix": "docs/remediation/phase-7-m7-scrutiny-round-4-fresh-rereview-and-resume-execution-report-2026-07-22.md",
@@ -1365,7 +1365,7 @@
       ],
       "completed_at": {
           "commit": "6deee51a5d7f8e1d97b9f28f463bb6835fb1f5ef",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-7-resume-reconcile-parity-execution-report-2026-07-22.md",
         "execution_report": "docs/remediation/phase-7-resume-reconcile-parity-execution-report-2026-07-22.md",
         "scrutiny_round_2_fix": "docs/remediation/phase-7-m7-scrutiny-round-2-production-wiring-fix-execution-report-2026-07-22.md",
@@ -1405,7 +1405,7 @@
       ],
       "completed_at": {
           "commit": "46b8bb307870bc905c2541e9c50eb2ea0ef8a54f",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-7-t30-remove-shortcuts-execution-report-2026-07-22.md",
         "execution_report": "docs/remediation/phase-7-t30-remove-shortcuts-execution-report-2026-07-22.md",
         "scrutiny_round_2_fix": "docs/remediation/phase-7-m7-scrutiny-round-2-production-wiring-fix-execution-report-2026-07-22.md",
@@ -1466,7 +1466,7 @@
       ],
       "completed_at": {
           "commit": "83985e748e161e9673465fe574402de6febe1e4a",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-8-m8-scrutiny-round-2-execution-report-2026-07-22.md"
       }
     },
@@ -1518,7 +1518,7 @@
       ],
       "completed_at": {
           "commit": "63fd9b1770845daa01456718f94cd04d3af72de3",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-8-m8-scrutiny-round-2-execution-report-2026-07-22.md"
       }
     },
@@ -1554,7 +1554,7 @@
       ],
       "completed_at": {
           "commit": "9c3813a62ee5df6e4f82e5afc1ccb771b9de1e24",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-8-m8-scrutiny-round-2-execution-report-2026-07-22.md"
       }
     },
@@ -1591,7 +1591,7 @@
       ],
       "completed_at": {
           "commit": "28a927533eed854ff070e36eebfdb1fbca0fa204",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-8-m8-scrutiny-round-2-execution-report-2026-07-22.md"
       }
     },
@@ -1628,7 +1628,7 @@
       ],
       "completed_at": {
           "commit": "cd9baad61154a26c748b134bb58123ddc9fafd31",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-9-t35-unified-release-contract-execution-report-2026-07-23.md"
       }
     },
@@ -1667,7 +1667,7 @@
       ],
       "completed_at": {
           "commit": "72e93dd2a5a89b6679bce51801c69b390cd25f69",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-9-t36-real-ci-gates-execution-report-2026-07-23.md"
       }
     },
@@ -1733,7 +1733,7 @@
       ],
       "completed_at": {
           "commit": "d4bed226c02e90fae9d47f44b3772194942f049e",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-9-t37-packed-install-execution-report.md"
       }
     },
@@ -1826,7 +1826,7 @@
       ],
       "completed_at": {
           "commit": "640d78eebdfbf76a52cb2121ff205bdb4e4300be",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-9-t38-installed-vertical-slice-execution-report.md"
       }
     },
@@ -1876,7 +1876,7 @@
       ],
       "completed_at": {
           "commit": "e8791de87e141405945e37d73831a480d5de3fbd",
-          "evidence_commit": "4c603bdd061f216c21a3c8286d5692f6d5350386",
+          "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-9-t39-release-closure-execution-report.md",
         "proof_index": "artifacts/reliability/release-proof-index.json",
         "claim_inventory": "artifacts/reliability/claim-surface-inventory.json",
