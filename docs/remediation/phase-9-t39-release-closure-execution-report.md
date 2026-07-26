@@ -39,6 +39,20 @@ checks remain part of the canonical gate set.
 The recovered Docker-backed concurrency authority was rerun after the outage
 and completed all 50 deterministic iterations plus both bounded-output proofs;
 the quality wrapper rejects reduced, skipped, failed, or timed-out corpus runs.
+The final Citadel defect was also returned to t39b: generation, standalone
+quality checking, Mission 3 completion, and mutation tests now import one exact
+12-gate inventory. Missing, duplicated, unknown, malformed, or non-passing
+gates fail closed. The concurrency receipt retains structured counts
+(`required_iterations=50`, `total_tests=57`, `passed_tests=57`,
+`failed_tests=0`, and `skipped_tests=0`) rather than relying on an aggregate
+boolean or display string. The full coverage corpus is serialized to one file
+worker after repeated two-worker runs passed all assertions but lost Vitest's
+final `onTaskUpdate` coordinator RPC; the serialized canonical rerun passed
+without reducing the corpus or thresholds.
+
+The retained quality receipt at `a94c6b7633ac9ace5d2907090437a1ea440cf25e`
+binds the corrected implementation and tests at
+`462eddca1f331ac673f97ff44eee1e1153ae8872`.
 
 ## Citadel
 
