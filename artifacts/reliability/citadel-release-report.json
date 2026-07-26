@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "decision": "pending",
+  "decision": "approved",
   "read_only": true,
-  "prepared_commit": "8d570a6fc03eda9115cd5da263ff6be945f57041",
-  "promise": null,
+  "prepared_commit": "33396f61163a13626c481a20c62e6e20acbc4f97",
+  "promise": "THE_CITADEL_APPROVES",
   "blocking_findings": [],
   "acceptance_criteria": [
     {
@@ -32,12 +32,14 @@
     },
     {
       "id": 7,
-      "status": "pending"
+      "status": "pass"
     }
   ],
   "source": {
-    "kind": "citadel-prepared-checkpoint",
+    "kind": "citadel-read-only-approval",
     "session": "2026-07-23-a34da084-citadel-direct",
+    "reviewed_range": "087824521cef7b59673b85960918cc6b395152c6..HEAD",
+    "generated_at": "2026-07-26T19:34:04Z",
     "prior_review_generated_at": "2026-07-26T16:07:53Z",
     "prior_findings_resolved_in_prepared_closure": [
       "Recorded t39 completion predates the t37 and t38 milestone commits",
