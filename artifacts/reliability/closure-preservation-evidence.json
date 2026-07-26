@@ -1,0 +1,62 @@
+{
+  "schema_version": 2,
+  "profile": "closure-preservation-v2",
+  "excluded_active_sessions": [
+    {
+      "session": "2026-07-26-8964645c",
+      "working_directory": "/Users/gregorydickson/loanlight/loanlight-api"
+    }
+  ],
+  "preserved": true,
+  "before": {
+    "caller": {
+      "head": "59534ff270d06ea49bc0a2847a6a5540faaa1a5d",
+      "index_delta_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "worktree_delta_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "untracked": {
+        "count": 0,
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "sibling": {
+      "head": "6e3c77855b08c9b612bf20763fe14f57a7ff9ad4",
+      "index_delta_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "worktree_delta_sha256": "b8c693e1235f1124836f1338a236e05ef94b5acdfe5cea47475cccef779dff4f",
+      "untracked": {
+        "count": 0,
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "unrelated_runtime": {
+      "count": 1846,
+      "sha256": "26bfbef19a94ccf754b91bfb060894af50e3ba6dd6ca26f1f6fa4528a1719b80"
+    },
+    "quality_summary_sha256": "c1410d8de5610d84bd007a3e1da1252d9bfaf1f81eeaab5ac1ca6cad57b8159f"
+  },
+  "after": {
+    "caller": {
+      "head": "59534ff270d06ea49bc0a2847a6a5540faaa1a5d",
+      "index_delta_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "worktree_delta_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "untracked": {
+        "count": 0,
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "sibling": {
+      "head": "6e3c77855b08c9b612bf20763fe14f57a7ff9ad4",
+      "index_delta_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "worktree_delta_sha256": "b8c693e1235f1124836f1338a236e05ef94b5acdfe5cea47475cccef779dff4f",
+      "untracked": {
+        "count": 0,
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "unrelated_runtime": {
+      "count": 1846,
+      "sha256": "26bfbef19a94ccf754b91bfb060894af50e3ba6dd6ca26f1f6fa4528a1719b80"
+    },
+    "quality_summary_sha256": "c1410d8de5610d84bd007a3e1da1252d9bfaf1f81eeaab5ac1ca6cad57b8159f"
+  },
+  "digest": "7332bc20f284dfd0f46b008230ea9b7f0a361ede169d89de9cf64a9c6a1432fd"
+}

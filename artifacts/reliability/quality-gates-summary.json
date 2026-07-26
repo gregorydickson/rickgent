@@ -4,6 +4,11 @@
   "infrastructure_errors": [],
   "gates": [
     {
+      "name": "ts_lint",
+      "status": "pass",
+      "detail": "exit 0"
+    },
+    {
       "name": "typecheck",
       "status": "pass",
       "detail": "exit 0"
@@ -16,38 +21,42 @@
     {
       "name": "ts_test_coverage",
       "status": "pass",
-      "detail": "  gate-runner.ts   |    73.8 |    85.91 |      70 |    73.8 | ...68-473,518-537  |   sandbox.ts       |   96.03 |    89.65 |      50 |   96.03 | 117-118,136-137    | -------------------|---------|----------|---------|---------|-------------------"
+      "detail": "exit 0"
+    },
+    {
+      "name": "mutation_manifest",
+      "status": "pass",
+      "detail": "exit 0"
     },
     {
       "name": "ruff_lint",
       "status": "pass",
-      "detail": "All checks passed!"
+      "detail": "exit 0"
     },
     {
       "name": "mypy_typecheck",
       "status": "pass",
-      "detail": "rickgent_policies/delivery.py:189: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked] | rickgent_policies/delivery.py:190: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked] | Success: no issues found in 13 source files"
+      "detail": "exit 0"
     },
     {
       "name": "py_test_coverage",
       "status": "pass",
-      "detail": "TOTAL                                  1904    189    90% | Required test coverage of 90% reached. Total coverage: 90.07% | 410 passed in 27.72s"
+      "detail": "exit 0"
     },
     {
       "name": "coverage_manifest_verify",
       "status": "pass",
-      "detail": "    } |   ] | }"
+      "detail": "exit 0"
     },
     {
       "name": "release_manifest",
       "status": "pass",
-      "detail": "release manifest valid: rickgent-trust-spine-release-v1 (npm 0.1.0-alpha, python 0.1.0a0, build a91beeb6d4c1, omnigent rickgent-omnigent-current-compatible-v1)"
+      "detail": "exit 0"
     },
     {
       "name": "package_inventory",
       "status": "pass",
-      "detail": "package inventory aligned: npm 450 files (7 required present, 10 exclusions enforced), python 1 wheel(s) + 0 sdist(s) inspected"
+      "detail": "exit 0"
     }
-  ],
-  "generated_at": "2026-07-25T23:20:04.817Z"
+  ]
 }
