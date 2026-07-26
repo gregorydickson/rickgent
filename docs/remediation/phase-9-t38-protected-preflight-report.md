@@ -11,7 +11,7 @@ The receipt passed the dedicated schema validator and the independent evidence s
 
 ## Exact installation handoff
 
-The preflight revalidated the t37 npm tarball and Python wheel against the packed-install receipt, then reused a digest-keyed persistent installation under the ignored `.rickgent` runtime root. The installed CLI reported the expected build identity. The receipt binds hashes for the installed CLI, manager, worker, and policy package, plus the observed Omnigent Git identity.
+The preflight revalidated the t37 npm tarball and Python wheel against the packed-install receipt, then created a digest-keyed persistent installation under a proof-owned temporary root. The installed CLI reported build `dcf5d46ebbe7e6ce09495944eef1fcd355b54647`. The receipt binds hashes for the installed CLI, manager, worker, and policy package, plus the observed Omnigent Git identity.
 
 Wheel installation is offline and dependency-free: Omnigent is supplied by the separately observed local compatibility root rather than resolved from a package index.
 
