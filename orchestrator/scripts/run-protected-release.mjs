@@ -1645,7 +1645,6 @@ export function requireFailureCleanupPullObservation(pulls, expected) {
   // converting the hosted response into signed failure-cleanup evidence.
   if (
     !Array.isArray(pulls)
-    || pulls.length !== 1
     || typeof expected?.baseBranch !== "string"
     || expected.baseBranch === ""
     || typeof expected?.branch !== "string"
@@ -1656,7 +1655,11 @@ export function requireFailureCleanupPullObservation(pulls, expected) {
   ) {
     fail("failure cleanup pull request observation is invalid");
   }
-  const [pull] = pulls;
+  const matches = pulls.filter((pull) => String(pull?.number ?? "") === expected.pullRequestId);
+  if (matches.length !== 1) {
+    fail("failure cleanup pull request observation is invalid");
+  }
+  const [pull] = matches;
   if (
     String(pull?.number ?? "") !== expected.pullRequestId
     || pull?.state !== "closed"

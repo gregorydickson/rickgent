@@ -68,9 +68,18 @@ describe("protected release aggregate cleanup evidence", () => {
 
   it("binds independent closed-PR evidence to the created reviewed delivery", () => {
     expect(requireFailureCleanupPullObservation([closedPull], expectedPull)).toBe(true);
+    expect(requireFailureCleanupPullObservation([
+      { ...closedPull, number: 12 },
+      closedPull,
+      { ...closedPull, number: 9 },
+    ], expectedPull)).toBe(true);
+
+    expect(() => requireFailureCleanupPullObservation(
+      [{ ...closedPull, number: 18 }],
+      expectedPull,
+    )).toThrow("failure cleanup pull request observation is invalid");
 
     for (const changed of [
-      { ...closedPull, number: 18 },
       { ...closedPull, state: "open" },
       { ...closedPull, head: { ...closedPull.head, ref: "other" } },
       { ...closedPull, head: { ...closedPull.head, sha: "b".repeat(40) } },
