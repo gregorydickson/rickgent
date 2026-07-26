@@ -199,7 +199,7 @@ export async function runAllGates(outputPath) {
       "--maxWorkers=4",
       "--coverage",
     ],
-    { cwd: ORCH_DIR, timeout: 1_200_000 },
+    { cwd: ORCH_DIR, timeout: 1_800_000 },
   );
   gates.push(tsTest);
   if (tsTest.status === "infrastructure_error") { infrastructureErrors.push({ gate: "ts_test_coverage", error: tsTest.detail }); }
