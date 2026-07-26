@@ -4,8 +4,8 @@
   "status": "valid",
   "authority_commits": {
     "t37_completion": "d4bed226c02e90fae9d47f44b3772194942f049e",
-    "t38_completion_marker": "302312ed3e02e5e05f2e3d7bf14872d869e418d2",
-    "final_retained_receipt_bytes": "302312ed3e02e5e05f2e3d7bf14872d869e418d2"
+    "t38_completion_marker": "6ff810db20eba35957f47418a2b2e3b136d6259f",
+    "final_retained_receipt_bytes": "6ff810db20eba35957f47418a2b2e3b136d6259f"
   },
   "receipts": {
     "packed": {
@@ -16,8 +16,8 @@
     },
     "vertical": {
       "path": "artifacts/reliability/vertical-slice-receipt.json",
-      "file_sha256": "f13e63755e756498c396bed286cc31ec5347d211c012f28f37037e2f568fe90d",
-      "digest": "18dd6c3d20b70d38257979ec10867c2a9fa3f4c5bee5259c0f14df1e67bd6caf",
+      "file_sha256": "a48fcc0d4220786af0049a0be1f17cb9de4717f2d9c3ce541a354110c83f0c09",
+      "digest": "fdc0a75c40af91dacf748f8c05c11722865930f51eb91e691b049dbc3e74340d",
       "proof_version": "vertical-slice-proof-v1"
     }
   },
