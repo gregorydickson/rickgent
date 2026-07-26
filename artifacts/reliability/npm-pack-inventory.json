@@ -3,10 +3,10 @@
     "id": "rickgent@0.1.0-alpha",
     "name": "rickgent",
     "version": "0.1.0-alpha",
-    "size": 1547373,
-    "unpackedSize": 7469489,
-    "shasum": "03585357f1a6231421407a1c60a24b3b11bd5010",
-    "integrity": "sha512-pCl2uhnt1VsIdZCxqiL7iEHRGN5yEZoDep97oGzCm6yvVWZiK36U6JP5yQw5lYCnrxS1GG8C0NyGAuPMyyv7GA==",
+    "size": 1547792,
+    "unpackedSize": 7472434,
+    "shasum": "1587c567fdc30b04830cfd5aa8429cdd168d0225",
+    "integrity": "sha512-PfYB+pltkrtolMw8y77m8Ho6Y6OuA+jzSNkhQiDWIEjTi6tTenqWsSh2xpN9QtDVTxdBHH4eIvhZz5faNmm7iw==",
     "filename": "rickgent-0.1.0-alpha.tgz",
     "files": [
       {
@@ -2006,32 +2006,32 @@
       },
       {
         "path": "dist/release-proof/proof-root.js",
-        "size": 7544,
+        "size": 7672,
         "mode": 420
       },
       {
         "path": "dist/release-proof/proof-root.js.map",
-        "size": 16220,
+        "size": 16466,
         "mode": 420
       },
       {
         "path": "dist/release-proof/receipt-validator.d.ts",
-        "size": 1772,
+        "size": 1850,
         "mode": 420
       },
       {
         "path": "dist/release-proof/receipt-validator.d.ts.map",
-        "size": 1643,
+        "size": 1713,
         "mode": 420
       },
       {
         "path": "dist/release-proof/receipt-validator.js",
-        "size": 11655,
+        "size": 12346,
         "mode": 420
       },
       {
         "path": "dist/release-proof/receipt-validator.js.map",
-        "size": 25379,
+        "size": 26624,
         "mode": 420
       },
       {
@@ -2256,7 +2256,7 @@
       },
       {
         "path": "validators/vertical-slice-receipt.schema.json",
-        "size": 11294,
+        "size": 11781,
         "mode": 420
       }
     ],
