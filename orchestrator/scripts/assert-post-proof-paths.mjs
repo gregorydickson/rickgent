@@ -39,8 +39,6 @@ const T39_ALLOWED = new Set([
   "orchestrator/scripts/quality-gates-summary.mjs",
   "orchestrator/scripts/closure-preservation-evidence.mjs",
   "orchestrator/scripts/validate-mission-completion.mjs",
-  "orchestrator/scripts/validate-packed-install-receipt.mjs",
-  "orchestrator/scripts/validate-receipt-schema.mjs",
   "orchestrator/scripts/validate-protected-preflight.mjs",
   "orchestrator/scripts/verify-remote-cleanup.mjs",
   "orchestrator/scripts/run-protected-release.mjs",
@@ -65,6 +63,9 @@ const T39_PREFIXES = [
   "rickgent-policies/test/",
 ];
 const FROZEN_PREFIXES = [
+  "orchestrator/scripts/validate-packed-install-receipt.mjs",
+  "orchestrator/scripts/validate-receipt-schema.mjs",
+  "orchestrator/scripts/validate-vertical-slice-receipt.mjs",
   "orchestrator/dist/", "orchestrator/src/", "orchestrator/package.json", "orchestrator/pnpm-lock.yaml",
   "orchestrator/resources/", "rickgent-policies/rickgent_policies/", "rickgent-policies/pyproject.toml",
   "agents/", "skills/", ".codex/", "package.json", "install.sh",
