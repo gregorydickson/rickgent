@@ -196,7 +196,7 @@ export async function runAllGates(outputPath) {
     [
       "vitest",
       "run",
-      "--maxWorkers=4",
+      "--maxWorkers=2",
       "--exclude",
       "test/lifecycle/manifest.test.ts",
       "--coverage",
