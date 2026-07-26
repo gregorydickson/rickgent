@@ -10,9 +10,9 @@
   "milestone_commits": {
     "t37": "d4bed226c02e90fae9d47f44b3772194942f049e",
     "t38": "640d78eebdfbf76a52cb2121ff205bdb4e4300be",
-    "t39": "de414dec3853d1c4bc7f9b34a64f1a85a30fc568"
+    "t39": "042188b78e885b3593ed118b7b5c024530d9425c"
   },
-  "prepared_commit": "e3d1857914ed8a3a45ebf5ca8abc6f16d945f029",
+  "prepared_commit": "91bc394b6519a5fcc8d398ff8603503710b7bb11",
   "release_proof_profile": "installed_t38_retained_proof_v1",
   "archive_sha256": {
     "npm_tarball": "e891c35e9ebefc3fb2d9a0e668d7c48c126c7e44445269ea555f172e93512109",
