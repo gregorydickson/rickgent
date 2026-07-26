@@ -178,6 +178,31 @@ export function validateBoundPath(path, evidenceCommit, ticket, field) {
   if (typeof path !== "string" || path.length === 0) {
     fail(`${ticket.id} has an invalid ${field} path`);
   }
+  let kind;
+  try {
+    kind = git(["cat-file", "-t", `${evidenceCommit}:${path}`]);
+  } catch {
+    fail(`committed evidence is missing at ${evidenceCommit}:${path}`);
+  }
+  if (kind === "tree") {
+    const retained = git(["ls-tree", "-r", "--name-only", evidenceCommit, "--", path])
+      .split("\n").filter(Boolean);
+    const current = git(["ls-tree", "-r", "--name-only", "HEAD", "--", path])
+      .split("\n").filter(Boolean);
+    if (retained.length === 0) fail(`${ticket.id} ${field} directory is empty: ${path}`);
+    if (JSON.stringify(retained) !== JSON.stringify(current)) {
+      fail(`${ticket.id} ${field} directory membership drifted after evidence_commit: ${path}`);
+    }
+    for (const child of retained) {
+      const bytes = gitBytes(evidenceCommit, child);
+      validateEvidenceContent(child, bytes, `${ticket.id} ${field}`);
+      if (!bytes.equals(readFileSync(repositoryPath(child)))) {
+        fail(`${ticket.id} ${field} bytes drifted after evidence_commit: ${child}`);
+      }
+    }
+    return;
+  }
+  if (kind !== "blob") fail(`${ticket.id} ${field} is not a committed file or directory: ${path}`);
   const bytes = gitBytes(evidenceCommit, path);
   validateEvidenceContent(path, bytes, `${ticket.id} ${field}`);
   requireCurrentCommittedPath(path, `${ticket.id} ${field}`);
