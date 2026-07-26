@@ -375,6 +375,11 @@ describe("VAL-REL-002 — real lint/typecheck/coverage/mutation/CI gates", () =>
       const content = readFileSync(config, "utf-8");
       expect(content).toContain("coverage");
       expect(content).toContain("thresholds");
+      expect(content).toContain("maxWorkers: 1");
+
+      const quality = readFileSync(QUALITY_GATES_SCRIPT, "utf-8");
+      expect(quality).toContain('"--maxWorkers=1"');
+      expect(quality).toContain('"--no-file-parallelism"');
     });
   });
 });

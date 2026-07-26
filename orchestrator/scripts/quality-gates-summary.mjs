@@ -287,12 +287,13 @@ export async function runAllGates(outputPath) {
     [
       "vitest",
       "run",
-      "--maxWorkers=2",
+      "--maxWorkers=1",
+      "--no-file-parallelism",
       "--exclude",
       "test/lifecycle/manifest.test.ts",
       "--coverage",
     ],
-    { cwd: ORCH_DIR, timeout: 1_200_000 },
+    { cwd: ORCH_DIR, timeout: 2_400_000 },
   );
   gates.push(tsTest);
   if (tsTest.status === "infrastructure_error") { infrastructureErrors.push({ gate: "ts_test_coverage", error: tsTest.detail }); }

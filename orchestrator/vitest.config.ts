@@ -6,7 +6,11 @@ export default defineConfig({
     exclude: ["test/reliability/protected-release.live.test.ts"],
     environment: "node",
     globalSetup: ["./test/global-setup.ts"],
-    maxWorkers: 2,
+    // The corpus contains long-running real Git and Docker suites. Multiple
+    // file workers have repeatedly completed every assertion and then lost
+    // the final onTaskUpdate RPC. One worker keeps the coordinator bounded
+    // and deterministic; the canonical release gate supplies a 40m ceiling.
+    maxWorkers: 1,
     // Several adversarial Git/policy cases spawn real subprocesses. Under the
     // full mutation corpus they can exceed 15 seconds despite completing in
     // under 5 seconds in isolation, so retain a bounded load-aware timeout.
