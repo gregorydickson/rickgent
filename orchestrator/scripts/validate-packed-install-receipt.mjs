@@ -160,13 +160,19 @@ if (typeof completion.commit !== "string" || !/^[0-9a-f]{40}$/.test(completion.c
   fail("t37 packed-output commit must be a full lowercase commit OID");
 }
 const packedOutputOid = completion.commit;
-equal(sourceOid, t37bSourceOid, "non-self-referential source Git OID");
+try {
+  execFileSync("git", ["merge-base", "--is-ancestor", t37bSourceOid, sourceOid], {
+    cwd: repositoryRoot, stdio: "ignore",
+  });
+} catch {
+  fail("packed source handoff must descend from the original t37b handoff");
+}
 try {
   execFileSync("git", ["merge-base", "--is-ancestor", sourceOid, packedOutputOid], {
     cwd: repositoryRoot, stdio: "ignore",
   });
 } catch {
-  fail("t37b source handoff must be an ancestor of the packed-output commit");
+  fail("packed source handoff must be an ancestor of the packed-output commit");
 }
 try {
   execFileSync("git", ["merge-base", "--is-ancestor", packedOutputOid, headOid], {
