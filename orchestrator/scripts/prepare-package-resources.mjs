@@ -16,6 +16,8 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = resolve(packageRoot, "..");
 const generated = ["agents", "runtime", "proof", "validators", "LICENSE"];
 const marker = join(packageRoot, ".rickgent-package-staging");
+const markerValue = `rickgent-package-staging/v2\nowner_pid=${process.ppid}\n`;
+const lockWait = new Int32Array(new SharedArrayBuffer(4));
 
 function fail(message) {
   throw new Error(`RICKGENT_PACKAGE_ASSEMBLY: ${message}`);
@@ -25,13 +27,44 @@ function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-if (existsSync(marker)) fail("staging marker already exists; clean the previous interrupted assembly");
-for (const name of generated) {
-  if (existsSync(join(packageRoot, name))) fail(`refusing to overwrite non-staged package resource: ${name}`);
+function ownerIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
 }
-if (!existsSync(join(packageRoot, "dist", "cli.js"))) fail("compiled dist/cli.js is required; source builds are not part of packaging");
 
-writeFileSync(marker, "rickgent-package-staging/v1\n", { flag: "wx" });
+function acquireMarker() {
+  const deadline = Date.now() + 180_000;
+  while (true) {
+    try {
+      writeFileSync(marker, markerValue, { flag: "wx" });
+      return;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+    const match = readFileSync(marker, "utf8").match(/^rickgent-package-staging\/v2\nowner_pid=([1-9][0-9]*)\n$/u);
+    if (!match) fail("invalid staging marker; clean the previous interrupted assembly");
+    const ownerPid = Number(match[1]);
+    if (!ownerIsAlive(ownerPid)) fail("stale staging marker owner; clean the previous interrupted assembly");
+    if (Date.now() >= deadline) fail("timed out waiting for the active package assembly");
+    Atomics.wait(lockWait, 0, 0, 100);
+  }
+}
+
+acquireMarker();
+for (const name of generated) {
+  if (existsSync(join(packageRoot, name))) {
+    rmSync(marker, { force: true });
+    fail(`refusing to overwrite non-staged package resource: ${name}`);
+  }
+}
+if (!existsSync(join(packageRoot, "dist", "cli.js"))) {
+  rmSync(marker, { force: true });
+  fail("compiled dist/cli.js is required; source builds are not part of packaging");
+}
 try {
   cpSync(join(repositoryRoot, "agents", "rickgent"), join(packageRoot, "agents", "rickgent"), {
     recursive: true,
