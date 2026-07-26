@@ -1630,7 +1630,7 @@
         "t35"
       ],
       "completed_at": {
-        "commit": "9852de8fb7dbc93d347f69da8516634c070d76f8",
+        "commit": "b21884069b38ba632375101a7a96483fbde0cd4c",
         "phase_report": "docs/remediation/phase-9-t36-real-ci-gates-execution-report-2026-07-23.md"
       }
     },
