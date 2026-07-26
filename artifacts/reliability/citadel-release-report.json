@@ -2,7 +2,7 @@
   "schema_version": 1,
   "decision": "pending",
   "read_only": true,
-  "prepared_commit": "79004843e6e44c5d03911e20891a474ead5835c1",
+  "prepared_commit": "faccddc97f56df19570ec6113278b0213b82cf09",
   "promise": null,
   "blocking_findings": [],
   "acceptance_criteria": [
