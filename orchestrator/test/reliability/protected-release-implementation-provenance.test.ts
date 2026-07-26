@@ -29,6 +29,7 @@ describe("protected release implementation provenance", () => {
     const provider = {
       adapter: "codex-cli",
       bundle_sha256: "a".repeat(64),
+      canonical_provider: "openai",
       conversation_id: "conversation",
       dispatch_id: "dispatch",
       evidence_id: "run:1:model:implementation",
@@ -40,12 +41,15 @@ describe("protected release implementation provenance", () => {
       },
       invoked_model: "gpt-5.6-sol",
       observed_model: "gpt-5.6-sol",
+      observed_canonical_model: "gpt-5.6-sol",
+      observed_provider: "openai",
       process_id: 123,
+      provider_process_id: 456,
       requested_model: "gpt-5.6-sol",
       role: "implementation",
     };
 
     expect(receiptModelObservation(provider)).not.toHaveProperty("implementation");
-    expect(receiptModelObservation(provider)).not.toHaveProperty("identity_sha256");
+    expect(receiptModelObservation(provider).identity_sha256).toBe("b".repeat(64));
   });
 });

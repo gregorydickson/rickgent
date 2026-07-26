@@ -38,8 +38,8 @@ export interface ReceiptExpectations {
   readonly requiredCorpusIds?: readonly string[];
   readonly packedInstallReceiptSha256?: string;
   readonly requiredProviderPair?: {
-    readonly implementation: { readonly adapter: string; readonly model: string };
-    readonly review: { readonly adapter: string; readonly model: string };
+    readonly implementation: { readonly adapter: string; readonly model: string; readonly provider: string };
+    readonly review: { readonly adapter: string; readonly model: string; readonly provider: string };
   };
   readonly now?: Date;
   readonly maxAgeMs?: number;
@@ -195,14 +195,24 @@ export function validateVerticalSliceReceipt(
       observations.some((item) =>
         item["requested_model"] !== item["invoked_model"] ||
         item["requested_model"] !== item["observed_model"] ||
+        typeof item["observed_canonical_model"] !== "string" ||
+        item["observed_canonical_model"] === "" ||
+        typeof item["observed_provider"] !== "string" ||
+        item["observed_provider"] === "" ||
+        typeof item["provider_process_id"] !== "number" ||
+        item["provider_process_id"] <= 0 ||
+        typeof item["identity_sha256"] !== "string" ||
+        !/^[0-9a-f]{64}$/.test(item["identity_sha256"]) ||
         typeof item["conversation_id"] !== "string" ||
         item["conversation_id"] === ""
       ) ||
       (pair !== undefined && (
         byRole.get("implementation")?.["adapter"] !== pair.implementation.adapter ||
         byRole.get("implementation")?.["observed_model"] !== pair.implementation.model ||
+        byRole.get("implementation")?.["canonical_provider"] !== pair.implementation.provider ||
         byRole.get("review")?.["adapter"] !== pair.review.adapter ||
-        byRole.get("review")?.["observed_model"] !== pair.review.model
+        byRole.get("review")?.["observed_model"] !== pair.review.model ||
+        byRole.get("review")?.["canonical_provider"] !== pair.review.provider
       ))
     ) diagnostics.push({ code: "PROOF_RUN_INCOMPLETE", detail: `production identity evidence incomplete: ${String(run["run_id"])}` });
     const delivery = record(run["delivery"]);

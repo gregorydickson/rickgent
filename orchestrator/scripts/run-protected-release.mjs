@@ -936,7 +936,191 @@ export function parseReviewDisposition(reply, candidateOid) {
   return disposition;
 }
 
-function providerProbe(role, runId, reviewCandidate) {
+export function requireCodexDispatchObservation(observation, expectedModel) {
+  const { thread, turn, assistant_reply: assistantReply } = observation ?? {};
+  if (
+    thread?.model !== expectedModel
+    || thread?.model_provider !== "openai"
+    || thread?.thread_id !== thread?.session_id
+    || typeof thread?.thread_id !== "string"
+    || thread.thread_id === ""
+    || typeof turn?.turn_id !== "string"
+    || turn.turn_id === ""
+    || turn?.thread_id !== thread.thread_id
+    || turn?.status !== "completed"
+    || typeof assistantReply !== "string"
+    || assistantReply === ""
+    || !Number.isSafeInteger(observation?.provider_process_id)
+    || observation.provider_process_id <= 0
+  ) {
+    fail("Codex dispatch did not emit a coherent runtime identity");
+  }
+  return observation;
+}
+
+export async function codexProviderDispatch(prompt, model, safeEnv) {
+  const child = spawn("codex", ["app-server", "--stdio", "-c", "mcp_servers={}"], {
+    cwd: process.cwd(),
+    env: safeEnv,
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  if (!Number.isSafeInteger(child.pid) || child.pid <= 0) {
+    fail("Codex app-server process identity is absent");
+  }
+  return await new Promise((resolvePromise, rejectPromise) => {
+    let stdout = "";
+    let stderr = "";
+    let thread;
+    let turn;
+    let assistantReply;
+    let settled = false;
+    const timeout = setTimeout(() => finish(new Error("Codex dispatch timed out")), 5 * 60_000);
+
+    function send(message) {
+      child.stdin.write(`${JSON.stringify(message)}\n`);
+    }
+
+    function finish(error, value) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.stdin.end();
+      child.kill("SIGTERM");
+      if (error) rejectPromise(error);
+      else resolvePromise(value);
+    }
+
+    function refuse(message) {
+      const detail = stderr.trim().replaceAll(/\s+/g, " ").slice(0, 300);
+      finish(new ProtectedReleaseRefusal(`${message}${detail ? `: ${detail}` : ""}`));
+    }
+
+    function consume(message) {
+      if (message?.id === 1) {
+        if (message.error || typeof message?.result?.userAgent !== "string") {
+          refuse("Codex app-server initialization failed");
+          return;
+        }
+        send({ jsonrpc: "2.0", method: "initialized", params: {} });
+        send({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "thread/start",
+          params: {
+            allowProviderModelFallback: false,
+            approvalPolicy: "never",
+            baseInstructions: "Follow the user request exactly without tools.",
+            cwd: process.cwd(),
+            developerInstructions: "Do not inspect files, invoke tools, or make changes.",
+            ephemeral: true,
+            model,
+            modelProvider: "openai",
+            sandbox: "read-only",
+          },
+        });
+        return;
+      }
+      if (message?.id === 2) {
+        const result = message?.result;
+        if (
+          message.error
+          || result?.model !== model
+          || result?.modelProvider !== "openai"
+          || result?.thread?.modelProvider !== result.modelProvider
+          || result?.thread?.id !== result?.thread?.sessionId
+        ) {
+          refuse("Codex thread did not return the requested runtime identity");
+          return;
+        }
+        thread = {
+          model: result.model,
+          model_provider: result.modelProvider,
+          session_id: result.thread.sessionId,
+          thread_id: result.thread.id,
+        };
+        send({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "turn/start",
+          params: {
+            input: [{ type: "text", text: prompt }],
+            model,
+            threadId: thread.thread_id,
+          },
+        });
+        return;
+      }
+      if (message?.id === 3) {
+        if (message.error || typeof message?.result?.turn?.id !== "string") {
+          refuse("Codex turn did not start");
+          return;
+        }
+        turn = { thread_id: thread.thread_id, turn_id: message.result.turn.id };
+        return;
+      }
+      if (
+        message?.method === "item/completed"
+        && message?.params?.threadId === thread?.thread_id
+        && message?.params?.turnId === turn?.turn_id
+        && message?.params?.item?.type === "agentMessage"
+        && message?.params?.item?.phase === "final_answer"
+      ) {
+        assistantReply = message.params.item.text;
+        return;
+      }
+      if (
+        message?.method === "turn/completed"
+        && message?.params?.threadId === thread?.thread_id
+        && message?.params?.turn?.id === turn?.turn_id
+      ) {
+        const observation = {
+          assistant_reply: assistantReply,
+          provider_process_id: child.pid,
+          thread,
+          turn: { ...turn, status: message.params.turn.status },
+        };
+        try {
+          finish(undefined, requireCodexDispatchObservation(observation, model));
+        } catch (error) {
+          finish(error);
+        }
+      }
+    }
+
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      let newline;
+      while ((newline = stdout.indexOf("\n")) >= 0) {
+        const line = stdout.slice(0, newline).trim();
+        stdout = stdout.slice(newline + 1);
+        if (line === "") continue;
+        try {
+          consume(JSON.parse(line));
+        } catch (error) {
+          finish(error);
+        }
+      }
+    });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", (error) => finish(error));
+    child.on("exit", (code, signal) => {
+      if (!settled) refuse(`Codex app-server exited ${code ?? signal ?? "without status"}`);
+    });
+    send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        capabilities: { experimentalApi: true },
+        clientInfo: { name: "rickgent-protected-proof", title: "Rickgent Protected Proof", version: "1.0.0" },
+      },
+    });
+  });
+}
+
+async function providerProbe(role, runId, reviewCandidate) {
   const safeEnv = { ...process.env, CI: "1", CODEX_NO_UPDATE_CHECK: "1" };
   delete safeEnv.GH_TOKEN;
   delete safeEnv.GITHUB_TOKEN;
@@ -989,29 +1173,16 @@ function providerProbe(role, runId, reviewCandidate) {
   if (role === "implementation") {
     model = "gpt-5.6-sol";
     adapter = "codex-cli";
-    response = run("codex", [
-      "exec",
-      "--model", model,
-      "--sandbox", "read-only",
-      "--ephemeral",
-      "--ignore-user-config",
-      "--ignore-rules",
-      "--skip-git-repo-check",
-      "--json",
-      prompt,
-    ], { env: safeEnv, timeout: 5 * 60_000 });
-    assistantReply = codexProbeReply(response);
-    const catalog = run("codex", ["debug", "models"], {
-      env: safeEnv,
-      json: true,
-      timeout: 30_000,
-    });
-    const observed = catalog?.models?.find((entry) => entry.slug === model);
-    if (observed === undefined) fail("OpenAI model identity is absent from the authenticated catalog");
+    const dispatch = await codexProviderDispatch(prompt, model, safeEnv);
+    assistantReply = dispatch.assistant_reply;
+    response = canonical(dispatch);
     identity = {
-      display_name: observed.display_name,
+      attempt_process_id: process.pid,
+      conversation_id: dispatch.thread.thread_id,
+      dispatch_id: dispatch.turn.turn_id,
+      model: dispatch.thread.model,
       provider: "openai",
-      slug: observed.slug,
+      provider_process_id: dispatch.provider_process_id,
     };
   } else {
     model = "claude-opus-4-8[1m]";
@@ -1063,13 +1234,21 @@ function providerProbe(role, runId, reviewCandidate) {
   return {
     adapter,
     bundle_sha256: responseSha,
-    conversation_id: sha256(`conversation:${runId}:${role}:${responseSha}`).slice(0, 32),
-    dispatch_id: sha256(`dispatch:${runId}:${role}:${responseSha}`).slice(0, 32),
+    canonical_provider: role === "implementation" ? "openai" : "anthropic",
+    conversation_id: role === "implementation"
+      ? identity.conversation_id
+      : sha256(`conversation:${runId}:${role}:${responseSha}`).slice(0, 32),
+    dispatch_id: role === "implementation"
+      ? identity.dispatch_id
+      : sha256(`dispatch:${runId}:${role}:${responseSha}`).slice(0, 32),
     evidence_id: `run:${runId.split("-").at(-1)}:model:${role}`,
     identity_sha256: sha256(canonical(identity)),
     ...(implementation === undefined ? {} : { implementation }),
     invoked_model: model,
+    observed_canonical_model: role === "implementation" ? identity.model : identity.canonical_model,
     observed_model: model,
+    observed_provider: role === "implementation" ? identity.provider : identity.provider,
+    provider_process_id: role === "implementation" ? identity.provider_process_id : process.pid,
     process_id: process.pid,
     requested_model: model,
     ...(review === undefined ? {} : { review }),
@@ -1178,7 +1357,7 @@ async function runAttemptWorker() {
     },
   });
   if (buildId !== config.build_id) fail("attempt did not execute the exact installed CLI");
-  config.provider = providerProbe(config.role, config.run_id, config.review_candidate);
+  config.provider = await providerProbe(config.role, config.run_id, config.review_candidate);
   if (config.phase === "crash") {
     const candidate = finalizeLocalLifecycleCandidate(config.workspace, config.provider);
     writeFileSync(config.candidate_file, `${canonical(candidate)}\n`);
@@ -1900,7 +2079,6 @@ export function receiptModelObservation(provider) {
   // projection with additionalProperties=false; do not spread internal
   // evidence across that schema boundary.
   const {
-    identity_sha256: _identity,
     implementation: _implementation,
     review: _review,
     ...observation
@@ -2252,7 +2430,7 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
     },
     installed_executable_realpath: runtime.cli,
     identity_evidence: providers.map((provider) => ({
-      provider: provider.role === "implementation" ? "openai" : "anthropic",
+      provider: provider.canonical_provider,
       sha256: provider.identity_sha256,
     })),
     failure_cleanup: failureCleanup,

@@ -117,10 +117,12 @@ function indexedProofRoot(root: string): {
       implementation: {
         adapter: String(implementation["adapter"] ?? ""),
         model: String(implementation["model"] ?? ""),
+        provider: String(implementation["provider"] ?? ""),
       },
       review: {
         adapter: String(review["adapter"] ?? ""),
         model: String(review["model"] ?? ""),
+        provider: String(review["provider"] ?? ""),
       },
     },
   };

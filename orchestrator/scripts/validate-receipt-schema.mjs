@@ -109,6 +109,7 @@ function validatePacked(schema) {
   requireEqual(at(schema, "$defs.cleanup.properties.unrelated_state_preserved.const"), true, "cleanup");
 
   for (const required of [
+    "canonical_provider",
     "source_git_oid",
     "release",
     "build",
@@ -149,11 +150,15 @@ function validateVertical(schema) {
     "requested_model",
     "invoked_model",
     "observed_model",
+    "observed_canonical_model",
+    "observed_provider",
     "dispatch_id",
     "conversation_id",
     "process_id",
+    "provider_process_id",
     "adapter",
     "bundle_sha256",
+    "identity_sha256",
   ]) {
     if (!at(schema, "$defs.modelObservation.required").includes(required)) {
       fail(`model observation must require ${required}`);

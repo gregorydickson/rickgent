@@ -70,7 +70,10 @@ describe("retained proof claim mutations", () => {
     mutateVertical((v) => { v.runs[0].lifecycle_complete = false; }, "lifecycle.protected-1");
     mutateVertical((v) => { v.runs[0].cleanup.owned_pull_request_closed = false; }, "cleanup.protected-1.pull_request");
     mutateVertical((v) => { v.runs[0].model_observations[0].adapter = "fixture"; }, "provider_pair.protected-1.implementation");
+    mutateVertical((v) => { v.runs[0].model_observations[0].observed_provider = "catalog-only"; }, "provider_pair.protected-1.implementation");
+    mutateVertical((v) => { v.runs[0].model_observations[0].provider_process_id = 0; }, "provider_pair.protected-1.implementation_runtime_identity");
     mutateVertical((v) => { v.runs[0].model_observations[1].invoked_model = "other"; }, "provider_pair.protected-1.review");
+    mutateVertical((v) => { v.runs[0].model_observations[1].observed_canonical_model = "other"; }, "provider_pair.protected-1.review");
     mutateVertical((v) => {
       v.evidence.items.find((item: any) => item.evidence_id === "run:1:identity:openai").authenticated = false;
     }, "provider_pair.protected-1.openai_identity");

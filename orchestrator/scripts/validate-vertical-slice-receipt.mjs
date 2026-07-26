@@ -221,17 +221,40 @@ for (const [index, run] of receipt.runs.entries()) {
   const implementation = observations.get("implementation");
   const review = observations.get("review");
   equal(
-    [implementation?.adapter, implementation?.requested_model, implementation?.invoked_model],
-    ["codex-cli", "gpt-5.6-sol", "gpt-5.6-sol"],
+    [
+      implementation?.adapter,
+      implementation?.canonical_provider,
+      implementation?.requested_model,
+      implementation?.invoked_model,
+      implementation?.observed_model,
+      implementation?.observed_canonical_model,
+      implementation?.observed_provider,
+    ],
+    ["codex-cli", "openai", "gpt-5.6-sol", "gpt-5.6-sol", "gpt-5.6-sol", "gpt-5.6-sol", "openai"],
     `${run.run_id} implementation dispatch`,
   );
   equal(
-    [review?.adapter, review?.requested_model, review?.invoked_model],
-    ["claude-code", "claude-opus-4-8[1m]", "claude-opus-4-8[1m]"],
+    [
+      review?.adapter,
+      review?.canonical_provider,
+      review?.requested_model,
+      review?.invoked_model,
+      review?.observed_model,
+      review?.observed_canonical_model,
+      review?.observed_provider,
+    ],
+    ["claude-code", "anthropic", "claude-opus-4-8[1m]", "claude-opus-4-8[1m]", "claude-opus-4-8[1m]", "claude-opus-4-8", "firstParty"],
     `${run.run_id} review dispatch`,
   );
   if (implementation?.process_id !== crash.process_id || review?.process_id !== resume.process_id) {
     fail(`${run.run_id} model observations are not bound to their attempt processes`);
+  }
+  for (const observation of [implementation, review]) {
+    if (
+      !Number.isSafeInteger(observation?.provider_process_id)
+      || observation.provider_process_id <= 0
+      || !SHA256.test(observation?.identity_sha256 ?? "")
+    ) fail(`${run.run_id} runtime identity binding is invalid`);
   }
 }
 

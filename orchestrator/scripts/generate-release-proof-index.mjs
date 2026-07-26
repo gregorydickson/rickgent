@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const SHA256 = /^[0-9a-f]{64}$/;
 const EXPECTED = Object.freeze({
   packed_file_sha256: "66a73f7ae98c158c3af08b73fa832591b3db9fd7ab2f710b9ce19538e4f57994",
   packed_digest: "364a2575ffe4754c6e2b66320ffcdf6b82add56e4561d1cfe8ea86550ca09bdc",
@@ -204,15 +205,38 @@ export function validateProofAuthorities({
     }
     const observations = Object.fromEntries((run.model_observations ?? []).map((x) => [x.role, x]));
     same(
-      [observations.implementation?.adapter, observations.implementation?.invoked_model],
-      ["codex-cli", "gpt-5.6-sol"],
+      [
+        observations.implementation?.adapter,
+        observations.implementation?.canonical_provider,
+        observations.implementation?.invoked_model,
+        observations.implementation?.observed_model,
+        observations.implementation?.observed_canonical_model,
+        observations.implementation?.observed_provider,
+      ],
+      ["codex-cli", "openai", "gpt-5.6-sol", "gpt-5.6-sol", "gpt-5.6-sol", "openai"],
       `provider_pair.${run.run_id}.implementation`,
     );
     same(
-      [observations.review?.adapter, observations.review?.invoked_model],
-      ["claude-code", "claude-opus-4-8[1m]"],
+      [
+        observations.review?.adapter,
+        observations.review?.canonical_provider,
+        observations.review?.invoked_model,
+        observations.review?.observed_model,
+        observations.review?.observed_canonical_model,
+        observations.review?.observed_provider,
+      ],
+      ["claude-code", "anthropic", "claude-opus-4-8[1m]", "claude-opus-4-8[1m]", "claude-opus-4-8", "firstParty"],
       `provider_pair.${run.run_id}.review`,
     );
+    for (const [role, observation] of Object.entries(observations)) {
+      claim(
+        Number.isSafeInteger(observation?.provider_process_id)
+          && observation.provider_process_id > 0
+          && SHA256.test(observation?.identity_sha256 ?? ""),
+        `provider_pair.${run.run_id}.${role}_runtime_identity`,
+        "provider runtime process or identity digest is invalid",
+      );
+    }
   }
   for (const path of ["success_path", "failure_path"]) {
     claim(vertical.cleanup?.[path]?.completed === true, `cleanup.aggregate.${path}`, "cleanup did not complete");
