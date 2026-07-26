@@ -4,8 +4,8 @@
   "status": "valid",
   "authority_commits": {
     "t37_completion": "d4bed226c02e90fae9d47f44b3772194942f049e",
-    "t38_completion_marker": "6ff810db20eba35957f47418a2b2e3b136d6259f",
-    "final_retained_receipt_bytes": "6ff810db20eba35957f47418a2b2e3b136d6259f"
+    "t38_completion_marker": "640d78eebdfbf76a52cb2121ff205bdb4e4300be",
+    "final_retained_receipt_bytes": "640d78eebdfbf76a52cb2121ff205bdb4e4300be"
   },
   "receipts": {
     "packed": {
@@ -16,8 +16,8 @@
     },
     "vertical": {
       "path": "artifacts/reliability/vertical-slice-receipt.json",
-      "file_sha256": "a48fcc0d4220786af0049a0be1f17cb9de4717f2d9c3ce541a354110c83f0c09",
-      "digest": "fdc0a75c40af91dacf748f8c05c11722865930f51eb91e691b049dbc3e74340d",
+      "file_sha256": "5ef541dcbd3cf466daad5b1f0eb6c2315a360fe8ea0ab0ece470b3b472f4a9bf",
+      "digest": "93a40ab2193bbe78ad2c6f832f835ed55f9e91c5a042abc50f5e8b28c014d903",
       "proof_version": "vertical-slice-proof-v1"
     }
   },
@@ -52,7 +52,7 @@
       },
       "vertical": {
         "path": "orchestrator/schemas/vertical-slice-receipt.schema.json",
-        "sha256": "9f822e56e7d05bf7905fac27076a1644bd9200810b9d61f9eea8d3a9855ce6e7"
+        "sha256": "07e4a1f5fdf0d7f3e8c2c005681ea6c7d8bf78261dd42993869ff0cba573f1b8"
       }
     },
     "redaction_version": "rickgent-redaction-v1",

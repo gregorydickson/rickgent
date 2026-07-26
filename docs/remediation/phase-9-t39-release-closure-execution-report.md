@@ -21,7 +21,7 @@ passed with zero skipped tests.
 - packed receipt file SHA-256:
   `66a73f7ae98c158c3af08b73fa832591b3db9fd7ab2f710b9ce19538e4f57994`
 - vertical receipt file SHA-256:
-  `a48fcc0d4220786af0049a0be1f17cb9de4717f2d9c3ce541a354110c83f0c09`
+  `5ef541dcbd3cf466daad5b1f0eb6c2315a360fe8ea0ab0ece470b3b472f4a9bf`
 
 The milestone completion convention binds t37 and t38 to their documented
 completion-marker commits and binds t39 to the descendant commit that retains

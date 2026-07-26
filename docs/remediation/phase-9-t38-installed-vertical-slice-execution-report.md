@@ -29,7 +29,8 @@ Each run retains:
 
 - nine mirrored proof-corpus digests;
 - separate model-dispatch and independently observed provider-identity evidence for
-  OpenAI and Anthropic;
+  OpenAI and Anthropic, including the Codex app-server's effective model/provider,
+  exact thread and turn IDs, provider PID, attempt PID, and identity digest;
 - sixteen derived lifecycle phase records covering native-policy allow/deny,
   ownership, worktree, ref, index, compare-and-swap lease, process topology,
   scope-clean commit, review, clean remediation outcome, gate, oracle, cleanup, push,
