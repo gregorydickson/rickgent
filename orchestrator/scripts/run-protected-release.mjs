@@ -820,10 +820,16 @@ function ghApi(endpoint, { body, method = "GET", fields = {} } = {}) {
   const args = ["api", "--method", method, endpoint];
   for (const [key, value] of Object.entries(fields)) args.push("-f", `${key}=${value}`);
   if (body !== undefined) args.push("--input", "-");
-  const output = run("gh", args, {
-    input: body === undefined ? "" : `${canonical(body)}\n`,
-    timeout: 60_000,
-  });
+  let output;
+  try {
+    output = run("gh", args, {
+      input: body === undefined ? "" : `${canonical(body)}\n`,
+      timeout: 60_000,
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    fail(`GitHub ${method} ${endpoint} failed: ${detail}`);
+  }
   if (output === "") return null;
   try {
     return JSON.parse(output);
