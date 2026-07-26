@@ -41,6 +41,7 @@ const T39_ALLOWED = new Set([
   "orchestrator/scripts/validate-protected-preflight.mjs",
   "orchestrator/scripts/verify-remote-cleanup.mjs",
   "orchestrator/scripts/run-protected-release.mjs",
+  "orchestrator/test/reliability/protected-release-branch-lease.test.ts",
   "artifacts/reliability/quality-gates-summary.json",
   "artifacts/reliability/closure-preservation-evidence.json",
   "artifacts/reliability/citadel-release-report.json",

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   branchCleanupAction,
   deleteBranchWithLease,
+  requireBranchAbsentAfterCleanup,
 } from "../../scripts/run-protected-release.mjs";
 
 const roots: string[] = [];
@@ -48,6 +49,33 @@ describe("protected release branch deletion lease", () => {
       ownedOid,
       true,
     )).toThrow("branch changed before compare-and-delete");
+  });
+
+  it("tolerates bounded hosted read-after-delete lag without weakening the lease", () => {
+    const ownedOid = "a".repeat(40);
+    const observations = [
+      { object: { sha: ownedOid } },
+      { object: { sha: ownedOid } },
+      null,
+    ];
+    expect(requireBranchAbsentAfterCleanup(
+      () => observations.shift(),
+      ownedOid,
+      true,
+      { attempts: 3, delayMs: 0 },
+    )).toBe(true);
+    expect(() => requireBranchAbsentAfterCleanup(
+      () => ({ object: { sha: "b".repeat(40) } }),
+      ownedOid,
+      true,
+      { attempts: 3, delayMs: 0 },
+    )).toThrow("branch changed before compare-and-delete");
+    expect(() => requireBranchAbsentAfterCleanup(
+      () => ({ object: { sha: ownedOid } }),
+      ownedOid,
+      true,
+      { attempts: 2, delayMs: 0 },
+    )).toThrow("owned branch remains after cleanup");
   });
 
   it("refuses to delete a branch that advanced after the owned OID was observed", () => {

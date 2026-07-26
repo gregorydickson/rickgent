@@ -1522,6 +1522,32 @@ export function branchCleanupAction(branchObservation, expectedOid, leaseAttempt
   return "delete-with-lease";
 }
 
+export function requireBranchAbsentAfterCleanup(
+  observeBranch,
+  expectedOid,
+  leaseAttempted,
+  { attempts = 8, delayMs = 250 } = {},
+) {
+  if (
+    typeof observeBranch !== "function"
+    || !Number.isInteger(attempts)
+    || attempts < 1
+    || !Number.isInteger(delayMs)
+    || delayMs < 0
+  ) {
+    fail("branch cleanup observation policy is invalid");
+  }
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (branchCleanupAction(observeBranch(), expectedOid, leaseAttempted) === "already-absent") {
+      return true;
+    }
+    if (attempt + 1 < attempts && delayMs > 0) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
+    }
+  }
+  fail("owned branch remains after cleanup");
+}
+
 function createDelivery(preflight, runId, candidate, { injectFailureAfterPullRequest = false } = {}) {
   const { repoPath } = observeRemote(preflight);
   const branch = `${preflight.remote.owned_namespace}/${runId}`;
@@ -1801,9 +1827,11 @@ function cleanupDelivery(preflight, delivery, cleanupState) {
       gitHubCredentialArgs(),
     );
   }
-  if (ghApiMaybe(`${delivery.repoPath}/git/ref/heads/${delivery.branch}`) !== null) {
-    fail("owned branch remains after cleanup");
-  }
+  requireBranchAbsentAfterCleanup(
+    () => ghApiMaybe(`${delivery.repoPath}/git/ref/heads/${delivery.branch}`),
+    delivery.delivery_oid,
+    cleanupState.branchDeletionLeaseAttempted,
+  );
   observeRemote(preflight);
 }
 
