@@ -1875,7 +1875,7 @@
         "t38"
       ],
       "completed_at": {
-          "commit": "e8791de87e141405945e37d73831a480d5de3fbd",
+          "commit": "309b7d50c3a6d9833deccc3652148daf5a0c3903",
           "evidence_commit": "7e00a08df74dcc6030e5340baf2e3d0dd3250c60",
         "phase_report": "docs/remediation/phase-9-t39-release-closure-execution-report.md",
         "proof_index": "artifacts/reliability/release-proof-index.json",
