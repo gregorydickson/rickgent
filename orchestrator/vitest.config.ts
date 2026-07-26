@@ -7,7 +7,10 @@ export default defineConfig({
     environment: "node",
     globalSetup: ["./test/global-setup.ts"],
     maxWorkers: 2,
-    testTimeout: 15_000,
+    // Several adversarial Git/policy cases spawn real subprocesses. Under the
+    // full mutation corpus they can exceed 15 seconds despite completing in
+    // under 5 seconds in isolation, so retain a bounded load-aware timeout.
+    testTimeout: 30_000,
     hookTimeout: 30_000,
     coverage: {
       provider: "v8",

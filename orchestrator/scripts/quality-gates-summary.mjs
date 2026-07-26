@@ -153,6 +153,7 @@ export function runAllGates(outputPath) {
     [
       "vitest",
       "run",
+      "--maxWorkers=4",
       "--coverage",
     ],
     { cwd: ORCH_DIR, timeout: 1_200_000 },
