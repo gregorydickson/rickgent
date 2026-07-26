@@ -8,16 +8,16 @@ import { fileURLToPath } from "node:url";
 const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const SHA256 = /^[0-9a-f]{64}$/;
 const EXPECTED = Object.freeze({
-  packed_file_sha256: "c90ef1094d3b5d75c16a2034a9c00e96c5169be027a63bf0a8b0dacc2fdd9044",
-  packed_digest: "f818b3341372584470239171bf66ac90ff4f0bda2e6b7c0524d348281d82720e",
+  packed_file_sha256: "e392614923fb3d4224f3ffd75dfc10d279d454a54924412dc09562c90b7e0456",
+  packed_digest: "ac32d6f1845b7c2fae7f0be3f003af4a2257587b1fcb8f477948c6ad0281d58a",
   vertical_file_sha256: "14abd8c8d6a17013293a613c679f3dbd4a22e719d4d509fdf2bd6ceb15ab8190",
   vertical_digest: "8cdf99f44c1405b8d2555855650d4c8b83f12169b779fd22ea8305207da6c876",
   packed_schema_sha256: "772ce8915d06869a181c49c2c636038f9e3adeda816d17f7bd1e5ee455f1aecb",
-  vertical_schema_sha256: "07e4a1f5fdf0d7f3e8c2c005681ea6c7d8bf78261dd42993869ff0cba573f1b8",
-  preflight_sha256: "be2cb7559cf837572e6139fc6842f2c9f1ff07d115e69340cf6e31b14ea7a208",
+  vertical_schema_sha256: "6e3c573bf2323353212e4470384e510a06f3d019ccf57d2a3a142955fe8ef0e4",
+  preflight_sha256: "c2f957fef77966210166af0ae4f0062e5998fa4e5f47fa62981f01069d741ead",
   diagnostics_sha256: "2e9daa0a9286511e401ac169102267a78c5ec23ae116a891f7648cb36c58a12c",
   release_sha256: "d0a97bd72502ea7af9554efa99be571424ad8be631ecb74dd2b22371c33a44e0",
-  t37_completion_commit: "47e06e263d6f1b78667b48725a873d016c04a7b7",
+  t37_completion_commit: "288514f896eb0d1cb103352449d213253a8e7ef0",
   t38_completion_marker: "04c21c01285ae7bf64ba1b0f3751c6b9447f5172",
   retained_receipt_commit: "04c21c01285ae7bf64ba1b0f3751c6b9447f5172",
 });

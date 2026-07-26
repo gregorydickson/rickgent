@@ -8,15 +8,15 @@
     "count": 40
   },
   "milestone_commits": {
-    "t37": "47e06e263d6f1b78667b48725a873d016c04a7b7",
+    "t37": "288514f896eb0d1cb103352449d213253a8e7ef0",
     "t38": "04c21c01285ae7bf64ba1b0f3751c6b9447f5172",
     "t39": "309b7d50c3a6d9833deccc3652148daf5a0c3903"
   },
   "prepared_commit": "5f89f3e765b60298576bf08f3fcf13836a72722a",
   "release_proof_profile": "installed_t38_retained_proof_v1",
   "archive_sha256": {
-    "npm_tarball": "db895894456ef96571da1a8a19d3f1e3d373b534d3948884e5d9620d5e92f051",
-    "python_wheel": "38ddf68df9a8993faec67ba8d000aa7d7181d3d856201c51db62d0ede59751f0"
+    "npm_tarball": "641ef9a04f1eb659ba3049370415ce1bfdc5e06e941d7bbec3d9601e362e79d1",
+    "python_wheel": "ecfb65dad232096eb1778e403f1dee6bab7e0d9d799824642da2698c7af109be"
   },
   "quality_thresholds_passed": true,
   "citadel_decision": "pending",

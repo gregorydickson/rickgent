@@ -7,15 +7,15 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const T37 = "47e06e263d6f1b78667b48725a873d016c04a7b7";
+const T37 = "288514f896eb0d1cb103352449d213253a8e7ef0";
 const T38_MARKER = "04c21c01285ae7bf64ba1b0f3751c6b9447f5172";
 const RETAINED = "04c21c01285ae7bf64ba1b0f3751c6b9447f5172";
 const ARCHIVES = {
-  "artifacts/reliability/npm-dist/rickgent-0.1.0-alpha.tgz": "db895894456ef96571da1a8a19d3f1e3d373b534d3948884e5d9620d5e92f051",
-  "artifacts/reliability/python-dist/rickgent_policies-0.1.0a0-py3-none-any.whl": "38ddf68df9a8993faec67ba8d000aa7d7181d3d856201c51db62d0ede59751f0",
+  "artifacts/reliability/npm-dist/rickgent-0.1.0-alpha.tgz": "641ef9a04f1eb659ba3049370415ce1bfdc5e06e941d7bbec3d9601e362e79d1",
+  "artifacts/reliability/python-dist/rickgent_policies-0.1.0a0-py3-none-any.whl": "ecfb65dad232096eb1778e403f1dee6bab7e0d9d799824642da2698c7af109be",
 };
 const INVENTORIES = {
-  "artifacts/reliability/npm-pack-inventory.json": "2394ebb07cadbd079cfda2831733eb102186f165b735e4e2b5d010dcd86840b0",
+  "artifacts/reliability/npm-pack-inventory.json": "0f03043d090514ef6ad64cf1ccc098e9dcb6b3f551e46ebff9d827187ecc9015",
 };
 const T39_ALLOWED = new Set([
   "artifacts/reliability/release-proof-index.json",
@@ -106,7 +106,7 @@ try {
 } catch {
   fail("packed baseline is malformed");
 }
-if (packed.digest !== "f818b3341372584470239171bf66ac90ff4f0bda2e6b7c0524d348281d82720e") {
+if (packed.digest !== "ac32d6f1845b7c2fae7f0be3f003af4a2257587b1fcb8f477948c6ad0281d58a") {
   fail("packed baseline digest is not the retained t37 authority");
 }
 

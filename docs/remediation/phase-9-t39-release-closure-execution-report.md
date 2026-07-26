@@ -15,11 +15,11 @@ passed with zero skipped tests.
 ## Immutable release inputs
 
 - npm archive SHA-256:
-  `db895894456ef96571da1a8a19d3f1e3d373b534d3948884e5d9620d5e92f051`
+  `641ef9a04f1eb659ba3049370415ce1bfdc5e06e941d7bbec3d9601e362e79d1`
 - Python wheel SHA-256:
-  `38ddf68df9a8993faec67ba8d000aa7d7181d3d856201c51db62d0ede59751f0`
+  `ecfb65dad232096eb1778e403f1dee6bab7e0d9d799824642da2698c7af109be`
 - packed receipt file SHA-256:
-  `c90ef1094d3b5d75c16a2034a9c00e96c5169be027a63bf0a8b0dacc2fdd9044`
+  `e392614923fb3d4224f3ffd75dfc10d279d454a54924412dc09562c90b7e0456`
 - vertical receipt file SHA-256:
   `14abd8c8d6a17013293a613c679f3dbd4a22e719d4d509fdf2bd6ceb15ab8190`
 
