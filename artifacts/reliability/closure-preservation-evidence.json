@@ -1,11 +1,16 @@
 {
   "schema_version": 2,
   "profile": "closure-preservation-v2",
-  "excluded_active_sessions": [],
+  "excluded_active_sessions": [
+    {
+      "session": "2026-07-26-c24f3a45",
+      "working_directory": "/Users/gregorydickson/loanlight/loanlight-api"
+    }
+  ],
   "preserved": true,
   "before": {
     "caller": {
-      "head": "d33cca0ebbe0305bcd459e178047ac8890418fe5",
+      "head": "d941632f079d4cf0bae7227415e042a28e059800",
       "index_delta_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "worktree_delta_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "untracked": {
@@ -24,13 +29,13 @@
     },
     "unrelated_runtime": {
       "count": 2118,
-      "sha256": "b59600f03cf34dbd130fb72a5113d5965901cb7b738eff46cc9cbb3483b5f123"
+      "sha256": "91b83e452e160a0590d0b7e6bbc634f6738b5b50ffed7cfe4326eb6881e5366a"
     },
-    "quality_summary_sha256": "048b3cfbd9271759ef15c1ef2e24440222a59624d1c99fb9dea3577ed957c910"
+    "quality_summary_sha256": "35f21283d1d6a3b18e6a294956c32927fc7c80c5d9690e42048c0944c312523e"
   },
   "after": {
     "caller": {
-      "head": "d33cca0ebbe0305bcd459e178047ac8890418fe5",
+      "head": "d941632f079d4cf0bae7227415e042a28e059800",
       "index_delta_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "worktree_delta_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "untracked": {
@@ -49,9 +54,9 @@
     },
     "unrelated_runtime": {
       "count": 2118,
-      "sha256": "b59600f03cf34dbd130fb72a5113d5965901cb7b738eff46cc9cbb3483b5f123"
+      "sha256": "91b83e452e160a0590d0b7e6bbc634f6738b5b50ffed7cfe4326eb6881e5366a"
     },
-    "quality_summary_sha256": "048b3cfbd9271759ef15c1ef2e24440222a59624d1c99fb9dea3577ed957c910"
+    "quality_summary_sha256": "35f21283d1d6a3b18e6a294956c32927fc7c80c5d9690e42048c0944c312523e"
   },
-  "digest": "4ccedce5d73b31742eb5a2fb2e536aa777fc94ea2814a0fc7494ecbaf13c85e6"
+  "digest": "829968d8443fb4995cca0c750600535d79e7d5d9eadd3dbc34c42e1699cc702b"
 }
