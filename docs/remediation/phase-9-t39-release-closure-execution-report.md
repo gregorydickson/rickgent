@@ -49,6 +49,12 @@ boolean or display string. The full coverage corpus is serialized to one file
 worker after repeated two-worker runs passed all assertions but lost Vitest's
 final `onTaskUpdate` coordinator RPC; the serialized canonical rerun passed
 without reducing the corpus or thresholds.
+The later Citadel finding that the retained t38 proof exercised only a source
+runner around an installed build-identity query was returned to t38. The
+rebuilt packed CLI now owns both crash/resume attempts and records the exact
+installed executable digest plus controller and attempt process identities in
+the schema-validated receipt; the authenticated two-run proof, cleanup,
+quality authority, and closure preservation evidence were all regenerated.
 
 The retained quality receipt at `56104157a59e057ab61c7d54af712dec2d17ba27` binds the corrected implementation
 and tests at `97d5b544ee7892f04ae1eecaf622146cb213aa76`. All 12 canonical

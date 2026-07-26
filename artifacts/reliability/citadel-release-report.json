@@ -2,7 +2,7 @@
   "schema_version": 1,
   "decision": "pending",
   "read_only": true,
-  "prepared_commit": "5f89f3e765b60298576bf08f3fcf13836a72722a",
+  "prepared_commit": "8d570a6fc03eda9115cd5da263ff6be945f57041",
   "promise": null,
   "blocking_findings": [],
   "acceptance_criteria": [
@@ -38,12 +38,13 @@
   "source": {
     "kind": "citadel-prepared-checkpoint",
     "session": "2026-07-23-a34da084-citadel-direct",
-    "prior_review_generated_at": "2026-07-26T15:07:08Z",
+    "prior_review_generated_at": "2026-07-26T16:07:53Z",
     "prior_findings_resolved_in_prepared_closure": [
       "Recorded t39 completion predates the t37 and t38 milestone commits",
       "Mandatory t39b mission-completion and commit-bound Citadel evidence are not implemented",
       "The t39 completion evidence is stale after the t37/t38 reseal",
-      "Post-t38 receipt-validator change invalidates the retained t37/t38 proofs"
+      "Post-t38 receipt-validator change invalidates the retained t37/t38 proofs",
+      "The retained t38 receipt does not prove an installed production lifecycle"
     ]
   }
 }
