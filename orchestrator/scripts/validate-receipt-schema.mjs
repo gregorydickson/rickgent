@@ -109,7 +109,6 @@ function validatePacked(schema) {
   requireEqual(at(schema, "$defs.cleanup.properties.unrelated_state_preserved.const"), true, "cleanup");
 
   for (const required of [
-    "canonical_provider",
     "source_git_oid",
     "release",
     "build",
@@ -147,6 +146,7 @@ function validateVertical(schema) {
   );
 
   for (const required of [
+    "canonical_provider",
     "requested_model",
     "invoked_model",
     "observed_model",

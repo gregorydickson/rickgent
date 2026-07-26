@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { resolve } from "node:path";
 import packedSchema from "../../schemas/packed-install-receipt.schema.json";
 import verticalSchema from "../../schemas/vertical-slice-receipt.schema.json";
 import {
@@ -20,6 +22,20 @@ const expected: ReceiptExpectations = {
 };
 
 describe("strict receipt validation", () => {
+  it("applies provider identity requirements only to the vertical receipt schema", () => {
+    const script = resolve("scripts/validate-receipt-schema.mjs");
+    const packed = execFileSync(process.execPath, [
+      script,
+      resolve("schemas/packed-install-receipt.schema.json"),
+    ], { encoding: "utf8" });
+    const vertical = execFileSync(process.execPath, [
+      script,
+      resolve("schemas/vertical-slice-receipt.schema.json"),
+    ], { encoding: "utf8" });
+    expect(packed).toContain("packed-install-receipt-v1");
+    expect(vertical).toContain("vertical-slice-receipt-v1");
+  });
+
   it("rejects malformed, skipped/infrastructure, fixture, and unredacted packed evidence", () => {
     const result = validatePackedInstallReceipt({
       schema_version: "1.0.0",
