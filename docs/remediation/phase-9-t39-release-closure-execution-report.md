@@ -12,28 +12,27 @@ or infrastructure errors.
 ## Immutable release inputs
 
 - npm archive SHA-256:
-  `7f4b11563366c1335507fdd8d26269b7f5f7318c6b7f86c98de6bcbacb0125c0`
+  `e891c35e9ebefc3fb2d9a0e668d7c48c126c7e44445269ea555f172e93512109`
 - Python wheel SHA-256:
-  `bcca92b31a0c6d962179d757c571139c41a143ea319ffa11b94fc3d636f977ef`
+  `b45febac86418cdb5ecde5b2188b100ce7f77d0e249f7cd791db8fd30e17e981`
 - packed receipt file SHA-256:
-  `102696db7012d97c21410d4deebdeaa8b4ac4c388c21d615a5c5dcce76d75b14`
+  `66a73f7ae98c158c3af08b73fa832591b3db9fd7ab2f710b9ce19538e4f57994`
 - vertical receipt file SHA-256:
-  `39d5b2eafd04fd71dfb9b15e6fe16f6b83d10e2dfcf63b2e2675db3e6125a0cd`
+  `f13e63755e756498c396bed286cc31ec5347d211c012f28f37037e2f568fe90d`
 
 The milestone completion convention binds t37 and t38 to their documented
-completion-marker commits and binds t39 to the clean prerequisite-repair
-commit `7408f0010aca726e15955c83acce05d95316c517`. The closure commit contains
-only t39b-owned validation and retained evidence; it does not redefine the
-release archives or packaged runtime.
+completion-marker commits and binds t39 to the descendant commit that retains
+the regenerated proof index, closure report, and final validation evidence.
+The closure commit does not redefine the release archives or packaged runtime.
 
 ## Resolved pre-Citadel findings
 
-The first adversarial pass correctly rejected the stale t39 milestone binding
-and the absence of retained closure artifacts. This prepared closure updates
-the t39 binding to an ordered descendant, adds the fail-closed Mission 3
-validator, and retains the prepared report and summary. The earlier Python
-coverage, claim-corpus, and post-proof-allowlist blockers were resolved in
-`7408f0010aca726e15955c83acce05d95316c517`.
+The adversarial passes correctly rejected stale milestone bindings, incomplete
+quality authority, and missing retained-state evidence. This prepared closure
+reseals t37 and t38, updates t39 to an ordered descendant, retains the
+fail-closed Mission 3 validator, and records deterministic before/after state
+preservation. The Python coverage, claim-corpus, and post-proof allowlist
+checks remain part of the canonical gate set.
 
 ## Citadel
 

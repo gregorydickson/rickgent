@@ -3,46 +3,46 @@
   "proof_profile": "installed_t38_retained_proof_v1",
   "status": "valid",
   "authority_commits": {
-    "t37_completion": "7bc1112ab592ef281e04adde3841a6d64ad51966",
-    "t38_completion_marker": "8ff527224bda1cc0560ff128331166676223db08",
-    "final_retained_receipt_bytes": "8ff527224bda1cc0560ff128331166676223db08"
+    "t37_completion": "d4bed226c02e90fae9d47f44b3772194942f049e",
+    "t38_completion_marker": "302312ed3e02e5e05f2e3d7bf14872d869e418d2",
+    "final_retained_receipt_bytes": "302312ed3e02e5e05f2e3d7bf14872d869e418d2"
   },
   "receipts": {
     "packed": {
       "path": "artifacts/reliability/packed-install-summary.json",
-      "file_sha256": "102696db7012d97c21410d4deebdeaa8b4ac4c388c21d615a5c5dcce76d75b14",
-      "digest": "63b5de57689f592676f7df03feead8e6838674dd287531acfc50c6838f947fbb",
+      "file_sha256": "66a73f7ae98c158c3af08b73fa832591b3db9fd7ab2f710b9ce19538e4f57994",
+      "digest": "364a2575ffe4754c6e2b66320ffcdf6b82add56e4561d1cfe8ea86550ca09bdc",
       "proof_version": "packed-install-proof-v1"
     },
     "vertical": {
       "path": "artifacts/reliability/vertical-slice-receipt.json",
-      "file_sha256": "39d5b2eafd04fd71dfb9b15e6fe16f6b83d10e2dfcf63b2e2675db3e6125a0cd",
-      "digest": "4d4db4cbfc7bceaba66951d4c426ed550ea56cdfb12c69164d340f8c22c515a3",
+      "file_sha256": "f13e63755e756498c396bed286cc31ec5347d211c012f28f37037e2f568fe90d",
+      "digest": "18dd6c3d20b70d38257979ec10867c2a9fa3f4c5bee5259c0f14df1e67bd6caf",
       "proof_version": "vertical-slice-proof-v1"
     }
   },
   "bindings": {
-    "source_git_oid": "a91beeb6d4c183f7f63813d41feb66c40e7e9eb4",
+    "source_git_oid": "dcf5d46ebbe7e6ce09495944eef1fcd355b54647",
     "release": {
       "id": "rickgent-trust-spine-release-v1",
       "sha256": "d0a97bd72502ea7af9554efa99be571424ad8be631ecb74dd2b22371c33a44e0"
     },
     "build": {
-      "id": "a91beeb6d4c183f7f63813d41feb66c40e7e9eb4",
-      "sha256": "ee698a5743026a488137e4eeee3e4722c696df87124a180c94d1d1e2abcd3f93"
+      "id": "dcf5d46ebbe7e6ce09495944eef1fcd355b54647",
+      "sha256": "aa3e843863f3ec7b6486513033d5eb42f7c7b2ac12166bce5770bb9a94fd52db"
     },
     "archives": [
       {
         "filename": "rickgent-0.1.0-alpha.tgz",
-        "inventory_sha256": "b1f8a578d1f0da3a15a91b68ea31d6bfe3fc950813bff9aa40781d421deaf97d",
+        "inventory_sha256": "b059c480ff107a4f086272881fb4454de2c27c523b9d795efafcf5ea7b3a3983",
         "kind": "npm_tarball",
-        "sha256": "7f4b11563366c1335507fdd8d26269b7f5f7318c6b7f86c98de6bcbacb0125c0"
+        "sha256": "e891c35e9ebefc3fb2d9a0e668d7c48c126c7e44445269ea555f172e93512109"
       },
       {
         "filename": "rickgent_policies-0.1.0a0-py3-none-any.whl",
         "inventory_sha256": "abeac2ab3ca773840a59c9a5439dc8c3c7e52742a3081f2f0a3e7eb88c543b2a",
         "kind": "python_wheel",
-        "sha256": "bcca92b31a0c6d962179d757c571139c41a143ea319ffa11b94fc3d636f977ef"
+        "sha256": "b45febac86418cdb5ecde5b2188b100ce7f77d0e249f7cd791db8fd30e17e981"
       }
     ],
     "schemas": {
@@ -97,7 +97,7 @@
     ],
     "preflight": {
       "path": "artifacts/reliability/protected-release-preflight.json",
-      "sha256": "8b9e2163549db6c3011449da14a70060ecbf857ec2662d76475113cff00dd055",
+      "sha256": "2f22219e0aee989a12b7747f50a5c065a0167b18ee7035b854b559f969f59368",
       "status": "accepted"
     },
     "diagnostics": {
