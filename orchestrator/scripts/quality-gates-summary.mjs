@@ -83,7 +83,10 @@ function runGate(name, command, args, options = {}) {
       };
     }
     // Exit 0 = pass, nonzero = fail (threshold not met)
-    const detail = (result.stdout || "").trim().split("\n").slice(-3).join(" | ");
+    const output = `${result.stdout || ""}\n${result.stderr || ""}`.trim();
+    const outputLines = output.split("\n").map((line) => line.trim()).filter(Boolean);
+    const failureLines = outputLines.filter((line) => /^(FAIL|Error:|AssertionError:|Test Files|Tests\s)/.test(line));
+    const detail = (failureLines.length > 0 ? failureLines : outputLines).slice(-8).join(" | ");
     return {
       name,
       status: result.status === 0 ? "pass" : "fail",
@@ -150,10 +153,9 @@ export function runAllGates(outputPath) {
     [
       "vitest",
       "run",
-      "--maxWorkers=4",
       "--coverage",
     ],
-    { cwd: ORCH_DIR, timeout: 900_000 },
+    { cwd: ORCH_DIR, timeout: 1_200_000 },
   );
   gates.push(tsTest);
   if (tsTest.status === "infrastructure_error") { infrastructureErrors.push({ gate: "ts_test_coverage", error: tsTest.detail }); }
