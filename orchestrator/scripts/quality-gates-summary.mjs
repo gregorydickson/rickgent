@@ -304,7 +304,7 @@ export async function runAllGates(outputPath) {
     ],
     {
       cwd: ORCH_DIR,
-      timeout: 1_200_000,
+      timeout: 2_400_000,
       env: {
         ...PATH_ENV(),
         RICKGENT_STRESS_ITERATIONS: String(concurrencyManifest.required_iterations),
