@@ -9,15 +9,15 @@ const sidecarPath = join(dirname(receiptPath), "protected-release-preflight.sha2
 const SHA256 = /^[0-9a-f]{64}$/;
 const OID = /^[0-9a-f]{40}$/;
 const EXPECTED_T37 = Object.freeze({
-  source_git_oid: "dcf5d46ebbe7e6ce09495944eef1fcd355b54647",
-  build_id: "dcf5d46ebbe7e6ce09495944eef1fcd355b54647",
-  build_resource_sha256: "aa3e843863f3ec7b6486513033d5eb42f7c7b2ac12166bce5770bb9a94fd52db",
-  npm_archive_sha256: "e891c35e9ebefc3fb2d9a0e668d7c48c126c7e44445269ea555f172e93512109",
-  npm_inventory_sha256: "b059c480ff107a4f086272881fb4454de2c27c523b9d795efafcf5ea7b3a3983",
-  wheel_archive_sha256: "b45febac86418cdb5ecde5b2188b100ce7f77d0e249f7cd791db8fd30e17e981",
+  source_git_oid: "ea8e5f7b4dde9311067c9dfafb66ea95e0817903",
+  build_id: "ea8e5f7b4dde9311067c9dfafb66ea95e0817903",
+  build_resource_sha256: "5fd001c01d8b325d4513df26951fd81abdb5e4c88923e5e4941135b5c22fb36d",
+  npm_archive_sha256: "db895894456ef96571da1a8a19d3f1e3d373b534d3948884e5d9620d5e92f051",
+  npm_inventory_sha256: "188a724d85dea6de2200a4695c58e3e3b3405e6c805328f0cb964d5aaafd37fa",
+  wheel_archive_sha256: "38ddf68df9a8993faec67ba8d000aa7d7181d3d856201c51db62d0ede59751f0",
   wheel_inventory_sha256: "abeac2ab3ca773840a59c9a5439dc8c3c7e52742a3081f2f0a3e7eb88c543b2a",
   omnigent_contract_sha256: "d1db539f7c602db8750a7187a3f74fee5ae46386d4f4a05df9c94fba13604b64",
-  packed_receipt_sha256: "364a2575ffe4754c6e2b66320ffcdf6b82add56e4561d1cfe8ea86550ca09bdc",
+  packed_receipt_sha256: "f818b3341372584470239171bf66ac90ff4f0bda2e6b7c0524d348281d82720e",
 });
 const EXPECTED_INSTALLATION = Object.freeze({
   build_id: EXPECTED_T37.build_id,

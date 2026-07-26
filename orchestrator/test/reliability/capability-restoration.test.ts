@@ -14,14 +14,14 @@ for (const [source, target] of [
 ]) cpSync(join(repoRoot, source), join(proofRoot, target));
 
 const expected = {
-  sourceGitOid: "dcf5d46ebbe7e6ce09495944eef1fcd355b54647",
+  sourceGitOid: "ea8e5f7b4dde9311067c9dfafb66ea95e0817903",
   releaseId: "rickgent-trust-spine-release-v1",
   releaseSha256: "d0a97bd72502ea7af9554efa99be571424ad8be631ecb74dd2b22371c33a44e0",
-  buildId: "dcf5d46ebbe7e6ce09495944eef1fcd355b54647",
-  buildSha256: "aa3e843863f3ec7b6486513033d5eb42f7c7b2ac12166bce5770bb9a94fd52db",
-  npmArchiveSha256: "e891c35e9ebefc3fb2d9a0e668d7c48c126c7e44445269ea555f172e93512109",
-  wheelArchiveSha256: "b45febac86418cdb5ecde5b2188b100ce7f77d0e249f7cd791db8fd30e17e981",
-  packedInstallReceiptSha256: "364a2575ffe4754c6e2b66320ffcdf6b82add56e4561d1cfe8ea86550ca09bdc",
+  buildId: "ea8e5f7b4dde9311067c9dfafb66ea95e0817903",
+  buildSha256: "5fd001c01d8b325d4513df26951fd81abdb5e4c88923e5e4941135b5c22fb36d",
+  npmArchiveSha256: "db895894456ef96571da1a8a19d3f1e3d373b534d3948884e5d9620d5e92f051",
+  wheelArchiveSha256: "38ddf68df9a8993faec67ba8d000aa7d7181d3d856201c51db62d0ede59751f0",
+  packedInstallReceiptSha256: "f818b3341372584470239171bf66ac90ff4f0bda2e6b7c0524d348281d82720e",
   requiredCheckIds: [],
   now: new Date("2026-07-25T22:10:00.000Z"),
 };
