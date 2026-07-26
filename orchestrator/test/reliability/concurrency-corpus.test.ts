@@ -1006,7 +1006,7 @@ describe.skipIf(process.env.RICKGENT_STRESS_ITERATIONS === undefined)(
           // catch runner failures and emit success flags.
           if (floodResult.supervisionSuccessful !== true) {
             violations++;
-            details.push(`supervision was not successful (outcome=${floodResult.outcome}, runnerError=${floodResult.runnerError ?? "n/a"}); runAttempt did not complete successfully — the failure must NOT be caught and swallowed`);
+            details.push(`supervision was not successful (outcome=${floodResult.outcome}, runnerError=${floodResult.runnerError ?? "n/a"}, runnerReport=${JSON.stringify(floodResult.runnerReport ?? null)}, reviewDiagnostics=${JSON.stringify(floodResult.reviewDiagnostics ?? null)}); runAttempt did not complete successfully — the failure must NOT be caught and swallowed`);
           }
           if (floodResult.outcome !== "succeeded") {
             violations++;
@@ -1168,10 +1168,10 @@ describe.skipIf(process.env.RICKGENT_STRESS_ITERATIONS === undefined)(
       // Assert zero violations for this iteration.  Infrastructure errors fail
       // the test rather than count as caught races.
       const totalViolations = scenarioResults.reduce((sum, s) => sum + s.violations, 0);
-      expect(totalViolations).toBe(0);
       for (const scenario of scenarioResults) {
         expect(scenario.passed, `iteration ${iteration} scenario ${scenario.id}: ${scenario.detail}`).toBe(true);
       }
+      expect(totalViolations).toBe(0);
     }, 300_000);
   }
 

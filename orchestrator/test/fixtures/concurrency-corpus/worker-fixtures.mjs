@@ -69,6 +69,16 @@ import { RICKGENT_ORACLE_VERSION } from "../../../dist/state/oracle.js";
 import { runBuildViaRunnerForTesting } from "../../../dist/lifecycle/build.js";
 import { FIXTURE_RUNTIME_AUTHORITY } from "../../../dist/testing/fixture-authority.js";
 
+const FIXTURE_MODEL_ROSTER = Object.freeze([
+  Object.freeze({
+    harness: "codex",
+    model: "openai/gpt-5-mini",
+    vendor: "openai",
+    tier: "cheap",
+    pricing: Object.freeze({ cost_per_dispatch: 0.04 }),
+  }),
+]);
+
 // ---------------------------------------------------------------------------
 // IPC helpers.
 // ---------------------------------------------------------------------------
@@ -708,6 +718,7 @@ async function scenarioFloodOutputSupervised(args) {
     extraEnv: {
       FIXTURE_MODE: "prompt",
       FIXTURE_FLOOD_BYTES: String(floodBytes),
+      FIXTURE_OBSERVED_VENDOR: "openai",
     },
   });
 
@@ -743,6 +754,7 @@ async function scenarioFloodOutputSupervised(args) {
       rickgentDir,
       agentDir,
       dataDir,
+      roster: FIXTURE_MODEL_ROSTER,
       env: {
         ...process.env,
         RICKGENT_DIR: rickgentDir,
@@ -807,6 +819,7 @@ async function scenarioFloodOutputSupervised(args) {
 
   let launchId = null;
   let processReceiptId = null;
+  let reviewDiagnostics = [];
 
   // Query the store for the process chain to get launchId and processReceiptId.
   try {
@@ -819,6 +832,11 @@ async function scenarioFloodOutputSupervised(args) {
         launchId = String(rows[0].launch_id);
         processReceiptId = String(rows[0].process_receipt_id);
       }
+      reviewDiagnostics = db.prepare(
+        "SELECT r.verdict, e.inline_payload_json AS findings "
+          + "FROM review_records r JOIN evidence e ON e.evidence_id = r.findings_evidence_id "
+          + "ORDER BY r.cycle",
+      ).all();
     } finally {
       db.close();
     }
@@ -844,6 +862,8 @@ async function scenarioFloodOutputSupervised(args) {
     processReceiptId,
     runnerOutcome: result.outcome.status,
     runnerError: supervisionSuccessful ? null : JSON.stringify(result.outcome),
+    runnerReport: supervisionSuccessful ? null : result.report,
+    reviewDiagnostics: supervisionSuccessful ? [] : reviewDiagnostics,
   });
 }
 
@@ -890,6 +910,7 @@ async function scenarioFloodOutputOverLimit(args) {
     extraEnv: {
       FIXTURE_MODE: "prompt",
       FIXTURE_FLOOD_BYTES: String(floodBytes),
+      FIXTURE_OBSERVED_VENDOR: "openai",
     },
   });
 
@@ -917,6 +938,7 @@ async function scenarioFloodOutputOverLimit(args) {
       rickgentDir,
       agentDir,
       dataDir,
+      roster: FIXTURE_MODEL_ROSTER,
       env: {
         ...process.env,
         RICKGENT_DIR: rickgentDir,

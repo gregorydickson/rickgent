@@ -43,6 +43,8 @@ const T39_ALLOWED = new Set([
   "orchestrator/scripts/run-protected-release.mjs",
   "orchestrator/test/reliability/protected-release-branch-lease.test.ts",
   "orchestrator/test/reliability/quality-gates.test.ts",
+  "orchestrator/test/reliability/concurrency-corpus.test.ts",
+  "orchestrator/test/fixtures/concurrency-corpus/worker-fixtures.mjs",
   "artifacts/reliability/vertical-slice-receipt.json",
   "artifacts/reliability/vertical-slice-receipt.sha256",
   "artifacts/reliability/concurrency-summary.json",
