@@ -132,7 +132,66 @@ function requireCurrentCommittedPath(path, label) {
   git(["cat-file", "-e", `HEAD:${path}`]);
 }
 
-function validateDeclaredEvidence(ticket) {
+function gitBytes(commit, path) {
+  try {
+    return execFileSync("git", ["show", `${commit}:${path}`], {
+      cwd: repositoryRoot,
+      encoding: "buffer",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 64 * 1024 * 1024,
+    });
+  } catch (error) {
+    const detail = String(error.stderr ?? error.message).trim();
+    fail(`committed evidence is missing at ${commit}:${path}: ${detail}`);
+  }
+}
+
+export function validateEvidenceContent(path, bytes, label = "evidence") {
+  if (!Buffer.isBuffer(bytes) || bytes.length === 0) fail(`${label} is empty: ${path}`);
+  const text = bytes.toString("utf8");
+  if (path.endsWith(".json")) {
+    let value;
+    try {
+      value = JSON.parse(text);
+    } catch (error) {
+      fail(`${label} is malformed JSON at ${path}: ${error.message}`);
+    }
+    if (
+      value === null
+      || typeof value !== "object"
+      || (Array.isArray(value) ? value.length === 0 : Object.keys(value).length === 0)
+    ) fail(`${label} has no semantic content: ${path}`);
+  } else if (path.endsWith(".md")) {
+    if (!/^#(?:#)?\s+\S/mu.test(text)) fail(`${label} has no Markdown authority heading: ${path}`);
+  } else if (text.trim() === "") {
+    fail(`${label} has no semantic content: ${path}`);
+  }
+}
+
+export function validateEvidenceCommitOrder(completionCommit, evidenceCommit, label) {
+  requireSingleParent(evidenceCommit, `${label} evidence`);
+  requireAncestor(completionCommit, evidenceCommit, `${label} evidence predates completion`);
+  requireAncestor(evidenceCommit, "HEAD", `${label} evidence retention`);
+}
+
+export function validateBoundPath(path, evidenceCommit, ticket, field) {
+  if (typeof path !== "string" || path.length === 0) {
+    fail(`${ticket.id} has an invalid ${field} path`);
+  }
+  const bytes = gitBytes(evidenceCommit, path);
+  validateEvidenceContent(path, bytes, `${ticket.id} ${field}`);
+  requireCurrentCommittedPath(path, `${ticket.id} ${field}`);
+  // The trust-spine manifest records its own evidence commit, so byte-for-byte
+  // self-binding is impossible. It is instead validated from committed HEAD by
+  // the dedicated manifest authority below. Every other evidence path must
+  // retain the exact bytes named by evidence_commit.
+  if (path !== "docs/remediation/trust-spine-manifest.json") {
+    const current = readFileSync(repositoryPath(path));
+    if (!bytes.equals(current)) fail(`${ticket.id} ${field} bytes drifted after evidence_commit: ${path}`);
+  }
+}
+
+function validateDeclaredEvidence(ticket, evidenceCommit) {
   for (const field of ["output_artifacts", "proof_corpus"]) {
     const paths = ticket[field] ?? [];
     if (!Array.isArray(paths) || (field === "output_artifacts" && paths.length === 0)) {
@@ -142,11 +201,7 @@ function validateDeclaredEvidence(ticket) {
       fail(`${ticket.id} has duplicate ${field} entries`);
     }
     for (const path of paths) {
-      if (typeof path !== "string" || path.length === 0) {
-        fail(`${ticket.id} has an invalid ${field} path`);
-      }
-      requireCurrentCommittedPath(path, `${ticket.id} ${field}`);
-      if (path.endsWith(".json")) loadJson(path, `${ticket.id} ${field}`);
+      validateBoundPath(path, evidenceCommit, ticket, field);
     }
   }
 }
@@ -179,8 +234,13 @@ function validateTickets(manifest, from, through) {
     if (typeof completion.phase_report !== "string") {
       fail(`${ticket.id} has no phase report`);
     }
-    requireCurrentCommittedPath(completion.phase_report, `${ticket.id} phase report`);
-    validateDeclaredEvidence(ticket);
+    const evidenceCommit = resolveCommit(
+      completion.evidence_commit,
+      `${ticket.id} evidence_commit`,
+    );
+    validateEvidenceCommitOrder(commit, evidenceCommit, ticket.id);
+    validateBoundPath(completion.phase_report, evidenceCommit, ticket, "phase report");
+    validateDeclaredEvidence(ticket, evidenceCommit);
     completions.set(ticket.id, commit);
   }
 
@@ -262,6 +322,51 @@ function validatePreservationEvidence() {
   } catch (error) {
     fail(`closure preservation evidence failed: ${String(error.stderr ?? error.message).trim()}`);
   }
+}
+
+function runEvidenceAuthority(script, args, label) {
+  try {
+    execFileSync(process.execPath, [resolve(repositoryRoot, script), ...args], {
+      cwd: repositoryRoot,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    fail(`${label} failed: ${String(error.stderr ?? error.message).trim()}`);
+  }
+}
+
+function validateEvidenceAuthorities() {
+  runEvidenceAuthority(
+    "orchestrator/scripts/validate-trust-spine-manifest.mjs",
+    [],
+    "trust-spine manifest authority",
+  );
+  runEvidenceAuthority(
+    "orchestrator/scripts/validate-release-manifest.mjs",
+    ["release-manifest.json"],
+    "release manifest authority",
+  );
+  runEvidenceAuthority(
+    "orchestrator/scripts/validate-packed-install-receipt.mjs",
+    ["artifacts/reliability/packed-install-summary.json"],
+    "packed receipt authority",
+  );
+  runEvidenceAuthority(
+    "orchestrator/scripts/validate-protected-preflight.mjs",
+    [],
+    "protected preflight authority",
+  );
+  runEvidenceAuthority(
+    "orchestrator/scripts/validate-vertical-slice-receipt.mjs",
+    [],
+    "vertical receipt authority",
+  );
+  runEvidenceAuthority(
+    "orchestrator/scripts/generate-release-proof-index.mjs",
+    ["--check"],
+    "release proof index authority",
+  );
 }
 
 function validateCorpora(vertical) {
@@ -361,6 +466,7 @@ function main() {
     options.through,
   );
   validateSessionMilestones(completions, options.citadel);
+  validateEvidenceAuthorities();
   validateQualitySummary();
   validatePreservationEvidence();
   const index = loadJson("artifacts/reliability/release-proof-index.json", "proof index");
@@ -402,9 +508,11 @@ function main() {
   );
 }
 
-try {
-  main();
-} catch (error) {
-  process.stderr.write(`mission completion rejected: ${error.message}\n`);
-  process.exitCode = 1;
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    main();
+  } catch (error) {
+    process.stderr.write(`mission completion rejected: ${error.message}\n`);
+    process.exitCode = 1;
+  }
 }
