@@ -10,7 +10,11 @@ import { execFileSync } from "child_process";
 import { existsSync, readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { requireCompleteVitestResult } from "../../scripts/quality-gates-summary.mjs";
+import {
+  evaluateSummary,
+  requireCompleteVitestResult,
+} from "../../scripts/quality-gates-summary.mjs";
+import { REQUIRED_QUALITY_GATES } from "../../scripts/quality-gate-contract.mjs";
 
 const ORCH_DIR = join(import.meta.dirname, "../..");
 const REPO_ROOT = join(ORCH_DIR, "..");
@@ -22,6 +26,31 @@ const TESTED_COMMIT = execFileSync("git", ["rev-parse", "HEAD"], {
   cwd: REPO_ROOT,
   encoding: "utf8",
 }).trim();
+
+function completeGates() {
+  return REQUIRED_QUALITY_GATES.map((name) => name === "concurrency_corpus_50"
+    ? {
+        name,
+        status: "pass",
+        detail: "57 tests passed, 0 skipped",
+        required_iterations: 50,
+        total_tests: 57,
+        passed_tests: 57,
+        failed_tests: 0,
+        skipped_tests: 0,
+      }
+    : { name, status: "pass", detail: "exit 0" });
+}
+
+function completeSummary() {
+  return {
+    tested_commit: TESTED_COMMIT,
+    thresholds_passed: true,
+    skipped_required: [],
+    infrastructure_errors: [],
+    gates: completeGates(),
+  };
+}
 
 function runScript(
   cmd: string,
@@ -83,6 +112,13 @@ describe("VAL-REL-002 — real lint/typecheck/coverage/mutation/CI gates", () =>
       }, 50);
       expect(complete.status).toBe("pass");
       expect(complete.detail).toContain("0 skipped");
+      expect(complete).toMatchObject({
+        required_iterations: 50,
+        total_tests: 57,
+        passed_tests: 57,
+        failed_tests: 0,
+        skipped_tests: 0,
+      });
 
       const skipped = requireCompleteVitestResult({
         status: "pass",
@@ -185,18 +221,46 @@ describe("VAL-REL-002 — real lint/typecheck/coverage/mutation/CI gates", () =>
       }
     });
 
-    it("accepts a clean summary with all thresholds passed", () => {
+    it("rejects removal, failure, duplication, or forgery of every required gate", () => {
+      const baseline = completeSummary();
+      expect(evaluateSummary(baseline)).toEqual({ passed: true, errors: [] });
+
+      for (const name of REQUIRED_QUALITY_GATES) {
+        const removed = { ...baseline, gates: baseline.gates.filter((gate) => gate.name !== name) };
+        expect(evaluateSummary(removed).passed, `removed ${name}`).toBe(false);
+
+        const failed = structuredClone(baseline);
+        const failedGate = failed.gates.find((gate) => gate.name === name);
+        if (failedGate) failedGate.status = "fail";
+        expect(evaluateSummary(failed).passed, `failed ${name}`).toBe(false);
+
+        const duplicated = structuredClone(baseline);
+        const duplicate = duplicated.gates.find((gate) => gate.name === name);
+        if (duplicate) duplicated.gates.push(duplicate);
+        expect(evaluateSummary(duplicated).passed, `duplicated ${name}`).toBe(false);
+      }
+
+      const unknown = structuredClone(baseline);
+      unknown.gates[0] = { name: "forged_gate", status: "pass", detail: "exit 0" };
+      expect(evaluateSummary(unknown).passed).toBe(false);
+
+      for (const field of [
+        "required_iterations",
+        "total_tests",
+        "passed_tests",
+        "failed_tests",
+        "skipped_tests",
+      ] as const) {
+        const malformed = structuredClone(baseline);
+        const concurrency = malformed.gates.find((gate) => gate.name === "concurrency_corpus_50");
+        if (concurrency) delete concurrency[field];
+        expect(evaluateSummary(malformed).passed, `missing concurrency ${field}`).toBe(false);
+      }
+    });
+
+    it("accepts a clean summary with the exact required gate contract", () => {
       const tmpDir = mkdtempSync(join(tmpdir(), "qg-clean-"));
-      const mockSummary = {
-        tested_commit: TESTED_COMMIT,
-        thresholds_passed: true,
-        skipped_required: [],
-        infrastructure_errors: [],
-        gates: [
-          { name: "typecheck", status: "pass" },
-          { name: "pytest", status: "pass" },
-        ],
-      };
+      const mockSummary = completeSummary();
       const summaryPath = join(tmpDir, "summary.json");
       writeFileSync(summaryPath, JSON.stringify(mockSummary, null, 2));
       try {

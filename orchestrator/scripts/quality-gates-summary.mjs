@@ -18,6 +18,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { validateRequiredQualityGates } from "./quality-gate-contract.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -49,6 +50,9 @@ const PATH_ENV = () => ({
  */
 export function evaluateSummary(summary) {
   const errors = [];
+  if (!summary || typeof summary !== "object" || Array.isArray(summary)) {
+    return { passed: false, errors: ["summary is malformed"] };
+  }
   if (!GIT_OID.test(summary.tested_commit ?? "")) {
     errors.push("tested_commit is not a full Git commit OID");
   }
@@ -61,6 +65,7 @@ export function evaluateSummary(summary) {
   if (summary.infrastructure_errors && summary.infrastructure_errors.length > 0) {
     errors.push(`infrastructure errors: ${summary.infrastructure_errors.map((e) => e.gate || e.name || "unknown").join(", ")}`);
   }
+  errors.push(...validateRequiredQualityGates(summary.gates));
   return {
     passed: errors.length === 0,
     errors,
@@ -217,7 +222,15 @@ export function requireCompleteVitestResult(gate, requiredIterations) {
         + total + ", passed=" + passed + ", failed=" + failed + ", skipped=" + skipped,
     };
   }
-  return { ...gate, detail: total + " tests passed, 0 skipped" };
+  return {
+    ...gate,
+    detail: total + " tests passed, 0 skipped",
+    required_iterations: requiredIterations,
+    total_tests: total,
+    passed_tests: passed,
+    failed_tests: failed,
+    skipped_tests: skipped,
+  };
 }
 
 /**
@@ -405,7 +418,9 @@ export async function runAllGates(outputPath) {
     thresholds_passed: thresholdsPassed,
     skipped_required: skippedRequired,
     infrastructure_errors: infrastructureErrors,
-    gates: gates.map((g) => ({ name: g.name, status: g.status, detail: g.detail })),
+    gates: gates.map((gate) => Object.fromEntries(
+      Object.entries(gate).filter(([key]) => key !== "stdout" && key !== "exitCode"),
+    )),
   };
 
   // Write summary to output path

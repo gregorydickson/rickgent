@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
+import { validateRequiredQualityGates } from "./quality-gate-contract.mjs";
 import { fileURLToPath } from "node:url";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
@@ -245,22 +246,8 @@ function validateQualitySummary() {
   ) {
     fail("quality summary contains infrastructure errors");
   }
-  const gates = new Map((quality.gates ?? []).map((gate) => [gate.name, gate.status]));
-  for (const name of [
-    "ts_lint",
-    "typecheck",
-    "build",
-    "ts_test_coverage",
-    "mutation_manifest",
-    "ruff_lint",
-    "mypy_typecheck",
-    "py_test_coverage",
-    "coverage_manifest_verify",
-    "release_manifest",
-    "package_inventory",
-  ]) {
-    if (gates.get(name) !== "pass") fail(`required quality gate did not pass: ${name}`);
-  }
+  const gateErrors = validateRequiredQualityGates(quality.gates);
+  if (gateErrors.length > 0) fail(`quality gate contract failed: ${gateErrors.join("; ")}`);
   return quality;
 }
 
