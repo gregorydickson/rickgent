@@ -10,6 +10,7 @@ import { execFileSync } from "child_process";
 import { existsSync, readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { requireCompleteVitestResult } from "../../scripts/quality-gates-summary.mjs";
 
 const ORCH_DIR = join(import.meta.dirname, "../..");
 const REPO_ROOT = join(ORCH_DIR, "..");
@@ -70,6 +71,32 @@ describe("VAL-REL-002 — real lint/typecheck/coverage/mutation/CI gates", () =>
   });
 
   describe("quality-gates summary — infrastructure failures not reported as success", () => {
+    it("requires the full concurrency corpus with zero skipped tests", () => {
+      const complete = requireCompleteVitestResult({
+        status: "pass",
+        stdout: JSON.stringify({
+          numTotalTests: 57,
+          numPassedTests: 57,
+          numFailedTests: 0,
+          numPendingTests: 0,
+        }),
+      }, 50);
+      expect(complete.status).toBe("pass");
+      expect(complete.detail).toContain("0 skipped");
+
+      const skipped = requireCompleteVitestResult({
+        status: "pass",
+        stdout: JSON.stringify({
+          numTotalTests: 57,
+          numPassedTests: 3,
+          numFailedTests: 0,
+          numPendingTests: 54,
+        }),
+      }, 50);
+      expect(skipped.status).toBe("fail");
+      expect(skipped.detail).toContain("skipped=54");
+    });
+
     it("rejects a summary without an immutable tested commit binding", () => {
       const tmpDir = mkdtempSync(join(tmpdir(), "qg-unbound-"));
       const summaryPath = join(tmpDir, "summary.json");

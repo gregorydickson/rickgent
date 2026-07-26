@@ -45,6 +45,7 @@ const T39_ALLOWED = new Set([
   "orchestrator/test/reliability/quality-gates.test.ts",
   "artifacts/reliability/vertical-slice-receipt.json",
   "artifacts/reliability/vertical-slice-receipt.sha256",
+  "artifacts/reliability/concurrency-summary.json",
   "docs/remediation/phase-9-t38-installed-vertical-slice-execution-report.md",
   "artifacts/reliability/quality-gates-summary.json",
   "artifacts/reliability/closure-preservation-evidence.json",

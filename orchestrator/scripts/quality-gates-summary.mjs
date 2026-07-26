@@ -29,6 +29,7 @@ const GIT_OID = /^[0-9a-f]{40}$/;
 const POST_QUALITY_EVIDENCE_PATHS = new Set([
   "artifacts/reliability/citadel-release-report.json",
   "artifacts/reliability/closure-preservation-evidence.json",
+  "artifacts/reliability/concurrency-summary.json",
   "artifacts/reliability/mission-3-completion-summary.json",
   "artifacts/reliability/quality-gates-summary.json",
   "docs/remediation/phase-9-t39-release-closure-execution-report.md",
@@ -173,6 +174,7 @@ function runGate(name, command, args, options = {}) {
       }
       const output = `${Buffer.concat(stdout).toString("utf8")}\n${Buffer.concat(stderr).toString("utf8")}`.trim();
       const outputLines = output.split("\n").map((line) => line.trim()).filter(Boolean);
+      const stdoutText = Buffer.concat(stdout).toString("utf8").trim();
       const failureLines = outputLines.filter((line) => /^(FAIL|Error:|AssertionError:|Test Files|Tests\s)/.test(line));
       const detail = (failureLines.length > 0 ? failureLines : outputLines).slice(-8).join(" | ");
       resolveGate({
@@ -180,9 +182,42 @@ function runGate(name, command, args, options = {}) {
         status: status === 0 ? "pass" : "fail",
         detail: status === 0 ? "exit 0" : (detail || `exit ${status}`),
         exitCode: status,
+        stdout: stdoutText,
       });
     });
   });
+}
+
+export function requireCompleteVitestResult(gate, requiredIterations) {
+  if (gate?.status !== "pass") return gate;
+  if (!Number.isInteger(requiredIterations) || requiredIterations < 50) {
+    return { ...gate, status: "fail", detail: "concurrency manifest requires fewer than 50 iterations" };
+  }
+  let report;
+  try {
+    report = JSON.parse(gate.stdout);
+  } catch {
+    return { ...gate, status: "fail", detail: "required concurrency gate returned invalid Vitest JSON" };
+  }
+  const total = report?.numTotalTests;
+  const passed = report?.numPassedTests;
+  const failed = report?.numFailedTests;
+  const skipped = report?.numPendingTests;
+  if (
+    !Number.isInteger(total)
+    || total < requiredIterations
+    || passed !== total
+    || failed !== 0
+    || skipped !== 0
+  ) {
+    return {
+      ...gate,
+      status: "fail",
+      detail: "required concurrency corpus incomplete: total="
+        + total + ", passed=" + passed + ", failed=" + failed + ", skipped=" + skipped,
+    };
+  }
+  return { ...gate, detail: total + " tests passed, 0 skipped" };
 }
 
 /**
@@ -249,7 +284,39 @@ export async function runAllGates(outputPath) {
   gates.push(tsTest);
   if (tsTest.status === "infrastructure_error") { infrastructureErrors.push({ gate: "ts_test_coverage", error: tsTest.detail }); }
 
-  // 5. Complete mutation corpus, isolated from ordinary file workers but
+  // 5. The manifest-required deterministic concurrency corpus must run in
+  // isolation at its full 50 iterations. Its JSON report is parsed so an
+  // exit-0 run that still contains skipped required tests fails closed.
+  const concurrencyManifest = JSON.parse(readFileSync(
+    join(ORCH_DIR, "test", "fixtures", "concurrency-corpus", "manifest.json"),
+    "utf8",
+  ));
+  const concurrencyCorpus = requireCompleteVitestResult(await runGate(
+    "concurrency_corpus_50",
+    "npx",
+    [
+      "vitest", "run",
+      "test/reliability/concurrency-corpus.test.ts",
+      "--pool=threads",
+      "--poolOptions.threads.maxThreads=4",
+      "--no-file-parallelism",
+      "--reporter=json",
+    ],
+    {
+      cwd: ORCH_DIR,
+      timeout: 1_200_000,
+      env: {
+        ...PATH_ENV(),
+        RICKGENT_STRESS_ITERATIONS: String(concurrencyManifest.required_iterations),
+      },
+    },
+  ), concurrencyManifest.required_iterations);
+  gates.push(concurrencyCorpus);
+  if (concurrencyCorpus.status === "infrastructure_error") {
+    infrastructureErrors.push({ gate: "concurrency_corpus_50", error: concurrencyCorpus.detail });
+  }
+
+  // 6. Complete mutation corpus, isolated from ordinary file workers but
   // still required. This is not a skip: the exact excluded file runs here.
   const mutationManifest = await runGate(
     "mutation_manifest",
