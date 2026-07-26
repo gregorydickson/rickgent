@@ -15,13 +15,13 @@ passed with zero skipped tests.
 ## Immutable release inputs
 
 - npm archive SHA-256:
-  `e891c35e9ebefc3fb2d9a0e668d7c48c126c7e44445269ea555f172e93512109`
+  `db895894456ef96571da1a8a19d3f1e3d373b534d3948884e5d9620d5e92f051`
 - Python wheel SHA-256:
-  `b45febac86418cdb5ecde5b2188b100ce7f77d0e249f7cd791db8fd30e17e981`
+  `38ddf68df9a8993faec67ba8d000aa7d7181d3d856201c51db62d0ede59751f0`
 - packed receipt file SHA-256:
-  `66a73f7ae98c158c3af08b73fa832591b3db9fd7ab2f710b9ce19538e4f57994`
+  `c90ef1094d3b5d75c16a2034a9c00e96c5169be027a63bf0a8b0dacc2fdd9044`
 - vertical receipt file SHA-256:
-  `5ef541dcbd3cf466daad5b1f0eb6c2315a360fe8ea0ab0ece470b3b472f4a9bf`
+  `14abd8c8d6a17013293a613c679f3dbd4a22e719d4d509fdf2bd6ceb15ab8190`
 
 The milestone completion convention binds t37 and t38 to their documented
 completion-marker commits and binds t39 to the descendant commit that retains

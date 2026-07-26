@@ -10,16 +10,16 @@ const SHA256 = /^[0-9a-f]{64}$/;
 const EXPECTED = Object.freeze({
   packed_file_sha256: "c90ef1094d3b5d75c16a2034a9c00e96c5169be027a63bf0a8b0dacc2fdd9044",
   packed_digest: "f818b3341372584470239171bf66ac90ff4f0bda2e6b7c0524d348281d82720e",
-  vertical_file_sha256: "5ef541dcbd3cf466daad5b1f0eb6c2315a360fe8ea0ab0ece470b3b472f4a9bf",
-  vertical_digest: "93a40ab2193bbe78ad2c6f832f835ed55f9e91c5a042abc50f5e8b28c014d903",
+  vertical_file_sha256: "14abd8c8d6a17013293a613c679f3dbd4a22e719d4d509fdf2bd6ceb15ab8190",
+  vertical_digest: "8cdf99f44c1405b8d2555855650d4c8b83f12169b779fd22ea8305207da6c876",
   packed_schema_sha256: "772ce8915d06869a181c49c2c636038f9e3adeda816d17f7bd1e5ee455f1aecb",
   vertical_schema_sha256: "07e4a1f5fdf0d7f3e8c2c005681ea6c7d8bf78261dd42993869ff0cba573f1b8",
   preflight_sha256: "be2cb7559cf837572e6139fc6842f2c9f1ff07d115e69340cf6e31b14ea7a208",
   diagnostics_sha256: "2e9daa0a9286511e401ac169102267a78c5ec23ae116a891f7648cb36c58a12c",
   release_sha256: "d0a97bd72502ea7af9554efa99be571424ad8be631ecb74dd2b22371c33a44e0",
   t37_completion_commit: "47e06e263d6f1b78667b48725a873d016c04a7b7",
-  t38_completion_marker: "640d78eebdfbf76a52cb2121ff205bdb4e4300be",
-  retained_receipt_commit: "640d78eebdfbf76a52cb2121ff205bdb4e4300be",
+  t38_completion_marker: "04c21c01285ae7bf64ba1b0f3751c6b9447f5172",
+  retained_receipt_commit: "04c21c01285ae7bf64ba1b0f3751c6b9447f5172",
 });
 
 const PATHS = Object.freeze({
