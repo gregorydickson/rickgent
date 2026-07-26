@@ -3,6 +3,7 @@ import {
   completedFailureCleanupCase,
   requireFailureCleanupPullObservation,
 } from "../../scripts/run-protected-release.mjs";
+import { ownedCleanupResources } from "../../scripts/verify-remote-cleanup.mjs";
 
 const expectedPull = {
   baseBranch: "main",
@@ -36,6 +37,35 @@ function observation(run: number) {
 }
 
 describe("protected release aggregate cleanup evidence", () => {
+  it("includes success and failure-cleanup resources in the remote-cleanup authority", () => {
+    const receipt = {
+      repository: {
+        base_branch: "main",
+        owned_branch_prefix: "rickgent/protected/proof",
+      },
+      runs: [1, 2].map((run) => ({
+        run_id: `protected-${run}`,
+        delivery: {
+          branch: `rickgent/protected/proof/protected-${run}`,
+          delivery_oid: "a".repeat(40),
+          pull_request_head_oid: "a".repeat(40),
+          pull_request_id: String(10 + run * 2),
+        },
+        cleanup: {
+          failure_path: {
+            ...observation(run),
+            branch: `rickgent/protected/proof/protected-${run}-failure-cleanup`,
+            pull_request_id: String(11 + run * 2),
+          },
+        },
+      })),
+    };
+
+    expect(ownedCleanupResources(receipt)).toHaveLength(4);
+    receipt.runs[0]!.cleanup.failure_path.owned_branch_absent_on_requery = false;
+    expect(() => ownedCleanupResources(receipt)).toThrow("failure-cleanup receipt is incomplete");
+  });
+
   it("binds independent closed-PR evidence to the created reviewed delivery", () => {
     expect(requireFailureCleanupPullObservation([closedPull], expectedPull)).toBe(true);
 
