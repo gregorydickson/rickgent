@@ -1693,6 +1693,11 @@ function createDelivery(preflight, runId, candidate, { injectFailureAfterPullReq
           partial.deliveryOid,
           gitHubCredentialArgs(),
         );
+        requireBranchAbsentAfterCleanup(
+          () => ghApiMaybe(`${repoPath}/git/ref/heads/${branch}`),
+          partial.deliveryOid,
+          true,
+        );
       }
     } catch (cleanupError) {
       const original = error instanceof Error ? error.message : String(error);
