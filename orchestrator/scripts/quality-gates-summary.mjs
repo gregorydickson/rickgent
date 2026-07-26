@@ -13,7 +13,7 @@
  *   node quality-gates-summary.mjs run [--output <path>]   — run all gates
  *   node quality-gates-summary.mjs check <summary.json>     — verify a summary
  */
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
@@ -25,6 +25,15 @@ const ORCH_DIR = resolve(__dirname, "..");
 const REPO_ROOT = resolve(ORCH_DIR, "..");
 const POLICIES_DIR = join(REPO_ROOT, "rickgent-policies");
 const ARTIFACTS_DIR = join(REPO_ROOT, "artifacts", "reliability");
+const GIT_OID = /^[0-9a-f]{40}$/;
+const POST_QUALITY_EVIDENCE_PATHS = new Set([
+  "artifacts/reliability/citadel-release-report.json",
+  "artifacts/reliability/closure-preservation-evidence.json",
+  "artifacts/reliability/mission-3-completion-summary.json",
+  "artifacts/reliability/quality-gates-summary.json",
+  "docs/remediation/phase-9-t39-release-closure-execution-report.md",
+  "docs/remediation/trust-spine-manifest.json",
+]);
 
 // CI-bound scripts must not hardcode machine-specific PATH prefixes (AGENTS.md
 // convention 20). Use process.env.PATH as-is so the script works in both local
@@ -39,6 +48,9 @@ const PATH_ENV = () => ({
  */
 export function evaluateSummary(summary) {
   const errors = [];
+  if (!GIT_OID.test(summary.tested_commit ?? "")) {
+    errors.push("tested_commit is not a full Git commit OID");
+  }
   if (!summary.thresholds_passed) {
     errors.push("thresholds_passed is false");
   }
@@ -52,6 +64,33 @@ export function evaluateSummary(summary) {
     passed: errors.length === 0,
     errors,
   };
+}
+
+function git(args) {
+  return execFileSync("git", args, {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    maxBuffer: 8 * 1024 * 1024,
+  }).trim();
+}
+
+function verifyTestedCommit(testedCommit) {
+  try {
+    git(["cat-file", "-e", `${testedCommit}^{commit}`]);
+    execFileSync("git", ["merge-base", "--is-ancestor", testedCommit, "HEAD"], {
+      cwd: REPO_ROOT,
+      stdio: "ignore",
+    });
+  } catch {
+    return ["tested_commit is not an ancestor of the reviewed HEAD"];
+  }
+  const changedPaths = git(["diff", "--name-only", `${testedCommit}..HEAD`])
+    .split("\n")
+    .filter(Boolean);
+  const disallowed = changedPaths.filter((path) => !POST_QUALITY_EVIDENCE_PATHS.has(path));
+  return disallowed.length === 0
+    ? []
+    : [`code or test paths changed after tested_commit: ${disallowed.join(", ")}`];
 }
 
 /**
@@ -150,6 +189,10 @@ function runGate(name, command, args, options = {}) {
  * Run all quality gates and produce a summary.
  */
 export async function runAllGates(outputPath) {
+  const testedCommit = git(["rev-parse", "HEAD"]);
+  if (!GIT_OID.test(testedCommit)) {
+    throw new Error("quality gates could not bind the tested Git commit");
+  }
   const gates = [];
   const infrastructureErrors = [];
   const skippedRequired = [];
@@ -291,6 +334,7 @@ export async function runAllGates(outputPath) {
   const thresholdsPassed = failedGates.length === 0 && infrastructureErrors.length === 0 && skippedRequired.length === 0;
 
   const summary = {
+    tested_commit: testedCommit,
     thresholds_passed: thresholdsPassed,
     skipped_required: skippedRequired,
     infrastructure_errors: infrastructureErrors,
@@ -326,6 +370,8 @@ if (process.argv[1] && resolve(process.argv[1]) === __filename) {
     }
     const summary = JSON.parse(readFileSync(summaryPath, "utf-8"));
     const evalResult = evaluateSummary(summary);
+    evalResult.errors.push(...verifyTestedCommit(summary.tested_commit));
+    evalResult.passed = evalResult.errors.length === 0;
     if (!evalResult.passed) {
       process.stderr.write(`quality gates summary rejected: ${evalResult.errors.join("; ")}\n`);
       process.exit(1);

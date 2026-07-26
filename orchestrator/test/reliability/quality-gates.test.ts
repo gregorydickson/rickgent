@@ -17,6 +17,10 @@ const COVERAGE_MANIFEST = join(ORCH_DIR, "scripts/coverage-manifest.cjs");
 const QUALITY_GATES_SCRIPT = join(ORCH_DIR, "scripts/quality-gates-summary.mjs");
 const CI_WORKFLOW = join(REPO_ROOT, ".github", "workflows", "ci.yml");
 const MUTATION_CORPUS_MANIFEST = join(ORCH_DIR, "test", "fixtures", "mutation-corpus", "manifest.json");
+const TESTED_COMMIT = execFileSync("git", ["rev-parse", "HEAD"], {
+  cwd: REPO_ROOT,
+  encoding: "utf8",
+}).trim();
 
 function runScript(
   cmd: string,
@@ -66,9 +70,28 @@ describe("VAL-REL-002 — real lint/typecheck/coverage/mutation/CI gates", () =>
   });
 
   describe("quality-gates summary — infrastructure failures not reported as success", () => {
+    it("rejects a summary without an immutable tested commit binding", () => {
+      const tmpDir = mkdtempSync(join(tmpdir(), "qg-unbound-"));
+      const summaryPath = join(tmpDir, "summary.json");
+      writeFileSync(summaryPath, JSON.stringify({
+        thresholds_passed: true,
+        skipped_required: [],
+        infrastructure_errors: [],
+        gates: [],
+      }, null, 2));
+      try {
+        const result = runScript("node", [QUALITY_GATES_SCRIPT, "check", summaryPath]);
+        expect(result.exitCode).not.toBe(0);
+        expect(result.stderr).toContain("tested_commit");
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
     it("rejects a summary with infrastructure_errors (negative proof)", () => {
       const tmpDir = mkdtempSync(join(tmpdir(), "qg-neg-"));
       const mockSummary = {
+        tested_commit: TESTED_COMMIT,
         thresholds_passed: false,
         skipped_required: [],
         infrastructure_errors: [
@@ -94,6 +117,7 @@ describe("VAL-REL-002 — real lint/typecheck/coverage/mutation/CI gates", () =>
     it("rejects a summary with skipped_required (negative proof)", () => {
       const tmpDir = mkdtempSync(join(tmpdir(), "qg-skip-"));
       const mockSummary = {
+        tested_commit: TESTED_COMMIT,
         thresholds_passed: true,
         skipped_required: ["lint", "coverage"],
         infrastructure_errors: [],
@@ -116,6 +140,7 @@ describe("VAL-REL-002 — real lint/typecheck/coverage/mutation/CI gates", () =>
     it("rejects a summary where thresholds_passed is false", () => {
       const tmpDir = mkdtempSync(join(tmpdir(), "qg-fail-"));
       const mockSummary = {
+        tested_commit: TESTED_COMMIT,
         thresholds_passed: false,
         skipped_required: [],
         infrastructure_errors: [],
@@ -136,6 +161,7 @@ describe("VAL-REL-002 — real lint/typecheck/coverage/mutation/CI gates", () =>
     it("accepts a clean summary with all thresholds passed", () => {
       const tmpDir = mkdtempSync(join(tmpdir(), "qg-clean-"));
       const mockSummary = {
+        tested_commit: TESTED_COMMIT,
         thresholds_passed: true,
         skipped_required: [],
         infrastructure_errors: [],
