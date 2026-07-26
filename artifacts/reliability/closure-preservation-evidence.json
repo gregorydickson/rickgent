@@ -1,16 +1,11 @@
 {
   "schema_version": 2,
   "profile": "closure-preservation-v2",
-  "excluded_active_sessions": [
-    {
-      "session": "2026-07-26-8964645c",
-      "working_directory": "/Users/gregorydickson/loanlight/loanlight-api"
-    }
-  ],
+  "excluded_active_sessions": [],
   "preserved": true,
   "before": {
     "caller": {
-      "head": "3287a4f19af6d6a6a1956ddc043c683d31a21ce9",
+      "head": "af8471d50ef935bd4bbc4f89314e9bf738920dab",
       "index_delta_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "worktree_delta_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "untracked": {
@@ -28,14 +23,14 @@
       }
     },
     "unrelated_runtime": {
-      "count": 1846,
-      "sha256": "26bfbef19a94ccf754b91bfb060894af50e3ba6dd6ca26f1f6fa4528a1719b80"
+      "count": 2096,
+      "sha256": "163dd4d8eb1df85634b65ee2558f6366b8cd9d3a4642435a3dfd0daa8b664f9c"
     },
-    "quality_summary_sha256": "4a7d16f93a3db3bd986987c7547a95167e143b8835c226720521d77a5c60e0bf"
+    "quality_summary_sha256": "29cab00a9c8a9fcb39d6a3681ca7e02debf5d7c08aef0d90717e55680c9fc518"
   },
   "after": {
     "caller": {
-      "head": "3287a4f19af6d6a6a1956ddc043c683d31a21ce9",
+      "head": "af8471d50ef935bd4bbc4f89314e9bf738920dab",
       "index_delta_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "worktree_delta_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "untracked": {
@@ -53,10 +48,10 @@
       }
     },
     "unrelated_runtime": {
-      "count": 1846,
-      "sha256": "26bfbef19a94ccf754b91bfb060894af50e3ba6dd6ca26f1f6fa4528a1719b80"
+      "count": 2096,
+      "sha256": "163dd4d8eb1df85634b65ee2558f6366b8cd9d3a4642435a3dfd0daa8b664f9c"
     },
-    "quality_summary_sha256": "4a7d16f93a3db3bd986987c7547a95167e143b8835c226720521d77a5c60e0bf"
+    "quality_summary_sha256": "29cab00a9c8a9fcb39d6a3681ca7e02debf5d7c08aef0d90717e55680c9fc518"
   },
-  "digest": "5e625b2a3d6d55564ed47badf28e3250fa1ad9d1b5b099f645722f1e0832af2d"
+  "digest": "7246b480533f25da42a4dc76574d93145d9392af22d455c49c3b866e8ae469a6"
 }

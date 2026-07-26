@@ -7,7 +7,10 @@ t37 archives and committed t38 retained receipts remain byte-identical, all
 t00–t39 manifest rows are Done, and the t37/t38/t39 milestone markers are
 ordered single-parent ancestors. The canonical TypeScript and Python quality
 gates pass their required coverage thresholds without skipped required gates
-or infrastructure errors.
+or infrastructure errors. The canonical quality authority also runs the
+manifest-required concurrency corpus in isolation with
+`RICKGENT_STRESS_ITERATIONS=50` and retains a parsed result of 57 tests
+passed with zero skipped tests.
 
 ## Immutable release inputs
 
@@ -33,6 +36,9 @@ reseals t37 and t38, updates t39 to an ordered descendant, retains the
 fail-closed Mission 3 validator, and records deterministic before/after state
 preservation. The Python coverage, claim-corpus, and post-proof allowlist
 checks remain part of the canonical gate set.
+The recovered Docker-backed concurrency authority was rerun after the outage
+and completed all 50 deterministic iterations plus both bounded-output proofs;
+the quality wrapper rejects reduced, skipped, failed, or timed-out corpus runs.
 
 ## Citadel
 
