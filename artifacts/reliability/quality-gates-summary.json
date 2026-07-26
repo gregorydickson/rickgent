@@ -1,5 +1,5 @@
 {
-  "tested_commit": "af8471d50ef935bd4bbc4f89314e9bf738920dab",
+  "tested_commit": "462eddca1f331ac673f97ff44eee1e1153ae8872",
   "thresholds_passed": true,
   "skipped_required": [],
   "infrastructure_errors": [],
@@ -27,7 +27,12 @@
     {
       "name": "concurrency_corpus_50",
       "status": "pass",
-      "detail": "57 tests passed, 0 skipped"
+      "detail": "57 tests passed, 0 skipped",
+      "required_iterations": 50,
+      "total_tests": 57,
+      "passed_tests": 57,
+      "failed_tests": 0,
+      "skipped_tests": 0
     },
     {
       "name": "mutation_manifest",
