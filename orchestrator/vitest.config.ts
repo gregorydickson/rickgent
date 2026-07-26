@@ -6,6 +6,11 @@ export default defineConfig({
     exclude: ["test/reliability/protected-release.live.test.ts"],
     environment: "node",
     globalSetup: ["./test/global-setup.ts"],
+    // Use an isolated process for the single full-suite worker. The thread
+    // worker can finish every assertion and then starve its final RPC while
+    // the coordinator maps the large V8 coverage payload; a fork keeps that
+    // acknowledgement channel independently scheduled.
+    pool: "forks",
     // The corpus contains long-running real Git and Docker suites. Multiple
     // file workers have repeatedly completed every assertion and then lost
     // the final onTaskUpdate RPC. One worker keeps the coordinator bounded
