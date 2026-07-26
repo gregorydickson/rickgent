@@ -251,6 +251,7 @@ function validateQualitySummary() {
     "typecheck",
     "build",
     "ts_test_coverage",
+    "mutation_manifest",
     "ruff_lint",
     "mypy_typecheck",
     "py_test_coverage",

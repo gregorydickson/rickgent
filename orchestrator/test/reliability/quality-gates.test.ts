@@ -228,6 +228,10 @@ describe("VAL-REL-002 — real lint/typecheck/coverage/mutation/CI gates", () =>
       }
       // Must record that disposable worktrees are required
       expect(parsed.disposable_worktrees).toBe(true);
+      const quality = readFileSync(QUALITY_GATES_SCRIPT, "utf8");
+      expect(quality).toContain('"mutation_manifest"');
+      expect(quality).toContain('"test/lifecycle/manifest.test.ts"');
+      expect(quality).toContain('"--exclude"');
     });
   });
 

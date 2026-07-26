@@ -47,7 +47,10 @@ jobs:
         run: pnpm build
       - name: Test with coverage
         working-directory: orchestrator
-        run: pnpm vitest run --pool=threads --poolOptions.threads.maxThreads=4 --no-file-parallelism --coverage
+        run: pnpm vitest run --maxWorkers=4 --exclude test/lifecycle/manifest.test.ts --coverage
+      - name: Mutation corpus
+        working-directory: orchestrator
+        run: pnpm vitest run test/lifecycle/manifest.test.ts --maxWorkers=1
 
   # ── Python quality gates ──────────────────────────────────────────────────
   py-quality:

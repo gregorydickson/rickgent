@@ -187,9 +187,9 @@ export async function runAllGates(outputPath) {
   gates.push(build);
   if (build.status === "infrastructure_error") { infrastructureErrors.push({ gate: "build", error: build.detail }); }
 
-  // 4. Full TypeScript regression with coverage. The global thresholds cover
-  // the production tree, so a tiny meta-test subset cannot honestly satisfy
-  // them.
+  // 4. Full TypeScript regression with coverage. The mutation driver is run
+  // immediately afterward in isolation because it launches many nested test
+  // processes that otherwise starve unrelated file workers.
   const tsTest = await runGate(
     "ts_test_coverage",
     "npx",
@@ -197,14 +197,27 @@ export async function runAllGates(outputPath) {
       "vitest",
       "run",
       "--maxWorkers=4",
+      "--exclude",
+      "test/lifecycle/manifest.test.ts",
       "--coverage",
     ],
-    { cwd: ORCH_DIR, timeout: 1_800_000 },
+    { cwd: ORCH_DIR, timeout: 1_200_000 },
   );
   gates.push(tsTest);
   if (tsTest.status === "infrastructure_error") { infrastructureErrors.push({ gate: "ts_test_coverage", error: tsTest.detail }); }
 
-  // 5. Python lint (ruff)
+  // 5. Complete mutation corpus, isolated from ordinary file workers but
+  // still required. This is not a skip: the exact excluded file runs here.
+  const mutationManifest = await runGate(
+    "mutation_manifest",
+    "npx",
+    ["vitest", "run", "test/lifecycle/manifest.test.ts", "--maxWorkers=1"],
+    { cwd: ORCH_DIR, timeout: 1_800_000 },
+  );
+  gates.push(mutationManifest);
+  if (mutationManifest.status === "infrastructure_error") { infrastructureErrors.push({ gate: "mutation_manifest", error: mutationManifest.detail }); }
+
+  // 6. Python lint (ruff)
   const ruff = await runGate("ruff_lint", "ruff", ["check", "."], { cwd: POLICIES_DIR, timeout: 30_000 });
   gates.push(ruff);
   if (ruff.status === "infrastructure_error") { infrastructureErrors.push({ gate: "ruff_lint", error: ruff.detail }); }
