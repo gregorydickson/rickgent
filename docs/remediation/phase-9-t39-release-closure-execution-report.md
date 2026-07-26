@@ -50,8 +50,8 @@ worker after repeated two-worker runs passed all assertions but lost Vitest's
 final `onTaskUpdate` coordinator RPC; the serialized canonical rerun passed
 without reducing the corpus or thresholds.
 
-The retained quality receipt at `d645738b2caa11e7a4b1850c9692f9cc97afeba2` binds the corrected implementation
-and tests at `e996bda823d493e5edc96632a949e90f79762274`. All 12 canonical
+The retained quality receipt at `56104157a59e057ab61c7d54af712dec2d17ba27` binds the corrected implementation
+and tests at `97d5b544ee7892f04ae1eecaf622146cb213aa76`. All 12 canonical
 gates passed with zero infrastructure errors and zero skipped required gates;
 the concurrency authority retained 57 passed tests from 50 required stress
 iterations.
