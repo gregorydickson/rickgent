@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "mission": "mission-3",
-  "status": "prepared",
+  "status": "complete",
   "ticket_range": {
     "from": "t00",
     "through": "t39",
@@ -12,13 +12,28 @@
     "t38": "a7a3b5bad21deca8955e20e23f86c14780859ff2",
     "t39": "56104157a59e057ab61c7d54af712dec2d17ba27"
   },
-  "prepared_commit": "8d570a6fc03eda9115cd5da263ff6be945f57041",
+  "prepared_commit": "33396f61163a13626c481a20c62e6e20acbc4f97",
+  "citadel_report_sha256": "b7ba17f098429cfa1d239a5636cac26df7499bae1fcc0065efff0c3df4e7120d",
   "release_proof_profile": "installed_t38_retained_proof_v1",
   "archive_sha256": {
     "npm_tarball": "641ef9a04f1eb659ba3049370415ce1bfdc5e06e941d7bbec3d9601e362e79d1",
     "python_wheel": "ecfb65dad232096eb1778e403f1dee6bab7e0d9d799824642da2698c7af109be"
   },
+  "proof_corpus": [
+    "orchestrator/test/lifecycle_coverage_manifest.json",
+    "orchestrator/test/fixtures/mutation-corpus/manifest.json",
+    "rickgent-policies/test/fixtures/native-policy-corpus/manifest.json",
+    "orchestrator/test/fixtures/crash-matrix/manifest.json",
+    "orchestrator/test/fixtures/concurrency-corpus/manifest.json",
+    "orchestrator/test/fixtures/git-attribution/manifest.json",
+    "orchestrator/test/fixtures/process-supervisor/stubborn-tree.mjs",
+    "orchestrator/test/fixtures/gate-corpus/manifest.json",
+    "orchestrator/test/fixtures/model-identity-corpus/manifest.json",
+    "orchestrator/test/fixtures/delivery-corpus/manifest.json",
+    "orchestrator/test/fixtures/packaging-corpus/manifest.json",
+    "orchestrator/test/fixtures/protected-release/manifest.json",
+    "orchestrator/test/fixtures/claim-mutation/manifest.json"
+  ],
   "quality_thresholds_passed": true,
-  "citadel_decision": "pending",
-  "blocking_findings": []
+  "citadel_decision": "approved"
 }
