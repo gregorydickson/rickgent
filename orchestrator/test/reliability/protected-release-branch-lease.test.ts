@@ -7,6 +7,7 @@ import {
   branchCleanupAction,
   deleteBranchWithLease,
   requireBranchAbsentAfterCleanup,
+  requireBranchPresentAfterPush,
 } from "../../scripts/run-protected-release.mjs";
 
 const roots: string[] = [];
@@ -76,6 +77,26 @@ describe("protected release branch deletion lease", () => {
       true,
       { attempts: 2, delayMs: 0 },
     )).toThrow("owned branch remains after cleanup");
+  });
+
+  it("tolerates bounded hosted read-after-push lag while binding the exact OID", () => {
+    const ownedOid = "a".repeat(40);
+    const observations = [null, null, { object: { sha: ownedOid } }];
+    expect(requireBranchPresentAfterPush(
+      () => observations.shift(),
+      ownedOid,
+      { attempts: 3, delayMs: 0 },
+    )).toEqual({ object: { sha: ownedOid } });
+    expect(() => requireBranchPresentAfterPush(
+      () => ({ object: { sha: "b".repeat(40) } }),
+      ownedOid,
+      { attempts: 2, delayMs: 0 },
+    )).toThrow("pushed branch changed before observation");
+    expect(() => requireBranchPresentAfterPush(
+      () => null,
+      ownedOid,
+      { attempts: 2, delayMs: 0 },
+    )).toThrow("pushed branch was not observable");
   });
 
   it("refuses to delete a branch that advanced after the owned OID was observed", () => {

@@ -1548,6 +1548,36 @@ export function requireBranchAbsentAfterCleanup(
   fail("owned branch remains after cleanup");
 }
 
+export function requireBranchPresentAfterPush(
+  observeBranch,
+  expectedOid,
+  { attempts = 8, delayMs = 250 } = {},
+) {
+  if (
+    typeof observeBranch !== "function"
+    || !OID.test(expectedOid ?? "")
+    || !Number.isInteger(attempts)
+    || attempts < 1
+    || !Number.isInteger(delayMs)
+    || delayMs < 0
+  ) {
+    fail("branch creation observation policy is invalid");
+  }
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const observation = observeBranch();
+    if (observation !== null) {
+      if (observation?.object?.sha !== expectedOid) {
+        fail("pushed branch changed before observation");
+      }
+      return observation;
+    }
+    if (attempt + 1 < attempts && delayMs > 0) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
+    }
+  }
+  fail("pushed branch was not observable");
+}
+
 function createDelivery(preflight, runId, candidate, { injectFailureAfterPullRequest = false } = {}) {
   const { repoPath } = observeRemote(preflight);
   const branch = `${preflight.remote.owned_namespace}/${runId}`;
@@ -1576,7 +1606,10 @@ function createDelivery(preflight, runId, candidate, { injectFailureAfterPullReq
       "push", "--porcelain", gitHubRepositoryUrl(preflight),
       `${candidateOid}:refs/heads/${branch}`,
     ], { timeout: 120_000 });
-    const observedBranch = ghApi(`${repoPath}/git/ref/heads/${branch}`);
+    const observedBranch = requireBranchPresentAfterPush(
+      () => ghApiMaybe(`${repoPath}/git/ref/heads/${branch}`),
+      candidateOid,
+    );
     const pull = ghApi(`${repoPath}/pulls`, {
       method: "POST",
       body: {
