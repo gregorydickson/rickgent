@@ -174,6 +174,8 @@ export function validateVerticalSliceReceipt(
   const cutoff = (expected.now ?? new Date()).getTime() - (expected.maxAgeMs ?? 7 * 24 * 60 * 60 * 1000);
   for (const run of runs) {
     const attempts = array(run["attempts"]).map(record);
+    const installedLifecycle = record(run["installed_lifecycle"]);
+    const installedAttemptPids = array(installedLifecycle["attempt_process_ids"]);
     if (
       attempts.length !== 2 ||
       attempts[0]?.["phase"] !== "crash" ||
@@ -183,6 +185,16 @@ export function validateVerticalSliceReceipt(
       attempts[0]?.["process_id"] === attempts[1]?.["process_id"] ||
       attempts[0]?.["process_group_id"] === attempts[1]?.["process_group_id"]
     ) diagnostics.push({ code: "PROOF_RUN_INCOMPLETE", detail: `crash/resume topology incomplete: ${String(run["run_id"])}` });
+    if (
+      installedLifecycle["entrypoint"] !== "rickgent __protected-release" ||
+      typeof installedLifecycle["executable_sha256"] !== "string" ||
+      !/^[0-9a-f]{64}$/.test(installedLifecycle["executable_sha256"] as string) ||
+      !Number.isInteger(installedLifecycle["controller_process_id"]) ||
+      installedAttemptPids.length !== 2 ||
+      installedAttemptPids[0] !== attempts[0]?.["process_id"] ||
+      installedAttemptPids[1] !== attempts[1]?.["process_id"] ||
+      installedAttemptPids.includes(installedLifecycle["controller_process_id"])
+    ) diagnostics.push({ code: "PROOF_RUN_INCOMPLETE", detail: `installed lifecycle entrypoint incomplete: ${String(run["run_id"])}` });
     const observations = array(run["model_observations"]).map(record);
     const byRole = new Map(observations.map((item) => [item["role"], item]));
     const pair = expected.requiredProviderPair;

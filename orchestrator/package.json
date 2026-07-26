@@ -26,7 +26,7 @@
     "rickgent": "./dist/cli.js"
   },
   "scripts": {
-    "build": "node scripts/generate-build-commit.cjs && node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc && node -e \"require('node:fs').copyFileSync('pnpm-lock.yaml','dist/pnpm-lock.yaml')\" && chmod +x dist/cli.js",
+    "build": "node scripts/generate-build-commit.cjs && node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc && node -e \"const f=require('node:fs');f.copyFileSync('pnpm-lock.yaml','dist/pnpm-lock.yaml');f.mkdirSync('dist/protected-release',{recursive:true});f.copyFileSync('scripts/run-protected-release.mjs','dist/protected-release/live-runner.mjs')\" && chmod +x dist/cli.js",
     "prepack": "node scripts/prepare-package-resources.mjs",
     "postpack": "node scripts/clean-package-resources.mjs",
     "test": "vitest run",

@@ -42,6 +42,13 @@ describe("CLI commands", () => {
     expect(out).toContain("status");
   });
 
+  it("rejects the non-public protected lifecycle entrypoint without installed authority", () => {
+    const result = spawnSync(process.execPath, [cliPath, "__protected-release", "execute"], { encoding: "utf-8" });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("internal protected release authority is invalid");
+    expect(run(["--help"])).not.toContain("__protected-release");
+  });
+
   it("build --help exits 0 and prints build help referencing the gates", () => {
     const out = run(["build", "--help"]);
     expect(out).toContain("rickgent build");

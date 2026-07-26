@@ -203,7 +203,11 @@ describe("protected release controller", () => {
     expect(runner).toContain('RICKGENT_PROTECTED_AUTHORITY !== "I_ACCEPT_REMOTE_MUTATION"');
     expect(runner).toContain('cli.includes("/rickgent/orchestrator/")');
     expect(runner).toContain('cli.includes("/node_modules/.pnpm/")');
-    expect(sourceReferences).not.toContain("runProtectedRelease");
+    expect(runner).toContain('spawn(config.cli, ["__protected-release", "_attempt", configPath]');
+    expect(runner).toContain('run(runtime.cli, ["__protected-release", ...process.argv.slice(2)]');
+    expect(sourceReferences).toContain('args[0] === "__protected-release"');
+    expect(sourceReferences).toContain('internal protected release authority is invalid');
+    expect(sourceReferences).not.toContain('rickgent __protected-release');
     expect(sourceReferences).not.toContain("RICKGENT_PROTECTED_AUTHORITY");
   });
 

@@ -247,6 +247,7 @@
         "run_id",
         "persistent_state_id",
         "installed_executable_realpath",
+        "installed_lifecycle",
         "attempts",
         "model_observations",
         "delivery",
@@ -258,6 +259,22 @@
         "run_id": { "type": "string", "minLength": 1 },
         "persistent_state_id": { "type": "string", "minLength": 1 },
         "installed_executable_realpath": { "type": "string", "pattern": "^/" },
+        "installed_lifecycle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["entrypoint", "executable_sha256", "controller_process_id", "attempt_process_ids"],
+          "properties": {
+            "entrypoint": { "const": "rickgent __protected-release" },
+            "executable_sha256": { "$ref": "#/$defs/sha256" },
+            "controller_process_id": { "type": "integer", "minimum": 1 },
+            "attempt_process_ids": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
         "attempts": {
           "type": "array",
           "minItems": 2,

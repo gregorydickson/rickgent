@@ -1340,7 +1340,8 @@ export function requirePersistentLifecycleObservation(observation, expected) {
 }
 
 async function runAttemptWorker() {
-  const configPath = realpathSync(resolve(process.argv[3] ?? ""));
+  const configArg = process.argv[2] === "__protected-release" ? process.argv[4] : process.argv[3];
+  const configPath = realpathSync(resolve(configArg ?? ""));
   const config = JSON.parse(readFileSync(configPath, "utf8"));
   if (
     process.env.RICKGENT_INTERNAL_ATTEMPT_NONCE === undefined ||
@@ -1429,11 +1430,15 @@ function waitForChild(child, timeoutMs, checkpointPath) {
 }
 
 function spawnAttempt(configPath, nonce) {
-  return spawn(process.execPath, [SCRIPT_PATH, "_attempt", configPath], {
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  return spawn(config.cli, ["__protected-release", "_attempt", configPath], {
     detached: true,
     env: {
       ...process.env,
+      RICKGENT_INTERNAL_PROTECTED_AUTHORITY_FILE: config.nonce_file,
       RICKGENT_INTERNAL_ATTEMPT_NONCE: nonce,
+      RICKGENT_INTERNAL_PROTECTED_CLI: config.cli,
+      RICKGENT_INTERNAL_PROTECTED_NONCE: nonce,
     },
     stdio: ["ignore", "ignore", "pipe"],
   });
@@ -2429,6 +2434,12 @@ async function executeLogicalRun(preflight, runtime, runNumber, executionRoot) {
       observed_branch_oid: delivery.delivery_oid,
     },
     installed_executable_realpath: runtime.cli,
+    installed_lifecycle: {
+      attempt_process_ids: attempts.map((attempt) => attempt.process_id),
+      controller_process_id: process.pid,
+      entrypoint: "rickgent __protected-release",
+      executable_sha256: sha256File(runtime.cli),
+    },
     identity_evidence: providers.map((provider) => ({
       provider: provider.canonical_provider,
       sha256: provider.identity_sha256,
@@ -2493,6 +2504,13 @@ async function runExecute() {
     preflight.binding.packed_receipt_sha256,
   );
   const runtime = protectedRuntime(preflight);
+  if (
+    process.env.RICKGENT_PROTECTED_INSTALLED_RUNNER !== "1"
+    || process.argv[1] === undefined
+    || realpathSync(process.argv[1]) !== runtime.cli
+  ) {
+    fail("protected lifecycle did not enter through the exact installed CLI");
+  }
   const packedPath = realpathSync(join(dirname(preflightPath), "packed-install-summary.json"));
   const packed = parseCanonicalReceipt(packedPath, "1.0.0");
   if (packed.digest !== preflight.binding.packed_receipt_sha256) {
@@ -2609,6 +2627,27 @@ async function runExecute() {
   console.log(canonical({ ok: true, mode: "execute", output: basename(outputPath), repeat_count: 2 }));
 }
 
+async function delegateInstalledExecute() {
+  const preflightPath = realpathSync(resolve(option("--preflight")));
+  const preflight = parseCanonicalReceipt(preflightPath, "rickgent-protected-release-preflight/v1");
+  const runtime = protectedRuntime(preflight);
+  const nonce = randomBytes(24).toString("hex");
+  const authorityRoot = join(tmpdir(), "rickgent-protected-execution", preflight.digest.slice(0, 16));
+  mkdirSync(authorityRoot, { recursive: true });
+  const authorityFile = join(authorityRoot, "installed-cli-authority");
+  writeFileSync(authorityFile, `${nonce}\n`, { mode: 0o600 });
+  const output = run(runtime.cli, ["__protected-release", ...process.argv.slice(2)], {
+    env: {
+      ...process.env,
+      RICKGENT_INTERNAL_PROTECTED_AUTHORITY_FILE: authorityFile,
+      RICKGENT_INTERNAL_PROTECTED_CLI: runtime.cli,
+      RICKGENT_INTERNAL_PROTECTED_NONCE: nonce,
+    },
+    timeout: 30 * 60_000,
+  });
+  process.stdout.write(`${output}\n`);
+}
+
 async function runMutation() {
   if (process.env.RICKGENT_PROTECTED_AUTHORITY !== "I_ACCEPT_REMOTE_MUTATION") {
     fail("explicit protected authority is absent");
@@ -2637,15 +2676,21 @@ async function runMutation() {
 
 async function main() {
   try {
-    if (process.argv[2] === "preflight") await runPreflight();
-    else if (process.argv[2] === "execute") await runExecute();
-    else if (process.argv[2] === "_attempt") await runAttemptWorker();
+    const command = process.argv[2] === "__protected-release" ? process.argv[3] : process.argv[2];
+    if (command === "preflight") await runPreflight();
+    else if (command === "execute" && process.env.RICKGENT_PROTECTED_INSTALLED_RUNNER === "1") await runExecute();
+    else if (command === "execute") await delegateInstalledExecute();
+    else if (command === "_attempt") await runAttemptWorker();
     else await runMutation();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`PROTECTED_RELEASE_REFUSED: ${message}`);
     process.exitCode = 2;
   }
+}
+
+export async function runProtectedReleaseCli() {
+  await main();
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === SCRIPT_PATH) await main();

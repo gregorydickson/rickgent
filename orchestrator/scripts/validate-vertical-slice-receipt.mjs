@@ -141,11 +141,27 @@ for (const [index, run] of receipt.runs.entries()) {
   runIds.add(run.run_id);
   stateIds.add(run.persistent_state_id);
   requireTrue(run.containment_passed, `${run.run_id}.containment_passed`);
+  equal(run.installed_lifecycle?.entrypoint, "rickgent __protected-release", `${run.run_id} installed entrypoint`);
+  equal(
+    run.installed_lifecycle?.executable_sha256,
+    preflight.binding.installation.cli_sha256,
+    `${run.run_id} installed executable digest`,
+  );
 
   if (!Array.isArray(run.attempts) || run.attempts.length !== 2) {
     fail(`${run.run_id} must contain exactly one crash and one resume attempt`);
   }
   const [crash, resume] = run.attempts;
+  equal(
+    run.installed_lifecycle?.attempt_process_ids,
+    [crash.process_id, resume.process_id],
+    `${run.run_id} installed attempt process IDs`,
+  );
+  if (
+    !Number.isInteger(run.installed_lifecycle?.controller_process_id)
+    || run.installed_lifecycle.controller_process_id < 1
+    || run.installed_lifecycle.attempt_process_ids.includes(run.installed_lifecycle.controller_process_id)
+  ) fail(`${run.run_id} installed controller process identity is invalid`);
   equal(crash.phase, "crash", `${run.run_id} crash phase`);
   equal(resume.phase, "resume", `${run.run_id} resume phase`);
   equal(crash.attempt_id, `${run.run_id}:crash`, `${run.run_id} crash attempt ID`);

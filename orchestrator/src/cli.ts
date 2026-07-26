@@ -481,6 +481,30 @@ async function executeMain(
   args: string[],
   dependencies: InternalCliDependencies,
 ): Promise<void> {
+  if (args[0] === "__protected-release") {
+    const nonce = process.env.RICKGENT_INTERNAL_PROTECTED_NONCE;
+    const authorityFile = process.env.RICKGENT_INTERNAL_PROTECTED_AUTHORITY_FILE;
+    const expectedCli = process.env.RICKGENT_INTERNAL_PROTECTED_CLI;
+    const invokedCli = process.argv[1];
+    if (
+      Object.keys(dependencies).length !== 0 ||
+      !/^[0-9a-f]{48}$/.test(nonce ?? "") ||
+      authorityFile === undefined || !authorityFile.startsWith("/") ||
+      expectedCli === undefined || !expectedCli.startsWith("/") ||
+      invokedCli === undefined ||
+      !existsSync(authorityFile) ||
+      readFileSync(authorityFile, "utf8") !== `${nonce}\n` ||
+      realpathSync(invokedCli) !== realpathSync(expectedCli) ||
+      !realpathSync(invokedCli).endsWith("/node_modules/rickgent/dist/cli.js")
+    ) {
+      throw new InputContractError("internal protected release authority is invalid");
+    }
+    process.env.RICKGENT_PROTECTED_INSTALLED_RUNNER = "1";
+    const runnerUrl = new URL("./protected-release/live-runner.mjs", import.meta.url).href;
+    const runner = await import(runnerUrl) as { runProtectedReleaseCli(): Promise<void> };
+    await runner.runProtectedReleaseCli();
+    return;
+  }
   (dependencies.assertEnvironment ?? assertNoProductionBypasses)(process.env);
   const command = args[0] ?? "";
   const rest = args.slice(1);

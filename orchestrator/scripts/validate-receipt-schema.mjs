@@ -138,6 +138,14 @@ function validateVertical(schema) {
   requireEqual(at(schema, "$defs.run.properties.attempts.maxItems"), 2, "attempt maximum");
   requireEqual(at(schema, "$defs.run.properties.lifecycle_complete.const"), true, "lifecycle completion");
   requireEqual(at(schema, "$defs.run.properties.containment_passed.const"), true, "containment");
+  requireEqual(
+    at(schema, "$defs.run.properties.installed_lifecycle.properties.entrypoint.const"),
+    "rickgent __protected-release",
+    "installed lifecycle entrypoint",
+  );
+  if (!at(schema, "$defs.run.required").includes("installed_lifecycle")) {
+    fail("vertical run must require installed_lifecycle");
+  }
   requireEqual(at(schema, "$defs.cleanup.properties.repository_deleted.const"), false, "repository preservation");
   requireEqual(
     at(schema, "$defs.runCleanup.properties.owned_branch_absent_on_requery.const"),
