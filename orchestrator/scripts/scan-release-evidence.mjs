@@ -28,7 +28,7 @@ const allowedKeys = new Set([
   "containment_passed", "conversation_id", "corpora", "death_observed", "delivery",
   "delivery_oid", "dispatch_id", "duplicate_side_effects", "ended_at", "evidence",
   "evidence_id", "evidence_ids", "failure_path", "fixture_substitution", "id",
-  "independently_requeried", "infrastructure_errors", "installed_executable_realpath",
+  "identity_sha256", "independently_requeried", "infrastructure_errors", "installed_executable_realpath",
   "invoked_model", "items", "kind", "lifecycle_complete", "model_observations", "name",
   "npm_archive_sha256", "observed_branch_oid", "observed_canonical_model", "observed_model", "observed_provider", "outcome",
   "owned_branch_absent_on_requery", "owned_branch_prefix", "owned_pull_request_closed",
