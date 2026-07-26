@@ -10,7 +10,7 @@
   "preserved": true,
   "before": {
     "caller": {
-      "head": "59534ff270d06ea49bc0a2847a6a5540faaa1a5d",
+      "head": "58ff5a8d87dbaaa9d06a3cb436775be19e725ec1",
       "index_delta_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "worktree_delta_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "untracked": {
@@ -35,7 +35,7 @@
   },
   "after": {
     "caller": {
-      "head": "59534ff270d06ea49bc0a2847a6a5540faaa1a5d",
+      "head": "58ff5a8d87dbaaa9d06a3cb436775be19e725ec1",
       "index_delta_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "worktree_delta_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "untracked": {
@@ -58,5 +58,5 @@
     },
     "quality_summary_sha256": "c1410d8de5610d84bd007a3e1da1252d9bfaf1f81eeaab5ac1ca6cad57b8159f"
   },
-  "digest": "7332bc20f284dfd0f46b008230ea9b7f0a361ede169d89de9cf64a9c6a1432fd"
+  "digest": "a2204082fa628d0a61ae17abea59c8af10a1a2e0dfef83abecc4d58b6d000d1d"
 }
